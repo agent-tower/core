@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 项目
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  repoPath    String
+  mainBranch  String   @default("main")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tasks       Task[]
+}
+
+// 任务
+// TaskStatus: TODO, IN_PROGRESS, IN_REVIEW, DONE
+model Task {
+  id          String      @id @default(uuid())
+  title       String
+  description String?
+  status      String      @default("TODO")
+  priority    Int         @default(0)
+  position    Int         @default(0)
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspaces  Workspace[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([projectId])
+  @@index([status])
+}
+
+// 工作空间 (对应一个 git worktree)
+// WorkspaceStatus: ACTIVE, MERGED, ABANDONED
+model Workspace {
+  id           String    @id @default(uuid())
+  taskId       String
+  task         Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  branchName   String
+  worktreePath String
+  status       String    @default("ACTIVE")
+  sessions     Session[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([taskId])
+}
+
+// 会话 (一次 AI 代理执行)
+// AgentType: CLAUDE_CODE, GEMINI_CLI
+// SessionStatus: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
+model Session {
+  id          String             @id @default(uuid())
+  workspaceId String
+  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agentType   String
+  prompt      String
+  status      String             @default("PENDING")
+  processes   ExecutionProcess[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([workspaceId])
+}
+
+// 执行进程
+model ExecutionProcess {
+  id        String   @id @default(uuid())
+  sessionId String
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  pid       Int?
+  exitCode  Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sessionId])
+}
+
+// 执行日志
+model ExecutionLog {
+  id        String   @id @default(uuid())
+  processId String
+  content   String
+  timestamp DateTime @default(now())
+
+  @@index([processId])
+}

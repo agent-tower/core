@@ -1,0 +1,19 @@
+{
+  "name": "agent-tower",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Agent 任务管理面板",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint",
+    "clean": "pnpm -r run clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}
