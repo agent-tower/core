@@ -1,0 +1,23 @@
+// 从 shared 包重新导出事件类型
+export {
+  NAMESPACES,
+  TerminalClientEvents,
+  TerminalServerEvents,
+  AgentClientEvents,
+  AgentServerEvents,
+  type TerminalAttachPayload,
+  type TerminalDetachPayload,
+  type TerminalInputPayload,
+  type TerminalResizePayload,
+  type TerminalOutputPayload,
+  type TerminalExitPayload,
+  type TerminalErrorPayload,
+  type AgentStatus,
+  type AgentStatusPayload,
+  type AgentSubscribePayload,
+  type AckResponse,
+  type TerminalClientEventType,
+  type TerminalServerEventType,
+  type AgentClientEventType,
+  type AgentServerEventType,
+} from '@agent-tower/shared/socket'

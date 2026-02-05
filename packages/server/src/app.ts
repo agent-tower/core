@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import websocket from '@fastify/websocket';
 import { registerRoutes } from './routes/index.js';
+import { initializeSocket, closeSocket } from './socket/index.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -15,10 +15,18 @@ export async function buildApp() {
     origin: true,
   });
 
-  await app.register(websocket);
-
   // 注册路由
   await registerRoutes(app);
+
+  // 服务器启动后初始化 Socket.IO
+  app.addHook('onReady', async () => {
+    initializeSocket(app);
+  });
+
+  // 服务器关闭时清理 Socket.IO
+  app.addHook('onClose', async () => {
+    await closeSocket();
+  });
 
   return app;
 }
