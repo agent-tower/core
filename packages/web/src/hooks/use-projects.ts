@@ -53,7 +53,7 @@ export function useProjects(options?: ListProjectsParams) {
   if (options?.limit != null) params.limit = String(options.limit)
 
   return useQuery({
-    queryKey: queryKeys.projects.list(options),
+    queryKey: queryKeys.projects.list(options as Record<string, unknown> | undefined),
     queryFn: () =>
       apiClient.get<PaginatedResponse<Project>>('/projects', { params }),
   })

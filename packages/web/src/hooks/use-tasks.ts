@@ -52,7 +52,7 @@ export function useTasks(projectId: string, options?: ListTasksParams) {
   if (options?.limit != null) params.limit = String(options.limit)
 
   return useQuery({
-    queryKey: queryKeys.tasks.list(projectId, options),
+    queryKey: queryKeys.tasks.list(projectId, options as Record<string, unknown> | undefined),
     queryFn: () =>
       apiClient.get<PaginatedResponse<Task>>(
         `/projects/${projectId}/tasks`,
