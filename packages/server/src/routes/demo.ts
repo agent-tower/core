@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { AgentType } from '../types/index.js';
 import { getExecutor, getAllExecutorsAvailability, ExecutionEnv } from '../executors/index.js';
 import { getProcessManager } from '../socket/index.js';
-import { sessionMsgStoreManager, createClaudeCodeParser } from '../output/index.js';
+import { sessionMsgStoreManager, createClaudeCodeParser, createCursorAgentParser } from '../output/index.js';
 
 // Debug 日志开关
 const DEBUG_DEMO = process.env.DEBUG_DEMO === 'true' || true;
@@ -56,9 +56,11 @@ export async function demoRoutes(app: FastifyInstance) {
       const msgStore = sessionMsgStoreManager.create(sessionId, body.agentType, workingDir);
 
       // 根据 agent 类型创建解析器
-      let parser: ReturnType<typeof createClaudeCodeParser> | null = null;
+      let parser: { processData(data: string): void; finish(): void } | null = null;
       if (body.agentType === AgentType.CLAUDE_CODE) {
         parser = createClaudeCodeParser(msgStore);
+      } else if (body.agentType === AgentType.CURSOR_AGENT) {
+        parser = createCursorAgentParser(msgStore, workingDir);
       }
 
       // 将 PTY 输出转发到 MsgStore 和解析器

@@ -17,6 +17,7 @@ export enum WorkspaceStatus {
 export enum AgentType {
   CLAUDE_CODE = 'CLAUDE_CODE',
   GEMINI_CLI = 'GEMINI_CLI',
+  CURSOR_AGENT = 'CURSOR_AGENT',
 }
 
 // 会话状态
