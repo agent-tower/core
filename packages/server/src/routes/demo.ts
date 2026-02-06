@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AgentType } from '../types/index.js';
 import { getExecutor, getAllExecutorsAvailability, ExecutionEnv } from '../executors/index.js';
 import { getProcessManager } from '../socket/index.js';
+import { sessionMsgStoreManager, createClaudeCodeParser } from '../output/index.js';
 
 const startDemoSchema = z.object({
   agentType: z.nativeEnum(AgentType),
@@ -46,6 +47,31 @@ export async function demoRoutes(app: FastifyInstance) {
         workingDir,
         prompt: body.prompt,
         env,
+      });
+
+      // 创建 MsgStore 并连接 PTY 输出
+      const msgStore = sessionMsgStoreManager.create(sessionId, body.agentType, workingDir);
+
+      // 根据 agent 类型创建解析器
+      let parser: ReturnType<typeof createClaudeCodeParser> | null = null;
+      if (body.agentType === AgentType.CLAUDE_CODE) {
+        parser = createClaudeCodeParser(msgStore);
+      }
+
+      // 将 PTY 输出转发到 MsgStore 和解析器
+      spawnResult.pty.onData((data) => {
+        msgStore.pushStdout(data);
+        if (parser) {
+          parser.processData(data);
+        }
+      });
+
+      // PTY 退出时标记 MsgStore 完成
+      spawnResult.pty.onExit(() => {
+        if (parser) {
+          parser.finish();
+        }
+        msgStore.pushFinished();
       });
 
       // 使用共享的 ProcessManager，这样 Socket.IO 可以正确推送输出

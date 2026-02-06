@@ -20,3 +20,6 @@ export {
   removeEntry,
   mergePatches,
 } from './utils/patch.js'
+
+// 解析器导出
+export { ClaudeCodeParser, createClaudeCodeParser } from './claude-code-parser.js'

@@ -13,6 +13,10 @@
     "./socket": {
       "types": "./dist/socket/index.d.ts",
       "import": "./dist/socket/index.js"
+    },
+    "./log-adapter": {
+      "types": "./dist/log-adapter.d.ts",
+      "import": "./dist/log-adapter.js"
     }
   },
   "scripts": {
