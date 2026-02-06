@@ -11,6 +11,8 @@ interface TaskListProps {
   filterProjectId: string | null;
   setFilterProjectId: (id: string | null) => void;
   width?: number;
+  onCreateProject?: () => void;
+  onCreateTask?: () => void;
 }
 
 const TaskGroup = ({ 
@@ -63,7 +65,7 @@ const TaskGroup = ({
               <button
                 key={task.id}
                 onClick={() => onSelectTask(task.id)}
-                className={`flex items-start pl-8 pr-4 py-2 text-sm w-full text-left transition-colors border-l-2
+                className={`flex items-start pl-8 pr-4 py-3 text-sm w-full text-left transition-all border-l-2 group
                   ${isSelected 
                     ? 'bg-neutral-100 border-neutral-800' 
                     : 'border-transparent hover:bg-neutral-50 hover:border-neutral-200'
@@ -77,7 +79,7 @@ const TaskGroup = ({
                 </div>
                 
                 <div className="flex-1 min-w-0">
-                  <div className="truncate">
+                  <div className="mb-0.5">
                     <span className={`font-medium mr-1 ${project?.color || 'text-neutral-500'}`}>
                       {project?.name}
                     </span>
@@ -86,6 +88,10 @@ const TaskGroup = ({
                       {task.title}
                     </span>
                   </div>
+                  {/* Task Description: visible, 2 lines max */}
+                  <p className={`text-xs line-clamp-2 leading-relaxed ${isSelected ? 'text-neutral-500' : 'text-neutral-400 group-hover:text-neutral-500'}`}>
+                    {task.description}
+                  </p>
                 </div>
               </button>
             );
@@ -96,7 +102,16 @@ const TaskGroup = ({
   );
 };
 
-export const TaskList: React.FC<TaskListProps> = ({ tasks, selectedTaskId, onSelectTask, filterProjectId, setFilterProjectId, width = 320 }) => {
+export const TaskList: React.FC<TaskListProps> = ({ 
+  tasks, 
+  selectedTaskId, 
+  onSelectTask, 
+  filterProjectId, 
+  setFilterProjectId, 
+  width = 320,
+  onCreateProject,
+  onCreateTask
+}) => {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
 
   const filteredTasks = filterProjectId 
@@ -185,12 +200,27 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, selectedTaskId, onSel
                                 </button>
                             );
                         })}
+
+                        <div className="h-px bg-neutral-100 my-1 mx-2"></div>
+
+                        {/* Create Project Action */}
+                        <button
+                            onClick={() => { setIsFilterOpen(false); onCreateProject && onCreateProject(); }}
+                            className="w-full text-left px-3 py-2 text-xs flex items-center gap-2 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50 transition-colors"
+                        >
+                            <Plus size={14} />
+                            <span>Create New Project...</span>
+                        </button>
                     </div>
                 </>
             )}
         </div>
 
-        <button className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors flex-shrink-0" title="New Task">
+        <button 
+          onClick={onCreateTask}
+          className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors flex-shrink-0" 
+          title="New Task"
+        >
           <Plus size={18} />
         </button>
       </div>

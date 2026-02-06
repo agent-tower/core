@@ -3,7 +3,8 @@ import { Task, TaskStatus } from '../types';
 import { PROJECTS } from '../constants';
 import { IconRunning, IconReview, IconDone, IconPending } from './Icons';
 import { LogStream } from './LogStream';
-import { Send, Square, Paperclip, AtSign, Hash, Globe, CheckCircle2, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { WorkspacePanel } from './WorkspacePanel';
+import { Send, PanelRightClose, PanelRightOpen, Paperclip, Mic, ArrowUp } from 'lucide-react';
 
 interface TaskDetailProps {
   task: Task | null;
@@ -11,7 +12,17 @@ interface TaskDetailProps {
 
 export const TaskDetail: React.FC<TaskDetailProps> = ({ task }) => {
   const [input, setInput] = useState('');
-  const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
+  
+  // Layout State: Chat is now the controlled width, Workspace is flex-1
+  // Increased default width from 450 to 675 (+50%)
+  const [chatWidth, setChatWidth] = useState(675); 
+  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(true);
+  const [isResizing, setIsResizing] = useState(false);
+  
+  // Refs for smooth resizing
+  const startXRef = useRef<number>(0);
+  const startWidthRef = useRef<number>(0);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -22,199 +33,192 @@ export const TaskDetail: React.FC<TaskDetailProps> = ({ task }) => {
     }
   }, [task?.logs]);
 
-  // Handle textarea auto-resize
+  // Handle Resizing Logic (Controlling Chat Width)
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+      const deltaX = e.clientX - startXRef.current;
+      const newWidth = startWidthRef.current + deltaX;
+      // Clamp width between 320px and 1200px (increased max width for larger screens)
+      const clampedWidth = Math.max(320, Math.min(newWidth, 1200));
+      setChatWidth(clampedWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    } else {
+      document.body.style.cursor = 'default';
+      document.body.style.userSelect = 'auto';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const handleMouseDownResize = (e: React.MouseEvent) => {
+    setIsResizing(true);
+    startXRef.current = e.clientX;
+    startWidthRef.current = chatWidth;
+  };
+
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'; // Reset height
-      // Max height approx 8 lines (24px line-height * 8 + padding) ~ 210px
-      const maxHeight = 210; 
-      const newHeight = Math.min(textareaRef.current.scrollHeight, maxHeight);
-      textareaRef.current.style.height = `${newHeight}px`;
+      textareaRef.current.style.height = 'auto';
+      const scrollHeight = textareaRef.current.scrollHeight;
+      // Ensure minimum height is respected
+      textareaRef.current.style.height = `${Math.max(60, Math.min(scrollHeight, 300))}px`;
     }
   };
 
   if (!task) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-white text-neutral-400">
-        <p>Select a task to view details</p>
+      <div className="flex-1 flex flex-col items-center justify-center bg-white text-neutral-400 select-none">
+        <div className="w-16 h-16 bg-neutral-50 rounded-2xl border border-neutral-100 flex items-center justify-center mb-6">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="text-neutral-300">
+                <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="currentColor"/>
+                <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+        </div>
+        <h3 className="text-neutral-900 font-medium mb-2 text-lg">Agent Tower</h3>
+        <p className="text-sm max-w-sm text-center text-neutral-500 leading-relaxed">
+            Select a task from the sidebar to view logs, monitor execution, or interact with an agent.
+        </p>
       </div>
     );
   }
 
   const project = PROJECTS.find(p => p.id === task.projectId);
-  const isReview = task.status === TaskStatus.Review;
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-white relative">
-      {/* Header */}
-      <div className="px-8 py-5 border-b border-neutral-100 bg-white transition-all duration-300">
+    <div className="flex-1 flex flex-col h-full bg-white relative overflow-hidden">
+      {/* Minimal Header */}
+      <div className="px-6 py-4 flex items-center justify-between border-b border-neutral-100 bg-white/80 backdrop-blur-sm z-20 flex-shrink-0">
+        <div className="flex flex-col">
+            <div className="flex items-center gap-2 mb-0.5">
+                <span className={`text-xs font-semibold uppercase tracking-wider ${project?.color || 'text-neutral-500'}`}>
+                    {project?.name}
+                </span>
+                <span className="text-neutral-300 text-xs">/</span>
+                <span className="text-xs text-neutral-500 font-mono">{task.branch}</span>
+            </div>
+            <h2 className="text-lg font-bold text-neutral-900">{task.title}</h2>
+        </div>
         
-        {/* Row 1: Title & Status */}
-        <div className="flex items-center flex-wrap gap-3">
-          <div className="flex items-baseline gap-2">
-             <span className={`text-base font-medium ${project?.color || 'text-neutral-500'}`}>
-               {project?.name}
-             </span>
-             <span className="text-neutral-300 text-sm">/</span>
-             <span className="text-xl font-bold text-neutral-900 tracking-tight">
-               {task.title}
-             </span>
-          </div>
-
-          {/* Status Indicators - Compact & Inline */}
-          <div className="flex items-center">
-             {task.status === TaskStatus.Running && (
-                <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-blue-50 text-blue-700 rounded-full text-xs font-medium border border-blue-100">
-                  <IconRunning className="w-3.5 h-3.5 animate-pulse" />
-                  <span>Running</span>
-                </div>
-             )}
-             {isReview && (
-                <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-amber-50 text-amber-700 rounded-full text-xs font-medium border border-amber-100">
-                  <IconReview className="w-3.5 h-3.5" />
-                  <span>Review</span>
-                </div>
-             )}
-              {task.status === TaskStatus.Done && (
-                <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-full text-xs font-medium border border-emerald-100">
-                  <IconDone className="w-3.5 h-3.5" />
-                  <span>Done</span>
-                </div>
-             )}
-             {task.status === TaskStatus.Pending && (
-                <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-neutral-100 text-neutral-600 rounded-full text-xs font-medium border border-neutral-200">
-                  <IconPending className="w-3.5 h-3.5" />
-                  <span>Pending</span>
-                </div>
-             )}
-          </div>
-        </div>
-
-        {/* Row 2: Description */}
-        <div className="mt-1.5 flex items-start gap-2 group max-w-4xl">
-          <div 
-            className={`text-sm text-neutral-600 leading-relaxed cursor-pointer transition-all ${isDescriptionExpanded ? '' : 'truncate'}`}
-            onClick={() => setIsDescriptionExpanded(!isDescriptionExpanded)}
-          >
-            {task.description}
-          </div>
-          <button 
-            onClick={() => setIsDescriptionExpanded(!isDescriptionExpanded)}
-            className="mt-0.5 text-neutral-400 opacity-0 group-hover:opacity-100 hover:text-neutral-600 transition-opacity"
-          >
-            {isDescriptionExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
-        </div>
-
-        {/* Row 3: Meta Info (Agent & Branch) */}
-        <div className="flex items-center gap-6 mt-3">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-neutral-400 font-medium">Agent</span>
-            <div className="flex items-center gap-1.5 text-neutral-900 font-medium bg-neutral-50 px-2 py-1 rounded border border-neutral-100">
-               {task.agent}
+        <div className="flex items-center gap-4">
+             {/* Status Badge */}
+            <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border ${
+                task.status === TaskStatus.Running ? 'bg-blue-50 text-blue-700 border-blue-100' :
+                task.status === TaskStatus.Review ? 'bg-amber-50 text-amber-700 border-amber-100' :
+                'bg-neutral-50 text-neutral-600 border-neutral-100'
+            }`}>
+                {task.status === TaskStatus.Running && <IconRunning className="w-3 h-3 animate-pulse" />}
+                {task.status === TaskStatus.Review && <IconReview className="w-3 h-3" />}
+                {task.status === TaskStatus.Pending && <IconPending className="w-3 h-3" />}
+                {task.status === TaskStatus.Done && <IconDone className="w-3 h-3" />}
+                <span>{task.status}</span>
             </div>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-neutral-400 font-medium">Branch</span>
-            <div className="flex items-center gap-1.5 text-neutral-700 font-mono bg-neutral-50 px-2 py-1 rounded border border-neutral-100">
-               {task.branch}
-            </div>
-          </div>
-        </div>
 
-      </div>
-
-      {/* Main Content Area (Logs) */}
-      <div className="flex-1 overflow-y-auto px-8 py-6">
-        <div className="min-h-[200px]">
-          <LogStream logs={task.logs} />
-          <div ref={bottomRef} />
+            {/* Toggle Workspace */}
+            <button 
+                onClick={() => setIsWorkspaceOpen(!isWorkspaceOpen)}
+                className="text-neutral-400 hover:text-neutral-900 transition-colors"
+                title="Toggle Workspace"
+            >
+                {isWorkspaceOpen ? <PanelRightClose size={20} /> : <PanelRightOpen size={20} />}
+            </button>
         </div>
       </div>
 
-      {/* Review Action Banner */}
-      {isReview && (
-        <div className="px-8 py-4 bg-amber-50 border-t border-amber-100 flex items-center justify-between animate-in slide-in-from-bottom-2 duration-300">
-            <div className="flex items-center gap-3">
-                <div className="flex items-center justify-center w-8 h-8 bg-amber-100 text-amber-600 rounded-full">
-                    <IconReview />
-                </div>
-                <div>
-                    <div className="text-sm font-semibold text-amber-900">Waiting for Review</div>
-                    <div className="text-xs text-amber-700/70">Verify the changes before proceeding</div>
-                </div>
-            </div>
-            <div className="flex items-center gap-3">
-                <button className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-neutral-600 bg-white border border-neutral-200 hover:bg-neutral-50 hover:text-neutral-900 rounded-lg transition-colors">
-                    <XCircle size={14} />
-                    <span>Request Changes</span>
-                </button>
-                <button className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-neutral-900 hover:bg-black rounded-lg shadow-sm transition-colors">
-                    <CheckCircle2 size={14} />
-                    <span>Approve</span>
-                </button>
-            </div>
-        </div>
-      )}
-
-      {/* Input Area */}
-      <div className={`px-8 py-6 border-t ${isReview ? 'border-amber-100' : 'border-neutral-100'} bg-white`}>
-        <div className={`relative border rounded-xl shadow-sm bg-white focus-within:ring-1 transition-all duration-200 ${
-            isReview 
-            ? 'border-amber-200 focus-within:ring-amber-200 focus-within:border-amber-300' 
-            : 'border-neutral-200 focus-within:ring-neutral-300 focus-within:border-neutral-300'
-        }`}>
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleInput}
-            rows={3}
-            placeholder={isReview ? "Add comments to your review..." : "Type a message to the agent..."}
-            className="w-full px-4 py-3 bg-transparent border-none focus:outline-none focus:ring-0 resize-none text-neutral-900 placeholder-neutral-400 leading-relaxed text-sm scrollbar-thin scrollbar-thumb-neutral-200 scrollbar-track-transparent"
-            style={{ minHeight: '80px', maxHeight: '210px' }}
-          />
+      {/* Main Area */}
+      <div className="flex-1 flex overflow-hidden">
+        
+        {/* Chat Stream Panel */}
+        {/* Removed transition-all to ensure smooth drag resizing */}
+        <div 
+            className={`flex flex-col bg-white relative border-r border-neutral-200 ${
+                isWorkspaceOpen ? 'flex-shrink-0' : 'flex-1'
+            }`}
+            style={{ width: isWorkspaceOpen ? chatWidth : '100%' }}
+        >
           
-          <div className="flex items-center justify-between px-3 pb-3 pt-1 border-t border-transparent">
-            {/* Left Toolbar */}
-            <div className="flex items-center gap-1 text-neutral-400">
-               <button className="p-2 hover:bg-neutral-100 hover:text-neutral-600 rounded-lg transition-colors" title="Attach File">
-                 <Paperclip size={18} />
-               </button>
-               <button className="p-2 hover:bg-neutral-100 hover:text-neutral-600 rounded-lg transition-colors" title="Mention">
-                 <AtSign size={18} />
-               </button>
-               <button className="p-2 hover:bg-neutral-100 hover:text-neutral-600 rounded-lg transition-colors" title="Reference Issue">
-                 <Hash size={18} />
-               </button>
-               <div className="w-px h-4 bg-neutral-200 mx-1"></div>
-               <button className="p-2 hover:bg-neutral-100 hover:text-neutral-600 rounded-lg transition-colors" title="Search Web">
-                 <Globe size={18} />
-               </button>
-            </div>
+          {/* Scrollable Logs */}
+          <div className="flex-1 overflow-y-auto px-6 pt-6 pb-4">
+             <div className="w-full">
+                 {/* Task Description */}
+                 <div className="mb-8 pb-8 border-b border-neutral-100">
+                    <p className="text-sm text-neutral-500 leading-relaxed">{task.description}</p>
+                 </div>
+                 
+                 <LogStream logs={task.logs} />
+                 <div ref={bottomRef} className="h-4" />
+             </div>
+          </div>
 
-            {/* Right Actions */}
-            <div className="flex items-center gap-2">
-               {task.status === TaskStatus.Running && (
-                  <button className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors">
-                    <Square size={12} fill="currentColor" />
-                    <span>Stop</span>
-                  </button>
-               )}
-               <button 
-                 disabled={!input.trim()}
-                 className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg transition-all ${
-                   input.trim() 
-                   ? 'bg-neutral-900 text-white hover:bg-black shadow-sm' 
-                   : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
-                 }`}
-               >
-                 <span>Send</span>
-                 <Send size={14} />
-               </button>
+          {/* Minimal Input Area */}
+          <div className="p-6 pt-4 bg-white flex-shrink-0 w-full z-10 pb-6 border-t border-transparent">
+            <div className="relative bg-white rounded-xl border border-neutral-200 shadow-sm hover:shadow-md focus-within:shadow-md focus-within:border-neutral-300 transition-all duration-200">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={handleInput}
+                rows={1}
+                placeholder="Message Agent..."
+                className="w-full px-4 pt-4 pb-2 bg-transparent border-none focus:outline-none resize-none text-sm text-neutral-900 placeholder-neutral-400 leading-relaxed"
+                style={{ minHeight: '60px', maxHeight: '300px' }}
+              />
+              
+              {/* Toolbar Row */}
+              <div className="flex items-center justify-between px-2 pb-2 pt-1">
+                 <div className="flex items-center gap-1">
+                     <button className="p-2 text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors">
+                        <Paperclip size={18} />
+                     </button>
+                 </div>
+                 
+                 <div className="flex items-center gap-2">
+                     <button 
+                       disabled={!input.trim()}
+                       className={`p-2 rounded-lg transition-all duration-200 ${
+                         input.trim() 
+                         ? 'bg-neutral-900 text-white shadow-md hover:bg-black' 
+                         : 'bg-transparent text-neutral-300 cursor-not-allowed'
+                       }`}
+                     >
+                       <ArrowUp size={18} />
+                     </button>
+                 </div>
+              </div>
             </div>
+            
           </div>
         </div>
+
+        {/* Resizer - Only visible if workspace is open */}
+        {isWorkspaceOpen && (
+            <div
+                className="w-1 cursor-col-resize hover:bg-neutral-200 active:bg-blue-400 transition-colors z-30 -ml-0.5 flex-shrink-0"
+                onMouseDown={handleMouseDownResize}
+            />
+        )}
+
+        {/* Right: Workspace - Takes remaining space */}
+        {isWorkspaceOpen && (
+            <div className="flex-1 flex flex-col min-w-0 bg-white">
+                <WorkspacePanel />
+            </div>
+        )}
+
       </div>
     </div>
   );
