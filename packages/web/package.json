@@ -13,6 +13,7 @@
     "@agent-tower/shared": "workspace:*",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-query": "^5.90.20",
+    "@xterm/addon-fit": "^0.11.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fast-json-patch": "^3.1.1",
@@ -24,6 +25,7 @@
     "socket.io-client": "^4.8.3",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^4.1.18",
+    "xterm": "^5.3.0",
     "zustand": "^5.0.11"
   },
   "devDependencies": {
