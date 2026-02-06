@@ -2,7 +2,7 @@ import { prisma } from '../utils/index.js';
 import { AgentType, SessionStatus } from '../types/index.js';
 import { ProcessManager } from '../process/process.manager.js';
 import { getExecutor, ExecutionEnv } from '../executors/index.js';
-import { sessionMsgStoreManager } from '../logs/index.js';
+import { sessionMsgStoreManager } from '../output/index.js';
 
 export class SessionService {
   private processManager = new ProcessManager();

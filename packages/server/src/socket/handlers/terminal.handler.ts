@@ -1,7 +1,7 @@
 import type { Namespace, Socket } from 'socket.io'
 import type { SocketHandler } from './base.handler.js'
 import { ProcessManager } from '../../process/process.manager.js'
-import { sessionMsgStoreManager } from '../../logs/index.js'
+import { sessionMsgStoreManager } from '../../output/index.js'
 import {
   TerminalClientEvents,
   TerminalServerEvents,
