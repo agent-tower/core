@@ -1,0 +1,5 @@
+{
+  "name": "Agent Tower",
+  "description": "A minimalist task management interface for AI Agents featuring a dual-pane layout, real-time execution logs, and project grouping.",
+  "requestFramePermissions": []
+}
