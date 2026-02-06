@@ -17,6 +17,9 @@ import {
   createCursorEntry,
 } from '@agent-tower/shared/log-adapter'
 
+// Debug 日志开关
+const DEBUG_LOGS = true;
+
 interface NormalizedConversation {
   sessionId?: string
   entries: NormalizedEntry[]
@@ -71,10 +74,18 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     }
 
     // 处理 JSON Patch 更新
+    let patchCount = 0;
     const handlePatch = (payload: TerminalPatchPayload) => {
       if (payload.sessionId !== sessionId) return
 
+      patchCount++;
+      const now = Date.now();
+      if (DEBUG_LOGS) {
+        console.log(`[useNormalizedLogs:handlePatch] t=${now} #${patchCount} sessionId=${sessionId} ops=${payload.patch.length}`);
+      }
+
       setConversation(prev => {
+        const startApply = Date.now();
         try {
           const patched = applyPatch(
             prev,
@@ -82,6 +93,9 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
             true, // validate
             false // mutate (false = immutable)
           )
+          if (DEBUG_LOGS) {
+            console.log(`[useNormalizedLogs:handlePatch] t=${Date.now()} applyTime=${Date.now() - startApply}ms entries=${patched.newDocument.entries.length}`);
+          }
           return patched.newDocument
         } catch (error) {
           console.error('Failed to apply patch:', error, payload.patch)
@@ -94,6 +108,9 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     // 处理 Agent 内部 session ID
     const handleSessionId = (payload: TerminalSessionIdPayload) => {
       if (payload.sessionId !== sessionId) return
+      if (DEBUG_LOGS) {
+        console.log(`[useNormalizedLogs:handleSessionId] t=${Date.now()} agentSessionId=${payload.agentSessionId}`);
+      }
       setAgentSessionId(payload.agentSessionId)
       callbacksRef.current.onAgentSessionId?.(payload.agentSessionId)
     }
@@ -153,15 +170,23 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     return new Promise((resolve) => {
       const socket = socketManager.getSocket('TERMINAL')
 
+      if (DEBUG_LOGS) {
+        console.log(`[useNormalizedLogs:attach] t=${Date.now()} sessionId=${sessionId} connected=${socket.connected}`);
+      }
+
       if (!socket.connected) {
         resolve(false)
         return
       }
 
+      const emitTime = Date.now();
       socket.emit(
         TerminalClientEvents.ATTACH,
         { sessionId },
         (response: AckResponse) => {
+          if (DEBUG_LOGS) {
+            console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success}`);
+          }
           resolve(response.success)
         }
       )

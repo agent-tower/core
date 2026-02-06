@@ -4,6 +4,9 @@
  */
 
 import type { MsgStore } from './msg-store.js'
+
+// Debug 日志开关
+const DEBUG_PARSER = process.env.DEBUG_PARSER === 'true' || true;
 import {
   type NormalizedEntry,
   type ActionType,
@@ -90,9 +93,18 @@ export class ClaudeCodeParser {
    * 处理原始输出数据
    */
   processData(data: string): void {
+    const now = Date.now();
+    if (DEBUG_PARSER) {
+      console.log(`[Parser:processData] t=${now} dataLen=${data.length} bufferLen=${this.buffer.length}`);
+    }
+    
     this.buffer += data
     const lines = this.buffer.split('\n')
     this.buffer = lines.pop() || ''
+
+    if (DEBUG_PARSER && lines.length > 0) {
+      console.log(`[Parser:processData] t=${now} linesCount=${lines.length} remainingBuffer=${this.buffer.length}`);
+    }
 
     for (const line of lines) {
       if (line.trim()) {
@@ -105,11 +117,18 @@ export class ClaudeCodeParser {
    * 解析单行 JSON
    */
   private parseLine(line: string): void {
+    const now = Date.now();
     try {
       const msg = JSON.parse(line) as ClaudeCodeMessage
+      if (DEBUG_PARSER) {
+        console.log(`[Parser:parseLine] t=${now} type=${msg.type} subtype=${msg.subtype || '-'}`);
+      }
       this.handleMessage(msg)
     } catch {
       // 非 JSON 行，忽略
+      if (DEBUG_PARSER && line.length > 0) {
+        console.log(`[Parser:parseLine] t=${now} non-JSON line len=${line.length} preview="${line.slice(0, 50)}..."`);
+      }
     }
   }
 

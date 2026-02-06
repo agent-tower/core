@@ -5,6 +5,9 @@ import { getExecutor, getAllExecutorsAvailability, ExecutionEnv } from '../execu
 import { getProcessManager } from '../socket/index.js';
 import { sessionMsgStoreManager, createClaudeCodeParser } from '../output/index.js';
 
+// Debug 日志开关
+const DEBUG_DEMO = process.env.DEBUG_DEMO === 'true' || true;
+
 const startDemoSchema = z.object({
   agentType: z.nativeEnum(AgentType),
   prompt: z.string().min(1),
@@ -59,7 +62,13 @@ export async function demoRoutes(app: FastifyInstance) {
       }
 
       // 将 PTY 输出转发到 MsgStore 和解析器
+      let ptyDataCount = 0;
       spawnResult.pty.onData((data) => {
+        ptyDataCount++;
+        const now = Date.now();
+        if (DEBUG_DEMO) {
+          console.log(`[Demo:PTY] #${ptyDataCount} t=${now} sessionId=${sessionId} len=${data.length} preview="${data.slice(0, 80).replace(/\n/g, '\\n')}..."`);
+        }
         msgStore.pushStdout(data);
         if (parser) {
           parser.processData(data);

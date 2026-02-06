@@ -5,6 +5,9 @@ import { LogStream, IconRunning, IconDone, IconPending } from '@/components/agen
 import { Button } from '@/components/ui/button'
 import { Send, Square, Paperclip, AtSign, Hash, Globe, ChevronDown, ChevronUp } from 'lucide-react'
 
+// Debug 日志开关
+const DEBUG_PAGE = true;
+
 interface Agent {
   type: string
   name: string
@@ -69,7 +72,13 @@ export function AgentDemoPage() {
 
   // 当 sessionId 变化且 socket 已连接时，自动 attach
   useEffect(() => {
+    if (DEBUG_PAGE) {
+      console.log(`[AgentDemoPage:useEffect] t=${Date.now()} sessionId=${sessionId} isConnected=${isConnected} isAttached=${isAttached}`);
+    }
     if (sessionId && isConnected && !isAttached) {
+      if (DEBUG_PAGE) {
+        console.log(`[AgentDemoPage:useEffect] t=${Date.now()} calling attach()`);
+      }
       attach()
     }
   }, [sessionId, isConnected, isAttached, attach])
@@ -89,6 +98,11 @@ export function AgentDemoPage() {
   const handleStart = async () => {
     if (!selectedAgent || !prompt.trim()) return
 
+    const startTime = Date.now();
+    if (DEBUG_PAGE) {
+      console.log(`[AgentDemoPage:handleStart] t=${startTime} starting...`);
+    }
+
     setSessionStatus('starting')
     clearLogs()
 
@@ -97,6 +111,9 @@ export function AgentDemoPage() {
         agentType: selectedAgent,
         prompt: prompt.trim(),
       })
+      if (DEBUG_PAGE) {
+        console.log(`[AgentDemoPage:handleStart] t=${Date.now()} apiTime=${Date.now() - startTime}ms sessionId=${res.sessionId}`);
+      }
       setSessionId(res.sessionId)
       setSessionStatus('running')
     } catch (error) {

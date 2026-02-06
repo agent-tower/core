@@ -1,7 +1,10 @@
 import { io, Socket } from 'socket.io-client'
-import { NAMESPACES } from '@agent-tower/shared/socket'
+import { NAMESPACES, TerminalServerEvents } from '@agent-tower/shared/socket'
 
 type NamespaceKey = keyof typeof NAMESPACES
+
+// Debug 日志开关
+const DEBUG_SOCKET = true;
 
 /**
  * Socket 连接管理器
@@ -33,16 +36,31 @@ class SocketManager {
 
       // 连接事件日志
       socket.on('connect', () => {
-        console.log(`[Socket] Connected to ${nsp}`)
+        console.log(`[Socket] Connected to ${nsp} t=${Date.now()}`)
       })
 
       socket.on('disconnect', (reason) => {
-        console.log(`[Socket] Disconnected from ${nsp}:`, reason)
+        console.log(`[Socket] Disconnected from ${nsp}: t=${Date.now()}`, reason)
       })
 
       socket.on('connect_error', (error) => {
-        console.error(`[Socket] Connection error on ${nsp}:`, error.message)
+        console.error(`[Socket] Connection error on ${nsp}: t=${Date.now()}`, error.message)
       })
+
+      // 添加原始事件监听用于调试
+      if (DEBUG_SOCKET && nsp === NAMESPACES.TERMINAL) {
+        socket.onAny((event, ...args) => {
+          if (event === TerminalServerEvents.PATCH) {
+            const payload = args[0] as { sessionId: string; patch: unknown[] };
+            console.log(`[Socket:raw] t=${Date.now()} event=${event} sessionId=${payload.sessionId} ops=${payload.patch?.length}`);
+          } else if (event === TerminalServerEvents.OUTPUT) {
+            const payload = args[0] as { sessionId: string; data: string };
+            console.log(`[Socket:raw] t=${Date.now()} event=${event} sessionId=${payload.sessionId} dataLen=${payload.data?.length}`);
+          } else {
+            console.log(`[Socket:raw] t=${Date.now()} event=${event}`);
+          }
+        });
+      }
 
       this.sockets.set(nsp, socket)
     }

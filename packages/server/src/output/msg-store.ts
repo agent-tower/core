@@ -6,6 +6,9 @@
 import { EventEmitter } from 'events'
 import type { LogMsg, JsonPatch } from './types.js'
 
+// Debug 日志开关
+const DEBUG_MSGSTORE = process.env.DEBUG_MSGSTORE === 'true' || true;
+
 const MAX_MEMORY_BYTES = 100 * 1024 * 1024 // 100MB
 
 /**
@@ -51,6 +54,7 @@ export class MsgStore extends EventEmitter {
    * 推送消息
    */
   push(msg: LogMsg): void {
+    const now = Date.now();
     const bytes = estimateMsgBytes(msg)
 
     // 内存管理：移除旧消息
@@ -66,6 +70,15 @@ export class MsgStore extends EventEmitter {
 
     if (msg.type === 'finished') {
       this.finished = true
+    }
+
+    if (DEBUG_MSGSTORE) {
+      const msgPreview = msg.type === 'patch' 
+        ? `patch ops=${(msg.patch as unknown[]).length}` 
+        : msg.type === 'stdout' 
+          ? `stdout len=${msg.data.length}` 
+          : msg.type;
+      console.log(`[MsgStore:push] t=${now} ${msgPreview} total=${this.messages.length} listenerCount=${this.listenerCount('message')}`);
     }
 
     this.emit('message', msg)
@@ -137,36 +150,52 @@ export class MsgStore extends EventEmitter {
   /**
    * 历史 + 实时流
    * 先返回历史消息，然后切换到实时流
+   * 
+   * 注意：使用监听器先注册的方式避免竞态条件
    */
   async *historyPlusStream(): AsyncGenerator<LogMsg> {
-    // 先返回历史消息
-    for (const msg of this.messages) {
-      yield msg
-    }
-
-    // 如果已完成，直接返回
-    if (this.finished) {
-      return
-    }
-
-    // 切换到实时流
+    // 切换到实时流 - 先注册监听器以避免丢失消息
     const queue: LogMsg[] = []
     let resolve: (() => void) | null = null
 
     const onMessage = (msg: LogMsg) => {
       queue.push(msg)
+      if (DEBUG_MSGSTORE) {
+        console.log(`[MsgStore:historyPlusStream:onMessage] t=${Date.now()} type=${msg.type} queueLen=${queue.length}`);
+      }
       if (resolve) {
         resolve()
         resolve = null
       }
     }
 
+    // 先注册监听器
     this.on('message', onMessage)
 
     try {
+      // 记录注册时的历史消息数量
+      const historyCount = this.messages.length
+      if (DEBUG_MSGSTORE) {
+        console.log(`[MsgStore:historyPlusStream] t=${Date.now()} historyCount=${historyCount} finished=${this.finished}`);
+      }
+
+      // 返回历史消息
+      for (let i = 0; i < historyCount; i++) {
+        yield this.messages[i]
+      }
+
+      // 如果已完成，直接返回
+      if (this.finished) {
+        return
+      }
+
+      // 处理实时流
       while (true) {
         while (queue.length > 0) {
           const msg = queue.shift()!
+          if (DEBUG_MSGSTORE) {
+            console.log(`[MsgStore:historyPlusStream:yield] t=${Date.now()} type=${msg.type} remainingQueue=${queue.length}`);
+          }
           yield msg
           if (msg.type === 'finished') {
             return
@@ -258,8 +287,15 @@ export class MsgStore extends EventEmitter {
    * 返回 patch 和 session_id 消息
    */
   async *normalizedLogsStream(): AsyncGenerator<LogMsg> {
+    if (DEBUG_MSGSTORE) {
+      console.log(`[MsgStore:normalizedLogsStream] t=${Date.now()} started, history=${this.messages.length}`);
+    }
     for await (const msg of this.historyPlusStream()) {
       if (msg.type === 'patch' || msg.type === 'session_id') {
+        if (DEBUG_MSGSTORE) {
+          const detail = msg.type === 'patch' ? `ops=${(msg.patch as unknown[]).length}` : `id=${msg.id}`;
+          console.log(`[MsgStore:normalizedLogsStream] t=${Date.now()} yielding ${msg.type} ${detail}`);
+        }
         yield msg
       }
     }

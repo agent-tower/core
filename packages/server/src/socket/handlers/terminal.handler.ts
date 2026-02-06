@@ -11,6 +11,9 @@ import {
   type AckResponse,
 } from '../events.js'
 
+// Debug 日志开关
+const DEBUG_TERMINAL = process.env.DEBUG_TERMINAL === 'true' || true;
+
 // 共享的 ProcessManager 实例
 const processManager = new ProcessManager()
 
@@ -71,6 +74,10 @@ export class TerminalHandler implements SocketHandler {
     const { sessionId } = payload
     const pty = processManager.get(sessionId)
 
+    if (DEBUG_TERMINAL) {
+      console.log(`[Terminal:attach] t=${Date.now()} sessionId=${sessionId} socketId=${socket.id} ptyExists=${!!pty}`);
+    }
+
     if (!pty) {
       socket.emit(TerminalServerEvents.ERROR, {
         sessionId,
@@ -91,7 +98,12 @@ export class TerminalHandler implements SocketHandler {
 
     // 避免重复订阅
     if (!disposers.has(sessionId)) {
+      let ptyOutputCount = 0;
       const onData = pty.onData((data) => {
+        ptyOutputCount++;
+        if (DEBUG_TERMINAL) {
+          console.log(`[Terminal:onData] t=${Date.now()} #${ptyOutputCount} sessionId=${sessionId} len=${data.length}`);
+        }
         nsp.to(`terminal:${sessionId}`).emit(TerminalServerEvents.OUTPUT, {
           sessionId,
           data,
@@ -99,6 +111,9 @@ export class TerminalHandler implements SocketHandler {
       })
 
       const onExit = pty.onExit(({ exitCode }) => {
+        if (DEBUG_TERMINAL) {
+          console.log(`[Terminal:onExit] t=${Date.now()} sessionId=${sessionId} exitCode=${exitCode}`);
+        }
         nsp.to(`terminal:${sessionId}`).emit(TerminalServerEvents.EXIT, {
           sessionId,
           exitCode,
@@ -108,20 +123,35 @@ export class TerminalHandler implements SocketHandler {
       // 订阅标准化日志流
       const msgStore = sessionMsgStoreManager.get(sessionId)
       let patchStreamAborted = false
+      let patchCount = 0;
+
+      if (DEBUG_TERMINAL) {
+        console.log(`[Terminal:attach] t=${Date.now()} sessionId=${sessionId} msgStoreExists=${!!msgStore}`);
+      }
 
       if (msgStore) {
         // 启动异步流处理
         ;(async () => {
+          if (DEBUG_TERMINAL) {
+            console.log(`[Terminal:patchStream] t=${Date.now()} sessionId=${sessionId} starting stream`);
+          }
           try {
             for await (const msg of msgStore.normalizedLogsStream()) {
               if (patchStreamAborted) break
 
+              patchCount++;
               if (msg.type === 'patch') {
+                if (DEBUG_TERMINAL) {
+                  console.log(`[Terminal:patchStream] t=${Date.now()} #${patchCount} sessionId=${sessionId} emitting PATCH ops=${(msg.patch as unknown[]).length}`);
+                }
                 nsp.to(`terminal:${sessionId}`).emit(TerminalServerEvents.PATCH, {
                   sessionId,
                   patch: msg.patch,
                 })
               } else if (msg.type === 'session_id') {
+                if (DEBUG_TERMINAL) {
+                  console.log(`[Terminal:patchStream] t=${Date.now()} #${patchCount} sessionId=${sessionId} emitting SESSION_ID=${msg.id}`);
+                }
                 nsp.to(`terminal:${sessionId}`).emit(TerminalServerEvents.SESSION_ID, {
                   sessionId,
                   agentSessionId: msg.id,
@@ -132,6 +162,9 @@ export class TerminalHandler implements SocketHandler {
             if (!patchStreamAborted) {
               console.error(`[Terminal] Patch stream error for session ${sessionId}:`, err)
             }
+          }
+          if (DEBUG_TERMINAL) {
+            console.log(`[Terminal:patchStream] t=${Date.now()} sessionId=${sessionId} stream ended, total patches=${patchCount}`);
           }
         })()
       }
