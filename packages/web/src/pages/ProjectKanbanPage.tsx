@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo, lazy, Suspense } from 'react'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, useQueryClient } from '@tanstack/react-query'
 import type { Task } from '@agent-tower/shared'
 import { TaskList } from '@/components/task'
 import { TaskDetail } from '@/components/task/TaskDetail'
@@ -9,6 +9,8 @@ import { useProjects, useCreateProject } from '@/hooks/use-projects'
 import { useTasks, useCreateTask } from '@/hooks/use-tasks'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
+import { useAgentStatus } from '@/lib/socket/hooks/useAgentStatus'
+import { useAgentStore } from '@/stores/agent-store'
 import { Settings } from 'lucide-react'
 
 // === bundle-dynamic-imports: Modal 组件懒加载 ===
@@ -85,6 +87,30 @@ export function ProjectKanbanPage() {
   const startWidthRef = useRef(DEFAULT_SIDEBAR_WIDTH)
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // === Agent 状态订阅 & 自动刷新 ===
+  const queryClient = useQueryClient()
+  useAgentStatus() // 订阅所有 Agent 状态变化，更新到 agent-store
+  const agents = useAgentStore((s) => s.agents)
+
+  // 当 Agent 状态变为 stopped/error 时，invalidate 任务列表触发重新获取
+  const prevAgentsRef = useRef<Map<string, { status: string }>>(new Map())
+  useEffect(() => {
+    const prev = prevAgentsRef.current
+    for (const [agentId, agent] of agents) {
+      const prevStatus = prev.get(agentId)?.status
+      if (prevStatus && prevStatus !== agent.status && (agent.status === 'stopped' || agent.status === 'error')) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+        break
+      }
+    }
+    // 快照当前状态用于下次比较
+    const snapshot = new Map<string, { status: string }>()
+    for (const [id, a] of agents) {
+      snapshot.set(id, { status: a.status })
+    }
+    prevAgentsRef.current = snapshot
+  }, [agents, queryClient])
+
   // === API 数据 ===
   const { data: projectsData, isLoading: isProjectsLoading } = useProjects()
   const projects = projectsData?.data ?? []
@@ -111,20 +137,46 @@ export function ProjectKanbanPage() {
 
   const isAllTasksLoading = !filterProjectId && allProjectTaskQueries.some(q => q.isLoading)
 
-  // 合并任务数据
-  const uiTasks = useMemo(() => {
+  // 合并任务数据（同时保留原始 Task 用于 session 匹配）
+  const rawTasks = useMemo<Task[]>(() => {
     if (filterProjectId) {
-      return (filteredTasksData?.data ?? []).map(adaptTaskForList)
+      return filteredTasksData?.data ?? []
     }
-    // All Projects: 合并所有项目的任务
     const allTasks: Task[] = []
     for (const q of allProjectTaskQueries) {
       if (q.data?.data) {
         allTasks.push(...q.data.data)
       }
     }
-    return allTasks.map(adaptTaskForList)
+    return allTasks
   }, [filterProjectId, filteredTasksData, allProjectTaskQueries])
+
+  const uiTasks = useMemo(() => rawTasks.map(adaptTaskForList), [rawTasks])
+
+  // 根据 agent-store 中正在运行的 session 计算活跃任务 ID 集合
+  const activeTaskIds = useMemo(() => {
+    const runningSessionIds = new Set<string>()
+    for (const [, agent] of agents) {
+      if (agent.status === 'running' || agent.status === 'starting') {
+        runningSessionIds.add(agent.sessionId)
+      }
+    }
+    if (runningSessionIds.size === 0) return new Set<string>()
+
+    const ids = new Set<string>()
+    for (const task of rawTasks) {
+      if (!task.workspaces) continue
+      for (const ws of task.workspaces) {
+        if (!ws.sessions) continue
+        for (const session of ws.sessions) {
+          if (runningSessionIds.has(session.id)) {
+            ids.add(task.id)
+          }
+        }
+      }
+    }
+    return ids
+  }, [agents, rawTasks])
 
   // === 选中的任务详情 ===
   const taskDetailData = useMemo<UITaskDetailData | null>(() => {
@@ -270,6 +322,7 @@ export function ProjectKanbanPage() {
             width={sidebarWidth}
             onCreateProject={handleCreateProject}
             onCreateTask={handleCreateTask}
+            activeTaskIds={activeTaskIds}
           />
         )}
 

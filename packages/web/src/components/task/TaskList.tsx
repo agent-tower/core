@@ -14,6 +14,8 @@ interface TaskListProps {
   width?: number
   onCreateProject?: () => void
   onCreateTask?: () => void
+  /** 当前有 Agent 正在运行的任务 ID 集合 */
+  activeTaskIds?: Set<string>
 }
 
 /** 空状态 placeholder - 提升到组件外避免重复创建 */
@@ -60,6 +62,7 @@ export function TaskList({
   width = 320,
   onCreateProject,
   onCreateTask,
+  activeTaskIds,
 }: TaskListProps) {
   const [isFilterOpen, setIsFilterOpen] = useState(false)
 
@@ -190,6 +193,7 @@ export function TaskList({
             selectedTaskId={selectedTaskId}
             onSelectTask={onSelectTask}
             projects={projects}
+            activeTaskIds={activeTaskIds}
           />
         ))}
       </div>

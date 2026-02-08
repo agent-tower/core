@@ -12,6 +12,8 @@ interface TaskGroupProps {
   selectedTaskId: string | null
   onSelectTask: (id: string) => void
   projects: UIProject[]
+  /** 当前有 Agent 正在运行的任务 ID 集合 */
+  activeTaskIds?: Set<string>
 }
 
 /** 状态图标映射 */
@@ -39,6 +41,7 @@ export const TaskGroup = memo(function TaskGroup({
   selectedTaskId,
   onSelectTask,
   projects,
+  activeTaskIds,
 }: TaskGroupProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen)
 
@@ -70,6 +73,7 @@ export const TaskGroup = memo(function TaskGroup({
           {tasks.map(task => {
             const project = projects.find(p => p.id === task.projectId)
             const isSelected = selectedTaskId === task.id
+            const isAgentActive = activeTaskIds?.has(task.id) ?? false
 
             return (
               <button
@@ -86,7 +90,7 @@ export const TaskGroup = memo(function TaskGroup({
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <div className="mb-0.5">
+                  <div className="mb-0.5 flex items-center gap-1.5">
                     <span className={`font-medium mr-1 ${project?.color ?? 'text-neutral-500'}`}>
                       {project?.name}
                     </span>
@@ -94,6 +98,12 @@ export const TaskGroup = memo(function TaskGroup({
                     <span className={`ml-1 ${isSelected ? 'text-neutral-900' : 'text-neutral-700'}`}>
                       {task.title}
                     </span>
+                    {isAgentActive && (
+                      <span className="relative flex h-2 w-2 ml-auto flex-shrink-0">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                      </span>
+                    )}
                   </div>
                   <p className={`text-xs line-clamp-2 leading-relaxed ${isSelected ? 'text-neutral-500' : 'text-neutral-400 group-hover:text-neutral-500'}`}>
                     {task.description}
