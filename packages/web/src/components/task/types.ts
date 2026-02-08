@@ -4,7 +4,6 @@
  * 这些类型专用于前端组件渲染，与 @agent-tower/shared 中的后端实体类型分离。
  * 通过 adapters.ts 中的映射函数将后端类型转换为 UI 类型。
  */
-import type { LogEntry } from '@agent-tower/shared/log-adapter'
 
 // ============ UI 状态枚举 ============
 
@@ -64,5 +63,4 @@ export interface UITaskDetailData {
   status: UITaskStatus
   branch: string
   description: string
-  logs: LogEntry[]
 }

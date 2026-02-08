@@ -1,9 +1,12 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
-import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { SessionStatus } from '@agent-tower/shared'
 import { LogStream } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone } from '@/components/agent'
 import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
+import { useWorkspaces } from '@/hooks/use-workspaces'
+import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
+import { useSendMessage } from '@/hooks/use-sessions'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
 
@@ -16,57 +19,6 @@ interface TaskDetailProps {
 const CHAT_WIDTH_DEFAULT = 675
 const CHAT_WIDTH_MIN = 320
 const CHAT_WIDTH_MAX = 1200
-
-// ============ Mock Data ============
-
-const MOCK_LOGS: LogEntry[] = [
-  {
-    id: 'log-1',
-    type: LogType.Action,
-    content: 'Analyzing the codebase structure to understand the project layout...',
-  },
-  {
-    id: 'log-2',
-    type: LogType.Tool,
-    title: 'Read File ✓',
-    content: 'packages/web/src/components/agent/LogStream.tsx',
-    isCollapsed: true,
-  },
-  {
-    id: 'log-3',
-    type: LogType.Info,
-    content: 'The LogStream component uses LogEntry from @agent-tower/shared. I will create a TaskDetail wrapper that integrates it.',
-  },
-  {
-    id: 'log-4',
-    type: LogType.Tool,
-    title: 'Edit File ✓',
-    content: 'packages/web/src/components/task/TaskDetail.tsx\n+ Created new TaskDetail component with header, log stream, and input bar.',
-    isCollapsed: false,
-  },
-  {
-    id: 'log-5',
-    type: LogType.User,
-    content: 'Looks good! Can you also add the empty state placeholder?',
-  },
-  {
-    id: 'log-6',
-    type: LogType.Action,
-    content: 'Adding empty state placeholder when no task is selected.',
-  },
-]
-
-export const MOCK_TASK: UITaskDetailData = {
-  id: 'task-1',
-  projectName: 'Agent Tower',
-  projectColor: 'text-blue-600',
-  title: 'Migrate TaskDetail component to web app',
-  status: UITaskStatus.Running,
-  branch: 'feat/task-detail',
-  description:
-    'Migrate the TaskDetail component from the design prototype into the main web application, integrating with the existing LogStream component and shared types.',
-  logs: MOCK_LOGS,
-}
 
 // ============ Empty State (hoisted JSX) ============
 
@@ -156,6 +108,81 @@ export function TaskDetail({ task }: TaskDetailProps) {
   const startWidthRef = useRef<number>(0)
   const chatPanelRef = useRef<HTMLDivElement>(null)
 
+  // ============ Session Discovery ============
+
+  const { data: workspaces } = useWorkspaces(task?.id ?? '')
+
+  // Find the latest active session from workspaces
+  const activeSession = useMemo(() => {
+    if (!workspaces) return null
+    for (const ws of workspaces) {
+      if (ws.status !== 'ACTIVE' || !ws.sessions) continue
+      // Prefer RUNNING, then PENDING, then latest COMPLETED/FAILED for history
+      const running = ws.sessions.find(s => s.status === SessionStatus.RUNNING)
+      if (running) return running
+      const pending = ws.sessions.find(s => s.status === SessionStatus.PENDING)
+      if (pending) return pending
+    }
+    // Fallback: find the most recent completed/failed session for history replay
+    for (const ws of workspaces) {
+      if (!ws.sessions) continue
+      const finished = ws.sessions.find(
+        s => s.status === SessionStatus.COMPLETED || s.status === SessionStatus.FAILED
+      )
+      if (finished) return finished
+    }
+    return null
+  }, [workspaces])
+
+  const sessionId = activeSession?.id ?? ''
+  const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
+
+  // ============ WebSocket Log Stream ============
+
+  const {
+    isConnected,
+    isAttached,
+    logs,
+    attach,
+    detach,
+  } = useNormalizedLogs({
+    sessionId,
+  })
+
+  // Auto-attach when sessionId and socket are ready
+  useEffect(() => {
+    if (sessionId && isConnected && !isAttached) {
+      attach()
+    }
+  }, [sessionId, isConnected, isAttached, attach])
+
+  // Detach when sessionId changes (cleanup handled by useNormalizedLogs internally)
+  const prevSessionIdRef = useRef(sessionId)
+  useEffect(() => {
+    if (prevSessionIdRef.current && prevSessionIdRef.current !== sessionId) {
+      detach()
+    }
+    prevSessionIdRef.current = sessionId
+  }, [sessionId, detach])
+
+  // Auto-scroll to bottom when logs change
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [logs])
+
+  // ============ Message Sending ============
+
+  const sendMessageMutation = useSendMessage()
+
+  const handleSend = useCallback(() => {
+    if (!input.trim() || !sessionId) return
+    sendMessageMutation.mutate({ id: sessionId, message: input.trim() })
+    setInput('')
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '60px'
+    }
+  }, [input, sessionId, sendMessageMutation])
+
   // Resize event handlers (useCallback)
   const handleMouseMove = useCallback((e: MouseEvent) => {
     const deltaX = e.clientX - startXRef.current
@@ -217,15 +244,6 @@ export function TaskDetail({ task }: TaskDetailProps) {
     el.style.height = `${Math.max(60, Math.min(scrollHeight, 300))}px`
   }, [])
 
-  const handleSend = useCallback(() => {
-    if (!input.trim()) return
-    // TODO: integrate with actual send logic
-    setInput('')
-    if (textareaRef.current) {
-      textareaRef.current.style.height = '60px'
-    }
-  }, [input])
-
   // Early return for null task
   if (!task) {
     return EMPTY_STATE
@@ -278,7 +296,19 @@ export function TaskDetail({ task }: TaskDetailProps) {
                 <p className="text-sm text-neutral-500 leading-relaxed">{task.description}</p>
               </div>
 
-              <LogStream logs={task.logs} />
+              {sessionId ? (
+                logs.length === 0 ? (
+                  <div className="text-neutral-400 text-center py-8">
+                    {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded for this session.'}
+                  </div>
+                ) : (
+                  <LogStream logs={logs} />
+                )
+              ) : (
+                <div className="text-neutral-400 text-center py-8">
+                  No agent session yet. Start an agent to begin.
+                </div>
+              )}
               <div ref={bottomRef} className="h-4" />
             </div>
           </div>

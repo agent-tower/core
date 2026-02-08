@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, lazy, Suspense } from 'react'
 import { TaskList } from '@/components/task'
-import { TaskDetail, MOCK_TASK } from '@/components/task/TaskDetail'
+import { TaskDetail } from '@/components/task/TaskDetail'
 import type { UITaskDetailData } from '@/components/task/types'
 import { MOCK_TASKS, MOCK_PROJECTS } from '@/components/task/mock-data'
 import type { UITask } from '@/components/task/types'
@@ -66,7 +66,6 @@ function findTaskDetailData(task: UITask | undefined): UITaskDetailData | null {
     status: task.status,
     branch: task.branch,
     description: task.description,
-    logs: MOCK_TASK.logs, // 暂用 mock logs
   }
 }
 
