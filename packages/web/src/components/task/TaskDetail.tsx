@@ -2,11 +2,13 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { SessionStatus } from '@agent-tower/shared'
 import { LogStream } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone } from '@/components/agent'
-import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen, Play } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage } from '@/hooks/use-sessions'
+import { StartAgentDialog } from './StartAgentDialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
 
@@ -95,6 +97,7 @@ function StatusBadge({ status }: { status: UITaskStatus }) {
 
 export function TaskDetail({ task }: TaskDetailProps) {
   const [input, setInput] = useState('')
+  const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -305,8 +308,20 @@ export function TaskDetail({ task }: TaskDetailProps) {
                   <LogStream logs={logs} />
                 )
               ) : (
-                <div className="text-neutral-400 text-center py-8">
-                  No agent session yet. Start an agent to begin.
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <div className="w-14 h-14 bg-neutral-50 rounded-2xl border border-neutral-100 flex items-center justify-center mb-5">
+                    <Play size={24} className="text-neutral-400 ml-0.5" />
+                  </div>
+                  <h3 className="text-base font-medium text-neutral-900 mb-1.5">
+                    尚未启动 Agent
+                  </h3>
+                  <p className="text-sm text-neutral-500 mb-6 max-w-xs">
+                    选择一个 Agent 来执行此任务，Agent 将自动创建工作空间并开始工作。
+                  </p>
+                  <Button onClick={() => setIsStartDialogOpen(true)}>
+                    <Play size={16} className="mr-1.5" />
+                    启动 Agent
+                  </Button>
                 </div>
               )}
               <div ref={bottomRef} className="h-4" />
@@ -373,6 +388,15 @@ export function TaskDetail({ task }: TaskDetailProps) {
           </div>
         )}
       </div>
+
+      {/* Start Agent Dialog */}
+      <StartAgentDialog
+        isOpen={isStartDialogOpen}
+        onClose={() => setIsStartDialogOpen(false)}
+        taskId={task.id}
+        taskTitle={task.title}
+        taskDescription={task.description}
+      />
     </div>
   )
 }
