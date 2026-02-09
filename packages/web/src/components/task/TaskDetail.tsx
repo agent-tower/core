@@ -1,13 +1,14 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { SessionStatus } from '@agent-tower/shared'
 import { LogStream } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone } from '@/components/agent'
-import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen, Play } from 'lucide-react'
+import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen, Play, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
-import { useSendMessage } from '@/hooks/use-sessions'
+import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
 import { StartAgentDialog } from './StartAgentDialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
@@ -187,7 +188,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
   // ============ Message Sending ============
 
+  const queryClient = useQueryClient()
   const sendMessageMutation = useSendMessage()
+  const stopSession = useStopSession()
 
   const handleSend = useCallback(() => {
     if (!input.trim() || !sessionId) return
@@ -197,6 +200,12 @@ export function TaskDetail({ task }: TaskDetailProps) {
       textareaRef.current.style.height = '60px'
     }
   }, [input, sessionId, sendMessageMutation])
+
+  const handleStop = useCallback(async () => {
+    if (!sessionId) return
+    await stopSession.mutateAsync(sessionId)
+    queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+  }, [sessionId, stopSession, queryClient])
 
   // Resize event handlers (useCallback)
   const handleMouseMove = useCallback((e: MouseEvent) => {
@@ -376,17 +385,27 @@ export function TaskDetail({ task }: TaskDetailProps) {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleSend}
-                    disabled={!input.trim()}
-                    className={`p-2 rounded-lg transition-all duration-200 ${
-                      input.trim()
-                        ? 'bg-neutral-900 text-white shadow-md hover:bg-black'
-                        : 'bg-transparent text-neutral-300 cursor-not-allowed'
-                    }`}
-                  >
-                    <ArrowUp size={18} />
-                  </button>
+                  {isSessionActive && !input.trim() ? (
+                    <button
+                      onClick={handleStop}
+                      disabled={stopSession.isPending}
+                      className="p-2 rounded-lg transition-all duration-200 bg-red-500 text-white hover:bg-red-600 shadow-md disabled:opacity-50"
+                    >
+                      <Square size={14} />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleSend}
+                      disabled={!input.trim()}
+                      className={`p-2 rounded-lg transition-all duration-200 ${
+                        input.trim()
+                          ? 'bg-neutral-900 text-white shadow-md hover:bg-black'
+                          : 'bg-transparent text-neutral-300 cursor-not-allowed'
+                      }`}
+                    >
+                      <ArrowUp size={18} />
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
