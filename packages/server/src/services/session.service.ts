@@ -5,14 +5,24 @@ import {
   sessionMsgStoreManager,
   createClaudeCodeParser,
   createCursorAgentParser,
-  createUserMessage,
-  addNormalizedEntry,
 } from '../output/index.js';
 import type { NormalizedConversation } from '../output/index.js';
 import { getProcessManager } from '../socket/handlers/terminal.handler.js';
 import type { SpawnedChild } from '../executors/index.js';
 
 export class SessionService {
+
+  /**
+   * Pipeline generation tracker — 每次 attachPtyPipeline 递增，
+   * 旧 PTY 的 onExit 通过比较 generation 来判断是否仍是当前 pipeline，
+   * 避免被 sendMessage 替换后的旧 PTY exit 错误地更新 session 状态。
+   */
+  private pipelineGenerations = new Map<string, number>();
+
+  /**
+   * 当前活跃 parser 引用，sendMessage 中 kill PTY 前先 finish 旧 parser
+   */
+  private activeParsers = new Map<string, { processData(data: string): void; finish(): void }>();
 
   async findById(id: string) {
     return prisma.session.findUnique({
@@ -72,8 +82,15 @@ export class SessionService {
     return session;
   }
 
-  async resume(id: string, prompt: string) {
-    // 1. 查询 session（含 workspace），校验存在
+  /**
+   * 统一的消息发送入口 — 无论 session 是 RUNNING 还是 COMPLETED/CANCELLED，
+   * 前端统一调此方法。后端自动处理 PTY 状态：
+   * - RUNNING: 先 stop 当前 PTY，再 spawn 新 PTY
+   * - COMPLETED/CANCELLED: 直接 spawn 新 PTY
+   *
+   * MsgStore 不销毁，新 PTY 的输出追加到已有消息列表后面。
+   */
+  async sendMessage(id: string, message: string) {
     const session = await prisma.session.findUnique({
       where: { id },
       include: { workspace: true },
@@ -83,15 +100,30 @@ export class SessionService {
       return null;
     }
 
-    // 2. 校验 session 状态必须为 COMPLETED 或 CANCELLED
-    if (session.status !== SessionStatus.COMPLETED && session.status !== SessionStatus.CANCELLED) {
-      throw new ResumeError(
-        `Cannot resume session with status ${session.status}. Only COMPLETED or CANCELLED sessions can be resumed.`,
-        400
-      );
+    // 如果当前 RUNNING，先 finish 旧 parser 并 kill 当前 PTY
+    if (session.status === SessionStatus.RUNNING) {
+      // Finish old parser synchronously before killing PTY
+      const oldParser = this.activeParsers.get(id);
+      if (oldParser) {
+        oldParser.finish();
+        this.activeParsers.delete(id);
+      }
+
+      const processManager = getProcessManager();
+      processManager.kill(id);
+      // 注意：不改 session.status，不销毁 MsgStore
+      // kill 后旧 PTY 的 onExit 会触发，但 generation 已过期，不会更新 status
     }
 
-    // 3. 获取 executor
+    // 获取或创建 MsgStore（不销毁旧的！）
+    const msgStore = sessionMsgStoreManager.getOrCreate(id);
+    // 重置 MsgStore 的 finished 状态，让新 PATCH 事件能继续产出
+    msgStore.resetFinished();
+
+    // 解析 agentSessionId（用于 spawnFollowUp 继续会话）
+    const agentSessionId = this.resolveAgentSessionId(id, session.logSnapshot);
+
+    // spawn 新 PTY
     const agentType = session.agentType as AgentType;
     const executor = getExecutor(agentType);
     if (!executor) {
@@ -99,14 +131,9 @@ export class SessionService {
     }
 
     const workingDir = session.workspace.worktreePath;
-
-    // 4. 解析 agentSessionId（agent 内部的 session ID）
-    const agentSessionId = this.resolveAgentSessionId(id, session.logSnapshot);
-
-    // 5. spawn：优先 spawnFollowUp，fallback 到 spawn
     const spawnConfig = {
       workingDir,
-      prompt,
+      prompt: message,
       env: ExecutionEnv.default(workingDir),
     };
 
@@ -115,15 +142,14 @@ export class SessionService {
       try {
         spawnResult = await executor.spawnFollowUp(spawnConfig, agentSessionId);
       } catch {
-        // executor 不支持 spawnFollowUp，fallback 到普通 spawn
+        // spawnFollowUp 失败，fallback 到普通 spawn
         spawnResult = await executor.spawn(spawnConfig);
       }
     } else {
-      // 没有 agentSessionId，视为新会话
       spawnResult = await executor.spawn(spawnConfig);
     }
 
-    // 6. 创建新的 executionProcess 记录
+    // 创建新的 executionProcess 记录
     await prisma.executionProcess.create({
       data: {
         sessionId: id,
@@ -131,18 +157,14 @@ export class SessionService {
       },
     });
 
-    // 7. 更新 session 状态为 RUNNING
+    // 更新 session 状态为 RUNNING
     await prisma.session.update({
       where: { id },
       data: { status: SessionStatus.RUNNING },
     });
 
-    // 8. 清除旧的 MsgStore（如果存在），创建新的 pipeline
-    sessionMsgStoreManager.remove(id);
+    // attach 新 PTY 到同一个 MsgStore（关键：复用，不重建）
     this.attachPtyPipeline(id, agentType, workingDir, spawnResult);
-
-    // 9. 将 resume prompt 作为用户消息注入新 MsgStore
-    this.injectUserMessage(id, prompt);
 
     return session;
   }
@@ -153,31 +175,47 @@ export class SessionService {
       return null;
     }
 
+    // Finish parser before killing
+    const parser = this.activeParsers.get(id);
+    if (parser) {
+      parser.finish();
+      this.activeParsers.delete(id);
+    }
+
     const processManager = getProcessManager();
     processManager.kill(id);
 
-    // 清理 MsgStore
-    sessionMsgStoreManager.remove(id);
+    // MsgStore 不销毁 — 用户可以继续发消息恢复会话
+    // 但标记 finished，让前端知道当前轮次结束
+    const msgStore = sessionMsgStoreManager.get(id);
+    if (msgStore) {
+      msgStore.pushFinished();
 
-    await prisma.session.update({
-      where: { id },
-      data: { status: SessionStatus.CANCELLED },
-    });
-
-    return session;
-  }
-
-  async sendMessage(id: string, message: string) {
-    const session = await prisma.session.findUnique({ where: { id } });
-    if (!session || session.status !== SessionStatus.RUNNING) {
-      return null;
+      // 持久化日志快照
+      try {
+        const snapshot = msgStore.getSnapshot();
+        await prisma.session.update({
+          where: { id },
+          data: {
+            status: SessionStatus.CANCELLED,
+            logSnapshot: JSON.stringify(snapshot),
+          },
+        });
+      } catch (error) {
+        console.error(`[SessionService] Failed to persist log snapshot for session ${id}:`, error);
+        // Fallback: just update status
+        await prisma.session.update({
+          where: { id },
+          data: { status: SessionStatus.CANCELLED },
+        });
+      }
+    } else {
+      await prisma.session.update({
+        where: { id },
+        data: { status: SessionStatus.CANCELLED },
+      });
     }
 
-    // 将用户消息注入 MsgStore，通过 patch 推送到所有连接的客户端
-    this.injectUserMessage(id, message);
-
-    const processManager = getProcessManager();
-    processManager.write(id, message);
     return session;
   }
 
@@ -210,22 +248,12 @@ export class SessionService {
   }
 
   /**
-   * 将用户消息注入 MsgStore（作为 JSON Patch 推送到所有客户端）
-   * 使用 MsgStore 共享的 entryIndex 保证与 parser 索引一致
-   */
-  private injectUserMessage(sessionId: string, message: string): void {
-    const msgStore = sessionMsgStoreManager.get(sessionId);
-    if (!msgStore) return;
-
-    const entry = createUserMessage(message);
-    const index = msgStore.entryIndex.next();
-    const patch = addNormalizedEntry(index, entry);
-    msgStore.pushPatch(patch);
-  }
-
-  /**
    * 将 PTY 输出连接到 MsgStore + Parser pipeline 并注册到 ProcessManager
-   * start 和 resume 共用此逻辑
+   * start 和 sendMessage 共用此逻辑
+   *
+   * 关键变化：MsgStore 通过 getOrCreate 获取，不再每次创建新的。
+   * 每次调用会递增 pipeline generation，旧 PTY 的 onExit 通过 generation
+   * 判断是否仍是当前 pipeline。
    */
   private attachPtyPipeline(
     sessionId: string,
@@ -233,19 +261,26 @@ export class SessionService {
     workingDir: string,
     spawnResult: SpawnedChild
   ): void {
-    // 创建 MsgStore
-    const msgStore = sessionMsgStoreManager.create(
-      sessionId,
-      agentType,
-      workingDir
-    );
+    // 获取或创建 MsgStore（复用已有的，不销毁重建）
+    const msgStore = sessionMsgStoreManager.getOrCreate(sessionId);
+
+    // 递增 pipeline generation
+    const generation = (this.pipelineGenerations.get(sessionId) || 0) + 1;
+    this.pipelineGenerations.set(sessionId, generation);
 
     // 根据 agent 类型创建解析器（将原始 PTY stdout 转换为标准化 JSON Patch）
+    // 每次 PTY 重启需要新的 parser 实例（新的输出流），
+    // 但 parser 使用 MsgStore 共享的 entryIndex，entry 会正确追加
     let parser: { processData(data: string): void; finish(): void } | null = null;
     if (agentType === AgentType.CLAUDE_CODE) {
       parser = createClaudeCodeParser(msgStore);
     } else if (agentType === AgentType.CURSOR_AGENT) {
       parser = createCursorAgentParser(msgStore, workingDir);
+    }
+
+    // 存储 parser 引用，供 sendMessage/stop 中 finish
+    if (parser) {
+      this.activeParsers.set(sessionId, parser);
     }
 
     // 将 PTY 输出转发到 MsgStore 和解析器
@@ -256,11 +291,22 @@ export class SessionService {
       }
     });
 
-    // PTY 退出时标记 MsgStore 完成并持久化日志快照
+    // PTY 退出时：仅当此 pipeline 仍是当前活跃的才做完整清理
     spawnResult.pty.onExit(async () => {
       if (parser) {
         parser.finish();
       }
+
+      // 只有当前 generation 匹配时才做 session 状态更新和 finished 推送
+      // 如果不匹配，说明 sendMessage 已经替换了新的 PTY，忽略此 exit
+      if (this.pipelineGenerations.get(sessionId) !== generation) {
+        return;
+      }
+
+      // 清理 parser 引用
+      this.activeParsers.delete(sessionId);
+
+      // 推送 finished 事件让前端知道此轮次结束
       msgStore.pushFinished();
 
       // 持久化日志快照到数据库
@@ -281,15 +327,5 @@ export class SessionService {
     // 使用共享的 ProcessManager，使 Socket.IO Terminal handler 能找到 PTY
     const processManager = getProcessManager();
     processManager.track(sessionId, spawnResult.pty);
-  }
-}
-
-/**
- * Resume 操作专用错误，携带 HTTP 状态码
- */
-export class ResumeError extends Error {
-  constructor(message: string, public readonly statusCode: number) {
-    super(message);
-    this.name = 'ResumeError';
   }
 }

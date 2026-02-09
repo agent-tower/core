@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { SessionService, ResumeError } from '../services/session.service.js';
+import { SessionService } from '../services/session.service.js';
 import { AgentType } from '../types/index.js';
 import { sessionMsgStoreManager } from '../output/index.js';
 import { prisma } from '../utils/index.js';
@@ -71,13 +71,13 @@ export async function sessionRoutes(app: FastifyInstance) {
     }
   );
 
-  // 恢复已结束的会话
+  // 发送消息（统一入口 — 无论 session 是 RUNNING 还是 COMPLETED/CANCELLED）
   app.post<{ Params: { id: string } }>(
-    '/sessions/:id/resume',
+    '/sessions/:id/message',
     async (request, reply) => {
       const body = sendMessageSchema.parse(request.body);
       try {
-        const result = await sessionService.resume(
+        const result = await sessionService.sendMessage(
           request.params.id,
           body.message
         );
@@ -87,29 +87,10 @@ export async function sessionRoutes(app: FastifyInstance) {
         }
         return { success: true };
       } catch (error) {
-        if (error instanceof ResumeError) {
-          reply.code(error.statusCode);
-          return { error: error.message };
-        }
-        throw error;
+        console.error(`[sessions] sendMessage failed for session ${request.params.id}:`, error);
+        reply.code(500);
+        return { error: error instanceof Error ? error.message : 'Failed to send message' };
       }
-    }
-  );
-
-  // 发送后续消息
-  app.post<{ Params: { id: string } }>(
-    '/sessions/:id/message',
-    async (request, reply) => {
-      const body = sendMessageSchema.parse(request.body);
-      const result = await sessionService.sendMessage(
-        request.params.id,
-        body.message
-      );
-      if (!result) {
-        reply.code(404);
-        return { error: 'Session not found' };
-      }
-      return { success: true };
     }
   );
 

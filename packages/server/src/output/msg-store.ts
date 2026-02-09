@@ -49,7 +49,7 @@ export class MsgStore extends EventEmitter {
   private totalBytes = 0
   private finished = false
 
-  /** 共享的条目索引提供器，parser 和 injectUserMessage 都必须使用它 */
+  /** 共享的条目索引提供器，所有 parser 实例共用以保证 entry 索引连续 */
   readonly entryIndex: EntryIndexProvider
 
   constructor() {
@@ -146,6 +146,14 @@ export class MsgStore extends EventEmitter {
    */
   isFinished(): boolean {
     return this.finished
+  }
+
+  /**
+   * 重置 finished 状态，允许继续追加消息
+   * 用于 sendMessage 在 spawn 新 PTY 前重置，使得新的 PATCH 事件能继续产出
+   */
+  resetFinished(): void {
+    this.finished = false
   }
 
   /**

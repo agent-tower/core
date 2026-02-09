@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
-import { useSendMessage, useStopSession, useResumeSession } from '@/hooks/use-sessions'
+import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
 import { StartAgentDialog } from './StartAgentDialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
@@ -165,7 +165,6 @@ export function TaskDetail({ task }: TaskDetailProps) {
     logs,
     attach,
     detach,
-    clearLogs,
   } = useNormalizedLogs({
     sessionId,
     onExit: useCallback(() => {
@@ -174,24 +173,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
     }, [queryClient]),
   })
 
-  // Auto-attach: 仅在 sessionId 变化或首次连接/重连时 attach
-  // 不依赖 isAttached —— 避免 EXIT/DETACH 事件导致 isAttached=false 后
-  // 自动 re-attach，触发 loadSnapshot 覆盖实时流状态
-  const hasAttachedRef = useRef(false)
+  // Auto-attach: 当 sessionId 或连接状态变化时自动 attach
   useEffect(() => {
-    // Reset when sessionId changes
-    hasAttachedRef.current = false
-  }, [sessionId])
-
-  useEffect(() => {
-    if (!isConnected) {
-      // Socket 断开时重置，下次 reconnect 时需要重新 attach
-      hasAttachedRef.current = false
-      return
-    }
-
-    if (sessionId && !hasAttachedRef.current) {
-      hasAttachedRef.current = true
+    if (sessionId && isConnected) {
       attach()
     }
   }, [sessionId, isConnected, attach])
@@ -213,7 +197,6 @@ export function TaskDetail({ task }: TaskDetailProps) {
   // ============ Session Actions ============
 
   const stopSession = useStopSession()
-  const resumeSession = useResumeSession()
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || !sessionId) return
@@ -223,31 +206,12 @@ export function TaskDetail({ task }: TaskDetailProps) {
       textareaRef.current.style.height = '60px'
     }
 
-    if (isSessionActive) {
-      // Running session: 直接写入 PTY stdin（后端会注入 user_message patch）
-      sendMessageMutation.mutate({ id: sessionId, message })
-    } else {
-      // 已结束 session: resume 恢复会话
-      // 后端会创建全新的 MsgStore，需要 detach → clearLogs → re-attach
-      try {
-        await resumeSession.mutateAsync({ id: sessionId, message })
-        // Resume 成功，后端创建了全新的 MsgStore + PTY
-        // 需要 detach 旧的 WebSocket 订阅，清空前端日志，重新 attach
-        detach()
-        clearLogs()
-        // invalidate workspaces 让 isSessionActive 更新
-        queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-        // 重置 hasAttachedRef 允许重新 attach
-        hasAttachedRef.current = false
-        // 短暂延迟让后端 PTY pipeline 就绪，然后重新 attach
-        setTimeout(() => {
-          attach()
-        }, 500)
-      } catch (error) {
-        console.error('[TaskDetail] Resume failed:', error)
-      }
-    }
-  }, [input, sessionId, isSessionActive, sendMessageMutation, resumeSession, detach, clearLogs, attach, queryClient])
+    // 统一入口：无论 session 是 RUNNING 还是 COMPLETED/CANCELLED，
+    // 都调同一个 sendMessage。后端自动处理 PTY 状态。
+    // 不需要 clearLogs / detach / re-attach —— WebSocket 持续订阅，
+    // MsgStore EventEmitter 自动转发新 PATCH。
+    sendMessageMutation.mutate({ id: sessionId, message })
+  }, [input, sessionId, sendMessageMutation])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) return

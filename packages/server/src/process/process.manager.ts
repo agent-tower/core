@@ -8,7 +8,10 @@ export class ProcessManager {
     this.processes.set(sessionId, p);
 
     p.onExit(() => {
-      this.processes.delete(sessionId);
+      // Only delete if this is still the tracked process (avoids race when PTY is replaced)
+      if (this.processes.get(sessionId) === p) {
+        this.processes.delete(sessionId);
+      }
     });
   }
 

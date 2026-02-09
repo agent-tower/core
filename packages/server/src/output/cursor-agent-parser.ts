@@ -17,6 +17,7 @@ import type { MsgStore } from './msg-store.js'
 import type { ActionType, ToolStatus } from './types.js'
 import {
   createAssistantMessage,
+  createUserMessage,
   createSystemMessage,
   createToolUse,
   createThinking,
@@ -414,6 +415,9 @@ function concatMessageText(message: CursorMessage): string | null {
 
 // ============ Cursor Agent 解析器 ============
 
+// Debug 日志开关
+const DEBUG_PARSER = process.env.DEBUG_PARSER === 'true' || false;
+
 const CURSOR_AUTH_REQUIRED_MSG = "Authentication required. Please run 'cursor-agent login' first, or set CURSOR_API_KEY environment variable.";
 
 /**
@@ -490,13 +494,13 @@ export class CursorAgentParser {
     try {
       msg = JSON.parse(line) as CursorJsonMessage;
     } catch {
-      // 非 JSON 行 — 先剥离 ANSI 转义序列，再判断是否有可读内容
-      const stripped = stripAnsiSequences(line).trim();
-      if (stripped) {
-        const entry = createSystemMessage(stripped);
-        const index = this.indexProvider.next();
-        const patch = addNormalizedEntry(index, entry);
-        this.msgStore.pushPatch(patch);
+      // 非 JSON 行（PTY echo、ANSI 控制序列等）— 丢弃，不产出 entry
+      // Agent CLI 的所有有效输出都是 JSONL 格式
+      if (DEBUG_PARSER) {
+        const stripped = stripAnsiSequences(line).trim();
+        if (stripped) {
+          console.log(`[CursorAgentParser] Skipping non-JSON line: "${stripped.slice(0, 80)}"`);
+        }
       }
       return;
     }
@@ -529,7 +533,7 @@ export class CursorAgentParser {
         this.handleSystem(msg as CursorJsonSystem);
         break;
       case 'user':
-        // 用户消息不做处理（与 Rust 实现一致）
+        this.handleUser(msg as CursorJsonUser);
         break;
       case 'assistant':
         this.handleAssistant(msg as CursorJsonAssistant);
@@ -566,6 +570,18 @@ export class CursorAgentParser {
       this.msgStore.pushPatch(patch);
       this.modelReported = true;
     }
+  }
+
+  /**
+   * 处理 user 消息 — 由 Agent CLI 输出 { type: "user" } 时产出 user_message entry
+   */
+  private handleUser(msg: CursorJsonUser): void {
+    const text = concatMessageText(msg.message);
+    if (!text) return;
+    const entry = createUserMessage(text);
+    const index = this.indexProvider.next();
+    const patch = addNormalizedEntry(index, entry);
+    this.msgStore.pushPatch(patch);
   }
 
   /**

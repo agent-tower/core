@@ -56,26 +56,16 @@ export function useStopSession() {
   })
 }
 
-/** 向 session 发送消息 */
+/** 向 session 发送消息（统一入口 — 无论 RUNNING 还是 COMPLETED/CANCELLED） */
 export function useSendMessage() {
-  return useMutation({
-    mutationFn: ({ id, message }: { id: string; message: string }) =>
-      apiClient.post<void>(`/sessions/${id}/message`, { message }),
-    // 不需要 onSuccess invalidation —— 发消息只是写入 PTY stdin，
-    // 后续状态更新全部通过 WebSocket PATCH 事件实时推送，
-    // 避免触发 query refetch 导致不必要的 re-render 级联
-  })
-}
-
-/** 恢复已结束的 session 继续对话 */
-export function useResumeSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
     mutationFn: ({ id, message }: { id: string; message: string }) =>
-      apiClient.post<Session>(`/sessions/${id}/resume`, { message }),
-    onSuccess: (_data, { id }) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.sessions.detail(id) })
+      apiClient.post<void>(`/sessions/${id}/message`, { message }),
+    onSuccess: () => {
+      // sendMessage 现在可能 spawn 新 PTY（从 COMPLETED → RUNNING），
+      // 需要 invalidate workspaces 让前端 session 状态刷新
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
     },
   })

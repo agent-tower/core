@@ -64,8 +64,6 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   const snapshotLoadedRef = useRef(false)
   // Buffer: PATCH events received before snapshot completes are queued here
   const pendingPatchesRef = useRef<TerminalPatchPayload[]>([])
-  // Track whether initial snapshot has been loaded for this session (survives re-attach)
-  const initialSnapshotDoneRef = useRef(false)
 
   // 使用 ref 保存回调
   const callbacksRef = useRef({ onAgentSessionId, onExit, onError })
@@ -82,7 +80,6 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       setIsConnected(false)
       setIsAttached(false)
       // 断开后可能丢失 PATCH 事件，下次 re-attach 时需要重新加载 snapshot
-      initialSnapshotDoneRef.current = false
       snapshotLoadedRef.current = false
       pendingPatchesRef.current = []
     }
@@ -183,7 +180,6 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
       // Reset snapshot guard on session change
       snapshotLoadedRef.current = false
-      initialSnapshotDoneRef.current = false
       pendingPatchesRef.current = []
 
       if (isAttached) {
@@ -240,7 +236,6 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     } finally {
       // Mark snapshot as loaded and clear buffer
       snapshotLoadedRef.current = true
-      initialSnapshotDoneRef.current = true
       pendingPatchesRef.current = []
       setIsLoadingSnapshot(false)
     }
@@ -252,11 +247,28 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       const socket = socketManager.getSocket('TERMINAL')
 
       if (DEBUG_LOGS) {
-        console.log(`[useNormalizedLogs:attach] t=${Date.now()} sessionId=${sessionId} connected=${socket.connected} initialSnapshotDone=${initialSnapshotDoneRef.current}`);
+        console.log(`[useNormalizedLogs:attach] t=${Date.now()} sessionId=${sessionId} connected=${socket.connected} snapshotLoaded=${snapshotLoadedRef.current}`);
       }
 
       if (!socket.connected) {
         resolve(false)
+        return
+      }
+
+      // 如果 snapshot 已经加载且仍有效，说明是 re-attach（如 reconnect），
+      // 不需要重新加载 snapshot，PATCH 事件通过 EventEmitter 持续转发
+      if (snapshotLoadedRef.current) {
+        if (DEBUG_LOGS) {
+          console.log(`[useNormalizedLogs:attach] skipping loadSnapshot — already have live state`);
+        }
+        // 仍然 emit ATTACH 以确保加入 room
+        socket.emit(
+          TerminalClientEvents.ATTACH,
+          { sessionId },
+          (response: AckResponse) => {
+            resolve(response.success)
+          }
+        )
         return
       }
 
@@ -266,32 +278,13 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
         { sessionId },
         (response: AckResponse) => {
           if (DEBUG_LOGS) {
-            console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success} initialSnapshotDone=${initialSnapshotDoneRef.current}`);
+            console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success}`);
           }
 
-          // 如果已经完成过初始 snapshot 加载（且 snapshotLoadedRef 仍为 true），
-          // 说明是 re-attach（比如短暂 disconnect 后重连），不需要重新加载 snapshot，
-          // 因为前端已经有通过 PATCH 事件实时维护的最新状态。
-          // 只有首次 attach 或 clearLogs 后才需要加载 snapshot。
-          if (initialSnapshotDoneRef.current && snapshotLoadedRef.current) {
-            if (DEBUG_LOGS) {
-              console.log(`[useNormalizedLogs:attach] skipping loadSnapshot — already have live state`);
-            }
-            resolve(response.success)
-            return
-          }
-
-          if (response.success) {
-            // Load snapshot immediately after successful attach (running session)
-            loadSnapshot()
-          } else {
-            // Attach failed (session PTY no longer active) — still load REST snapshot
-            // for completed/failed sessions whose logs are persisted in the database
-            if (DEBUG_LOGS) {
-              console.log(`[useNormalizedLogs:attach] attach failed, falling back to REST snapshot for sessionId=${sessionId}`);
-            }
-            loadSnapshot()
-          }
+          // 无论 attach 成功或失败，都加载 snapshot
+          // 成功：运行中 session，snapshot + 实时 PATCH
+          // 失败：已结束 session，从 DB 加载持久化 snapshot
+          loadSnapshot()
           resolve(response.success)
         }
       )
@@ -316,7 +309,6 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     setAgentSessionId(null)
     setIsLoading(false)
     snapshotLoadedRef.current = false
-    initialSnapshotDoneRef.current = false
     pendingPatchesRef.current = []
   }, [])
 
