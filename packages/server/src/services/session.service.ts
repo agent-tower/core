@@ -1,7 +1,13 @@
 import { prisma } from '../utils/index.js';
 import { AgentType, SessionStatus } from '../types/index.js';
 import { getExecutor, ExecutionEnv } from '../executors/index.js';
-import { sessionMsgStoreManager, createClaudeCodeParser, createCursorAgentParser } from '../output/index.js';
+import {
+  sessionMsgStoreManager,
+  createClaudeCodeParser,
+  createCursorAgentParser,
+  createUserMessage,
+  addNormalizedEntry,
+} from '../output/index.js';
 import type { NormalizedConversation } from '../output/index.js';
 import { getProcessManager } from '../socket/handlers/terminal.handler.js';
 import type { SpawnedChild } from '../executors/index.js';
@@ -135,6 +141,9 @@ export class SessionService {
     sessionMsgStoreManager.remove(id);
     this.attachPtyPipeline(id, agentType, workingDir, spawnResult);
 
+    // 9. 将 resume prompt 作为用户消息注入新 MsgStore
+    this.injectUserMessage(id, prompt);
+
     return session;
   }
 
@@ -163,6 +172,9 @@ export class SessionService {
     if (!session || session.status !== SessionStatus.RUNNING) {
       return null;
     }
+
+    // 将用户消息注入 MsgStore，通过 patch 推送到所有连接的客户端
+    this.injectUserMessage(id, message);
 
     const processManager = getProcessManager();
     processManager.write(id, message);
@@ -195,6 +207,20 @@ export class SessionService {
     }
 
     return null;
+  }
+
+  /**
+   * 将用户消息注入 MsgStore（作为 JSON Patch 推送到所有客户端）
+   */
+  private injectUserMessage(sessionId: string, message: string): void {
+    const msgStore = sessionMsgStoreManager.get(sessionId);
+    if (!msgStore) return;
+
+    const entry = createUserMessage(message);
+    const snapshot = msgStore.getSnapshot();
+    const index = snapshot.entries.length;
+    const patch = addNormalizedEntry(index, entry);
+    msgStore.pushPatch(patch);
   }
 
   /**

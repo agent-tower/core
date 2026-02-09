@@ -161,6 +161,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
     logs,
     attach,
     detach,
+    clearLogs,
   } = useNormalizedLogs({
     sessionId,
   })
@@ -193,20 +194,37 @@ export function TaskDetail({ task }: TaskDetailProps) {
   const stopSession = useStopSession()
   const resumeSession = useResumeSession()
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     if (!input.trim() || !sessionId) return
-    if (isSessionActive) {
-      // Running session: 直接写入 PTY stdin
-      sendMessageMutation.mutate({ id: sessionId, message: input.trim() })
-    } else {
-      // 已结束 session: resume 恢复会话
-      resumeSession.mutate({ id: sessionId, message: input.trim() })
-    }
+    const message = input.trim()
     setInput('')
     if (textareaRef.current) {
       textareaRef.current.style.height = '60px'
     }
-  }, [input, sessionId, isSessionActive, sendMessageMutation, resumeSession])
+
+    if (isSessionActive) {
+      // Running session: 直接写入 PTY stdin（后端会注入 user_message patch）
+      sendMessageMutation.mutate({ id: sessionId, message })
+    } else {
+      // 已结束 session: resume 恢复会话
+      // 后端会创建全新的 MsgStore，需要 detach → clearLogs → re-attach
+      try {
+        await resumeSession.mutateAsync({ id: sessionId, message })
+        // Resume 成功，后端创建了全新的 MsgStore + PTY
+        // 需要 detach 旧的 WebSocket 订阅，清空前端日志，重新 attach
+        detach()
+        clearLogs()
+        // invalidate workspaces 让 isSessionActive 更新
+        queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+        // 短暂延迟让后端 PTY pipeline 就绪，然后重新 attach
+        setTimeout(() => {
+          attach()
+        }, 500)
+      } catch (error) {
+        console.error('[TaskDetail] Resume failed:', error)
+      }
+    }
+  }, [input, sessionId, isSessionActive, sendMessageMutation, resumeSession, detach, clearLogs, attach, queryClient])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) return
