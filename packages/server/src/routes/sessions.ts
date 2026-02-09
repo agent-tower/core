@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { SessionService } from '../services/session.service.js';
+import { SessionService, ResumeError } from '../services/session.service.js';
 import { AgentType } from '../types/index.js';
 import { sessionMsgStoreManager } from '../output/index.js';
 import { prisma } from '../utils/index.js';
@@ -68,6 +68,31 @@ export async function sessionRoutes(app: FastifyInstance) {
         return { error: 'Session not found' };
       }
       return { success: true };
+    }
+  );
+
+  // 恢复已结束的会话
+  app.post<{ Params: { id: string } }>(
+    '/sessions/:id/resume',
+    async (request, reply) => {
+      const body = sendMessageSchema.parse(request.body);
+      try {
+        const result = await sessionService.resume(
+          request.params.id,
+          body.message
+        );
+        if (!result) {
+          reply.code(404);
+          return { error: 'Session not found' };
+        }
+        return { success: true };
+      } catch (error) {
+        if (error instanceof ResumeError) {
+          reply.code(error.statusCode);
+          return { error: error.message };
+        }
+        throw error;
+      }
     }
   );
 
