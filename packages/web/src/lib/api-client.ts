@@ -20,12 +20,15 @@ class ApiClient {
       url += `?${searchParams.toString()}`
     }
 
+    const headers: Record<string, string> = { ...init.headers as Record<string, string> }
+    // 只有在有 body 时才设置 Content-Type
+    if (init.body !== undefined) {
+      headers['Content-Type'] = 'application/json'
+    }
+
     const response = await fetch(url, {
       ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...init.headers,
-      },
+      headers,
     })
 
     if (!response.ok) {

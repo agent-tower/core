@@ -1,11 +1,10 @@
 import { prisma } from '../utils/index.js';
 import { AgentType, SessionStatus } from '../types/index.js';
-import { ProcessManager } from '../process/process.manager.js';
 import { getExecutor, ExecutionEnv } from '../executors/index.js';
-import { sessionMsgStoreManager } from '../output/index.js';
+import { sessionMsgStoreManager, createClaudeCodeParser, createCursorAgentParser } from '../output/index.js';
+import { getProcessManager } from '../socket/handlers/terminal.handler.js';
 
 export class SessionService {
-  private processManager = new ProcessManager();
 
   async findById(id: string) {
     return prisma.session.findUnique({
@@ -67,13 +66,28 @@ export class SessionService {
       workingDir
     );
 
-    // 将 PTY 输出转发到 MsgStore
+    // 根据 agent 类型创建解析器（将原始 PTY stdout 转换为标准化 JSON Patch）
+    let parser: { processData(data: string): void; finish(): void } | null = null;
+    const agentType = session.agentType as AgentType;
+    if (agentType === AgentType.CLAUDE_CODE) {
+      parser = createClaudeCodeParser(msgStore);
+    } else if (agentType === AgentType.CURSOR_AGENT) {
+      parser = createCursorAgentParser(msgStore, workingDir);
+    }
+
+    // 将 PTY 输出转发到 MsgStore 和解析器
     spawnResult.pty.onData((data) => {
       msgStore.pushStdout(data);
+      if (parser) {
+        parser.processData(data);
+      }
     });
 
     // PTY 退出时标记 MsgStore 完成并持久化日志快照
     spawnResult.pty.onExit(async () => {
+      if (parser) {
+        parser.finish();
+      }
       msgStore.pushFinished();
 
       // 持久化日志快照到数据库
@@ -91,7 +105,9 @@ export class SessionService {
       }
     });
 
-    this.processManager.track(id, spawnResult.pty);
+    // 使用共享的 ProcessManager，使 Socket.IO Terminal handler 能找到 PTY
+    const processManager = getProcessManager();
+    processManager.track(id, spawnResult.pty);
 
     return session;
   }
@@ -102,7 +118,8 @@ export class SessionService {
       return null;
     }
 
-    this.processManager.kill(id);
+    const processManager = getProcessManager();
+    processManager.kill(id);
 
     // 清理 MsgStore
     sessionMsgStoreManager.remove(id);
@@ -121,7 +138,8 @@ export class SessionService {
       return null;
     }
 
-    this.processManager.write(id, message);
+    const processManager = getProcessManager();
+    processManager.write(id, message);
     return session;
   }
 }

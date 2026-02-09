@@ -4,7 +4,9 @@
  */
 
 import { EventEmitter } from 'events'
-import { applyPatch, type Operation } from 'fast-json-patch'
+import jsonpatch from 'fast-json-patch'
+const { applyPatch } = jsonpatch
+type Operation = jsonpatch.Operation
 import type { LogMsg, JsonPatch, NormalizedConversation } from './types.js'
 
 // Debug 日志开关

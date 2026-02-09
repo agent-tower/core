@@ -261,7 +261,14 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
             console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success}`);
           }
           if (response.success) {
-            // Load snapshot immediately after successful attach
+            // Load snapshot immediately after successful attach (running session)
+            loadSnapshot()
+          } else {
+            // Attach failed (session PTY no longer active) — still load REST snapshot
+            // for completed/failed sessions whose logs are persisted in the database
+            if (DEBUG_LOGS) {
+              console.log(`[useNormalizedLogs:attach] attach failed, falling back to REST snapshot for sessionId=${sessionId}`);
+            }
             loadSnapshot()
           }
           resolve(response.success)

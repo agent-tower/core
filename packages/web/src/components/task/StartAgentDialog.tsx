@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
 import { useCreateWorkspace } from '@/hooks/use-workspaces'
 import { useCreateSession, useStartSession } from '@/hooks/use-sessions'
+import { queryKeys } from '@/hooks/query-keys'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import type { AgentType } from '@agent-tower/shared'
@@ -37,6 +39,7 @@ export function StartAgentDialog({
   const [step, setStep] = useState<StartStep>('idle')
   const [error, setError] = useState<string | null>(null)
 
+  const queryClient = useQueryClient()
   const createWorkspace = useCreateWorkspace(taskId)
   const startSession = useStartSession()
 
@@ -86,7 +89,10 @@ export function StartAgentDialog({
       setStep('starting-session')
       await startSession.mutateAsync(session.id)
 
-      // 成功，关闭对话框
+      // 成功，invalidate workspaces 使 TaskDetail 发现新 session
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
+
+      // 关闭对话框
       setStep('idle')
       onClose()
     } catch (err) {
