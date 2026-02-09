@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
-import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
+import { useSendMessage, useStopSession, useResumeSession } from '@/hooks/use-sessions'
 import { StartAgentDialog } from './StartAgentDialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
@@ -191,15 +191,22 @@ export function TaskDetail({ task }: TaskDetailProps) {
   const queryClient = useQueryClient()
   const sendMessageMutation = useSendMessage()
   const stopSession = useStopSession()
+  const resumeSession = useResumeSession()
 
   const handleSend = useCallback(() => {
     if (!input.trim() || !sessionId) return
-    sendMessageMutation.mutate({ id: sessionId, message: input.trim() })
+    if (isSessionActive) {
+      // Running session: 直接写入 PTY stdin
+      sendMessageMutation.mutate({ id: sessionId, message: input.trim() })
+    } else {
+      // 已结束 session: resume 恢复会话
+      resumeSession.mutate({ id: sessionId, message: input.trim() })
+    }
     setInput('')
     if (textareaRef.current) {
       textareaRef.current.style.height = '60px'
     }
-  }, [input, sessionId, sendMessageMutation])
+  }, [input, sessionId, isSessionActive, sendMessageMutation, resumeSession])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) return
@@ -371,7 +378,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
                   }
                 }}
                 rows={1}
-                placeholder="Message Agent..."
+                placeholder={sessionId && !isSessionActive ? 'Continue conversation...' : 'Message Agent...'}
                 className="w-full px-4 pt-4 pb-2 bg-transparent border-none focus:outline-none resize-none text-sm text-neutral-900 placeholder-neutral-400 leading-relaxed"
                 style={{ minHeight: '60px', maxHeight: '300px' }}
               />

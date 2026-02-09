@@ -68,3 +68,17 @@ export function useSendMessage() {
     },
   })
 }
+
+/** 恢复已结束的 session 继续对话 */
+export function useResumeSession() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ id, message }: { id: string; message: string }) =>
+      apiClient.post<Session>(`/sessions/${id}/resume`, { message }),
+    onSuccess: (_data, { id }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.sessions.detail(id) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+    },
+  })
+}
