@@ -16,6 +16,7 @@ import {
   normalizedEntriesToLogEntries,
   createCursorEntry,
 } from '@agent-tower/shared/log-adapter'
+import { apiClient } from '../../api-client.js'
 
 // Debug 日志开关
 const DEBUG_LOGS = true;
@@ -35,6 +36,7 @@ interface UseNormalizedLogsOptions {
 interface UseNormalizedLogsReturn {
   isConnected: boolean
   isAttached: boolean
+  isLoadingSnapshot: boolean
   logs: LogEntry[]
   entries: NormalizedEntry[]
   agentSessionId: string | null
@@ -53,9 +55,15 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
   const [isConnected, setIsConnected] = useState(false)
   const [isAttached, setIsAttached] = useState(false)
+  const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false)
   const [conversation, setConversation] = useState<NormalizedConversation>({ entries: [] })
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+
+  // Guard: true after snapshot is loaded; prevents PATCH from clobbering snapshot
+  const snapshotLoadedRef = useRef(false)
+  // Buffer: PATCH events received before snapshot completes are queued here
+  const pendingPatchesRef = useRef<TerminalPatchPayload[]>([])
 
   // 使用 ref 保存回调
   const callbacksRef = useRef({ onAgentSessionId, onExit, onError })
@@ -75,33 +83,41 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
     // 处理 JSON Patch 更新
     let patchCount = 0;
+    const applyOnePatch = (prev: NormalizedConversation, patch: Operation[]): NormalizedConversation => {
+      const startApply = Date.now();
+      try {
+        const patched = applyPatch(
+          prev,
+          patch,
+          true, // validate
+          false // mutate (false = immutable)
+        )
+        if (DEBUG_LOGS) {
+          console.log(`[useNormalizedLogs:applyPatch] t=${Date.now()} applyTime=${Date.now() - startApply}ms entries=${patched.newDocument.entries.length}`);
+        }
+        return patched.newDocument
+      } catch (error) {
+        console.error('Failed to apply patch:', error, patch)
+        return prev
+      }
+    }
+
     const handlePatch = (payload: TerminalPatchPayload) => {
       if (payload.sessionId !== sessionId) return
 
       patchCount++;
       const now = Date.now();
       if (DEBUG_LOGS) {
-        console.log(`[useNormalizedLogs:handlePatch] t=${now} #${patchCount} sessionId=${sessionId} ops=${payload.patch.length}`);
+        console.log(`[useNormalizedLogs:handlePatch] t=${now} #${patchCount} sessionId=${sessionId} ops=${payload.patch.length} snapshotLoaded=${snapshotLoadedRef.current}`);
       }
 
-      setConversation(prev => {
-        const startApply = Date.now();
-        try {
-          const patched = applyPatch(
-            prev,
-            payload.patch as Operation[],
-            true, // validate
-            false // mutate (false = immutable)
-          )
-          if (DEBUG_LOGS) {
-            console.log(`[useNormalizedLogs:handlePatch] t=${Date.now()} applyTime=${Date.now() - startApply}ms entries=${patched.newDocument.entries.length}`);
-          }
-          return patched.newDocument
-        } catch (error) {
-          console.error('Failed to apply patch:', error, payload.patch)
-          return prev
-        }
-      })
+      // If snapshot hasn't loaded yet, buffer the patch
+      if (!snapshotLoadedRef.current) {
+        pendingPatchesRef.current.push(payload)
+        return
+      }
+
+      setConversation(prev => applyOnePatch(prev, payload.patch as Operation[]))
       setIsLoading(true)
     }
 
@@ -159,9 +175,66 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       socket.off(TerminalServerEvents.ATTACHED, handleAttached)
       socket.off(TerminalServerEvents.DETACHED, handleDetached)
 
+      // Reset snapshot guard on session change
+      snapshotLoadedRef.current = false
+      pendingPatchesRef.current = []
+
       if (isAttached) {
         socket.emit(TerminalClientEvents.DETACH, { sessionId })
       }
+    }
+  }, [sessionId])
+
+  // Load snapshot from REST API
+  const loadSnapshot = useCallback(async () => {
+    if (!sessionId) return
+
+    if (DEBUG_LOGS) {
+      console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} start`);
+    }
+    setIsLoadingSnapshot(true)
+
+    try {
+      const snapshot = await apiClient.get<NormalizedConversation>(`/sessions/${sessionId}/logs`)
+
+      if (DEBUG_LOGS) {
+        console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} entries=${snapshot.entries.length}`);
+      }
+
+      // Apply snapshot as base state, then replay any buffered patches
+      setConversation(prev => {
+        let state: NormalizedConversation = snapshot.entries.length > 0 ? snapshot : prev
+        // Replay buffered patches on top of snapshot
+        for (const buffered of pendingPatchesRef.current) {
+          const startApply = Date.now();
+          try {
+            const patched = applyPatch(
+              state,
+              buffered.patch as Operation[],
+              true,
+              false
+            )
+            if (DEBUG_LOGS) {
+              console.log(`[useNormalizedLogs:loadSnapshot] replay buffered patch, applyTime=${Date.now() - startApply}ms entries=${patched.newDocument.entries.length}`);
+            }
+            state = patched.newDocument
+          } catch (error) {
+            console.error('Failed to replay buffered patch:', error)
+          }
+        }
+        return state
+      })
+
+      if (snapshot.entries.length > 0) {
+        setIsLoading(true)
+      }
+    } catch (error) {
+      console.error('[useNormalizedLogs:loadSnapshot] Failed to load snapshot:', error)
+    } finally {
+      // Mark snapshot as loaded and clear buffer
+      snapshotLoadedRef.current = true
+      pendingPatchesRef.current = []
+      setIsLoadingSnapshot(false)
     }
   }, [sessionId])
 
@@ -187,11 +260,15 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
           if (DEBUG_LOGS) {
             console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success}`);
           }
+          if (response.success) {
+            // Load snapshot immediately after successful attach
+            loadSnapshot()
+          }
           resolve(response.success)
         }
       )
     })
-  }, [sessionId])
+  }, [sessionId, loadSnapshot])
 
   // Detach 从终端会话
   const detach = useCallback(() => {
@@ -210,6 +287,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     setConversation({ entries: [] })
     setAgentSessionId(null)
     setIsLoading(false)
+    snapshotLoadedRef.current = false
+    pendingPatchesRef.current = []
   }, [])
 
   // 转换为 LogEntry 格式
@@ -223,6 +302,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   return {
     isConnected,
     isAttached,
+    isLoadingSnapshot,
     logs,
     entries: conversation.entries,
     agentSessionId,
