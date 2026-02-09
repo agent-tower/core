@@ -161,7 +161,6 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
   const {
     isConnected,
-    isAttached,
     isLoadingSnapshot,
     logs,
     attach,
@@ -175,12 +174,27 @@ export function TaskDetail({ task }: TaskDetailProps) {
     }, [queryClient]),
   })
 
-  // Auto-attach when sessionId and socket are ready
+  // Auto-attach: 仅在 sessionId 变化或首次连接/重连时 attach
+  // 不依赖 isAttached —— 避免 EXIT/DETACH 事件导致 isAttached=false 后
+  // 自动 re-attach，触发 loadSnapshot 覆盖实时流状态
+  const hasAttachedRef = useRef(false)
   useEffect(() => {
-    if (sessionId && isConnected && !isAttached) {
+    // Reset when sessionId changes
+    hasAttachedRef.current = false
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!isConnected) {
+      // Socket 断开时重置，下次 reconnect 时需要重新 attach
+      hasAttachedRef.current = false
+      return
+    }
+
+    if (sessionId && !hasAttachedRef.current) {
+      hasAttachedRef.current = true
       attach()
     }
-  }, [sessionId, isConnected, isAttached, attach])
+  }, [sessionId, isConnected, attach])
 
   // Detach when sessionId changes (cleanup handled by useNormalizedLogs internally)
   const prevSessionIdRef = useRef(sessionId)
@@ -223,6 +237,8 @@ export function TaskDetail({ task }: TaskDetailProps) {
         clearLogs()
         // invalidate workspaces 让 isSessionActive 更新
         queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+        // 重置 hasAttachedRef 允许重新 attach
+        hasAttachedRef.current = false
         // 短暂延迟让后端 PTY pipeline 就绪，然后重新 attach
         setTimeout(() => {
           attach()

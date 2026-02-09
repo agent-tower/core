@@ -64,6 +64,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   const snapshotLoadedRef = useRef(false)
   // Buffer: PATCH events received before snapshot completes are queued here
   const pendingPatchesRef = useRef<TerminalPatchPayload[]>([])
+  // Track whether initial snapshot has been loaded for this session (survives re-attach)
+  const initialSnapshotDoneRef = useRef(false)
 
   // 使用 ref 保存回调
   const callbacksRef = useRef({ onAgentSessionId, onExit, onError })
@@ -79,6 +81,10 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     const handleDisconnect = () => {
       setIsConnected(false)
       setIsAttached(false)
+      // 断开后可能丢失 PATCH 事件，下次 re-attach 时需要重新加载 snapshot
+      initialSnapshotDoneRef.current = false
+      snapshotLoadedRef.current = false
+      pendingPatchesRef.current = []
     }
 
     // 处理 JSON Patch 更新
@@ -177,6 +183,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
       // Reset snapshot guard on session change
       snapshotLoadedRef.current = false
+      initialSnapshotDoneRef.current = false
       pendingPatchesRef.current = []
 
       if (isAttached) {
@@ -233,6 +240,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     } finally {
       // Mark snapshot as loaded and clear buffer
       snapshotLoadedRef.current = true
+      initialSnapshotDoneRef.current = true
       pendingPatchesRef.current = []
       setIsLoadingSnapshot(false)
     }
@@ -244,7 +252,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       const socket = socketManager.getSocket('TERMINAL')
 
       if (DEBUG_LOGS) {
-        console.log(`[useNormalizedLogs:attach] t=${Date.now()} sessionId=${sessionId} connected=${socket.connected}`);
+        console.log(`[useNormalizedLogs:attach] t=${Date.now()} sessionId=${sessionId} connected=${socket.connected} initialSnapshotDone=${initialSnapshotDoneRef.current}`);
       }
 
       if (!socket.connected) {
@@ -258,8 +266,21 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
         { sessionId },
         (response: AckResponse) => {
           if (DEBUG_LOGS) {
-            console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success}`);
+            console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success} initialSnapshotDone=${initialSnapshotDoneRef.current}`);
           }
+
+          // 如果已经完成过初始 snapshot 加载（且 snapshotLoadedRef 仍为 true），
+          // 说明是 re-attach（比如短暂 disconnect 后重连），不需要重新加载 snapshot，
+          // 因为前端已经有通过 PATCH 事件实时维护的最新状态。
+          // 只有首次 attach 或 clearLogs 后才需要加载 snapshot。
+          if (initialSnapshotDoneRef.current && snapshotLoadedRef.current) {
+            if (DEBUG_LOGS) {
+              console.log(`[useNormalizedLogs:attach] skipping loadSnapshot — already have live state`);
+            }
+            resolve(response.success)
+            return
+          }
+
           if (response.success) {
             // Load snapshot immediately after successful attach (running session)
             loadSnapshot()
@@ -295,6 +316,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     setAgentSessionId(null)
     setIsLoading(false)
     snapshotLoadedRef.current = false
+    initialSnapshotDoneRef.current = false
     pendingPatchesRef.current = []
   }, [])
 
