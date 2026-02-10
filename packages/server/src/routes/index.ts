@@ -6,6 +6,7 @@ import { sessionRoutes } from './sessions.js';
 import { systemRoutes } from './system.js';
 import { demoRoutes } from './demo.js';
 import { filesystemRoutes } from './filesystem.js';
+import { filesRoutes } from './files.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // 系统路由
@@ -28,4 +29,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // 文件系统浏览路由
   await app.register(filesystemRoutes, { prefix: '/api/filesystem' });
+
+  // Editor Tab 文件读写路由
+  await app.register(filesRoutes, { prefix: '/api/files' });
 }

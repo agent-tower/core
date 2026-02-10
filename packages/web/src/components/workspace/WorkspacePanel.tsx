@@ -3,6 +3,7 @@ import { Code2, Terminal, Globe, GitGraph, Plus, X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { TerminalView } from "./TerminalView"
+import { EditorView } from "./EditorView"
 import {
   useTerminalManager,
   type TerminalTab,
@@ -405,10 +406,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
         <div className="flex-1 overflow-hidden relative">
           {/* Editor Tab */}
           {activeTab === "editor" && (
-            <ComingSoonPlaceholder
-              icon={<Code2 size={32} />}
-              title="Editor"
-            />
+            <EditorView workingDir={workingDir} />
           )}
 
           {/* Terminal Tab */}

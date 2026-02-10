@@ -30,4 +30,12 @@ export const queryKeys = {
     all: ['sessions'] as const,
     detail: (id: string) => ['sessions', 'detail', id] as const,
   },
+
+  files: {
+    all: ['files'] as const,
+    tree: (workingDir: string, dirPath: string) =>
+      ['files', 'tree', workingDir, dirPath] as const,
+    content: (workingDir: string, filePath: string) =>
+      ['files', 'content', workingDir, filePath] as const,
+  },
 }
