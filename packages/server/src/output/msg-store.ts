@@ -49,6 +49,9 @@ export class MsgStore extends EventEmitter {
   private totalBytes = 0
   private finished = false
 
+  /** 基础快照 — 从 DB 恢复时设置，getSnapshot 在此基础上重放新 patch */
+  private baseSnapshot: NormalizedConversation | null = null
+
   /** 共享的条目索引提供器，所有 parser 实例共用以保证 entry 索引连续 */
   readonly entryIndex: EntryIndexProvider
 
@@ -56,6 +59,18 @@ export class MsgStore extends EventEmitter {
     super()
     this.setMaxListeners(100)
     this.entryIndex = new EntryIndexProvider()
+  }
+
+  /**
+   * 从持久化快照恢复基础状态
+   * 设置 baseSnapshot 和 entryIndex，使新 parser 生成的 patch 索引正确衔接
+   */
+  restoreFromSnapshot(snapshot: NormalizedConversation): void {
+    this.baseSnapshot = snapshot
+    this.entryIndex.startFrom(snapshot.entries.length)
+    if (DEBUG_MSGSTORE) {
+      console.log(`[MsgStore:restoreFromSnapshot] t=${Date.now()} entries=${snapshot.entries.length} entryIndex=${this.entryIndex.current()}`);
+    }
   }
 
   /**
@@ -168,7 +183,10 @@ export class MsgStore extends EventEmitter {
    * 重放所有 patch 和 session_id 消息，构建完整的 NormalizedConversation 状态
    */
   getSnapshot(): NormalizedConversation {
-    let conversation: NormalizedConversation = { entries: [] }
+    // 从 baseSnapshot 开始（如果有），在此基础上重放新 patch
+    let conversation: NormalizedConversation = this.baseSnapshot
+      ? JSON.parse(JSON.stringify(this.baseSnapshot))
+      : { entries: [] }
 
     for (const msg of this.messages) {
       if (msg.type === 'patch') {
@@ -353,8 +371,13 @@ export class MsgStore extends EventEmitter {
  * Session MsgStore 管理器
  * 管理多个会话的 MsgStore
  */
-class SessionMsgStoreManager {
+class SessionMsgStoreManager extends EventEmitter {
   private stores = new Map<string, MsgStore>()
+
+  constructor() {
+    super()
+    this.setMaxListeners(100)
+  }
 
   /**
    * 创建 MsgStore
@@ -364,6 +387,8 @@ class SessionMsgStoreManager {
     if (!store) {
       store = new MsgStore()
       this.stores.set(sessionId, store)
+      // 通知监听者（如 TerminalHandler）新 MsgStore 已创建，需要补注册 EventEmitter 监听
+      this.emit('store-created', sessionId, store)
     }
     return store
   }
