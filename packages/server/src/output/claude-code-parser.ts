@@ -20,6 +20,7 @@ import {
 import {
   EntryIndexProvider,
   addNormalizedEntry,
+  replaceNormalizedEntry,
   updateEntryContent,
   updateToolStatus,
   setSessionId,
@@ -60,7 +61,7 @@ interface ClaudeCodeMessage {
     index?: number
     content_block?: { type: string; thinking?: string; text?: string }
     delta?: { type: string; thinking?: string; text?: string }
-    message?: { role?: string }
+    message?: { id?: string; role?: string }
   }
 }
 
@@ -92,6 +93,16 @@ interface StreamingContentBlock {
 }
 
 /**
+ * Streaming message state — 跟踪一个 assistant message 的所有 content blocks
+ * 用于在 assistant 汇总消息到达时，通过 content index 找到 stream_event 阶段创建的 entry index
+ */
+interface StreamingMessageState {
+  role: string
+  /** content_index → StreamingContentBlock */
+  contents: Map<number, StreamingContentBlock>
+}
+
+/**
  * Claude Code 解析器
  */
 export class ClaudeCodeParser {
@@ -103,6 +114,9 @@ export class ClaudeCodeParser {
   // stream_event state
   private streamingBlocks: Map<number, StreamingContentBlock> = new Map()
   private streamingRole: string | null = null
+  // message_id → StreamingMessageState，用于 assistant 消息的 replace 机制
+  private streamingMessages: Map<string, StreamingMessageState> = new Map()
+  private streamingMessageId: string | null = null
 
   constructor(msgStore: MsgStore) {
     this.msgStore = msgStore
@@ -196,17 +210,45 @@ export class ClaudeCodeParser {
 
   /**
    * 处理助手消息
-   * text 和 thinking 已由 stream_event 增量处理，这里只处理 tool_use
-   * 避免重复创建 entries
+   * 通过 message.id 查找 stream_event 阶段创建的 entry，用完整内容 replace
+   * 对于 tool_use（不走 stream_event），直接新建 entry
    */
   private handleAssistantMessage(msg: ClaudeCodeMessage): void {
     if (!msg.message?.content) return
 
-    for (const block of msg.message.content) {
+    const messageId = msg.message.id
+    const streamingState = messageId ? this.streamingMessages.get(messageId) : undefined
+
+    for (let contentIndex = 0; contentIndex < msg.message.content.length; contentIndex++) {
+      const block = msg.message.content[contentIndex]
+
       if (block.type === 'tool_use' && block.name) {
         this.flushAssistantText()
-        this.handleToolUse(block.name, block.input, msg.message.id)
+        // tool_use 可能已有 streaming entry index（虽然目前 Claude 不流式传 tool_use）
+        const existingIndex = streamingState?.contents.get(contentIndex)?.entryIndex
+        this.handleToolUse(block.name, block.input, msg.message.id, existingIndex)
+      } else if (block.type === 'text' && block.text) {
+        // 用完整内容 replace stream_event 阶段的 entry
+        const existingIndex = streamingState?.contents.get(contentIndex)?.entryIndex
+        if (existingIndex != null) {
+          const entry = createAssistantMessage(block.text)
+          const patch = replaceNormalizedEntry(existingIndex, entry)
+          this.msgStore.pushPatch(patch)
+        }
+        // 如果没有 streaming state（没走 stream_event），不创建新 entry 避免重复
+      } else if (block.type === 'thinking' && block.thinking) {
+        const existingIndex = streamingState?.contents.get(contentIndex)?.entryIndex
+        if (existingIndex != null) {
+          const entry = createThinking(block.thinking)
+          const patch = replaceNormalizedEntry(existingIndex, entry)
+          this.msgStore.pushPatch(patch)
+        }
       }
+    }
+
+    // 清理已消费的 streaming state
+    if (messageId) {
+      this.streamingMessages.delete(messageId)
     }
   }
 
@@ -241,18 +283,26 @@ export class ClaudeCodeParser {
   /**
    * 处理工具使用
    */
-  private handleToolUse(toolName: string, input: unknown, messageId?: string): void {
+  private handleToolUse(toolName: string, input: unknown, messageId?: string, existingIndex?: number): void {
     const action = toolNameToAction(toolName)
     const content = this.formatToolContent(toolName, input)
     const entry = createToolUse(toolName, content, action, messageId)
-    const index = this.indexProvider.next()
 
-    if (messageId) {
-      this.toolEntryMap.set(messageId, index)
+    if (existingIndex != null) {
+      // replace stream_event 阶段创建的 entry
+      const patch = replaceNormalizedEntry(existingIndex, entry)
+      this.msgStore.pushPatch(patch)
+      if (messageId) {
+        this.toolEntryMap.set(messageId, existingIndex)
+      }
+    } else {
+      const index = this.indexProvider.next()
+      if (messageId) {
+        this.toolEntryMap.set(messageId, index)
+      }
+      const patch = addNormalizedEntry(index, entry)
+      this.msgStore.pushPatch(patch)
     }
-
-    const patch = addNormalizedEntry(index, entry)
-    this.msgStore.pushPatch(patch)
   }
 
   /**
@@ -342,6 +392,13 @@ export class ClaudeCodeParser {
     switch (event.type) {
       case 'message_start': {
         this.streamingRole = event.message?.role || null
+        const messageId = event.message?.id
+        if (messageId && this.streamingRole === 'assistant') {
+          this.streamingMessageId = messageId
+          this.streamingMessages.set(messageId, { role: 'assistant', contents: new Map() })
+        } else {
+          this.streamingMessageId = null
+        }
         break
       }
 
@@ -380,7 +437,16 @@ export class ClaudeCodeParser {
           }
         }
 
-        this.streamingBlocks.set(index, { kind, entryIndex, buffer: initial })
+        const streamBlock: StreamingContentBlock = { kind, entryIndex, buffer: initial }
+        this.streamingBlocks.set(index, streamBlock)
+
+        // 记录到 StreamingMessageState
+        if (this.streamingMessageId) {
+          const state = this.streamingMessages.get(this.streamingMessageId)
+          if (state) {
+            state.contents.set(index, streamBlock)
+          }
+        }
         break
       }
 
@@ -427,6 +493,8 @@ export class ClaudeCodeParser {
         this.flushAssistantText()
         this.streamingBlocks.clear()
         this.streamingRole = null
+        // 不清理 streamingMessages — 保留到 handleAssistantMessage 消费
+        this.streamingMessageId = null
         break
       }
     }
