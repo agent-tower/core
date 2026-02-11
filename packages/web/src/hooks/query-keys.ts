@@ -45,4 +45,12 @@ export const queryKeys = {
     diff: (workingDir: string, filePath: string, type: string) =>
       ['git', 'diff', workingDir, filePath, type] as const,
   },
+
+  profiles: {
+    all: ['profiles'] as const,
+    defaults: ['profiles', 'defaults'] as const,
+    agent: (agentType: string) => ['profiles', 'agent', agentType] as const,
+    variant: (agentType: string, variant: string) =>
+      ['profiles', 'variant', agentType, variant] as const,
+  },
 }

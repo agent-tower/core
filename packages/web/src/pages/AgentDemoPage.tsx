@@ -3,7 +3,9 @@ import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { LogStream, IconRunning, IconDone, IconPending } from '@/components/agent'
 import { Button } from '@/components/ui/button'
-import { Send, Square, Paperclip, AtSign, Hash, Globe, ChevronDown, ChevronUp } from 'lucide-react'
+import { useAgentVariants } from '@/hooks/use-profiles'
+import { Link } from 'react-router-dom'
+import { Send, Square, Paperclip, AtSign, Hash, Globe, ChevronDown, ChevronUp, Settings } from 'lucide-react'
 
 // Debug 日志开关
 const DEBUG_PAGE = true;
@@ -21,6 +23,7 @@ type SessionStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'error'
 export function AgentDemoPage() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [selectedAgent, setSelectedAgent] = useState<string>('')
+  const [selectedVariant, setSelectedVariant] = useState<string>('DEFAULT')
   const [prompt, setPrompt] = useState('')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('idle')
@@ -29,6 +32,16 @@ export function AgentDemoPage() {
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // 获取当前选中 agent 的 variant 列表
+  const { data: variantsData } = useAgentVariants(selectedAgent)
+  const variantNames = variantsData ? Object.keys(variantsData) : ['DEFAULT']
+
+  // 切换 agent 时重置 variant
+  const handleSelectAgent = (agentType: string) => {
+    setSelectedAgent(agentType)
+    setSelectedVariant('DEFAULT')
+  }
 
   // 处理退出
   const handleExit = useCallback((exitCode: number) => {
@@ -110,6 +123,7 @@ export function AgentDemoPage() {
       const res = await apiClient.post<{ sessionId: string }>('/demo/start', {
         agentType: selectedAgent,
         prompt: prompt.trim(),
+        variant: selectedVariant,
       })
       if (DEBUG_PAGE) {
         console.log(`[AgentDemoPage:handleStart] t=${Date.now()} apiTime=${Date.now() - startTime}ms sessionId=${res.sessionId}`);
@@ -239,6 +253,14 @@ export function AgentDemoPage() {
               {currentAgent?.name || selectedAgent || '未选择'}
             </div>
           </div>
+          {selectedVariant !== 'DEFAULT' && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-neutral-400 font-medium">Variant</span>
+              <div className="flex items-center gap-1.5 text-neutral-700 font-medium bg-blue-50 px-2 py-1 rounded border border-blue-100">
+                {selectedVariant}
+              </div>
+            </div>
+          )}
           {agentSessionId && (
             <div className="flex items-center gap-2 text-xs">
               <span className="text-neutral-400 font-medium">Session</span>
@@ -262,6 +284,13 @@ export function AgentDemoPage() {
               新会话
             </Button>
           )}
+          <Link
+            to="/settings/profiles"
+            className={`flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors ${hasSession ? '' : 'ml-auto'}`}
+          >
+            <Settings size={14} />
+            <span>Profiles 设置</span>
+          </Link>
         </div>
       </div>
 
@@ -278,7 +307,7 @@ export function AgentDemoPage() {
                     key={agent.type}
                     variant={selectedAgent === agent.type ? 'default' : 'outline'}
                     disabled={!agent.available}
-                    onClick={() => setSelectedAgent(agent.type)}
+                    onClick={() => handleSelectAgent(agent.type)}
                   >
                     {agent.name}
                     {agent.available && agent.version && ` (${agent.version})`}
@@ -286,6 +315,32 @@ export function AgentDemoPage() {
                   </Button>
                 ))}
               </div>
+            </div>
+
+            <div>
+              <h2 className="text-lg font-semibold mb-3 text-neutral-900">配置变体 (Profile Variant)</h2>
+              <div className="flex gap-2 flex-wrap">
+                {variantNames.map(v => (
+                  <button
+                    key={v}
+                    onClick={() => setSelectedVariant(v)}
+                    className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+                      selectedVariant === v
+                        ? 'bg-neutral-900 text-white border-neutral-900'
+                        : 'bg-white text-neutral-600 border-neutral-200 hover:border-neutral-400'
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+              {variantsData && variantsData[selectedVariant] && (
+                <p className="mt-2 text-xs text-neutral-500 font-mono">
+                  {Object.entries(variantsData[selectedVariant])
+                    .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+                    .join(', ')}
+                </p>
+              )}
             </div>
 
             <div>

@@ -12,6 +12,7 @@ import { queryKeys } from '@/hooks/query-keys'
 import { useAgentStatus } from '@/lib/socket/hooks/useAgentStatus'
 import { useAgentStore } from '@/stores/agent-store'
 import { Settings } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 // === bundle-dynamic-imports: Modal 组件懒加载 ===
 const Modal = lazy(() =>
@@ -299,9 +300,9 @@ export function ProjectKanbanPage() {
           {LOGO_ICON}
           {HEADER_TITLE}
         </div>
-        <button className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors">
+        <Link to="/settings" className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors">
           <Settings size={16} />
-        </button>
+        </Link>
       </header>
 
       {/* === 主体双栏区域 === */}
