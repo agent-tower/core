@@ -1,0 +1,44 @@
+type EventMap = {
+  'session:stdout': { sessionId: string; data: string };
+  'session:patch': { sessionId: string; patch: unknown[] };
+  'session:exit': { sessionId: string; exitCode?: number };
+  'session:started': { sessionId: string };
+  'session:stopped': { sessionId: string };
+  'session:sessionId': { sessionId: string; agentSessionId: string };
+  'task:updated': { taskId: string; status: string };
+};
+
+type EventName = keyof EventMap;
+type Handler<K extends EventName> = (payload: EventMap[K]) => void;
+
+/**
+ * A small, type-safe in-process event bus.
+ */
+export class EventBus {
+  private listeners = new Map<EventName, Set<(payload: unknown) => void>>();
+
+  on<K extends EventName>(event: K, handler: Handler<K>): void {
+    const set = this.listeners.get(event) ?? new Set();
+    set.add(handler as (payload: unknown) => void);
+    this.listeners.set(event, set);
+  }
+
+  off<K extends EventName>(event: K, handler: Handler<K>): void {
+    const set = this.listeners.get(event);
+    if (!set) return;
+    set.delete(handler as (payload: unknown) => void);
+    if (set.size === 0) {
+      this.listeners.delete(event);
+    }
+  }
+
+  emit<K extends EventName>(event: K, payload: EventMap[K]): void {
+    const set = this.listeners.get(event);
+    if (!set) return;
+    for (const handler of set) {
+      handler(payload);
+    }
+  }
+}
+
+export type { EventMap, EventName };

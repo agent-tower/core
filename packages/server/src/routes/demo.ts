@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import type { IPty } from 'node-pty';
 import { AgentType } from '../types/index.js';
 import { getExecutor, getAllExecutorsAvailability, ExecutionEnv } from '../executors/index.js';
-import { getProcessManager } from '../socket/index.js';
 import { sessionMsgStoreManager, createClaudeCodeParser, createCursorAgentParser } from '../output/index.js';
 
 // Debug 日志开关
-const DEBUG_DEMO = process.env.DEBUG_DEMO === 'true' || true;
+const DEBUG_DEMO = process.env.DEBUG_DEMO === 'true';
 
 const startDemoSchema = z.object({
   agentType: z.nativeEnum(AgentType),
@@ -21,6 +21,7 @@ const sendMessageSchema = z.object({
 
 // 简单的内存存储，用于 MVP 演示
 const demoSessions = new Map<string, { agentType: AgentType; status: string }>();
+const demoPtys = new Map<string, IPty>();
 
 export async function demoRoutes(app: FastifyInstance) {
   // 快速启动 demo 会话（跳过 workspace/task 创建）
@@ -78,17 +79,21 @@ export async function demoRoutes(app: FastifyInstance) {
         }
       });
 
-      // PTY 退出时标记 MsgStore 完成
+      // PTY 退出时标记 MsgStore 完成并清理状态
       spawnResult.pty.onExit(() => {
         if (parser) {
           parser.finish();
         }
         msgStore.pushFinished();
+        // Update session status and clean up PTY reference
+        const session = demoSessions.get(sessionId);
+        if (session) {
+          session.status = 'stopped';
+        }
+        demoPtys.delete(sessionId);
       });
 
-      // 使用共享的 ProcessManager，这样 Socket.IO 可以正确推送输出
-      const processManager = getProcessManager();
-      processManager.track(sessionId, spawnResult.pty);
+      demoPtys.set(sessionId, spawnResult.pty);
       demoSessions.set(sessionId, {
         agentType: body.agentType,
         status: 'running',
@@ -123,8 +128,12 @@ export async function demoRoutes(app: FastifyInstance) {
         return { error: 'Session not found' };
       }
 
-      const processManager = getProcessManager();
-      processManager.write(sessionId, body.message);
+      const pty = demoPtys.get(sessionId);
+      if (!pty) {
+        reply.code(404);
+        return { error: 'PTY not found' };
+      }
+      pty.write(body.message + '\n');
       return { success: true };
     }
   );
@@ -141,8 +150,11 @@ export async function demoRoutes(app: FastifyInstance) {
         return { error: 'Session not found' };
       }
 
-      const processManager = getProcessManager();
-      processManager.kill(sessionId);
+      const pty = demoPtys.get(sessionId);
+      if (pty) {
+        pty.kill();
+        demoPtys.delete(sessionId);
+      }
       demoSessions.set(sessionId, { ...session, status: 'stopped' });
 
       return { success: true };

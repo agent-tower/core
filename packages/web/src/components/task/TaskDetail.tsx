@@ -583,7 +583,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
         {/* Right: WorkspacePanel — takes remaining space */}
         {isWorkspaceOpen && (
           <div className="flex-1 flex flex-col min-w-0 bg-white">
-            <WorkspacePanel workingDir={workingDir} />
+            <WorkspacePanel sessionId={sessionId || undefined} workingDir={workingDir} />
           </div>
         )}
       </div>

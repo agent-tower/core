@@ -1,17 +1,15 @@
 import { io, Socket } from 'socket.io-client'
-import { NAMESPACES, TerminalServerEvents } from '@agent-tower/shared/socket'
-
-type NamespaceKey = keyof typeof NAMESPACES
+import { NAMESPACE, ServerEvents } from '@agent-tower/shared/socket'
 
 // Debug 日志开关
-const DEBUG_SOCKET = true;
+const DEBUG_SOCKET = import.meta.env.DEV;
 
 /**
  * Socket 连接管理器
  * 单例模式，管理所有命名空间的连接
  */
 class SocketManager {
-  private sockets: Map<string, Socket> = new Map()
+  private socket: Socket | null = null
   private baseUrl: string
 
   constructor() {
@@ -20,40 +18,39 @@ class SocketManager {
   }
 
   /**
-   * 获取或创建指定命名空间的 socket 连接
+   * 获取或创建统一 socket 连接
    */
-  getSocket(namespace: NamespaceKey): Socket {
-    const nsp = NAMESPACES[namespace]
-
-    if (!this.sockets.has(nsp)) {
-      const socket = io(`${this.baseUrl}${nsp}`, {
+  getSocket(): Socket {
+    if (!this.socket) {
+      this.socket = io(`${this.baseUrl}${NAMESPACE}`, {
         autoConnect: false,
+        transports: ['websocket'],  // 跳过 polling，直接用 WebSocket
         reconnection: true,
-        reconnectionAttempts: 5,
+        reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
+        reconnectionDelayMax: 10000,
       })
 
       // 连接事件日志
-      socket.on('connect', () => {
-        console.log(`[Socket] Connected to ${nsp} t=${Date.now()}`)
+      this.socket.on('connect', () => {
+        console.log(`[Socket] Connected to ${NAMESPACE} t=${Date.now()}`)
       })
 
-      socket.on('disconnect', (reason) => {
-        console.log(`[Socket] Disconnected from ${nsp}: t=${Date.now()}`, reason)
+      this.socket.on('disconnect', (reason) => {
+        console.log(`[Socket] Disconnected from ${NAMESPACE}: t=${Date.now()}`, reason)
       })
 
-      socket.on('connect_error', (error) => {
-        console.error(`[Socket] Connection error on ${nsp}: t=${Date.now()}`, error.message)
+      this.socket.on('connect_error', (error) => {
+        console.error(`[Socket] Connection error on ${NAMESPACE}: t=${Date.now()}`, error.message)
       })
 
       // 添加原始事件监听用于调试
-      if (DEBUG_SOCKET && nsp === NAMESPACES.TERMINAL) {
-        socket.onAny((event, ...args) => {
-          if (event === TerminalServerEvents.PATCH) {
+      if (DEBUG_SOCKET) {
+        this.socket.onAny((event, ...args) => {
+          if (event === ServerEvents.SESSION_PATCH) {
             const payload = args[0] as { sessionId: string; patch: unknown[] };
             console.log(`[Socket:raw] t=${Date.now()} event=${event} sessionId=${payload.sessionId} ops=${payload.patch?.length}`);
-          } else if (event === TerminalServerEvents.OUTPUT) {
+          } else if (event === ServerEvents.SESSION_STDOUT) {
             const payload = args[0] as { sessionId: string; data: string };
             console.log(`[Socket:raw] t=${Date.now()} event=${event} sessionId=${payload.sessionId} dataLen=${payload.data?.length}`);
           } else {
@@ -61,18 +58,16 @@ class SocketManager {
           }
         });
       }
-
-      this.sockets.set(nsp, socket)
     }
 
-    return this.sockets.get(nsp)!
+    return this.socket
   }
 
   /**
    * 连接到指定命名空间
    */
-  connect(namespace: NamespaceKey): Socket {
-    const socket = this.getSocket(namespace)
+  connect(): Socket {
+    const socket = this.getSocket()
     if (!socket.connected) {
       socket.connect()
     }
@@ -80,34 +75,20 @@ class SocketManager {
   }
 
   /**
-   * 断开指定命名空间的连接
+   * 断开连接并清理 socket 引用
    */
-  disconnect(namespace: NamespaceKey): void {
-    const nsp = NAMESPACES[namespace]
-    const socket = this.sockets.get(nsp)
-    if (socket?.connected) {
-      socket.disconnect()
-    }
-  }
-
-  /**
-   * 断开所有连接
-   */
-  disconnectAll(): void {
-    for (const socket of this.sockets.values()) {
-      if (socket.connected) {
-        socket.disconnect()
-      }
+  disconnect(): void {
+    if (this.socket) {
+      this.socket.disconnect()
+      this.socket = null
     }
   }
 
   /**
    * 检查指定命名空间是否已连接
    */
-  isConnected(namespace: NamespaceKey): boolean {
-    const nsp = NAMESPACES[namespace]
-    const socket = this.sockets.get(nsp)
-    return socket?.connected ?? false
+  isConnected(): boolean {
+    return this.socket?.connected ?? false
   }
 }
 

@@ -2,12 +2,12 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { applyPatch, type Operation } from 'fast-json-patch'
 import { socketManager } from '../manager.js'
 import {
-  TerminalClientEvents,
-  TerminalServerEvents,
-  type TerminalPatchPayload,
-  type TerminalSessionIdPayload,
-  type TerminalExitPayload,
-  type TerminalErrorPayload,
+  ClientEvents,
+  ServerEvents,
+  type SessionPatchPayload,
+  type SessionIdPayload,
+  type SessionExitPayload,
+  type SessionErrorPayload,
   type AckResponse,
 } from '@agent-tower/shared/socket'
 import {
@@ -53,7 +53,7 @@ interface UseNormalizedLogsReturn {
 export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormalizedLogsReturn {
   const { sessionId, onAgentSessionId, onExit, onError } = options
 
-  const [isConnected, setIsConnected] = useState(false)
+  const [isConnected, setIsConnected] = useState(() => socketManager.isConnected())
   const [isAttached, setIsAttached] = useState(false)
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false)
   const [conversation, setConversation] = useState<NormalizedConversation>({ entries: [] })
@@ -63,7 +63,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   // Guard: true after snapshot is loaded; prevents PATCH from clobbering snapshot
   const snapshotLoadedRef = useRef(false)
   // Buffer: PATCH events received before snapshot completes are queued here
-  const pendingPatchesRef = useRef<TerminalPatchPayload[]>([])
+  const pendingPatchesRef = useRef<SessionPatchPayload[]>([])
 
   // 使用 ref 保存回调
   const callbacksRef = useRef({ onAgentSessionId, onExit, onError })
@@ -73,7 +73,9 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   useEffect(() => {
     if (!sessionId) return
 
-    const socket = socketManager.connect('TERMINAL')
+    const socket = socketManager.getSocket()
+    // Sync initial connected state (socket may already be connected from App level)
+    setIsConnected(socket.connected)
 
     const handleConnect = () => setIsConnected(true)
     const handleDisconnect = () => {
@@ -105,7 +107,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       }
     }
 
-    const handlePatch = (payload: TerminalPatchPayload) => {
+    const handlePatch = (payload: SessionPatchPayload) => {
       if (payload.sessionId !== sessionId) return
 
       patchCount++;
@@ -125,7 +127,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     }
 
     // 处理 Agent 内部 session ID
-    const handleSessionId = (payload: TerminalSessionIdPayload) => {
+    const handleSessionId = (payload: SessionIdPayload) => {
       if (payload.sessionId !== sessionId) return
       if (DEBUG_LOGS) {
         console.log(`[useNormalizedLogs:handleSessionId] t=${Date.now()} agentSessionId=${payload.agentSessionId}`);
@@ -134,14 +136,14 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       callbacksRef.current.onAgentSessionId?.(payload.agentSessionId)
     }
 
-    const handleExit = (payload: TerminalExitPayload) => {
+    const handleExit = (payload: SessionExitPayload) => {
       if (payload.sessionId !== sessionId) return
       setIsAttached(false)
       setIsLoading(false)
       callbacksRef.current.onExit?.(payload.exitCode)
     }
 
-    const handleError = (payload: TerminalErrorPayload) => {
+    const handleError = (payload: SessionErrorPayload) => {
       if (payload.sessionId !== sessionId) return
       callbacksRef.current.onError?.(payload.message)
     }
@@ -159,24 +161,24 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     // 注册事件监听
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
-    socket.on(TerminalServerEvents.PATCH, handlePatch)
-    socket.on(TerminalServerEvents.SESSION_ID, handleSessionId)
-    socket.on(TerminalServerEvents.EXIT, handleExit)
-    socket.on(TerminalServerEvents.ERROR, handleError)
-    socket.on(TerminalServerEvents.ATTACHED, handleAttached)
-    socket.on(TerminalServerEvents.DETACHED, handleDetached)
+    socket.on(ServerEvents.SESSION_PATCH, handlePatch)
+    socket.on(ServerEvents.SESSION_ID, handleSessionId)
+    socket.on(ServerEvents.SESSION_EXIT, handleExit)
+    socket.on(ServerEvents.SESSION_ERROR, handleError)
+    socket.on(ServerEvents.SESSION_SUBSCRIBED, handleAttached)
+    socket.on(ServerEvents.SESSION_UNSUBSCRIBED, handleDetached)
 
     setIsConnected(socket.connected)
 
     return () => {
       socket.off('connect', handleConnect)
       socket.off('disconnect', handleDisconnect)
-      socket.off(TerminalServerEvents.PATCH, handlePatch)
-      socket.off(TerminalServerEvents.SESSION_ID, handleSessionId)
-      socket.off(TerminalServerEvents.EXIT, handleExit)
-      socket.off(TerminalServerEvents.ERROR, handleError)
-      socket.off(TerminalServerEvents.ATTACHED, handleAttached)
-      socket.off(TerminalServerEvents.DETACHED, handleDetached)
+      socket.off(ServerEvents.SESSION_PATCH, handlePatch)
+      socket.off(ServerEvents.SESSION_ID, handleSessionId)
+      socket.off(ServerEvents.SESSION_EXIT, handleExit)
+      socket.off(ServerEvents.SESSION_ERROR, handleError)
+      socket.off(ServerEvents.SESSION_SUBSCRIBED, handleAttached)
+      socket.off(ServerEvents.SESSION_UNSUBSCRIBED, handleDetached)
 
       // Reset snapshot guard on session change
       snapshotLoadedRef.current = false
@@ -187,9 +189,9 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       setAgentSessionId(null)
       setIsLoading(false)
 
-      if (isAttached) {
-        socket.emit(TerminalClientEvents.DETACH, { sessionId })
-      }
+      // Always unsubscribe from the room when the effect is torn down.
+      // This avoids leaking room membership when sessionId changes.
+      socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: sessionId })
     }
   }, [sessionId])
 
@@ -209,12 +211,17 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
         console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} entries=${snapshot.entries.length}`);
       }
 
+      // Atomically capture pending buffer and flip the flag so that any
+      // patches arriving from this point on go through handlePatch directly
+      // instead of being buffered (and then lost).
+      const bufferedPatches = pendingPatchesRef.current
+      pendingPatchesRef.current = []
+      snapshotLoadedRef.current = true
+
       // Apply snapshot as base state, then replay any buffered patches
-      // 始终使用新 snapshot 作为基础状态，即使为空也不保留旧 session 的数据
       setConversation(() => {
         let state: NormalizedConversation = snapshot
-        // Replay buffered patches on top of snapshot
-        for (const buffered of pendingPatchesRef.current) {
+        for (const buffered of bufferedPatches) {
           const startApply = Date.now();
           try {
             const patched = applyPatch(
@@ -239,10 +246,10 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       }
     } catch (error) {
       console.error('[useNormalizedLogs:loadSnapshot] Failed to load snapshot:', error)
-    } finally {
-      // Mark snapshot as loaded and clear buffer
+      // On failure, still mark loaded so patches aren't buffered forever
       snapshotLoadedRef.current = true
       pendingPatchesRef.current = []
+    } finally {
       setIsLoadingSnapshot(false)
     }
   }, [sessionId])
@@ -250,7 +257,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   // Attach 到终端会话
   const attach = useCallback((): Promise<boolean> => {
     return new Promise((resolve) => {
-      const socket = socketManager.getSocket('TERMINAL')
+      const socket = socketManager.getSocket()
 
       if (DEBUG_LOGS) {
         console.log(`[useNormalizedLogs:attach] t=${Date.now()} sessionId=${sessionId} connected=${socket.connected} snapshotLoaded=${snapshotLoadedRef.current}`);
@@ -269,8 +276,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
         }
         // 仍然 emit ATTACH 以确保加入 room
         socket.emit(
-          TerminalClientEvents.ATTACH,
-          { sessionId },
+          ClientEvents.SUBSCRIBE,
+          { topic: 'session', id: sessionId },
           (response: AckResponse) => {
             resolve(response.success)
           }
@@ -280,8 +287,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
       const emitTime = Date.now();
       socket.emit(
-        TerminalClientEvents.ATTACH,
-        { sessionId },
+        ClientEvents.SUBSCRIBE,
+        { topic: 'session', id: sessionId },
         (response: AckResponse) => {
           if (DEBUG_LOGS) {
             console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success}`);
@@ -299,14 +306,14 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
   // Detach 从终端会话
   const detach = useCallback(() => {
-    const socket = socketManager.getSocket('TERMINAL')
-    socket.emit(TerminalClientEvents.DETACH, { sessionId })
+    const socket = socketManager.getSocket()
+    socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: sessionId })
   }, [sessionId])
 
   // 发送输入
   const sendInput = useCallback((data: string) => {
-    const socket = socketManager.getSocket('TERMINAL')
-    socket.emit(TerminalClientEvents.INPUT, { sessionId, data })
+    const socket = socketManager.getSocket()
+    socket.emit(ClientEvents.INPUT, { sessionId, data })
   }, [sessionId])
 
   // 清空日志

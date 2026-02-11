@@ -1,10 +1,12 @@
 import { Server } from 'socket.io'
 import type { FastifyInstance } from 'fastify'
 import { authMiddleware } from './middleware/index.js'
-import { createTerminalHandler, createAgentHandler } from './handlers/index.js'
-import { NAMESPACES } from './events.js'
+import { SocketGateway } from './socket-gateway.js'
+import { NAMESPACE, type AgentStatusPayload } from './events.js'
+import { getEventBus, getSessionManager } from '../core/container.js'
 
 let io: Server | null = null
+let socketGateway: SocketGateway | null = null
 
 /**
  * 获取 Socket.IO 实例
@@ -30,27 +32,16 @@ export function initializeSocket(fastify: FastifyInstance): Server {
     pingInterval: 25000,
   })
 
-  // ============ /terminal 命名空间 ============
-  const terminalNsp = io.of(NAMESPACES.TERMINAL)
-  terminalNsp.use(authMiddleware)
+  const nsp = io.of(NAMESPACE)
+  nsp.use(authMiddleware)
 
-  const terminalHandler = createTerminalHandler()
-  terminalNsp.on('connection', (socket) => {
-    console.log(`[Terminal] Socket connected: ${socket.id}`)
-    terminalHandler.register(terminalNsp, socket)
+  socketGateway = new SocketGateway(nsp, getEventBus(), getSessionManager())
+  nsp.on('connection', (socket) => {
+    console.log(`[Socket] Connected: ${socket.id}`)
+    socketGateway?.register(socket)
   })
 
-  // ============ /agents 命名空间 ============
-  const agentsNsp = io.of(NAMESPACES.AGENTS)
-  agentsNsp.use(authMiddleware)
-
-  const agentHandler = createAgentHandler()
-  agentsNsp.on('connection', (socket) => {
-    console.log(`[Agents] Socket connected: ${socket.id}`)
-    agentHandler.register(agentsNsp, socket)
-  })
-
-  console.log('[Socket.IO] Initialized with namespaces:', Object.values(NAMESPACES))
+  console.log('[Socket.IO] Initialized namespace:', NAMESPACE)
 
   return io
 }
@@ -60,12 +51,14 @@ export function initializeSocket(fastify: FastifyInstance): Server {
  */
 export async function closeSocket(): Promise<void> {
   if (io) {
+    socketGateway?.destroy()
     await new Promise<void>((resolve) => {
       io!.close(() => {
         console.log('[Socket.IO] Closed')
         resolve()
       })
     })
+    socketGateway = null
     io = null
   }
 }
@@ -74,5 +67,7 @@ export async function closeSocket(): Promise<void> {
 export * from './events.js'
 export * from './rooms.js'
 export { type AuthenticatedSocket } from './middleware/index.js'
-export { broadcastAgentStatus } from './handlers/agent.handler.js'
-export { getProcessManager } from './handlers/terminal.handler.js'
+
+export function broadcastAgentStatus(payload: AgentStatusPayload): void {
+  socketGateway?.broadcastAgentStatus(payload)
+}

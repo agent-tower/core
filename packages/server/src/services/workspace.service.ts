@@ -3,10 +3,10 @@ import { WorkspaceStatus, TaskStatus, SessionStatus } from '../types/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
 import { execGit } from '../git/git-cli.js';
 import { NotFoundError, ServiceError } from '../errors.js';
-import { SessionService } from './session.service.js';
+import { getSessionManager } from '../core/container.js';
 
 export class WorkspaceService {
-  private sessionService = new SessionService();
+  private sessionService = getSessionManager();
 
   // ── Queries ──────────────────────────────────────────────────────────────────
 
@@ -121,19 +121,7 @@ export class WorkspaceService {
       throw new NotFoundError('Workspace', id);
     }
 
-    // 检查是否有 RUNNING 状态的 Session
-    const runningSessions = workspace.sessions.filter(
-      (s) => s.status === SessionStatus.RUNNING
-    );
-    if (runningSessions.length > 0) {
-      throw new ServiceError(
-        `Workspace has ${runningSessions.length} running session(s). Stop them before deleting.`,
-        'WORKSPACE_HAS_RUNNING_SESSIONS',
-        400
-      );
-    }
-
-    // 停止所有未完成的 Session（PENDING 状态的也一并清理）
+    // 停止所有活跃的 Session（RUNNING 和 PENDING 状态）
     const activeSessions = workspace.sessions.filter(
       (s) => s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING
     );

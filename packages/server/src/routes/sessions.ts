@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { SessionService } from '../services/session.service.js';
+import { getSessionManager } from '../core/container.js';
 import { AgentType } from '../types/index.js';
 import { sessionMsgStoreManager } from '../output/index.js';
 import { prisma } from '../utils/index.js';
@@ -16,7 +16,7 @@ const sendMessageSchema = z.object({
 });
 
 export async function sessionRoutes(app: FastifyInstance) {
-  const sessionService = new SessionService();
+  const sessionService = getSessionManager();
 
   // 创建会话
   app.post<{ Params: { workspaceId: string } }>(
