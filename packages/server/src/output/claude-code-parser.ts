@@ -196,19 +196,16 @@ export class ClaudeCodeParser {
 
   /**
    * 处理助手消息
+   * text 和 thinking 已由 stream_event 增量处理，这里只处理 tool_use
+   * 避免重复创建 entries
    */
   private handleAssistantMessage(msg: ClaudeCodeMessage): void {
     if (!msg.message?.content) return
 
     for (const block of msg.message.content) {
-      if (block.type === 'text' && block.text) {
-        this.appendAssistantText(block.text)
-      } else if (block.type === 'tool_use' && block.name) {
+      if (block.type === 'tool_use' && block.name) {
         this.flushAssistantText()
         this.handleToolUse(block.name, block.input, msg.message.id)
-      } else if (block.type === 'thinking' && block.thinking) {
-        this.flushAssistantText()
-        this.addThinking(block.thinking)
       }
     }
   }
