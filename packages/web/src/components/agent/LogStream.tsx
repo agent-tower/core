@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
 import { Terminal, Brain, ChevronRight, ChevronDown } from 'lucide-react'
+import { Streamdown } from 'streamdown'
+import 'streamdown/styles.css'
 
 interface LogStreamProps {
   logs: LogEntry[]
@@ -95,6 +97,13 @@ const AgentText = ({ content }: { content: string }) => (
   </div>
 )
 
+// 5. Assistant Message — Streamdown 渲染 markdown
+const AssistantMessage = ({ content }: { content: string }) => (
+  <div className="text-sm text-neutral-800 leading-7 mb-4 animate-in fade-in duration-500">
+    <Streamdown>{content}</Streamdown>
+  </div>
+)
+
 export function LogStream({ logs }: LogStreamProps) {
   return (
     <div className="flex flex-col w-full mx-auto pb-4">
@@ -113,6 +122,9 @@ export function LogStream({ logs }: LogStreamProps) {
 
           case LogType.Action:
             return <ToolBlock key={log.id} type={log.type} title="Action" content={log.content} />
+
+          case LogType.Assistant:
+            return <AssistantMessage key={log.id} content={log.content} />
 
           case LogType.Info:
             return <AgentText key={log.id} content={log.content} />

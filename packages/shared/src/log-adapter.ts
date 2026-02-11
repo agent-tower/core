@@ -7,6 +7,7 @@
 
 export enum LogType {
   Action = 'Action',     // ◆ Agent Action
+  Assistant = 'Assistant', // ◆ Assistant Message (markdown)
   Info = 'Info',         // ◇ Agent Explanation/Thinking
   Tool = 'Tool',         // ▶ Tool Call
   User = 'User',         // User Message
@@ -136,6 +137,12 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
       }
 
     case 'assistant_message':
+      return {
+        id: entry.id,
+        type: LogType.Assistant,
+        content: entry.content,
+      }
+
     case 'next_action':
       return {
         id: entry.id,
