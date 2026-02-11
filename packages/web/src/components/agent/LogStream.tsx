@@ -33,7 +33,7 @@ const ThinkingBlock = ({ content, isOpenDefault = false }: { content: string; is
       </button>
 
       {isOpen && (
-        <div className="mt-1 pl-3 border-l-2 border-neutral-100">
+        <div className="mt-2 pl-3 border-l-2 border-neutral-100">
           <div className="text-xs text-neutral-500 font-mono leading-relaxed whitespace-pre-wrap">
             {content.trim()}
           </div>

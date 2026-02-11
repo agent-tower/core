@@ -189,10 +189,18 @@ export class TerminalHandler implements SocketHandler {
   /**
    * 为指定 socket 注册 MsgStore EventEmitter 监听
    * 抽取为独立方法，handleAttach 和 handleStoreCreated 共用
+   * re-attach 时会先清理旧监听再重新注册，确保拿到最新的 MsgStore
    */
   private subscribeMsgStore(nsp: Namespace, socketId: string, sessionId: string, msgStore: MsgStore): void {
     const disposers = this.msgStoreDisposers.get(socketId)
-    if (!disposers || disposers.has(sessionId)) return // 已订阅或 socket 已断开
+    if (!disposers) return // socket 已断开
+
+    // 清理旧的 MsgStore 监听（如果有），确保 re-attach 时不会遗留过期监听
+    const existingDispose = disposers.get(sessionId)
+    if (existingDispose) {
+      existingDispose()
+      disposers.delete(sessionId)
+    }
 
     let patchCount = 0;
     const onMessage = (msg: LogMsg) => {

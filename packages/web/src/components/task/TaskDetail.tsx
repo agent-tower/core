@@ -101,6 +101,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  /** Whether the user has scrolled away from the bottom (disables auto-scroll) */
+  const userScrolledAwayRef = useRef(false)
 
   // Layout state
   const [chatWidth, setChatWidth] = useState(CHAT_WIDTH_DEFAULT)
@@ -202,9 +205,20 @@ export function TaskDetail({ task }: TaskDetailProps) {
     prevSessionIdRef.current = sessionId
   }, [sessionId, detach])
 
-  // Auto-scroll to bottom when logs change
+  // Track whether user has scrolled away from the bottom
+  const handleScrollContainer = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    // Consider "at bottom" if within 80px of the bottom edge
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    userScrolledAwayRef.current = !atBottom
+  }, [])
+
+  // Auto-scroll to bottom when logs change — only if user hasn't scrolled away
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (!userScrolledAwayRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [logs])
 
   // ============ Session Actions ============
@@ -355,7 +369,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
           style={{ width: isWorkspaceOpen ? chatWidth : '100%' }}
         >
           {/* Scrollable Logs */}
-          <div className="flex-1 overflow-y-auto px-6 pt-6 pb-4">
+          <div ref={scrollContainerRef} onScroll={handleScrollContainer} className="flex-1 overflow-y-auto px-6 pt-6 pb-4">
             <div className="w-full">
               {/* Task Description */}
               <div className="mb-4 pb-4 border-b border-neutral-100">
