@@ -110,7 +110,7 @@ export function LogStream({ logs }: LogStreamProps) {
       {logs.map((log) => {
         // 先识别 Thinking 类型（通过 title 或 content 前缀）
         if (log.title === 'Thinking' || log.content.startsWith('Thinking:')) {
-          return <ThinkingBlock key={log.id} content={log.content} />
+          return <ThinkingBlock key={log.id} content={log.content} isOpenDefault={true} />
         }
 
         switch (log.type) {

@@ -154,6 +154,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
       return {
         id: entry.id,
         type: LogType.Info,
+        title: 'Thinking',
         content: entry.content,
       }
 
