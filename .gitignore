@@ -148,3 +148,12 @@ example/
 packages/server/data/
 
 *.db
+
+# IDE
+.vscode/
+
+# Test screenshots
+test-screenshots/
+
+# Runtime data (src/data is dev-mode path)
+packages/server/src/data/
