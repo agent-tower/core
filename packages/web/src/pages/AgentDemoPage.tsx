@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
-import { LogStream, IconRunning, IconDone, IconPending } from '@/components/agent'
+import { LogStream, IconRunning, IconDone, IconPending, TodoPanel } from '@/components/agent'
 import { Button } from '@/components/ui/button'
 import { useAgentVariants } from '@/hooks/use-profiles'
+import { useTodos } from '@/hooks/use-todos'
 import { Link } from 'react-router-dom'
 import { Send, Square, Paperclip, AtSign, Hash, Globe, ChevronDown, ChevronUp, Settings } from 'lucide-react'
 
@@ -58,6 +59,7 @@ export function AgentDemoPage() {
     isConnected,
     isAttached,
     logs,
+    entries,
     agentSessionId,
     attach,
     clearLogs,
@@ -66,6 +68,8 @@ export function AgentDemoPage() {
     onExit: handleExit,
     onError: handleError,
   })
+
+  const { todos } = useTodos(entries)
 
   // 加载可用 agents
   useEffect(() => {
@@ -376,6 +380,13 @@ export function AgentDemoPage() {
           </div>
         )}
       </div>
+
+      {/* Todo Panel — fixed above input */}
+      {hasSession && todos.length > 0 && (
+        <div className="px-8 py-2 bg-white border-t border-neutral-100">
+          <TodoPanel todos={todos} />
+        </div>
+      )}
 
       {/* Input Area (when has session) */}
       {hasSession && (

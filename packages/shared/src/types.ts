@@ -94,6 +94,15 @@ export interface Session {
   endedAt?: string
 }
 
+// ============ Agent Todo 类型 ============
+
+/** Agent 生成的 Todo 项 */
+export interface TodoItem {
+  content: string
+  status: string
+  priority?: string | null
+}
+
 // ============ 辅助类型 ============
 
 /** 代理可用性检查结果 */

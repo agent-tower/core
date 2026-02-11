@@ -82,6 +82,9 @@ export interface NormalizedEntry {
       cacheWriteTokens?: number
     }
     error?: string
+    /** Agent todo list (for todo_management action) */
+    todos?: Array<{ content: string; status: string; priority?: string | null }>
+    todoOperation?: string
   }
 }
 

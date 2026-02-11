@@ -25,8 +25,8 @@ const FolderPicker = lazy(() =>
 // === rendering-hoist-jsx: 静态 Logo SVG 提升到组件外 ===
 const LOGO_ICON = (
   <svg
-    width="22"
-    height="22"
+    width="20"
+    height="20"
     viewBox="0 0 24 24"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
@@ -52,7 +52,7 @@ const LOGO_ICON = (
 
 // === rendering-hoist-jsx: 静态顶部栏标题文字 ===
 const HEADER_TITLE = (
-  <span className="text-sm font-bold tracking-tight text-neutral-900">
+  <span className="font-bold text-neutral-900 tracking-tight text-base">
     Agent Tower
   </span>
 )
@@ -60,7 +60,7 @@ const HEADER_TITLE = (
 // === 拖拽 resize 的常量配置 ===
 const MIN_SIDEBAR_WIDTH = 260
 const MAX_SIDEBAR_WIDTH = 600
-const DEFAULT_SIDEBAR_WIDTH = 340
+const DEFAULT_SIDEBAR_WIDTH = 400
 
 /** 分页响应类型 */
 interface PaginatedResponse<T> {
@@ -293,10 +293,10 @@ export function ProjectKanbanPage() {
   const isLoading = isProjectsLoading || isFilteredTasksLoading || isAllTasksLoading
 
   return (
-    <div ref={containerRef} className="h-screen flex flex-col overflow-hidden bg-white">
+    <div ref={containerRef} className="flex flex-col h-screen bg-neutral-50 overflow-hidden text-sm">
       {/* === 顶部栏 === */}
-      <header className="h-12 flex items-center justify-between px-4 border-b border-neutral-100 bg-white flex-shrink-0 z-30">
-        <div className="flex items-center gap-2.5">
+      <header className="h-12 bg-white border-b border-neutral-200 flex items-center px-4 justify-between flex-shrink-0 z-10 relative">
+        <div className="flex items-center gap-2">
           {LOGO_ICON}
           {HEADER_TITLE}
         </div>
@@ -333,10 +333,9 @@ export function ProjectKanbanPage() {
         {/* 拖拽分隔线 */}
         <div
           onMouseDown={handleMouseDown}
-          className="w-1 cursor-col-resize hover:bg-blue-200 active:bg-blue-300 transition-colors flex-shrink-0 relative group"
-        >
-          <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-blue-100/50" />
-        </div>
+          className="w-1 cursor-col-resize hover:bg-neutral-300 active:bg-neutral-400 transition-colors z-50 -ml-[2px] flex-shrink-0 h-full"
+          title="Drag to resize"
+        />
 
         {/* 右侧: TaskDetail */}
         <TaskDetail task={taskDetailData} />

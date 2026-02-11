@@ -64,6 +64,13 @@ export type FileChange =
   | { type: 'rename'; from: string; to: string }
   | { type: 'edit'; path: string; diff?: string }
 
+// Todo 项
+export interface TodoItem {
+  content: string
+  status: string
+  priority?: string | null
+}
+
 // 标准化条目
 export interface NormalizedEntry {
   id: string
@@ -83,6 +90,9 @@ export interface NormalizedEntry {
       cacheWriteTokens?: number
     }
     error?: string
+    /** Agent todo list (for todo_management action) */
+    todos?: TodoItem[]
+    todoOperation?: string
   }
 }
 
@@ -149,7 +159,8 @@ export function createToolUse(
   content: string,
   action: ActionType,
   toolId?: string,
-  id?: string
+  id?: string,
+  extras?: { todos?: TodoItem[]; todoOperation?: string }
 ): NormalizedEntry {
   return {
     id: id || crypto.randomUUID(),
@@ -161,6 +172,8 @@ export function createToolUse(
       toolName,
       toolId,
       status: 'created',
+      ...(extras?.todos ? { todos: extras.todos } : {}),
+      ...(extras?.todoOperation ? { todoOperation: extras.todoOperation } : {}),
     },
   }
 }

@@ -16,23 +16,6 @@ interface TaskGroupProps {
   activeTaskIds?: Set<string>
 }
 
-/** 状态图标映射 */
-const StatusIcon = ({ status, isSelected }: { status: UITaskStatus; isSelected?: boolean }) => {
-  switch (status) {
-    case UITaskStatus.Review:
-      return <IconReview className={isSelected ? 'text-amber-600' : 'text-neutral-500'} />
-    case UITaskStatus.Running:
-      return <IconRunning className="animate-pulse" />
-    case UITaskStatus.Pending:
-      return <IconPending />
-    case UITaskStatus.Done:
-      return <IconDone className="text-neutral-400" />
-  }
-}
-
-/** 空状态 placeholder - 静态 JSX 提升到组件外 */
-const EmptyPlaceholder = null
-
 export const TaskGroup = memo(function TaskGroup({
   title,
   tasks,
@@ -45,7 +28,7 @@ export const TaskGroup = memo(function TaskGroup({
 }: TaskGroupProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen)
 
-  if (tasks.length === 0) return EmptyPlaceholder
+  if (tasks.length === 0) return null
 
   const isReview = status === UITaskStatus.Review
 
@@ -68,7 +51,7 @@ export const TaskGroup = memo(function TaskGroup({
         )}
       </button>
 
-      {isOpen ? (
+      {isOpen && (
         <div className="flex flex-col mt-1">
           {tasks.map(task => {
             const project = projects.find(p => p.id === task.projectId)
@@ -86,27 +69,29 @@ export const TaskGroup = memo(function TaskGroup({
                   }`}
               >
                 <div className={`mt-0.5 mr-3 flex-shrink-0 ${status === UITaskStatus.Running ? 'text-blue-600' : 'text-neutral-500'}`}>
-                  <StatusIcon status={status} isSelected={isSelected} />
+                  {status === UITaskStatus.Review && <IconReview className={isSelected ? "text-amber-600" : "text-neutral-500"} />}
+                  {status === UITaskStatus.Running && <IconRunning className="animate-pulse" />}
+                  {status === UITaskStatus.Pending && <IconPending />}
+                  {status === UITaskStatus.Done && <IconDone className="text-neutral-400" />}
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <div className="mb-0.5 flex items-start gap-1.5">
-                    <div className="flex-1 min-w-0">
-                      <span className={`font-medium ${project?.color ?? 'text-neutral-500'}`}>
-                        {project?.name}
-                      </span>
-                      <span className="text-neutral-400"> / </span>
-                      <span className={isSelected ? 'text-neutral-900' : 'text-neutral-700'}>
-                        {task.title}
-                      </span>
-                    </div>
+                  <div className="mb-0.5">
+                    <span className={`font-medium mr-1 ${project?.color || 'text-neutral-500'}`}>
+                      {project?.name}
+                    </span>
+                    <span className="text-neutral-400">/</span>
+                    <span className={`ml-1 ${isSelected ? 'text-neutral-900' : 'text-neutral-700'}`}>
+                      {task.title}
+                    </span>
                     {isAgentActive && (
-                      <span className="relative flex h-2 w-2 mt-1.5 flex-shrink-0">
+                      <span className="relative inline-flex h-2 w-2 ml-1.5 align-middle">
                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                         <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                       </span>
                     )}
                   </div>
+                  {/* Task Description: visible, 2 lines max */}
                   <p className={`text-xs line-clamp-2 leading-relaxed ${isSelected ? 'text-neutral-500' : 'text-neutral-400 group-hover:text-neutral-500'}`}>
                     {task.description}
                   </p>
@@ -115,7 +100,7 @@ export const TaskGroup = memo(function TaskGroup({
             )
           })}
         </div>
-      ) : null}
+      )}
     </div>
   )
 })

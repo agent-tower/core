@@ -286,7 +286,10 @@ export class ClaudeCodeParser {
   private handleToolUse(toolName: string, input: unknown, messageId?: string, existingIndex?: number): void {
     const action = toolNameToAction(toolName)
     const content = this.formatToolContent(toolName, input)
-    const entry = createToolUse(toolName, content, action, messageId)
+
+    // Extract todos from TodoWrite tool call
+    const extras = this.extractTodoExtras(toolName, input)
+    const entry = createToolUse(toolName, content, action, messageId, undefined, extras)
 
     if (existingIndex != null) {
       // replace stream_event 阶段创建的 entry
@@ -336,6 +339,24 @@ export class ClaudeCodeParser {
         return 'Updating todo list'
       default:
         return `${toolName}: ${JSON.stringify(input).slice(0, 100)}`
+    }
+  }
+
+  /**
+   * 从 TodoWrite 工具调用中提取 todo 数据
+   */
+  private extractTodoExtras(toolName: string, input: unknown): { todos?: Array<{ content: string; status: string; priority?: string | null }>; todoOperation?: string } | undefined {
+    if (toolName !== 'TodoWrite' || !input || typeof input !== 'object') return undefined
+    const obj = input as Record<string, unknown>
+    const todos = obj.todos
+    if (!Array.isArray(todos)) return undefined
+    return {
+      todos: todos.map((t: Record<string, unknown>) => ({
+        content: String(t.content || ''),
+        status: String(t.status || 'pending'),
+        priority: t.priority ? String(t.priority) : null,
+      })),
+      todoOperation: 'write',
     }
   }
 

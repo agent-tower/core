@@ -349,6 +349,19 @@ function toolNameToAction(toolName: string): ActionType {
 }
 
 /**
+ * Normalize Cursor todo status strings to standard format
+ */
+function normalizeTodoStatus(status: string): string {
+  switch (status.toLowerCase()) {
+    case 'todo_status_pending': return 'pending'
+    case 'todo_status_in_progress': return 'in_progress'
+    case 'todo_status_completed': return 'completed'
+    case 'todo_status_cancelled': return 'cancelled'
+    default: return status
+  }
+}
+
+/**
  * 获取工具调用的内容描述
  */
 function getToolCallContent(toolCall: CursorToolCall, worktreePath: string): string {
@@ -639,8 +652,9 @@ export class CursorAgentParser {
     const content = getToolCallContent(tool_call, this.worktreePath);
 
     if (subtype?.toLowerCase() === 'started') {
-      // 工具调用开始
-      const entry = createToolUse(toolName, content, action, call_id);
+      // Extract todos if this is a todo tool call
+      const extras = this.extractTodoExtras(toolName, tool_call);
+      const entry = createToolUse(toolName, content, action, call_id, undefined, extras);
       const index = this.indexProvider.next();
 
       if (call_id) {
@@ -657,6 +671,23 @@ export class CursorAgentParser {
         this.msgStore.pushPatch(patch);
       }
     }
+  }
+
+  /**
+   * Extract todo items from Cursor's updateTodosToolCall
+   */
+  private extractTodoExtras(toolName: string, toolCall: CursorToolCall): { todos?: Array<{ content: string; status: string; priority?: string | null }>; todoOperation?: string } | undefined {
+    if (toolName !== 'todo') return undefined;
+    const args = getToolCallArgs(toolCall) as CursorUpdateTodosArgs;
+    if (!args.todos || !Array.isArray(args.todos)) return undefined;
+    return {
+      todos: args.todos.map(t => ({
+        content: t.content || '',
+        status: normalizeTodoStatus(t.status || 'pending'),
+        priority: null,
+      })),
+      todoOperation: 'write',
+    };
   }
 
   /**

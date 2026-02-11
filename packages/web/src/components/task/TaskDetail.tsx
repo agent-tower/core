@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { SessionStatus } from '@agent-tower/shared'
 import { LogStream } from '@/components/agent'
+import { TodoPanel } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone } from '@/components/agent'
 import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen, Play, Square, Code2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,7 @@ import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces, useOpenInEditor } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
+import { useTodos } from '@/hooks/use-todos'
 import { StartAgentDialog } from './StartAgentDialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
@@ -102,8 +104,15 @@ export function TaskDetail({ task }: TaskDetailProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
-  /** Whether the user has scrolled away from the bottom (disables auto-scroll) */
-  const userScrolledAwayRef = useRef(false)
+  /**
+   * Scroll-lock state machine (inspired by vibe-kanban's useScrollSyncStateMachine):
+   * - 'following': auto-scroll is active, new logs scroll to bottom
+   * - 'user-scrolling': user initiated a scroll (wheel/touch), auto-scroll paused
+   * - 'programmatic': we triggered a scroll, ignore scroll events briefly
+   */
+  const scrollStateRef = useRef<'following' | 'user-scrolling' | 'programmatic'>('following')
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [isInitialLoad, setIsInitialLoad] = useState(true)
 
   // Layout state
   const [chatWidth, setChatWidth] = useState(CHAT_WIDTH_DEFAULT)
@@ -117,7 +126,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
   // ============ Session Discovery ============
 
-  const { data: workspaces } = useWorkspaces(task?.id ?? '')
+  const { data: workspaces, isLoading: isLoadingWorkspaces } = useWorkspaces(task?.id ?? '')
 
   // Find the latest active session from workspaces
   const activeSession = useMemo(() => {
@@ -179,6 +188,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
     isConnected,
     isLoadingSnapshot,
     logs,
+    entries,
     attach,
     detach,
   } = useNormalizedLogs({
@@ -188,6 +198,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }, [queryClient]),
   })
+
+  // Extract agent todos from the log stream
+  const { todos } = useTodos(entries)
 
   // Auto-attach: 当 sessionId 或连接状态变化时自动 attach
   useEffect(() => {
@@ -205,21 +218,97 @@ export function TaskDetail({ task }: TaskDetailProps) {
     prevSessionIdRef.current = sessionId
   }, [sessionId, detach])
 
-  // Track whether user has scrolled away from the bottom
-  const handleScrollContainer = useCallback(() => {
-    const el = scrollContainerRef.current
-    if (!el) return
-    // Consider "at bottom" if within 80px of the bottom edge
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    userScrolledAwayRef.current = !atBottom
+  // Reset scroll state when switching tasks — new task should always start at bottom
+  const prevTaskIdRef = useRef(task?.id)
+  useEffect(() => {
+    if (prevTaskIdRef.current !== task?.id) {
+      scrollStateRef.current = 'following'
+      setIsInitialLoad(true)
+      if (cooldownTimerRef.current) {
+        clearTimeout(cooldownTimerRef.current)
+        cooldownTimerRef.current = null
+      }
+    }
+    prevTaskIdRef.current = task?.id
+  }, [task?.id])
+
+  // User-initiated scroll detection: wheel/touchmove = user wants to look around
+  const handleUserScrollIntent = useCallback(() => {
+    // If we're in a programmatic scroll cooldown, ignore
+    if (scrollStateRef.current === 'programmatic') return
+    scrollStateRef.current = 'user-scrolling'
   }, [])
 
-  // Auto-scroll to bottom when logs change — only if user hasn't scrolled away
-  useEffect(() => {
-    if (!userScrolledAwayRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  // When user scrolls back to the very bottom, re-engage auto-scroll
+  const handleScroll = useCallback(() => {
+    if (scrollStateRef.current !== 'user-scrolling') return
+    const el = scrollContainerRef.current
+    if (!el) return
+    // Only re-engage when user has scrolled all the way to the bottom (within 2px tolerance)
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 2) {
+      scrollStateRef.current = 'following'
     }
+  }, [])
+
+  // Attach wheel/touch listeners to detect user-initiated scrolls
+  useEffect(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    // wheel and touchmove are the only events that indicate user intent
+    // (as opposed to programmatic scrollIntoView which only fires 'scroll')
+    el.addEventListener('wheel', handleUserScrollIntent, { passive: true })
+    el.addEventListener('touchmove', handleUserScrollIntent, { passive: true })
+    return () => {
+      el.removeEventListener('wheel', handleUserScrollIntent)
+      el.removeEventListener('touchmove', handleUserScrollIntent)
+    }
+  }, [handleUserScrollIntent])
+
+  // Auto-scroll to bottom when logs change — respects scroll state machine
+  useEffect(() => {
+    if (scrollStateRef.current !== 'following') return
+
+    if (isInitialLoad && logs.length > 0) {
+      // Initial load (task switch / history replay): wait for DOM to fully settle, then jump instantly
+      setIsInitialLoad(false)
+      // Double rAF: first rAF schedules after React commit, second after browser layout/paint
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+        })
+      })
+      return
+    }
+
+    // Streaming updates: smooth scroll
+    scrollStateRef.current = 'programmatic'
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current)
+    cooldownTimerRef.current = setTimeout(() => {
+      if (scrollStateRef.current === 'programmatic') {
+        scrollStateRef.current = 'following'
+      }
+    }, 300)
   }, [logs])
+
+  // Also scroll to bottom when snapshot finishes loading (isLoadingSnapshot: true → false with content)
+  const prevLoadingRef = useRef(isLoadingSnapshot)
+  useEffect(() => {
+    const wasLoading = prevLoadingRef.current
+    prevLoadingRef.current = isLoadingSnapshot
+    if (wasLoading && !isLoadingSnapshot) {
+      // Snapshot finished loading — end initial load state regardless of content
+      setIsInitialLoad(false)
+      if (logs.length > 0) {
+        scrollStateRef.current = 'following'
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+          })
+        })
+      }
+    }
+  }, [isLoadingSnapshot, logs.length])
 
   // ============ Session Actions ============
 
@@ -369,15 +458,23 @@ export function TaskDetail({ task }: TaskDetailProps) {
           style={{ width: isWorkspaceOpen ? chatWidth : '100%' }}
         >
           {/* Scrollable Logs */}
-          <div ref={scrollContainerRef} onScroll={handleScrollContainer} className="flex-1 overflow-y-auto px-6 pt-6 pb-4">
+          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-6 pt-6 pb-4">
             <div className="w-full">
               {/* Task Description */}
               <div className="mb-4 pb-4 border-b border-neutral-100">
                 <p className="text-sm text-neutral-500 leading-relaxed">{task.description}</p>
               </div>
 
-              {sessionId ? (
-                isLoadingSnapshot ? (
+              {isLoadingWorkspaces ? (
+                <div className="flex items-center justify-center py-12 gap-3 text-neutral-400">
+                  <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span className="text-sm">Loading...</span>
+                </div>
+              ) : sessionId ? (
+                isLoadingSnapshot || (logs.length === 0 && isInitialLoad) ? (
                   <div className="flex items-center justify-center py-12 gap-3 text-neutral-400">
                     <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -413,8 +510,15 @@ export function TaskDetail({ task }: TaskDetailProps) {
             </div>
           </div>
 
+          {/* Todo Panel — fixed between logs and input */}
+          {todos.length > 0 && (
+            <div className="px-6 pt-3 pb-1 bg-white flex-shrink-0 border-t border-neutral-100">
+              <TodoPanel todos={todos} />
+            </div>
+          )}
+
           {/* Input Area */}
-          <div className="p-6 pt-4 bg-white flex-shrink-0 w-full z-10 pb-6 border-t border-transparent">
+          <div className="p-6 pt-2 bg-white flex-shrink-0 w-full z-10 pb-6 border-t border-transparent">
             <div className="relative bg-white rounded-xl border border-neutral-200 shadow-sm hover:shadow-md focus-within:shadow-md focus-within:border-neutral-300 transition-all duration-200">
               <textarea
                 ref={textareaRef}
