@@ -33,9 +33,9 @@ const ThinkingBlock = ({ content, isOpenDefault = false }: { content: string; is
       </button>
 
       {isOpen && (
-        <div className="mt-2 pl-3 border-l-2 border-neutral-100">
+        <div className="mt-1 pl-3 border-l-2 border-neutral-100">
           <div className="text-xs text-neutral-500 font-mono leading-relaxed whitespace-pre-wrap">
-            {content}
+            {content.trim()}
           </div>
         </div>
       )}
@@ -108,6 +108,9 @@ export function LogStream({ logs }: LogStreamProps) {
   return (
     <div className="flex flex-col w-full mx-auto pb-4">
       {logs.map((log) => {
+        // 跳过空内容的条目，避免空 div 占据间距
+        if (!log.content && log.type !== LogType.Cursor) return null
+
         // 先识别 Thinking 类型（通过 title 或 content 前缀）
         if (log.title === 'Thinking' || log.content.startsWith('Thinking:')) {
           return <ThinkingBlock key={log.id} content={log.content} isOpenDefault={true} />
