@@ -304,18 +304,11 @@ export class ClaudeCodeParser {
 
   /**
    * 处理用户消息
+   * 跳过 — 用户消息已由 session.service.ts 在收到请求时主动推送，
+   * 这里如果再处理 Claude Code 回显的 user message 会导致重复
    */
-  private handleUserMessage(msg: ClaudeCodeMessage): void {
-    if (!msg.message?.content) return
-
-    for (const block of msg.message.content) {
-      if (block.type === 'text' && block.text) {
-        const entry = createUserMessage(block.text)
-        const index = this.indexProvider.next()
-        const patch = addNormalizedEntry(index, entry)
-        this.msgStore.pushPatch(patch)
-      }
-    }
+  private handleUserMessage(_msg: ClaudeCodeMessage): void {
+    // noop: 避免与 session.service.ts 的 createUserMessage 重复
   }
 
   /**
