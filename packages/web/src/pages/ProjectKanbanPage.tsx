@@ -563,7 +563,7 @@ export function ProjectKanbanPage() {
                 placeholder="e.g., Implement login flow"
                 className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors"
                 onKeyDown={e => {
-                  if (e.key === 'Enter') handleSubmitTask()
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleSubmitTask()
                 }}
               />
             </div>
