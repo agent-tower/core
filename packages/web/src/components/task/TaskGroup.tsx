@@ -62,7 +62,7 @@ export const TaskGroup = memo(function TaskGroup({
               <button
                 key={task.id}
                 onClick={() => onSelectTask(task.id)}
-                className={`flex items-start pl-8 pr-4 py-3 text-sm w-full text-left transition-all border-l-2 group
+                className={`flex items-start pl-8 pr-4 py-2 text-sm w-full text-left transition-all border-l-2 group
                   ${isSelected
                     ? 'bg-neutral-100 border-neutral-800'
                     : 'border-transparent hover:bg-neutral-50 hover:border-neutral-200'
