@@ -1,11 +1,20 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo } from 'react'
 import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
 import { Terminal, Brain, ChevronRight, ChevronDown, Files } from 'lucide-react'
 import { Streamdown } from 'streamdown'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import 'streamdown/styles.css'
 
 interface LogStreamProps {
   logs: LogEntry[]
+  /** 外部滚动容器 ref，virtualizer 需要它来计算可视区域 */
+  scrollElementRef: React.RefObject<HTMLDivElement | null>
+  /** scrollMargin: 滚动容器顶部到 LogStream 之间的偏移量（如 task description 高度） */
+  scrollMargin?: number
+}
+
+export interface LogStreamHandle {
+  scrollToBottom: (behavior?: 'instant' | 'smooth') => void
 }
 
 // ============ Grouping Logic ============
@@ -16,8 +25,8 @@ function toolBaseLabel(title: string): string {
 }
 
 type RenderItem =
-  | { kind: 'single'; log: LogEntry }
-  | { kind: 'group'; label: string; logs: LogEntry[] }
+  | { kind: 'single'; log: LogEntry; key: string }
+  | { kind: 'group'; label: string; logs: LogEntry[]; key: string }
 
 /** Group consecutive Tool entries with the same base label into collapsed groups */
 function groupConsecutiveTools(logs: LogEntry[]): RenderItem[] {
@@ -46,16 +55,16 @@ function groupConsecutiveTools(logs: LogEntry[]): RenderItem[] {
 
       if (group.length >= 2) {
         // 2+ consecutive same-type tools → collapse into a group
-        items.push({ kind: 'group', label: baseLabel, logs: group })
+        items.push({ kind: 'group', label: baseLabel, logs: group, key: group[0].id })
       } else {
         // 1-2 items, render individually
         for (const g of group) {
-          items.push({ kind: 'single', log: g })
+          items.push({ kind: 'single', log: g, key: g.id })
         }
       }
       i = j
     } else {
-      items.push({ kind: 'single', log })
+      items.push({ kind: 'single', log, key: log.id })
       i++
     }
   }
@@ -66,16 +75,17 @@ function groupConsecutiveTools(logs: LogEntry[]): RenderItem[] {
 // ============ Components ============
 
 // 1. User Message — 右对齐聊天气泡
-const UserMessage = ({ content }: { content: string }) => (
+const UserMessage = memo(({ content }: { content: string }) => (
   <div className="flex justify-end mb-8 mt-4">
     <div className="relative bg-neutral-200 text-neutral-900 px-5 py-3.5 rounded-2xl rounded-tr-sm max-w-[85%] text-sm leading-relaxed whitespace-pre-wrap">
       {content}
     </div>
   </div>
-)
+))
+UserMessage.displayName = 'UserMessage'
 
 // 2. Thinking — 可折叠，默认收起，Brain 图标
-const ThinkingBlock = ({ content, isOpenDefault = false }: { content: string; isOpenDefault?: boolean }) => {
+const ThinkingBlock = memo(({ content, isOpenDefault = false }: { content: string; isOpenDefault?: boolean }) => {
   const [isOpen, setIsOpen] = useState(isOpenDefault)
 
   return (
@@ -98,10 +108,11 @@ const ThinkingBlock = ({ content, isOpenDefault = false }: { content: string; is
       )}
     </div>
   )
-}
+})
+ThinkingBlock.displayName = 'ThinkingBlock'
 
 // 3. Tool / Action — pill 按钮或极简状态行
-const ToolBlock = ({ title, content, type }: { title: string; content: string; type: LogType }) => {
+const ToolBlock = memo(({ title, content, type }: { title: string; content: string; type: LogType }) => {
   const [isOpen, setIsOpen] = useState(false)
   const isAction = type === LogType.Action
 
@@ -145,10 +156,11 @@ const ToolBlock = ({ title, content, type }: { title: string; content: string; t
       )}
     </div>
   )
-}
+})
+ToolBlock.displayName = 'ToolBlock'
 
 // 3b. Tool Group — collapsed group of consecutive same-type tool calls
-const ToolGroup = ({ label, logs }: { label: string; logs: LogEntry[] }) => {
+const ToolGroup = memo(({ label, logs }: { label: string; logs: LogEntry[] }) => {
   const [isOpen, setIsOpen] = useState(false)
 
   // Extract short file/resource names from content for preview
@@ -196,10 +208,11 @@ const ToolGroup = ({ label, logs }: { label: string; logs: LogEntry[] }) => {
       )}
     </div>
   )
-}
+})
+ToolGroup.displayName = 'ToolGroup'
 
 /** Single item inside a ToolGroup — expandable for full content */
-const ToolGroupItem = ({ log, firstLine }: { log: LogEntry; firstLine: string }) => {
+const ToolGroupItem = memo(({ log, firstLine }: { log: LogEntry; firstLine: string }) => {
   const [isDetailOpen, setIsDetailOpen] = useState(false)
   const hasMultiLineContent = log.content.includes('\n')
 
@@ -228,71 +241,129 @@ const ToolGroupItem = ({ log, firstLine }: { log: LogEntry; firstLine: string })
       )}
     </div>
   )
-}
+})
+ToolGroupItem.displayName = 'ToolGroupItem'
 
 // 4. Agent 主文本 — 纯文本无图标
-const AgentText = ({ content }: { content: string }) => (
+const AgentText = memo(({ content }: { content: string }) => (
   <div className="text-sm text-neutral-800 leading-7 mb-4 whitespace-pre-wrap animate-in fade-in duration-500">
     {content}
   </div>
-)
+))
+AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
-const AssistantMessage = ({ content }: { content: string }) => (
+const AssistantMessage = memo(({ content }: { content: string }) => (
   <div className="text-sm text-neutral-800 leading-7 mb-4 animate-in fade-in duration-500">
     <Streamdown>{content}</Streamdown>
   </div>
-)
+))
+AssistantMessage.displayName = 'AssistantMessage'
+
+// ============ RenderItem renderer ============
+
+function renderItem(item: RenderItem): React.ReactNode {
+  if (item.kind === 'group') {
+    return <ToolGroup label={item.label} logs={item.logs} />
+  }
+
+  const log = item.log
+
+  // 跳过空内容的条目，避免空 div 占据间距
+  if (!log.content && log.type !== LogType.Cursor) return null
+
+  // 先识别 Thinking 类型（通过 title 或 content 前缀）
+  if (log.title === 'Thinking' || log.content.startsWith('Thinking:')) {
+    return <ThinkingBlock content={log.content} isOpenDefault={true} />
+  }
+
+  switch (log.type) {
+    case LogType.User:
+      return <UserMessage content={log.content} />
+
+    case LogType.Tool:
+      return <ToolBlock type={log.type} title={log.title || 'Tool'} content={log.content} />
+
+    case LogType.Action:
+      return <ToolBlock type={log.type} title="Action" content={log.content} />
+
+    case LogType.Assistant:
+      return <AssistantMessage content={log.content} />
+
+    case LogType.Info:
+            // 跳过 token_usage_info 条目的文本渲染（已由 TokenUsageIndicator 聚合展示）
+            if (log.tokenUsage) return null
+      return <AgentText content={log.content} />
+
+    case LogType.Cursor:
+      return (
+        <div className="h-4 w-2 bg-neutral-900 animate-pulse mt-1 inline-block align-middle" />
+      )
+
+    default:
+      return null
+  }
+}
 
 // ============ Main Component ============
 
-export function LogStream({ logs }: LogStreamProps) {
-  const items = useMemo(() => groupConsecutiveTools(logs), [logs])
+export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
+  function LogStream({ logs, scrollElementRef, scrollMargin = 0 }, ref) {
+    const items = useMemo(() => groupConsecutiveTools(logs), [logs])
 
-  return (
-    <div className="flex flex-col w-full mx-auto pb-4">
-      {items.map((item) => {
-        if (item.kind === 'group') {
-          return <ToolGroup key={item.logs[0].id} label={item.label} logs={item.logs} />
+    const virtualizer = useVirtualizer({
+      count: items.length,
+      getScrollElement: () => scrollElementRef.current,
+      estimateSize: () => 60,
+      overscan: 10,
+      scrollMargin,
+    })
+
+    // 暴露 scrollToBottom 给父组件
+    useImperativeHandle(ref, () => ({
+      scrollToBottom: (behavior: 'instant' | 'smooth' = 'instant') => {
+        if (items.length === 0) return
+        virtualizer.scrollToIndex(items.length - 1, {
+          align: 'end',
+          behavior: behavior as any,
+        })
+      },
+    }), [items.length, virtualizer])
+
+    // 动态测量回调
+    const measureElement = useCallback(
+      (el: HTMLElement | null) => {
+        if (el) {
+          virtualizer.measureElement(el)
         }
+      },
+      [virtualizer],
+    )
 
-        const log = item.log
+    const virtualItems = virtualizer.getVirtualItems()
 
-        // 跳过空内容的条目，避免空 div 占据间距
-        if (!log.content && log.type !== LogType.Cursor) return null
-
-        // 先识别 Thinking 类型（通过 title 或 content 前缀）
-        if (log.title === 'Thinking' || log.content.startsWith('Thinking:')) {
-          return <ThinkingBlock key={log.id} content={log.content} isOpenDefault={true} />
-        }
-
-        switch (log.type) {
-          case LogType.User:
-            return <UserMessage key={log.id} content={log.content} />
-
-          case LogType.Tool:
-            return <ToolBlock key={log.id} type={log.type} title={log.title || 'Tool'} content={log.content} />
-
-          case LogType.Action:
-            return <ToolBlock key={log.id} type={log.type} title="Action" content={log.content} />
-
-          case LogType.Assistant:
-            return <AssistantMessage key={log.id} content={log.content} />
-
-          case LogType.Info:
-            // 跳过 token_usage_info 条目的文本渲染（已由 TokenUsageIndicator 聚合展示）
-            if (log.tokenUsage) return null
-            return <AgentText key={log.id} content={log.content} />
-
-          case LogType.Cursor:
-            return (
-              <div key={log.id} className="h-4 w-2 bg-neutral-900 animate-pulse mt-1 inline-block align-middle" />
-            )
-
-          default:
-            return null
-        }
-      })}
-    </div>
-  )
-}
+    return (
+      <div
+        className="w-full mx-auto pb-4 relative"
+        style={{ height: virtualizer.getTotalSize() }}
+      >
+        {virtualItems.map((virtualRow) => {
+          const item = items[virtualRow.index]
+          return (
+            <div
+              key={item.key}
+              ref={measureElement}
+              data-index={virtualRow.index}
+              className="absolute left-0 w-full"
+              style={{
+                top: virtualRow.start - virtualizer.options.scrollMargin,
+              }}
+            >
+              {renderItem(item)}
+            </div>
+          )
+        })}
+      </div>
+    )
+  },
+)

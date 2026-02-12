@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { SessionStatus } from '@agent-tower/shared'
 import { LogStream } from '@/components/agent'
+import type { LogStreamHandle } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone } from '@/components/agent'
@@ -112,7 +113,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const logStreamRef = useRef<LogStreamHandle>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   /**
    * Scroll-lock state machine (inspired by vibe-kanban's useScrollSyncStateMachine):
@@ -308,7 +309,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
       // Double rAF: first rAF schedules after React commit, second after browser layout/paint
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+          logStreamRef.current?.scrollToBottom('instant')
         })
       })
       return
@@ -316,7 +317,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
 
     // Streaming updates: smooth scroll
     scrollStateRef.current = 'programmatic'
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    logStreamRef.current?.scrollToBottom('smooth')
     if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current)
     cooldownTimerRef.current = setTimeout(() => {
       if (scrollStateRef.current === 'programmatic') {
@@ -337,7 +338,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
         scrollStateRef.current = 'following'
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+            logStreamRef.current?.scrollToBottom('instant')
           })
         })
       }
@@ -572,7 +573,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
                     {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded for this session.'}
                   </div>
                 ) : (
-                  <LogStream logs={logs} />
+                  <LogStream ref={logStreamRef} logs={logs} scrollElementRef={scrollContainerRef} />
                 )
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -591,7 +592,6 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
                   </Button>
                 </div>
               )}
-              <div ref={bottomRef} className="h-4" />
             </div>
           </div>
 

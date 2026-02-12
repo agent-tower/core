@@ -50,6 +50,10 @@ export class MsgStore {
   private sessionIdListeners = new Set<(id: string) => void>();
   private finishedListeners = new Set<() => void>();
 
+  // Incremental snapshot cache: avoid replaying all patches on every getSnapshot() call
+  private cachedSnapshot: NormalizedConversation | null = null;
+  private cachedUpToIndex = -1; // index of last message applied to cachedSnapshot
+
   constructor() {
     this.entryIndex = new EntryIndexProvider();
   }
@@ -61,6 +65,9 @@ export class MsgStore {
   restoreFromSnapshot(snapshot: NormalizedConversation): void {
     this.baseSnapshot = snapshot;
     this.entryIndex.startFrom(snapshot.entries.length);
+    // Invalidate cache — will be rebuilt from new base on next getSnapshot()
+    this.cachedSnapshot = null;
+    this.cachedUpToIndex = -1;
   }
 
   /**
@@ -73,6 +80,9 @@ export class MsgStore {
       if (removed) {
         this.totalBytes -= estimateMsgBytes(removed);
       }
+      // FIFO eviction invalidates the incremental cache — the base messages are gone
+      this.cachedSnapshot = null;
+      this.cachedUpToIndex = -1;
     }
 
     this.messages.push(msg);
@@ -161,18 +171,47 @@ export class MsgStore {
 
   /**
    * 获取当前标准化日志快照
-   * 重放所有 patch 和 session_id 消息，构建完整的 NormalizedConversation 状态
+   * 使用增量缓存：只重放上次快照之后的新 patch，避免每次从头重放
    */
   getSnapshot(): NormalizedConversation {
-    // 从 baseSnapshot 开始（如果有），在此基础上重放新 patch
+    // If cache is valid, only apply new messages since last snapshot
+    if (this.cachedSnapshot && this.cachedUpToIndex >= 0) {
+      let conversation = this.cachedSnapshot;
+      let changed = false;
+
+      for (let i = this.cachedUpToIndex + 1; i < this.messages.length; i++) {
+        const msg = this.messages[i];
+        if (msg.type === 'patch') {
+          try {
+            const result = applyPatch(conversation, msg.patch as Operation[], true, true);
+            conversation = result.newDocument;
+            changed = true;
+          } catch {
+            // invalid patch chunks are ignored
+          }
+        } else if (msg.type === 'session_id') {
+          conversation = { ...conversation, sessionId: msg.id };
+          changed = true;
+        }
+      }
+
+      this.cachedSnapshot = conversation;
+      this.cachedUpToIndex = this.messages.length - 1;
+
+      // Return a shallow copy so callers can't mutate our cache
+      return { ...conversation, entries: [...conversation.entries] };
+    }
+
+    // No cache — full rebuild from baseSnapshot
     let conversation: NormalizedConversation = this.baseSnapshot
       ? JSON.parse(JSON.stringify(this.baseSnapshot))
       : { entries: [] };
 
-    for (const msg of this.messages) {
+    for (let i = 0; i < this.messages.length; i++) {
+      const msg = this.messages[i];
       if (msg.type === 'patch') {
         try {
-          const result = applyPatch(conversation, msg.patch as Operation[], true, false);
+          const result = applyPatch(conversation, msg.patch as Operation[], true, true);
           conversation = result.newDocument;
         } catch {
           // invalid patch chunks are ignored to avoid breaking the whole snapshot
@@ -182,7 +221,11 @@ export class MsgStore {
       }
     }
 
-    return JSON.parse(JSON.stringify(conversation));
+    // Cache the result for incremental updates
+    this.cachedSnapshot = conversation;
+    this.cachedUpToIndex = this.messages.length - 1;
+
+    return { ...conversation, entries: [...conversation.entries] };
   }
 
   onPatch(handler: (patch: JsonPatch) => void): () => void {

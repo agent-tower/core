@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react'
 import { applyPatch, type Operation } from 'fast-json-patch'
 import { socketManager } from '../manager.js'
 import {
@@ -96,13 +96,14 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
           prev,
           patch,
           true, // validate
-          false // mutate (false = immutable)
+          true  // mutate (true = in-place, avoids deep clone)
         )
         const newCount = patched.newDocument.entries.length;
         if (DEBUG_LOGS) {
           console.log(`[useNormalizedLogs:applyPatch] t=${Date.now()} applyTime=${Date.now() - startApply}ms entries=${prevCount}->${newCount} delta=${newCount - prevCount}`);
         }
-        return patched.newDocument
+        // Shallow copy to produce a new reference for React state update
+        return { ...patched.newDocument }
       } catch (error) {
         console.error('Failed to apply patch:', error, patch)
         return prev
@@ -234,7 +235,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
               state,
               buffered.patch as Operation[],
               true,
-              false
+              true  // mutate in-place
             )
             if (DEBUG_LOGS) {
               console.log(`[useNormalizedLogs:loadSnapshot] replay buffered patch, applyTime=${Date.now() - startApply}ms entries=${patched.newDocument.entries.length}`);
@@ -331,13 +332,14 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     pendingPatchesRef.current = []
   }, [])
 
-  // 转换为 LogEntry 格式
-  const logs = normalizedEntriesToLogEntries(conversation.entries)
-
-  // 如果正在加载，添加 cursor
-  if (isLoading && isAttached) {
-    logs.push(createCursorEntry())
-  }
+  // 转换为 LogEntry 格式（useMemo 避免每次 render 重算）
+  const logs = useMemo(() => {
+    const result = normalizedEntriesToLogEntries(conversation.entries)
+    if (isLoading && isAttached) {
+      result.push(createCursorEntry())
+    }
+    return result
+  }, [conversation.entries, isLoading, isAttached])
 
   return {
     isConnected,

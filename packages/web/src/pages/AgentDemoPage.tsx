@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { LogStream, IconRunning, IconDone, IconPending, TodoPanel } from '@/components/agent'
+import type { LogStreamHandle } from '@/components/agent'
 import { Button } from '@/components/ui/button'
 import { useAgentVariants } from '@/hooks/use-profiles'
 import { useTodos } from '@/hooks/use-todos'
@@ -31,7 +32,8 @@ export function AgentDemoPage() {
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
   const [input, setInput] = useState('')
 
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const logStreamRef = useRef<LogStreamHandle>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // 获取当前选中 agent 的 variant 列表
@@ -84,7 +86,7 @@ export function AgentDemoPage() {
 
   // 自动滚动到底部
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    logStreamRef.current?.scrollToBottom('smooth')
   }, [logs])
 
   // 当 sessionId 变化且 socket 已连接时，自动 attach
@@ -299,7 +301,7 @@ export function AgentDemoPage() {
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto px-8 py-6">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-8 py-6">
         {!hasSession ? (
           /* Agent Selection & Prompt Input */
           <div className="max-w-2xl mx-auto space-y-6">
@@ -374,9 +376,8 @@ export function AgentDemoPage() {
             {logs.length === 0 ? (
               <div className="text-neutral-400 text-center py-8">等待 Agent 响应...</div>
             ) : (
-              <LogStream logs={logs} />
+              <LogStream ref={logStreamRef} logs={logs} scrollElementRef={scrollContainerRef} />
             )}
-            <div ref={bottomRef} />
           </div>
         )}
       </div>

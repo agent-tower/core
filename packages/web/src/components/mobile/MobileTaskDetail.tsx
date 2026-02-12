@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { SessionStatus } from '@agent-tower/shared'
 import { LogStream, TodoPanel, TokenUsageIndicator } from '@/components/agent'
+import type { LogStreamHandle } from '@/components/agent'
 import {
   ArrowLeft, ArrowUp, Paperclip, Play, Square,
   MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical,
@@ -58,7 +59,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const logStreamRef = useRef<LogStreamHandle>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const scrollStateRef = useRef<'following' | 'user-scrolling' | 'programmatic'>('following')
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -211,13 +212,13 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
       setIsInitialLoad(false)
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+          logStreamRef.current?.scrollToBottom('instant')
         })
       })
       return
     }
     scrollStateRef.current = 'programmatic'
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    logStreamRef.current?.scrollToBottom('smooth')
     if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current)
     cooldownTimerRef.current = setTimeout(() => {
       if (scrollStateRef.current === 'programmatic') scrollStateRef.current = 'following'
@@ -235,7 +236,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         scrollStateRef.current = 'following'
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+            logStreamRef.current?.scrollToBottom('instant')
           })
         })
       }
@@ -371,7 +372,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                   {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded.'}
                 </div>
               ) : (
-                <LogStream logs={logs} />
+                <LogStream ref={logStreamRef} logs={logs} scrollElementRef={scrollContainerRef} />
               )
             ) : (
               /* No session — show start agent CTA */
@@ -389,7 +390,6 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                 </Button>
               </div>
             )}
-            <div ref={bottomRef} className="h-4" />
           </div>
 
           {/* Todo Panel */}
