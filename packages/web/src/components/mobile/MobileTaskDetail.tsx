@@ -14,6 +14,7 @@ import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
 import { useTodos } from '@/hooks/use-todos'
 import { StartAgentDialog } from '@/components/task/StartAgentDialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 
@@ -113,6 +114,26 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const activeWorkspaceId = useMemo(() => {
     if (!workspaces) return undefined
     return workspaces.find(ws => ws.status === 'ACTIVE')?.id
+  }, [workspaces])
+
+  // Build dynamic delete warning from workspace data
+  const deleteDescription = useMemo(() => {
+    const warnings: string[] = []
+
+    if (workspaces && workspaces.length > 0) {
+      const hasActive = workspaces.some(ws => ws.status === 'ACTIVE')
+      const hasRunning = workspaces.some(ws =>
+        ws.sessions?.some(s => s.status === SessionStatus.RUNNING || s.status === SessionStatus.PENDING)
+      )
+
+      if (hasRunning) warnings.push('正在运行的 Agent 将被停止')
+      if (hasActive) {
+        warnings.push('分支上未合并的变更将丢失')
+        warnings.push('关联的工作目录（worktree）将被清理')
+      }
+    }
+
+    return warnings
   }, [workspaces])
 
   // ============ Mutations ============
@@ -285,38 +306,16 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
               </button>
               {isMoreMenuOpen && (
                 <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg border border-neutral-200 shadow-lg z-50 py-1">
-                  {!isDeleteConfirmOpen ? (
-                    <button
-                      onClick={() => setIsDeleteConfirmOpen(true)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 active:bg-red-50"
-                    >
-                      <Trash2 size={15} />
-                      <span>删除任务</span>
-                    </button>
-                  ) : (
-                    <div className="px-3 py-2">
-                      <p className="text-xs text-neutral-500 mb-2">确认删除此任务？</p>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => {
-                            onDeleteTask(task.id)
-                            setIsDeleteConfirmOpen(false)
-                            setIsMoreMenuOpen(false)
-                          }}
-                          disabled={isDeleting}
-                          className="flex-1 px-2 py-1 text-xs font-medium text-white bg-red-500 active:bg-red-600 rounded disabled:opacity-50"
-                        >
-                          {isDeleting ? '...' : '确认'}
-                        </button>
-                        <button
-                          onClick={() => setIsDeleteConfirmOpen(false)}
-                          className="flex-1 px-2 py-1 text-xs font-medium text-neutral-600 bg-neutral-100 active:bg-neutral-200 rounded"
-                        >
-                          取消
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  <button
+                    onClick={() => {
+                      setIsDeleteConfirmOpen(true)
+                      setIsMoreMenuOpen(false)
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 active:bg-red-50"
+                  >
+                    <Trash2 size={15} />
+                    <span>删除任务</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -460,6 +459,35 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         taskId={task.id}
         taskTitle={task.title}
         taskDescription={task.description}
+      />
+
+      {/* Delete Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={isDeleteConfirmOpen}
+        onClose={() => setIsDeleteConfirmOpen(false)}
+        onConfirm={() => {
+          onDeleteTask?.(task.id)
+          setIsDeleteConfirmOpen(false)
+        }}
+        title="删除任务"
+        description={
+          <>
+            <p>确认删除任务「{task.title}」？此操作不可撤销。</p>
+            {deleteDescription.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {deleteDescription.map((w, i) => (
+                  <li key={i} className="flex items-start gap-1.5 text-amber-600">
+                    <span className="mt-1 shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    <span>{w}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        }
+        confirmText="删除"
+        variant="danger"
+        isLoading={isDeleting}
       />
     </div>
   )

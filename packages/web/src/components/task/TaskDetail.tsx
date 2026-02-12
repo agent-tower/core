@@ -12,6 +12,7 @@ import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
 import { useTodos } from '@/hooks/use-todos'
 import { StartAgentDialog } from './StartAgentDialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
 
@@ -430,6 +431,25 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
     el.style.height = `${Math.max(60, Math.min(scrollHeight, 300))}px`
   }, [])
 
+  // Build dynamic delete warning from workspace data
+  const deleteDescription = useMemo(() => {
+    const warnings: string[] = []
+
+    if (workspaces && workspaces.length > 0) {
+      const hasActive = workspaces.some(ws => ws.status === 'ACTIVE')
+      const hasRunning = workspaces.some(ws =>
+        ws.sessions?.some(s => s.status === SessionStatus.RUNNING || s.status === SessionStatus.PENDING)
+      )
+      const hasUnmerged = workspaces.some(ws => ws.status === 'ACTIVE')
+
+      if (hasRunning) warnings.push('正在运行的 Agent 将被停止')
+      if (hasUnmerged) warnings.push('分支上未合并的变更将丢失')
+      if (hasActive) warnings.push('关联的工作目录（worktree）将被清理')
+    }
+
+    return warnings
+  }, [workspaces])
+
   // Early return for null task
   if (!task) {
     return EMPTY_STATE
@@ -457,19 +477,19 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
           <button
             onClick={handleOpenInIde}
             disabled={!activeWorkspaceId}
-            className="text-neutral-400 hover:text-neutral-900 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             title="Open in IDE"
           >
-            <Code2 size={20} />
+            <Code2 size={18} />
           </button>
 
           {/* Toggle Workspace */}
           <button
             onClick={handleToggleWorkspace}
-            className="text-neutral-400 hover:text-neutral-900 transition-colors"
+            className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
             title="Toggle Workspace"
           >
-            {isWorkspaceOpen ? <PanelRightClose size={20} /> : <PanelRightOpen size={20} />}
+            {isWorkspaceOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
           </button>
 
           {/* More Actions */}
@@ -477,44 +497,23 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
             <div className="relative" ref={moreMenuRef}>
               <button
                 onClick={() => setIsMoreMenuOpen(v => !v)}
-                className="text-neutral-400 hover:text-neutral-900 transition-colors"
+                className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
                 title="More actions"
               >
-                <MoreVertical size={20} />
+                <MoreVertical size={18} />
               </button>
               {isMoreMenuOpen && (
                 <div className="absolute right-0 top-full mt-2 w-44 bg-white rounded-lg border border-neutral-200 shadow-lg z-50 py-1">
-                  {!isDeleteConfirmOpen ? (
-                    <button
-                      onClick={() => setIsDeleteConfirmOpen(true)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
-                    >
-                      <Trash2 size={15} />
-                      <span>删除任务</span>
-                    </button>
-                  ) : (
-                    <div className="px-3 py-2">
-                      <p className="text-xs text-neutral-500 mb-2">确认删除此任务？</p>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => {
-                            handleDeleteTask()
-                            setIsMoreMenuOpen(false)
-                          }}
-                          disabled={isDeleting}
-                          className="flex-1 px-2 py-1 text-xs font-medium text-white bg-red-500 hover:bg-red-600 rounded transition-colors disabled:opacity-50"
-                        >
-                          {isDeleting ? '...' : '确认'}
-                        </button>
-                        <button
-                          onClick={() => setIsDeleteConfirmOpen(false)}
-                          className="flex-1 px-2 py-1 text-xs font-medium text-neutral-600 bg-neutral-100 hover:bg-neutral-200 rounded transition-colors"
-                        >
-                          取消
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  <button
+                    onClick={() => {
+                      setIsDeleteConfirmOpen(true)
+                      setIsMoreMenuOpen(false)
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                  >
+                    <Trash2 size={15} />
+                    <span>删除任务</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -670,6 +669,32 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
         taskId={task.id}
         taskTitle={task.title}
         taskDescription={task.description}
+      />
+
+      {/* Delete Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={isDeleteConfirmOpen}
+        onClose={() => setIsDeleteConfirmOpen(false)}
+        onConfirm={handleDeleteTask}
+        title="删除任务"
+        description={
+          <>
+            <p>确认删除任务「{task.title}」？此操作不可撤销。</p>
+            {deleteDescription.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {deleteDescription.map((w, i) => (
+                  <li key={i} className="flex items-start gap-1.5 text-amber-600">
+                    <span className="mt-1 shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    <span>{w}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        }
+        confirmText="删除"
+        variant="danger"
+        isLoading={isDeleting}
       />
     </div>
   )
