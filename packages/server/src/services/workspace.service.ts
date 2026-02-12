@@ -3,10 +3,12 @@ import { WorkspaceStatus, TaskStatus, SessionStatus } from '../types/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
 import { execGit } from '../git/git-cli.js';
 import { NotFoundError, ServiceError } from '../errors.js';
-import { getSessionManager } from '../core/container.js';
+import { getSessionManager, getEventBus } from '../core/container.js';
+import type { EventBus } from '../core/event-bus.js';
 
 export class WorkspaceService {
   private sessionService = getSessionManager();
+  private eventBus: EventBus = getEventBus();
 
   // ── Queries ──────────────────────────────────────────────────────────────────
 
@@ -85,6 +87,11 @@ export class WorkspaceService {
         await prisma.task.update({
           where: { id: taskId },
           data: { status: TaskStatus.IN_PROGRESS },
+        });
+        this.eventBus.emit('task:updated', {
+          taskId,
+          projectId: task.projectId,
+          status: TaskStatus.IN_PROGRESS,
         });
       }
 
@@ -200,6 +207,19 @@ export class WorkspaceService {
       where: { id },
       data: { status: WorkspaceStatus.MERGED },
     });
+
+    // 自动推进 Task 状态：如果 Task 处于 IN_PROGRESS，合并后自动流转到 IN_REVIEW
+    if (workspace.task.status === TaskStatus.IN_PROGRESS) {
+      await prisma.task.update({
+        where: { id: workspace.task.id },
+        data: { status: TaskStatus.IN_REVIEW },
+      });
+      this.eventBus.emit('task:updated', {
+        taskId: workspace.task.id,
+        projectId: workspace.task.projectId,
+        status: TaskStatus.IN_REVIEW,
+      });
+    }
 
     return sha;
   }

@@ -4,7 +4,7 @@ import { SessionStatus } from '@agent-tower/shared'
 import { LogStream, TodoPanel } from '@/components/agent'
 import {
   ArrowLeft, ArrowUp, Paperclip, Play, Square,
-  MessageSquare, FolderOpen, GitGraph, Code2,
+  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
@@ -20,6 +20,8 @@ import { UITaskStatus } from '@/components/task/types'
 interface MobileTaskDetailProps {
   task: UITaskDetailData
   onBack: () => void
+  onDeleteTask?: (taskId: string) => void
+  isDeleting?: boolean
 }
 
 type MobileTab = 'chat' | 'changes' | 'workspace'
@@ -46,10 +48,13 @@ const TAB_CONFIG: { key: MobileTab; label: string; icon: typeof MessageSquare }[
 
 // ============ Main Component ============
 
-export function MobileTaskDetail({ task, onBack }: MobileTaskDetailProps) {
+export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: MobileTaskDetailProps) {
   const [activeTab, setActiveTab] = useState<MobileTab>('chat')
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -58,6 +63,18 @@ export function MobileTaskDetail({ task, onBack }: MobileTaskDetailProps) {
   const [isInitialLoad, setIsInitialLoad] = useState(true)
 
   const queryClient = useQueryClient()
+
+  // Close more-menu on outside click
+  useEffect(() => {
+    if (!isMoreMenuOpen) return
+    const handler = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setIsMoreMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [isMoreMenuOpen])
 
   // ============ Session Discovery ============
 
@@ -257,6 +274,53 @@ export function MobileTaskDetail({ task, onBack }: MobileTaskDetailProps) {
           >
             <Code2 size={18} />
           </button>
+          {onDeleteTask && (
+            <div className="relative" ref={moreMenuRef}>
+              <button
+                onClick={() => setIsMoreMenuOpen(v => !v)}
+                className="p-2 text-neutral-400 active:text-neutral-900"
+                aria-label="More actions"
+              >
+                <MoreVertical size={18} />
+              </button>
+              {isMoreMenuOpen && (
+                <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg border border-neutral-200 shadow-lg z-50 py-1">
+                  {!isDeleteConfirmOpen ? (
+                    <button
+                      onClick={() => setIsDeleteConfirmOpen(true)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 active:bg-red-50"
+                    >
+                      <Trash2 size={15} />
+                      <span>删除任务</span>
+                    </button>
+                  ) : (
+                    <div className="px-3 py-2">
+                      <p className="text-xs text-neutral-500 mb-2">确认删除此任务？</p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            onDeleteTask(task.id)
+                            setIsDeleteConfirmOpen(false)
+                            setIsMoreMenuOpen(false)
+                          }}
+                          disabled={isDeleting}
+                          className="flex-1 px-2 py-1 text-xs font-medium text-white bg-red-500 active:bg-red-600 rounded disabled:opacity-50"
+                        >
+                          {isDeleting ? '...' : '确认'}
+                        </button>
+                        <button
+                          onClick={() => setIsDeleteConfirmOpen(false)}
+                          className="flex-1 px-2 py-1 text-xs font-medium text-neutral-600 bg-neutral-100 active:bg-neutral-200 rounded"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Sub-Tab Bar */}

@@ -1,5 +1,5 @@
 import { prisma } from '../utils/index.js';
-import { AgentType, SessionStatus } from '../types/index.js';
+import { AgentType, SessionStatus, TaskStatus } from '../types/index.js';
 import { getExecutor, ExecutionEnv } from '../executors/index.js';
 import {
   sessionMsgStoreManager,
@@ -25,9 +25,11 @@ export class SessionManager {
       // each subsequent pushPatch() forwards the same patch N times.
       pipeline.destroy();
       this.pipelines.delete(sessionId);
-      this.persistCompletedSnapshot(sessionId).catch((error) => {
-        console.error(`[SessionManager] Failed to persist completed snapshot for ${sessionId}:`, error);
-      });
+      this.persistCompletedSnapshot(sessionId)
+        .then(() => this.checkTaskAutoAdvance(sessionId))
+        .catch((error) => {
+          console.error(`[SessionManager] Failed to persist completed snapshot for ${sessionId}:`, error);
+        });
     });
   }
 
@@ -265,5 +267,52 @@ export class SessionManager {
         logSnapshot: JSON.stringify(snapshot),
       },
     });
+  }
+
+  /**
+   * Session 完成后检查 Task 是否可以自动推进状态。
+   *
+   * 规则：当一个 Task 下所有 Workspace 的所有 Session 都处于终态
+   * （COMPLETED / CANCELLED / FAILED）时，自动将 IN_PROGRESS 的 Task
+   * 推进到 IN_REVIEW，提示用户进行代码审查。
+   */
+  private async checkTaskAutoAdvance(sessionId: string): Promise<void> {
+    try {
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        include: { workspace: { include: { task: true } } },
+      });
+      if (!session?.workspace?.task) return;
+
+      const task = session.workspace.task;
+      // 只对 IN_PROGRESS 的 Task 做自动推进
+      if (task.status !== TaskStatus.IN_PROGRESS) return;
+
+      // 查询该 Task 下所有 Session
+      const allSessions = await prisma.session.findMany({
+        where: { workspace: { taskId: task.id } },
+        select: { status: true },
+      });
+
+      const terminalStatuses: string[] = [SessionStatus.COMPLETED, SessionStatus.CANCELLED, SessionStatus.FAILED];
+      const allDone = allSessions.every((s) => terminalStatuses.includes(s.status));
+
+      if (allDone && allSessions.length > 0) {
+        await prisma.task.update({
+          where: { id: task.id },
+          data: { status: TaskStatus.IN_REVIEW },
+        });
+
+        this.eventBus.emit('task:updated', {
+          taskId: task.id,
+          projectId: task.projectId,
+          status: TaskStatus.IN_REVIEW,
+        });
+
+        console.log(`[SessionManager] Task ${task.id} auto-advanced to IN_REVIEW (all sessions completed)`);
+      }
+    } catch (error) {
+      console.error(`[SessionManager] checkTaskAutoAdvance failed for session ${sessionId}:`, error);
+    }
   }
 }

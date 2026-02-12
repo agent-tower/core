@@ -3,6 +3,7 @@ import { z, ZodError } from 'zod';
 import { TaskService } from '../services/task.service.js';
 import { TaskStatus } from '../types/index.js';
 import { ServiceError } from '../errors.js';
+import { getEventBus, getSessionManager } from '../core/container.js';
 
 const createTaskSchema = z.object({
   title: z.string().min(1, 'title is required'),
@@ -59,7 +60,7 @@ function handleError(error: unknown, reply: any) {
 }
 
 export async function taskRoutes(app: FastifyInstance) {
-  const taskService = new TaskService();
+  const taskService = new TaskService(getEventBus(), getSessionManager());
 
   // 获取项目的任务列表（支持分页和状态过滤）
   app.get<{ Params: { projectId: string } }>(

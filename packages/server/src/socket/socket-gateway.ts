@@ -105,8 +105,16 @@ export class SocketGateway {
         exitCode: typeof exitCode === 'number' ? exitCode : 0,
       });
     };
-    const onTask = ({ taskId, status }: { taskId: string; status: string }) => {
-      this.nsp.to(`task:${taskId}`).emit(ServerEvents.TASK_UPDATED, { taskId, status });
+    const onTask = ({ taskId, projectId, status }: { taskId: string; projectId: string; status: string }) => {
+      const payload = { taskId, projectId, status };
+      this.nsp.to(`task:${taskId}`).emit(ServerEvents.TASK_UPDATED, payload);
+      // 同时广播到 project room，让看板实时更新
+      this.nsp.to(`project:${projectId}`).emit(ServerEvents.TASK_UPDATED, payload);
+    };
+    const onTaskDeleted = ({ taskId, projectId }: { taskId: string; projectId: string }) => {
+      const payload = { taskId, projectId };
+      this.nsp.to(`task:${taskId}`).emit(ServerEvents.TASK_DELETED, payload);
+      this.nsp.to(`project:${projectId}`).emit(ServerEvents.TASK_DELETED, payload);
     };
 
     // --- Terminal events (new) ---
@@ -125,6 +133,7 @@ export class SocketGateway {
     this.eventBus.on('session:sessionId', onSessionId);
     this.eventBus.on('session:exit', onExit);
     this.eventBus.on('task:updated', onTask);
+    this.eventBus.on('task:deleted', onTaskDeleted);
     this.eventBus.on('terminal:stdout', onTerminalStdout);
     this.eventBus.on('terminal:exit', onTerminalExit);
 
@@ -134,6 +143,7 @@ export class SocketGateway {
       () => this.eventBus.off('session:sessionId', onSessionId),
       () => this.eventBus.off('session:exit', onExit),
       () => this.eventBus.off('task:updated', onTask),
+      () => this.eventBus.off('task:deleted', onTaskDeleted),
       () => this.eventBus.off('terminal:stdout', onTerminalStdout),
       () => this.eventBus.off('terminal:exit', onTerminalExit),
     );
@@ -179,6 +189,9 @@ export class SocketGateway {
     }
     if (payload.topic === 'terminal') {
       return payload.id ? `terminal:${payload.id}` : 'terminal:all';
+    }
+    if (payload.topic === 'project') {
+      return payload.id ? `project:${payload.id}` : 'project:all';
     }
     return payload.id ? `agent:${payload.id}` : 'agent:all';
   }

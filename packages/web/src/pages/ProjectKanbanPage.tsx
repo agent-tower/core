@@ -6,7 +6,8 @@ import { TaskDetail } from '@/components/task/TaskDetail'
 import type { UITaskDetailData } from '@/components/task/types'
 import { adaptProject, adaptTaskForList } from '@/components/task/adapters'
 import { useProjects, useCreateProject } from '@/hooks/use-projects'
-import { useTasks, useCreateTask } from '@/hooks/use-tasks'
+import { useTasks, useCreateTask, useDeleteTask } from '@/hooks/use-tasks'
+import { useTaskRealtimeSync } from '@/lib/socket/hooks/useTaskRealtimeSync'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
 import { Settings } from 'lucide-react'
@@ -98,6 +99,10 @@ export function ProjectKanbanPage() {
   const projects = projectsData?.data ?? []
   const uiProjects = useMemo(() => projects.map(adaptProject), [projects])
 
+  // === 实时同步：订阅 project rooms，监听 task:updated / task:deleted 事件 ===
+  const projectIdsForSync = useMemo(() => projects.map(p => p.id), [projects])
+  useTaskRealtimeSync(projectIdsForSync)
+
   // 当选中了某个项目时，直接用 useTasks 获取该项目的任务
   const { data: filteredTasksData, isLoading: isFilteredTasksLoading } = useTasks(
     filterProjectId ?? '',
@@ -158,6 +163,20 @@ export function ProjectKanbanPage() {
   // === Mutations ===
   const createProject = useCreateProject()
   const createTask = useCreateTask(newTaskProjectId)
+  const deleteTask = useDeleteTask()
+
+  const handleDeleteTask = useCallback((taskId: string) => {
+    deleteTask.mutate(taskId, {
+      onSuccess: () => {
+        // 删除后清除选中状态
+        if (selectedTaskId === taskId) {
+          setSelectedTaskId(null)
+        }
+        // 刷新所有任务列表
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      },
+    })
+  }, [deleteTask, selectedTaskId, queryClient])
 
   // === rerender-defer-reads: 侧边栏宽度只在 resize handler 中读取 ===
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -259,6 +278,8 @@ export function ProjectKanbanPage() {
           <MobileTaskDetail
             task={taskDetailData}
             onBack={() => setSelectedTaskId(null)}
+            onDeleteTask={handleDeleteTask}
+            isDeleting={deleteTask.isPending}
           />
           {/* Modals 在移动端也需要 */}
           <Suspense fallback={null}>
@@ -421,7 +442,11 @@ export function ProjectKanbanPage() {
         />
 
         {/* 右侧: TaskDetail */}
-        <TaskDetail task={taskDetailData} />
+        <TaskDetail
+          task={taskDetailData}
+          onDeleteTask={handleDeleteTask}
+          isDeleting={deleteTask.isPending}
+        />
       </div>
 
       {/* === Modals (懒加载) === */}

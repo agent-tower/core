@@ -1,10 +1,13 @@
 import { prisma } from '../utils/index.js';
-import { TaskStatus } from '../types/index.js';
+import { TaskStatus, SessionStatus } from '../types/index.js';
 import {
   NotFoundError,
   ValidationError,
   InvalidStateTransitionError,
 } from '../errors.js';
+import type { EventBus } from '../core/event-bus.js';
+import type { SessionManager } from './session-manager.js';
+import { WorktreeManager } from '../git/worktree.manager.js';
 
 interface CreateTaskInput {
   title: string;
@@ -39,6 +42,11 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 };
 
 export class TaskService {
+  constructor(
+    private readonly eventBus: EventBus,
+    private readonly sessionManager: SessionManager
+  ) {}
+
   /**
    * 获取项目的任务列表（支持按状态过滤和分页）
    */
@@ -144,6 +152,7 @@ export class TaskService {
 
   /**
    * 更新任务状态（含状态流转校验）
+   * 更新后通过 EventBus 发射 task:updated 事件，通知前端实时更新
    */
   async updateStatus(id: string, status: TaskStatus) {
     const task = await prisma.task.findUnique({ where: { id } });
@@ -170,17 +179,23 @@ export class TaskService {
       _max: { position: true },
     });
 
-    return prisma.task.update({
+    const updated = await prisma.task.update({
       where: { id },
       data: {
         status,
         position: (maxPosition._max.position ?? 0) + 1,
       },
     });
+
+    // 通知前端
+    this.emitTaskUpdated(id, task.projectId, status);
+
+    return updated;
   }
 
   /**
    * 更新任务位置（用于拖拽排序）
+   * 如果同时传了 status，会进行状态流转并通知前端
    */
   async updatePosition(id: string, position: number, status?: TaskStatus) {
     const task = await prisma.task.findUnique({ where: { id } });
@@ -197,24 +212,77 @@ export class TaskService {
       }
     }
 
-    return prisma.task.update({
+    const updated = await prisma.task.update({
       where: { id },
       data: { position, ...(status && { status }) },
     });
+
+    // 如果状态发生了变化，通知前端
+    if (status && status !== task.status) {
+      this.emitTaskUpdated(id, task.projectId, status);
+    }
+
+    return updated;
   }
 
   /**
-   * 删除任务
-   * Prisma schema 中已配置 onDelete: Cascade，
-   * 删除任务会自动级联删除关联的 Workspace 和 Session
+   * 删除任务（增强版）
+   *
+   * 1. 停止所有 RUNNING/PENDING 状态的 Session
+   * 2. 清理所有关联 Workspace 的 git worktree
+   * 3. 级联删除数据库记录
+   * 4. 通过 EventBus 通知前端实时删除
    */
   async delete(id: string) {
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: {
+        project: true,
+        workspaces: {
+          include: { sessions: true },
+        },
+      },
+    });
     if (!task) {
       throw new NotFoundError('Task', id);
     }
 
+    // 1. 停止所有活跃 Session
+    for (const workspace of task.workspaces) {
+      const activeSessions = workspace.sessions.filter(
+        (s) => s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING
+      );
+      for (const session of activeSessions) {
+        try {
+          await this.sessionManager.stop(session.id);
+        } catch (err) {
+          console.warn(`[TaskService] Failed to stop session ${session.id} during task delete:`, err);
+        }
+      }
+    }
+
+    // 2. 清理所有 Workspace 的 worktree
+    for (const workspace of task.workspaces) {
+      try {
+        const worktreeManager = new WorktreeManager(task.project.repoPath);
+        await worktreeManager.remove(workspace.worktreePath);
+      } catch (err) {
+        console.warn(
+          `[TaskService] Failed to remove worktree for workspace ${workspace.id} during task delete:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    // 3. 级联删除数据库记录
     await prisma.task.delete({ where: { id } });
+
+    // 4. 通知前端
+    this.eventBus.emit('task:deleted', {
+      taskId: id,
+      projectId: task.projectId,
+    });
+
     return true;
   }
 
@@ -263,5 +331,14 @@ export class TaskService {
     }
 
     return stats;
+  }
+
+  // ── 内部方法 ────────────────────────────────────────────────────────────────
+
+  /**
+   * 发射 task:updated 事件，通知 SocketGateway 转发到前端
+   */
+  emitTaskUpdated(taskId: string, projectId: string, status: string): void {
+    this.eventBus.emit('task:updated', { taskId, projectId, status });
   }
 }

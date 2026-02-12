@@ -4,7 +4,7 @@ import { SessionStatus } from '@agent-tower/shared'
 import { LogStream } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone } from '@/components/agent'
-import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen, Play, Square, Code2 } from 'lucide-react'
+import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces, useOpenInEditor } from '@/hooks/use-workspaces'
@@ -17,6 +17,10 @@ import { UITaskStatus } from './types'
 
 interface TaskDetailProps {
   task: UITaskDetailData | null
+  /** 删除任务回调 — 传入 taskId */
+  onDeleteTask?: (taskId: string) => void
+  /** 删除中状态 */
+  isDeleting?: boolean
 }
 
 // ============ Layout Constants ============
@@ -98,9 +102,12 @@ function StatusBadge({ status }: { status: UITaskStatus }) {
 
 // ============ TaskDetail Component ============
 
-export function TaskDetail({ task }: TaskDetailProps) {
+export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) {
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -174,6 +181,19 @@ export function TaskDetail({ task }: TaskDetailProps) {
   // ============ Query Client & Mutations ============
 
   const queryClient = useQueryClient()
+
+  // Close more-menu on outside click
+  useEffect(() => {
+    if (!isMoreMenuOpen) return
+    const handler = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setIsMoreMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [isMoreMenuOpen])
+
   const sendMessageMutation = useSendMessage()
   const openInEditorMutation = useOpenInEditor()
 
@@ -181,6 +201,12 @@ export function TaskDetail({ task }: TaskDetailProps) {
     if (!activeWorkspaceId) return
     openInEditorMutation.mutate({ workspaceId: activeWorkspaceId })
   }, [activeWorkspaceId, openInEditorMutation])
+
+  const handleDeleteTask = useCallback(() => {
+    if (!task?.id || !onDeleteTask) return
+    onDeleteTask(task.id)
+    setIsDeleteConfirmOpen(false)
+  }, [task?.id, onDeleteTask])
 
   // ============ WebSocket Log Stream ============
 
@@ -445,6 +471,54 @@ export function TaskDetail({ task }: TaskDetailProps) {
           >
             {isWorkspaceOpen ? <PanelRightClose size={20} /> : <PanelRightOpen size={20} />}
           </button>
+
+          {/* More Actions */}
+          {onDeleteTask && (
+            <div className="relative" ref={moreMenuRef}>
+              <button
+                onClick={() => setIsMoreMenuOpen(v => !v)}
+                className="text-neutral-400 hover:text-neutral-900 transition-colors"
+                title="More actions"
+              >
+                <MoreVertical size={20} />
+              </button>
+              {isMoreMenuOpen && (
+                <div className="absolute right-0 top-full mt-2 w-44 bg-white rounded-lg border border-neutral-200 shadow-lg z-50 py-1">
+                  {!isDeleteConfirmOpen ? (
+                    <button
+                      onClick={() => setIsDeleteConfirmOpen(true)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                    >
+                      <Trash2 size={15} />
+                      <span>删除任务</span>
+                    </button>
+                  ) : (
+                    <div className="px-3 py-2">
+                      <p className="text-xs text-neutral-500 mb-2">确认删除此任务？</p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            handleDeleteTask()
+                            setIsMoreMenuOpen(false)
+                          }}
+                          disabled={isDeleting}
+                          className="flex-1 px-2 py-1 text-xs font-medium text-white bg-red-500 hover:bg-red-600 rounded transition-colors disabled:opacity-50"
+                        >
+                          {isDeleting ? '...' : '确认'}
+                        </button>
+                        <button
+                          onClick={() => setIsDeleteConfirmOpen(false)}
+                          className="flex-1 px-2 py-1 text-xs font-medium text-neutral-600 bg-neutral-100 hover:bg-neutral-200 rounded transition-colors"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

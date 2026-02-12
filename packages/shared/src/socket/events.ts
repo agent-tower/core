@@ -23,6 +23,7 @@ export const ServerEvents = {
   SESSION_ID: 'session:sessionId',
   SESSION_ERROR: 'session:error',
   TASK_UPDATED: 'task:updated',
+  TASK_DELETED: 'task:deleted',
   AGENT_STATUS_CHANGED: 'agent:status_changed',
   // Standalone terminal events (server -> client)
   TERMINAL_STDOUT: 'terminal:stdout',
@@ -32,12 +33,12 @@ export const ServerEvents = {
 } as const;
 
 export interface SubscribePayload {
-  topic: 'session' | 'task' | 'agent' | 'terminal';
+  topic: 'session' | 'task' | 'agent' | 'terminal' | 'project';
   id?: string;
 }
 
 export interface UnsubscribePayload {
-  topic: 'session' | 'task' | 'agent' | 'terminal';
+  topic: 'session' | 'task' | 'agent' | 'terminal' | 'project';
   id?: string;
 }
 
@@ -104,7 +105,13 @@ export interface AgentStatusPayload {
 
 export interface TaskUpdatedPayload {
   taskId: string;
+  projectId: string;
   status: string;
+}
+
+export interface TaskDeletedPayload {
+  taskId: string;
+  projectId: string;
 }
 
 // Standalone terminal payloads
