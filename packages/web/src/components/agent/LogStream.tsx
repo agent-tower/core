@@ -1,6 +1,6 @@
-import { useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo } from 'react'
+import { useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
 import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
-import { Terminal, Brain, ChevronRight, ChevronDown, Files } from 'lucide-react'
+import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import 'streamdown/styles.css'
@@ -84,72 +84,108 @@ const UserMessage = memo(({ content }: { content: string }) => (
 ))
 UserMessage.displayName = 'UserMessage'
 
-// 2. Thinking — 可折叠，默认收起，Brain 图标
+// 2. Thinking — 沉浸式折叠区块，视觉降权但内容可达
 const ThinkingBlock = memo(({ content, isOpenDefault = false }: { content: string; isOpenDefault?: boolean }) => {
   const [isOpen, setIsOpen] = useState(isOpenDefault)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [contentHeight, setContentHeight] = useState(0)
+
+  useEffect(() => {
+    if (contentRef.current) {
+      setContentHeight(contentRef.current.scrollHeight)
+    }
+  }, [content, isOpen])
+
+  // 截取前 80 字符作为摘要预览
+  const preview = useMemo(() => {
+    const trimmed = content.replace(/^Thinking:\s*/i, '').trim()
+    const firstLine = trimmed.split('\n')[0] || ''
+    return firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine
+  }, [content])
 
   return (
-    <div className="mb-2">
+    <div className="my-1.5">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 text-xs font-medium text-neutral-400 hover:text-neutral-600 transition-colors select-none"
+        className="group flex items-center gap-1.5 py-1 text-xs text-neutral-400 hover:text-neutral-500 transition-colors select-none w-full text-left"
       >
-        <Brain size={12} />
-        <span>Thinking Process</span>
-        {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+          <ChevronRight size={11} strokeWidth={2} />
+        </span>
+        <span className="font-medium">Thinking</span>
+        {!isOpen && preview && (
+          <span className="truncate text-neutral-300 ml-1 font-normal">{preview}</span>
+        )}
       </button>
 
-      {isOpen && (
-        <div className="mt-2 pl-3 border-l-2 border-neutral-100">
-          <div className="text-xs text-neutral-500 font-mono leading-relaxed whitespace-pre-wrap">
-            {content.trim()}
+      <div
+        className="overflow-hidden transition-[max-height] duration-300 ease-in-out"
+        style={{ maxHeight: isOpen ? contentHeight + 16 : 0 }}
+      >
+        <div ref={contentRef} className="pl-5 pt-1 pb-2">
+          <div className="text-xs text-neutral-400 leading-relaxed whitespace-pre-wrap">
+            {content.replace(/^Thinking:\s*/i, '').trim()}
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
 })
 ThinkingBlock.displayName = 'ThinkingBlock'
 
-// 3. Tool / Action — pill 按钮或极简状态行
+// 3. Tool / Action — 内联文本样式，去除边框噪音
 const ToolBlock = memo(({ title, content, type }: { title: string; content: string; type: LogType }) => {
   const [isOpen, setIsOpen] = useState(false)
   const isAction = type === LogType.Action
 
-  // Action: 极简状态行 — 小圆点 + 浅色文字
+  // Action: 极简内联文本
   if (isAction) {
     return (
-      <div className="flex items-center gap-2 py-1.5 text-xs text-neutral-400 animate-in fade-in slide-in-from-left-1 duration-300">
-        <div className="w-1 h-1 rounded-full bg-neutral-300" />
+      <div className="flex items-center gap-1.5 py-0.5 text-xs text-neutral-400">
+        <span className="shrink-0 w-1 h-1 rounded-full bg-neutral-300" />
         <span>{content}</span>
       </div>
     )
   }
 
-  // Tool: pill 按钮 + 暗色代码展开区域
+  // 从 title 中提取状态
+  const isSuccess = title.endsWith('✓')
+  const isFailed = title.endsWith('✗')
+  const statusColor = isFailed ? 'text-red-400' : isSuccess ? 'text-emerald-400' : 'text-neutral-400'
+
+  // 提取首行摘要
+  const firstLine = content?.split('\n')[0] || ''
+  const summary = firstLine !== title ? firstLine : ''
+
   return (
-    <div className="mb-2 group">
+    <div className="my-0.5">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-mono w-full text-left transition-all ${
-          isOpen
-            ? 'bg-neutral-50 border-neutral-200 text-neutral-700'
-            : 'bg-white border-neutral-100 text-neutral-500 hover:border-neutral-200 hover:text-neutral-700'
-        }`}
+        className="group flex items-center gap-1.5 py-1 text-xs w-full text-left transition-colors"
       >
-        <Terminal size={12} className="opacity-70" />
-        <span className="font-medium shrink-0">{title || 'System Operation'}</span>
-        {content && content.split('\n')[0] !== title && (
-          <span className="truncate text-neutral-400">— {content.split('\n')[0]}</span>
-        )}
-        <span className="opacity-0 group-hover:opacity-100 transition-opacity text-neutral-400">
-          {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <span className={`shrink-0 w-3.5 h-3.5 flex items-center justify-center ${statusColor}`}>
+          {isFailed ? (
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          ) : isSuccess ? (
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5.5l2 2 4-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          ) : (
+            <span className="w-1 h-1 rounded-full bg-neutral-300" />
+          )}
         </span>
+        <span className="font-medium text-neutral-500 shrink-0">{title.replace(/\s*[✓✗]$/, '')}</span>
+        {summary && (
+          <span className="truncate text-neutral-300 font-mono">{summary}</span>
+        )}
+        {content && (
+          <span className="ml-auto shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-neutral-300">
+            {isOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+          </span>
+        )}
       </button>
 
       {isOpen && content && (
-        <div className="mt-1 bg-neutral-900 rounded-lg p-3 overflow-x-auto">
-          <code className="text-[11px] font-mono text-neutral-300 whitespace-pre-wrap break-all">
+        <div className="ml-5 mt-0.5 mb-1.5 rounded-md bg-neutral-50 border border-neutral-100 overflow-x-auto">
+          <code className="block p-2.5 text-[11px] font-mono text-neutral-500 leading-relaxed whitespace-pre-wrap break-all">
             {content}
           </code>
         </div>
@@ -159,45 +195,49 @@ const ToolBlock = memo(({ title, content, type }: { title: string; content: stri
 })
 ToolBlock.displayName = 'ToolBlock'
 
-// 3b. Tool Group — collapsed group of consecutive same-type tool calls
+// 3b. Tool Group — 紧凑的折叠分组
 const ToolGroup = memo(({ label, logs }: { label: string; logs: LogEntry[] }) => {
   const [isOpen, setIsOpen] = useState(false)
 
-  // Extract short file/resource names from content for preview
+  // 提取文件名摘要
   const summaries = logs.map((log) => {
     const firstLine = log.content.split('\n')[0] || ''
-    // Try to extract just the filename from a path
     const pathMatch = firstLine.match(/([^/\\]+\.[a-zA-Z0-9]+)/)
-    return pathMatch ? pathMatch[1] : firstLine.slice(0, 60)
+    return pathMatch ? pathMatch[1] : firstLine.slice(0, 40)
   })
 
+  // 统计成功/失败
+  const successCount = logs.filter(l => l.title?.endsWith('✓')).length
+  const failCount = logs.filter(l => l.title?.endsWith('✗')).length
+
   return (
-    <div className="mb-3">
+    <div className="my-0.5">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-mono w-full text-left transition-all ${
-          isOpen
-            ? 'bg-neutral-50 border-neutral-200 text-neutral-700'
-            : 'bg-white border-neutral-100 text-neutral-500 hover:border-neutral-200 hover:text-neutral-700'
-        }`}
+        className="group flex items-center gap-1.5 py-1 text-xs w-full text-left transition-colors"
       >
-        <Files size={12} className="opacity-70 shrink-0" />
-        <span className="font-medium shrink-0">{label}</span>
-        <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-500 text-[10px] font-semibold leading-none shrink-0">
+        <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+          <ChevronRight size={11} strokeWidth={2} className="text-neutral-400" />
+        </span>
+        <span className="font-medium text-neutral-500 shrink-0">{label}</span>
+        <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-neutral-100 text-neutral-400 text-[10px] font-medium leading-none shrink-0 tabular-nums">
           {logs.length}
         </span>
+        {successCount > 0 && (
+          <span className="text-emerald-400 text-[10px]">{successCount}✓</span>
+        )}
+        {failCount > 0 && (
+          <span className="text-red-400 text-[10px]">{failCount}✗</span>
+        )}
         {!isOpen && (
-          <span className="truncate text-neutral-400">
-            — {summaries.slice(0, 3).join(', ')}{logs.length > 3 ? ', …' : ''}
+          <span className="truncate text-neutral-300 font-mono">
+            {summaries.slice(0, 3).join(', ')}{logs.length > 3 ? ' …' : ''}
           </span>
         )}
-        <span className="ml-auto text-neutral-400 shrink-0">
-          {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        </span>
       </button>
 
       {isOpen && (
-        <div className="mt-1 border border-neutral-100 rounded-lg overflow-hidden divide-y divide-neutral-50">
+        <div className="ml-5 mt-0.5 mb-1.5">
           {logs.map((log) => {
             const firstLine = log.content.split('\n')[0] || ''
             return (
@@ -216,25 +256,36 @@ const ToolGroupItem = memo(({ log, firstLine }: { log: LogEntry; firstLine: stri
   const [isDetailOpen, setIsDetailOpen] = useState(false)
   const hasMultiLineContent = log.content.includes('\n')
 
+  const isSuccess = log.title?.endsWith('✓')
+  const isFailed = log.title?.endsWith('✗')
+
   return (
-    <div className="bg-white">
+    <div>
       <button
         onClick={() => hasMultiLineContent && setIsDetailOpen(!isDetailOpen)}
-        className={`flex items-center gap-2 px-3 py-1.5 text-xs font-mono w-full text-left ${
-          hasMultiLineContent ? 'hover:bg-neutral-50 cursor-pointer' : 'cursor-default'
-        } text-neutral-500`}
+        className={`group flex items-center gap-1.5 py-0.5 text-xs w-full text-left ${
+          hasMultiLineContent ? 'cursor-pointer' : 'cursor-default'
+        }`}
       >
-        <div className="w-1 h-1 rounded-full bg-neutral-300 shrink-0" />
-        <span className="truncate">{firstLine}</span>
+        <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center">
+          {isFailed ? (
+            <svg width="8" height="8" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2l-6 6" stroke="rgb(248 113 113)" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          ) : isSuccess ? (
+            <svg width="8" height="8" viewBox="0 0 10 10" fill="none"><path d="M2 5.5l2 2 4-4.5" stroke="rgb(52 211 153)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          ) : (
+            <span className="w-1 h-1 rounded-full bg-neutral-300" />
+          )}
+        </span>
+        <span className="truncate text-neutral-400 font-mono">{firstLine}</span>
         {hasMultiLineContent && (
-          <span className="ml-auto text-neutral-300 shrink-0">
+          <span className="ml-auto shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-neutral-300">
             {isDetailOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
           </span>
         )}
       </button>
       {isDetailOpen && (
-        <div className="mx-3 mb-2 bg-neutral-900 rounded-lg p-3 overflow-x-auto">
-          <code className="text-[11px] font-mono text-neutral-300 whitespace-pre-wrap break-all">
+        <div className="ml-5 mt-0.5 mb-1 rounded-md bg-neutral-50 border border-neutral-100 overflow-x-auto">
+          <code className="block p-2.5 text-[11px] font-mono text-neutral-500 leading-relaxed whitespace-pre-wrap break-all">
             {log.content}
           </code>
         </div>
@@ -246,7 +297,7 @@ ToolGroupItem.displayName = 'ToolGroupItem'
 
 // 4. Agent 主文本 — 纯文本无图标
 const AgentText = memo(({ content }: { content: string }) => (
-  <div className="text-sm text-neutral-800 leading-7 mb-2 whitespace-pre-wrap animate-in fade-in duration-500">
+  <div className="text-sm text-neutral-800 leading-7 mb-2 whitespace-pre-wrap">
     {content}
   </div>
 ))
@@ -254,7 +305,7 @@ AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
 const AssistantMessage = memo(({ content }: { content: string }) => (
-  <div className="text-sm text-neutral-800 leading-7 mb-2 animate-in fade-in duration-500">
+  <div className="text-sm text-neutral-800 leading-7 mb-2">
     <Streamdown>{content}</Streamdown>
   </div>
 ))
@@ -297,7 +348,7 @@ function renderItem(item: RenderItem): React.ReactNode {
 
     case LogType.Cursor:
       return (
-        <div className="h-4 w-2 bg-neutral-900 animate-pulse mt-1 inline-block align-middle" />
+        <div className="h-4 w-1.5 bg-neutral-400 animate-pulse rounded-sm mt-1 inline-block align-middle" />
       )
 
     default:
