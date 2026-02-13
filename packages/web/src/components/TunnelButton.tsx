@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Globe, Loader2, Copy, Check, X } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 import { useTunnelStatus, useStartTunnel, useStopTunnel } from '@/hooks/use-tunnel'
 
 export function TunnelButton() {
@@ -92,6 +93,11 @@ export function TunnelButton() {
                 <X size={14} />
               </button>
             </div>
+            {status?.url && (
+              <div className="flex justify-center py-3">
+                <QRCodeSVG value={status.url} size={160} />
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <input
                 readOnly
