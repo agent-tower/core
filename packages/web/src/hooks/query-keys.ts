@@ -54,4 +54,8 @@ export const queryKeys = {
     variant: (agentType: string, variant: string) =>
       ['profiles', 'variant', agentType, variant] as const,
   },
+
+  tunnel: {
+    status: ['tunnel', 'status'] as const,
+  },
 }

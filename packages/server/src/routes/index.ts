@@ -10,6 +10,7 @@ import { filesRoutes } from './files.js';
 import { gitRoutes } from './git.js';
 import { profileRoutes } from './profiles.js';
 import { terminalRoutes } from './terminals.js';
+import { tunnelRoutes } from './tunnel.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // 系统路由
@@ -44,4 +45,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // Standalone terminal 路由
   await app.register(terminalRoutes, { prefix: '/api' });
+
+  // Tunnel 路由
+  await app.register(tunnelRoutes, { prefix: '/api' });
 }

@@ -18,6 +18,7 @@ import { Settings } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { MobileTaskDetail } from '@/components/mobile'
+import { TunnelButton } from '@/components/TunnelButton'
 import { Select } from '@/components/ui/select'
 
 interface AgentInfo {
@@ -401,9 +402,12 @@ export function ProjectKanbanPage() {
               {LOGO_ICON}
               {HEADER_TITLE}
             </div>
-            <Link to="/settings" className="p-1.5 text-neutral-400 active:text-neutral-900 rounded-md">
-              <Settings size={16} />
-            </Link>
+            <div className="flex items-center gap-1">
+              <TunnelButton />
+              <Link to="/settings" className="p-1.5 text-neutral-400 active:text-neutral-900 rounded-md">
+                <Settings size={16} />
+              </Link>
+            </div>
           </header>
 
           {isLoading && uiTasks.length === 0 ? (
@@ -495,9 +499,12 @@ export function ProjectKanbanPage() {
           {LOGO_ICON}
           {HEADER_TITLE}
         </div>
-        <Link to="/settings" className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors">
-          <Settings size={16} />
-        </Link>
+        <div className="flex items-center gap-1">
+          <TunnelButton />
+          <Link to="/settings" className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors">
+            <Settings size={16} />
+          </Link>
+        </div>
       </header>
 
       {/* === 主体双栏区域 === */}
