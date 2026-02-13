@@ -96,14 +96,13 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
           prev,
           patch,
           true, // validate
-          true  // mutate (true = in-place, avoids deep clone)
+          false // mutate (false = immutable; keeps state updater pure)
         )
         const newCount = patched.newDocument.entries.length;
         if (DEBUG_LOGS) {
           console.log(`[useNormalizedLogs:applyPatch] t=${Date.now()} applyTime=${Date.now() - startApply}ms entries=${prevCount}->${newCount} delta=${newCount - prevCount}`);
         }
-        // Shallow copy to produce a new reference for React state update
-        return { ...patched.newDocument }
+        return patched.newDocument
       } catch (error) {
         console.error('Failed to apply patch:', error, patch)
         return prev
@@ -212,7 +211,12 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     setIsLoadingSnapshot(true)
 
     try {
-      const snapshot = await apiClient.get<NormalizedConversation>(`/sessions/${sessionId}/logs`)
+      // Always fetch latest snapshot; stale HTTP cache can desync patch indexes
+      // after task switching and cause subsequent patches to fail applying.
+      const snapshot = await apiClient.get<NormalizedConversation>(
+        `/sessions/${sessionId}/logs`,
+        { cache: 'no-store' }
+      )
 
       if (DEBUG_LOGS) {
         console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} entries=${snapshot.entries.length}`);
@@ -235,7 +239,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
               state,
               buffered.patch as Operation[],
               true,
-              true  // mutate in-place
+              false // immutable replay to avoid mutating captured snapshot/state
             )
             if (DEBUG_LOGS) {
               console.log(`[useNormalizedLogs:loadSnapshot] replay buffered patch, applyTime=${Date.now() - startApply}ms entries=${patched.newDocument.entries.length}`);

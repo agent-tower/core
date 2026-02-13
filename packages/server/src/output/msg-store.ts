@@ -10,6 +10,7 @@ import type { LogMsg, JsonPatch, NormalizedConversation } from './types.js';
 
 const { applyPatch } = jsonpatch;
 const MAX_MEMORY_BYTES = 100 * 1024 * 1024;
+const DEBUG_MSGSTORE = process.env.DEBUG_MSGSTORE === 'true';
 
 /**
  * 估算字符串字节大小
@@ -186,8 +187,13 @@ export class MsgStore {
             const result = applyPatch(conversation, msg.patch as Operation[], true, true);
             conversation = result.newDocument;
             changed = true;
-          } catch {
-            // invalid patch chunks are ignored
+          } catch (error) {
+            if (DEBUG_MSGSTORE) {
+              const first = (msg.patch as Array<{ op?: string; path?: string }>)[0];
+              console.warn(
+                `[MsgStore:getSnapshot] incremental patch apply failed entries=${conversation.entries.length} op=${first?.op ?? '?'} path=${first?.path ?? '?'} err=${error instanceof Error ? error.message : String(error)}`
+              );
+            }
           }
         } else if (msg.type === 'session_id') {
           conversation = { ...conversation, sessionId: msg.id };
@@ -213,8 +219,13 @@ export class MsgStore {
         try {
           const result = applyPatch(conversation, msg.patch as Operation[], true, true);
           conversation = result.newDocument;
-        } catch {
-          // invalid patch chunks are ignored to avoid breaking the whole snapshot
+        } catch (error) {
+          if (DEBUG_MSGSTORE) {
+            const first = (msg.patch as Array<{ op?: string; path?: string }>)[0];
+            console.warn(
+              `[MsgStore:getSnapshot] full patch apply failed entries=${conversation.entries.length} op=${first?.op ?? '?'} path=${first?.path ?? '?'} err=${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
       } else if (msg.type === 'session_id') {
         conversation = { ...conversation, sessionId: msg.id };

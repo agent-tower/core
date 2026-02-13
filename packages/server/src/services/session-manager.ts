@@ -13,24 +13,42 @@ import type { SpawnedChild } from '../executors/index.js';
 import { AgentPipeline, type OutputParser } from '../pipeline/agent-pipeline.js';
 import type { EventBus } from '../core/event-bus.js';
 
+const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
+
 export class SessionManager {
   private pipelines = new Map<string, AgentPipeline>();
+  private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private snapshotFlushChains = new Map<string, Promise<void>>();
+  private pendingSnapshotStatus = new Map<string, SessionStatus>();
+  private static readonly SNAPSHOT_DEBOUNCE_MS = 1200;
 
   constructor(private readonly eventBus: EventBus) {
-    // Persist token usage from real-time patch stream
+    // Debounced snapshot persistence: keep DB up-to-date without per-patch writes.
     this.eventBus.on('session:patch', ({ sessionId, patch }) => {
-      this.extractAndPersistTokenUsage(sessionId, patch as Array<{ op: string; path: string; value?: Record<string, unknown> }>);
+      if (DEBUG_SNAPSHOT) {
+        const ops = (patch as Array<{ op?: string; path?: string }>).slice(0, 3)
+          .map((p) => `${p.op ?? '?'}:${p.path ?? '?'}`)
+          .join(', ');
+        console.log(
+          `[SessionManager:snapshot] patch sessionId=${sessionId} ops=${(patch as unknown[]).length} [${ops}]`
+        );
+      }
+      this.scheduleSnapshotPersist(sessionId);
     });
 
     this.eventBus.on('session:exit', ({ sessionId }) => {
       const pipeline = this.pipelines.get(sessionId);
-      if (!pipeline) return;
-      // Must call destroy() to remove MsgStore onPatch/onSessionId listeners.
-      // Without this, stale listeners accumulate across send/exit cycles and
-      // each subsequent pushPatch() forwards the same patch N times.
-      pipeline.destroy();
-      this.pipelines.delete(sessionId);
-      this.persistCompletedSnapshot(sessionId)
+      if (DEBUG_SNAPSHOT) {
+        console.log(`[SessionManager:snapshot] session:exit sessionId=${sessionId} hasPipeline=${Boolean(pipeline)}`);
+      }
+      if (pipeline) {
+        // Must call destroy() to remove MsgStore onPatch/onSessionId listeners.
+        // Without this, stale listeners accumulate across send/exit cycles and
+        // each subsequent pushPatch() forwards the same patch N times.
+        pipeline.destroy();
+        this.pipelines.delete(sessionId);
+      }
+      this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED)
         .then(() => this.checkTaskAutoAdvance(sessionId))
         .catch((error) => {
           console.error(`[SessionManager] Failed to persist completed snapshot for ${sessionId}:`, error);
@@ -109,6 +127,11 @@ export class SessionManager {
 
     const existing = this.pipelines.get(id);
     if (existing) {
+      // Checkpoint snapshot before replacing PTY pipeline.
+      if (DEBUG_SNAPSHOT) {
+        console.log(`[SessionManager:snapshot] sendMessage checkpoint before pipeline replace sessionId=${id}`);
+      }
+      await this.flushSnapshotPersist(id);
       existing.destroy();
       this.pipelines.delete(id);
     }
@@ -125,8 +148,29 @@ export class SessionManager {
       }
     }
 
+    // Heal index drift caused by previously failed patches (e.g. invalid value).
+    // If entryIndex is ahead of snapshot length, subsequent add/replace paths
+    // become out-of-bounds and all later patches fail.
+    const preflightSnapshot = msgStore.getSnapshot();
+    const expectedIndex = preflightSnapshot.entries.length;
+    const currentIndex = msgStore.entryIndex.current();
+    if (currentIndex !== expectedIndex) {
+      if (DEBUG_SNAPSHOT) {
+        console.warn(
+          `[SessionManager:snapshot] rebase entryIndex sessionId=${id} currentIndex=${currentIndex} expectedIndex=${expectedIndex}`
+        );
+      }
+      msgStore.entryIndex.startFrom(expectedIndex);
+    }
+
     const userEntry = createUserMessage(message);
-    const userPatch = addNormalizedEntry(msgStore.entryIndex.next(), userEntry);
+    const userIndex = msgStore.entryIndex.next();
+    const userPatch = addNormalizedEntry(userIndex, userEntry);
+    if (DEBUG_SNAPSHOT) {
+      console.log(
+        `[SessionManager:snapshot] sendMessage userPatch sessionId=${id} index=${userIndex} currentIndex=${msgStore.entryIndex.current()}`
+      );
+    }
     msgStore.pushPatch(userPatch);
     // Emit directly to EventBus — the old pipeline was already destroyed so
     // MsgStore's patchListeners are empty at this point. Without this line
@@ -189,16 +233,7 @@ export class SessionManager {
     if (msgStore) {
       msgStore.pushFinished();
       try {
-        const snapshot = msgStore.getSnapshot();
-        const tokenUsage = this.extractTokenUsageFromSnapshot(snapshot);
-        await prisma.session.update({
-          where: { id },
-          data: {
-            status: SessionStatus.CANCELLED,
-            logSnapshot: JSON.stringify(snapshot),
-            ...(tokenUsage ? { tokenUsage: JSON.stringify(tokenUsage) } : {}),
-          },
-        });
+        await this.flushSnapshotPersist(id, SessionStatus.CANCELLED);
       } catch (error) {
         console.error(`[SessionManager] Failed to persist cancelled snapshot for ${id}:`, error);
         await prisma.session.update({
@@ -270,37 +305,125 @@ export class SessionManager {
   }
 
   private async persistCompletedSnapshot(sessionId: string): Promise<void> {
-    const msgStore = sessionMsgStoreManager.get(sessionId);
-    if (!msgStore) return;
-    const snapshot = msgStore.getSnapshot();
-    const tokenUsage = this.extractTokenUsageFromSnapshot(snapshot);
-    await prisma.session.update({
-      where: { id: sessionId },
-      data: {
-        status: SessionStatus.COMPLETED,
-        logSnapshot: JSON.stringify(snapshot),
-        ...(tokenUsage ? { tokenUsage: JSON.stringify(tokenUsage) } : {}),
-      },
-    });
+    await this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED);
   }
 
-  private extractAndPersistTokenUsage(
-    sessionId: string,
-    patch: Array<{ op: string; path: string; value?: Record<string, unknown> }>
-  ): void {
-    for (const op of patch) {
-      if (op.op !== 'add' || !op.value) continue;
-      const value = op.value as { entryType?: string; metadata?: { tokenUsage?: { totalTokens?: number; modelContextWindow?: number } } };
-      if (value.entryType !== 'token_usage_info') continue;
-      const usage = value.metadata?.tokenUsage;
-      if (!usage || typeof usage.totalTokens !== 'number') continue;
-      prisma.session.update({
-        where: { id: sessionId },
-        data: { tokenUsage: JSON.stringify(usage) },
-      }).catch((err) => {
-        console.error(`[SessionManager] Failed to persist tokenUsage for ${sessionId}:`, err);
+  private scheduleSnapshotPersist(sessionId: string, status?: SessionStatus): void {
+    if (status) {
+      this.pendingSnapshotStatus.set(sessionId, status);
+    }
+    const timer = this.snapshotFlushTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+    }
+    const nextTimer = setTimeout(() => {
+      this.snapshotFlushTimers.delete(sessionId);
+      if (DEBUG_SNAPSHOT) {
+        console.log(`[SessionManager:snapshot] debounce fire sessionId=${sessionId}`);
+      }
+      this.flushSnapshotPersist(sessionId).catch((error) => {
+        console.error(`[SessionManager] Debounced snapshot persist failed for ${sessionId}:`, error);
       });
-      return; // Only persist the first token_usage_info per patch batch
+    }, SessionManager.SNAPSHOT_DEBOUNCE_MS);
+    this.snapshotFlushTimers.set(sessionId, nextTimer);
+    if (DEBUG_SNAPSHOT) {
+      console.log(
+        `[SessionManager:snapshot] debounce scheduled sessionId=${sessionId} ms=${SessionManager.SNAPSHOT_DEBOUNCE_MS} status=${status ?? 'none'}`
+      );
+    }
+  }
+
+  private async flushSnapshotPersist(sessionId: string, status?: SessionStatus): Promise<void> {
+    if (status) {
+      this.pendingSnapshotStatus.set(sessionId, status);
+    }
+    const timer = this.snapshotFlushTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.snapshotFlushTimers.delete(sessionId);
+    }
+
+    const previous = this.snapshotFlushChains.get(sessionId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => {
+        // Keep the chain alive even if previous flush failed.
+      })
+      .then(async () => {
+        const pendingStatus = this.pendingSnapshotStatus.get(sessionId);
+        this.pendingSnapshotStatus.delete(sessionId);
+        if (DEBUG_SNAPSHOT) {
+          console.log(
+            `[SessionManager:snapshot] flush start sessionId=${sessionId} pendingStatus=${pendingStatus ?? 'none'}`
+          );
+        }
+
+        const msgStore = sessionMsgStoreManager.get(sessionId);
+        if (!msgStore) {
+          if (DEBUG_SNAPSHOT) {
+            console.log(`[SessionManager:snapshot] flush no-msgStore sessionId=${sessionId}`);
+          }
+          if (pendingStatus) {
+            await prisma.session.update({
+              where: { id: sessionId },
+              data: { status: pendingStatus },
+            });
+            if (DEBUG_SNAPSHOT) {
+              console.log(
+                `[SessionManager:snapshot] flush status-only persisted sessionId=${sessionId} status=${pendingStatus}`
+              );
+            }
+          }
+          return;
+        }
+
+        const snapshot = msgStore.getSnapshot();
+        const tokenUsage = this.extractTokenUsageFromSnapshot(snapshot);
+        if (DEBUG_SNAPSHOT) {
+          const msgCount = msgStore.getMessages().length;
+          const nextIndex = msgStore.entryIndex.current();
+          console.log(
+            `[SessionManager:snapshot] flush snapshot sessionId=${sessionId} entries=${snapshot.entries.length} msgCount=${msgCount} nextIndex=${nextIndex} tokenUsage=${tokenUsage ? 'yes' : 'no'}`
+          );
+        }
+
+        if (pendingStatus) {
+          await prisma.session.update({
+            where: { id: sessionId },
+            data: {
+              status: pendingStatus,
+              logSnapshot: JSON.stringify(snapshot),
+              ...(tokenUsage ? { tokenUsage: JSON.stringify(tokenUsage) } : {}),
+            },
+          });
+          if (DEBUG_SNAPSHOT) {
+            console.log(
+              `[SessionManager:snapshot] flush persisted sessionId=${sessionId} status=${pendingStatus} entries=${snapshot.entries.length}`
+            );
+          }
+          return;
+        }
+
+        await prisma.session.update({
+          where: { id: sessionId },
+          data: {
+            logSnapshot: JSON.stringify(snapshot),
+            ...(tokenUsage ? { tokenUsage: JSON.stringify(tokenUsage) } : {}),
+          },
+        });
+        if (DEBUG_SNAPSHOT) {
+          console.log(
+            `[SessionManager:snapshot] flush persisted sessionId=${sessionId} status=unchanged entries=${snapshot.entries.length}`
+          );
+        }
+      });
+
+    this.snapshotFlushChains.set(sessionId, current);
+    try {
+      await current;
+    } finally {
+      if (this.snapshotFlushChains.get(sessionId) === current) {
+        this.snapshotFlushChains.delete(sessionId);
+      }
     }
   }
 

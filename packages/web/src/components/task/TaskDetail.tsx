@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { SessionStatus } from '@agent-tower/shared'
+import { SessionStatus, type Session } from '@agent-tower/shared'
 import { LogStream } from '@/components/agent'
 import type { LogStreamHandle } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
@@ -139,26 +139,37 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
 
   const { data: workspaces, isLoading: isLoadingWorkspaces } = useWorkspaces(task?.id ?? '')
 
-  // Find the latest active session from workspaces
+  // Find the latest relevant session from active workspaces.
+  // We prioritize RUNNING > PENDING > terminal states, and within each bucket
+  // pick the newest by available timestamps to avoid selecting stale sessions.
   const activeSession = useMemo(() => {
     if (!workspaces) return null
-    for (const ws of workspaces) {
-      if (ws.status !== 'ACTIVE' || !ws.sessions) continue
-      // Prefer RUNNING, then PENDING, then latest COMPLETED/FAILED for history
-      const running = ws.sessions.find(s => s.status === SessionStatus.RUNNING)
-      if (running) return running
-      const pending = ws.sessions.find(s => s.status === SessionStatus.PENDING)
-      if (pending) return pending
+    const allSessions: Session[] = workspaces
+      .filter((ws) => ws.status === 'ACTIVE' && Array.isArray(ws.sessions))
+      .flatMap((ws) => ws.sessions ?? [])
+
+    const getSessionTime = (session: Session): number => {
+      const createdAt = (session as Session & { createdAt?: string }).createdAt
+      const time =
+        session.endedAt ??
+        session.startedAt ??
+        createdAt
+      if (!time) return 0
+      const ts = Date.parse(time)
+      return Number.isNaN(ts) ? 0 : ts
     }
-    // Fallback: find the most recent completed/failed/cancelled session for history replay
-    for (const ws of workspaces) {
-      if (!ws.sessions) continue
-      const finished = ws.sessions.find(
-        s => s.status === SessionStatus.COMPLETED || s.status === SessionStatus.FAILED || s.status === SessionStatus.CANCELLED
-      )
-      if (finished) return finished
+
+    const pickLatest = (statuses: SessionStatus[]): Session | null => {
+      const candidates = allSessions.filter((s) => statuses.includes(s.status))
+      if (candidates.length === 0) return null
+      return candidates.sort((a, b) => getSessionTime(b) - getSessionTime(a))[0] ?? null
     }
-    return null
+
+    return (
+      pickLatest([SessionStatus.RUNNING]) ??
+      pickLatest([SessionStatus.PENDING]) ??
+      pickLatest([SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED])
+    )
   }, [workspaces])
 
   const sessionId = activeSession?.id ?? ''

@@ -6,7 +6,7 @@
 import type { MsgStore } from './msg-store.js'
 
 // Debug 日志开关
-const DEBUG_PARSER = process.env.DEBUG_PARSER === 'true' || true;
+const DEBUG_PARSER = process.env.DEBUG_PARSER === 'true';
 import {
   type NormalizedEntry,
   type ActionType,

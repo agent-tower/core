@@ -168,8 +168,8 @@ export function createToolUse(
     metadata: {
       action,
       toolName,
-      toolId,
       status: 'created',
+      ...(toolId ? { toolId } : {}),
       ...(extras?.todos ? { todos: extras.todos } : {}),
       ...(extras?.todoOperation ? { todoOperation: extras.todoOperation } : {}),
     },
@@ -190,7 +190,7 @@ export function createTokenUsageInfo(
     metadata: {
       tokenUsage: {
         totalTokens,
-        modelContextWindow,
+        ...(modelContextWindow != null ? { modelContextWindow } : {}),
       },
     },
   }
