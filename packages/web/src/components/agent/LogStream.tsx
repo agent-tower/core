@@ -119,10 +119,10 @@ const ThinkingBlock = memo(({ content, isOpenDefault = true }: { content: string
       </button>
 
       <div
-        className="overflow-hidden"
+        className="overflow-hidden relative"
         style={{ maxHeight: isOpen ? contentHeight + 16 : 0 }}
       >
-        <div ref={contentRef} className="pl-5 pt-1 pb-2">
+        <div ref={contentRef} className="pl-5 pt-1 pb-2 before:absolute before:left-[7px] before:top-1 before:bottom-2 before:w-px before:bg-neutral-100">
           <div className="text-xs text-neutral-400 leading-relaxed whitespace-pre-wrap">
             {content.replace(/^Thinking:\s*/i, '').trim()}
           </div>
