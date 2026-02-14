@@ -4,7 +4,7 @@
   "private": true,
   "description": "AI Agent 任务管理面板",
   "scripts": {
-    "setup": "pnpm install && pnpm db:push",
+    "setup": "pnpm install && pnpm --filter @agent-tower/shared build && pnpm db:push",
     "dev": "pnpm -r --parallel run dev",
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint",
