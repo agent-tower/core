@@ -217,6 +217,13 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
     return active?.branchName ?? ''
   }, [workspaces])
 
+  // Active workspace AI-generated commit message
+  const activeWorkspaceCommitMessage = useMemo(() => {
+    if (!workspaces) return undefined
+    const active = workspaces.find(ws => ws.status === 'ACTIVE')
+    return active?.commitMessage
+  }, [workspaces])
+
   // ============ Query Client & Mutations ============
 
   const queryClient = useQueryClient()
@@ -746,6 +753,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
           workspaceId={activeWorkspaceId}
           branchName={activeWorkspaceBranch}
           targetBranch={task.mainBranch}
+          commitMessage={activeWorkspaceCommitMessage}
           onConflict={() => setIsResolveDialogOpen(true)}
         />
       )}

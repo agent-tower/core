@@ -36,6 +36,14 @@ export enum SessionStatus {
   CANCELLED = 'CANCELLED',
 }
 
+/** 会话用途 */
+export enum SessionPurpose {
+  /** 正常用户交互会话 */
+  CHAT = 'CHAT',
+  /** 内部：生成 commit message */
+  COMMIT_MSG = 'COMMIT_MSG',
+}
+
 // ============ 核心实体类型 ============
 
 /** 项目 */
@@ -78,6 +86,8 @@ export interface Workspace {
   /** worktree 路径 (对应 Prisma worktreePath) */
   worktreePath: string
   status: WorkspaceStatus
+  /** AI 生成的 commit message（合并时使用） */
+  commitMessage?: string | null
   /** 关联的会话列表（API include 时返回） */
   sessions?: Session[]
   createdAt?: string
@@ -90,6 +100,8 @@ export interface Session {
   workspaceId: string
   agentType: AgentType
   status: SessionStatus
+  /** 会话用途 */
+  purpose?: SessionPurpose
   tokenUsage?: { totalTokens: number; modelContextWindow?: number } | null
   startedAt?: string
   endedAt?: string

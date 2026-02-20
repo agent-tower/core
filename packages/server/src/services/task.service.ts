@@ -1,5 +1,5 @@
 import { prisma } from '../utils/index.js';
-import { TaskStatus, SessionStatus } from '../types/index.js';
+import { TaskStatus, SessionStatus, SessionPurpose } from '../types/index.js';
 import {
   NotFoundError,
   ValidationError,
@@ -91,7 +91,7 @@ export class TaskService {
   async findById(id: string) {
     const task = await prisma.task.findUnique({
       where: { id },
-      include: { workspaces: { include: { sessions: true } } },
+      include: { workspaces: { include: { sessions: { where: { purpose: { not: SessionPurpose.COMMIT_MSG } } } } } },
     });
 
     if (!task) {

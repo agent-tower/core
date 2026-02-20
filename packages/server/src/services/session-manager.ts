@@ -1,5 +1,5 @@
 import { prisma } from '../utils/index.js';
-import { AgentType, SessionStatus, TaskStatus } from '../types/index.js';
+import { AgentType, SessionStatus, SessionPurpose, TaskStatus } from '../types/index.js';
 import { getExecutor, ExecutionEnv } from '../executors/index.js';
 import {
   sessionMsgStoreManager,
@@ -13,6 +13,7 @@ import type { SpawnedChild } from '../executors/index.js';
 import { AgentPipeline, type OutputParser } from '../pipeline/agent-pipeline.js';
 import { execGit } from '../git/git-cli.js';
 import type { EventBus } from '../core/event-bus.js';
+import { getCommitMessageService } from '../core/container.js';
 
 const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
 
@@ -49,12 +50,9 @@ export class SessionManager {
         pipeline.destroy();
         this.pipelines.delete(sessionId);
       }
-      this.autoCommitChanges(sessionId)
-        .then(() => this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED))
-        .then(() => this.checkTaskAutoAdvance(sessionId))
-        .catch((error) => {
-          console.error(`[SessionManager] post-exit handling failed for ${sessionId}:`, error);
-        });
+      this.handleSessionExit(sessionId).catch((error) => {
+        console.error(`[SessionManager] post-exit handling failed for ${sessionId}:`, error);
+      });
     });
 
     this.eventBus.on('session:started', ({ sessionId }) => {
@@ -476,9 +474,10 @@ export class SessionManager {
   /**
    * Session 完成后检查 Task 是否可以自动推进状态。
    *
-   * 规则：当一个 Task 下所有 Workspace 的所有 Session 都处于终态
+   * 规则：当一个 Task 下所有 Workspace 的所有 CHAT Session 都处于终态
    * （COMPLETED / CANCELLED / FAILED）时，自动将 IN_PROGRESS 的 Task
    * 推进到 IN_REVIEW，提示用户进行代码审查。
+   * 同时触发 commit message 的后台生成。
    */
   private async checkTaskAutoAdvance(sessionId: string): Promise<void> {
     try {
@@ -492,9 +491,12 @@ export class SessionManager {
       // 只对 IN_PROGRESS 的 Task 做自动推进
       if (task.status !== TaskStatus.IN_PROGRESS) return;
 
-      // 查询该 Task 下所有 Session
+      // 查询该 Task 下所有 CHAT Session（排除 COMMIT_MSG）
       const allSessions = await prisma.session.findMany({
-        where: { workspace: { taskId: task.id } },
+        where: {
+          workspace: { taskId: task.id },
+          purpose: { not: SessionPurpose.COMMIT_MSG },
+        },
         select: { status: true },
       });
 
@@ -514,6 +516,9 @@ export class SessionManager {
         });
 
         console.log(`[SessionManager] Task ${task.id} auto-advanced to IN_REVIEW (all sessions completed)`);
+
+        // 触发 commit message 后台生成
+        this.triggerCommitMessageGeneration(session.workspaceId);
       }
     } catch (error) {
       console.error(`[SessionManager] checkTaskAutoAdvance failed for session ${sessionId}:`, error);
@@ -521,10 +526,24 @@ export class SessionManager {
   }
 
   /**
+   * 异步触发 commit message 生成（fire-and-forget）
+   */
+  private triggerCommitMessageGeneration(workspaceId: string): void {
+    const commitMessageService = getCommitMessageService();
+    commitMessageService.triggerGeneration(workspaceId).catch((error) => {
+      console.warn(
+        `[SessionManager] Failed to trigger commit message generation for workspace ${workspaceId}:`,
+        error instanceof Error ? error.message : error
+      );
+    });
+  }
+
+  /**
    * Session 启动时检查 Task 是否需要自动回退状态。
    *
    * 规则：当某个 Session 重新变为 RUNNING 时，如果所属 Task 处于
    * IN_REVIEW 或 DONE，自动回退到 IN_PROGRESS，表示工作重新进行中。
+   * 注意：COMMIT_MSG session 启动不应触发状态回退。
    */
   private async checkTaskAutoRevert(sessionId: string): Promise<void> {
     try {
@@ -533,6 +552,9 @@ export class SessionManager {
         include: { workspace: { include: { task: true } } },
       });
       if (!session?.workspace?.task) return;
+
+      // COMMIT_MSG session 不触发状态回退
+      if (session.purpose === SessionPurpose.COMMIT_MSG) return;
 
       const task = session.workspace.task;
       const revertableStatuses: string[] = [TaskStatus.IN_REVIEW, TaskStatus.DONE];
@@ -554,6 +576,36 @@ export class SessionManager {
       );
     } catch (error) {
       console.error(`[SessionManager] checkTaskAutoRevert failed for session ${sessionId}:`, error);
+    }
+  }
+
+  /**
+   * Session 退出后的统一处理入口。
+   * 根据 session purpose 走不同的后处理路径。
+   */
+  private async handleSessionExit(sessionId: string): Promise<void> {
+    const session = await prisma.session.findUnique({
+      where: { id: sessionId },
+      select: { purpose: true },
+    });
+
+    if (session?.purpose === SessionPurpose.COMMIT_MSG) {
+      // COMMIT_MSG session: 只需持久化快照，然后提取 commit message
+      await this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED);
+      try {
+        const commitMessageService = getCommitMessageService();
+        await commitMessageService.extractAndCache(sessionId);
+      } catch (error) {
+        console.warn(
+          `[SessionManager] Failed to extract commit message from session ${sessionId}:`,
+          error instanceof Error ? error.message : error
+        );
+      }
+    } else {
+      // 正常 CHAT session: autoCommit → 持久化 → 检查 Task 推进
+      await this.autoCommitChanges(sessionId);
+      await this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED);
+      await this.checkTaskAutoAdvance(sessionId);
     }
   }
 }

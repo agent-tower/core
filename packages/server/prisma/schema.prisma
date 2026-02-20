@@ -41,15 +41,16 @@ model Task {
 // 工作空间 (对应一个 git worktree)
 // WorkspaceStatus: ACTIVE, MERGED, ABANDONED
 model Workspace {
-  id           String    @id @default(uuid())
-  taskId       String
-  task         Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  branchName   String
-  worktreePath String
-  status       String    @default("ACTIVE")
-  sessions     Session[]
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id            String    @id @default(uuid())
+  taskId        String
+  task          Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  branchName    String
+  worktreePath  String
+  status        String    @default("ACTIVE")
+  commitMessage String?   // AI 生成的 commit message（合并时使用）
+  sessions      Session[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@index([taskId])
 }
@@ -57,6 +58,7 @@ model Workspace {
 // 会话 (一次 AI 代理执行)
 // AgentType: CLAUDE_CODE, GEMINI_CLI, CURSOR_AGENT
 // SessionStatus: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
+// SessionPurpose: CHAT, COMMIT_MSG
 model Session {
   id           String             @id @default(uuid())
   workspaceId  String
@@ -65,6 +67,7 @@ model Session {
   variant      String             @default("DEFAULT")
   prompt       String
   status       String             @default("PENDING")
+  purpose      String             @default("CHAT")  // CHAT: 正常会话, COMMIT_MSG: 生成提交消息
   logSnapshot  String?            // 序列化的 NormalizedConversation JSON，session 结束时持久化
   tokenUsage   String?            // JSON: { totalTokens, modelContextWindow? }
   processes    ExecutionProcess[]

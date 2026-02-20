@@ -150,10 +150,15 @@ export async function workspaceRoutes(app: FastifyInstance) {
 
   // ── 合并工作空间到主分支 ────────────────────────────────────────────────────
 
+  const mergeSchema = z.object({
+    commitMessage: z.string().min(1).optional(),
+  });
+
   app.post<{ Params: { id: string } }>(
     '/workspaces/:id/merge',
     async (request) => {
-      const sha = await workspaceService.merge(request.params.id);
+      const body = mergeSchema.parse(request.body || {});
+      const sha = await workspaceService.merge(request.params.id, body.commitMessage);
       return { success: true, sha };
     }
   );

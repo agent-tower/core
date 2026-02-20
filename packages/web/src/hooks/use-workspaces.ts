@@ -54,8 +54,8 @@ export function useMergeWorkspace() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.post<{ success: boolean; sha: string }>(`/workspaces/${id}/merge`),
+    mutationFn: ({ id, commitMessage }: { id: string; commitMessage?: string }) =>
+      apiClient.post<{ success: boolean; sha: string }>(`/workspaces/${id}/merge`, { commitMessage }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })

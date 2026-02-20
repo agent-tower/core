@@ -155,5 +155,8 @@ packages/server/data/
 # Test screenshots
 test-screenshots/
 
+# Playwright MCP
+.playwright-mcp/
+
 # Runtime data (src/data is dev-mode path)
 packages/server/src/data/

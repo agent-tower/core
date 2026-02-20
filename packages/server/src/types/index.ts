@@ -29,6 +29,14 @@ export enum SessionStatus {
   CANCELLED = 'CANCELLED',
 }
 
+// 会话用途
+export enum SessionPurpose {
+  /** 正常用户交互会话 */
+  CHAT = 'CHAT',
+  /** 内部：生成 commit message */
+  COMMIT_MSG = 'COMMIT_MSG',
+}
+
 // 代理可用性检查结果
 export interface AgentAvailability {
   available: boolean;

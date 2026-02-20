@@ -1,11 +1,14 @@
 import { prisma } from '../utils/index.js';
-import { WorkspaceStatus, TaskStatus, SessionStatus } from '../types/index.js';
+import { WorkspaceStatus, TaskStatus, SessionStatus, SessionPurpose } from '../types/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
 import { execGit } from '../git/git-cli.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 import { getSessionManager, getEventBus } from '../core/container.js';
 import type { EventBus } from '../core/event-bus.js';
 import type { GitOperationStatus } from '@agent-tower/shared';
+
+/** 过滤条件：只返回用户可见的 CHAT session */
+const visibleSessionsFilter = { where: { purpose: { not: SessionPurpose.COMMIT_MSG } } };
 
 export class WorkspaceService {
   private sessionService = getSessionManager();
@@ -16,7 +19,7 @@ export class WorkspaceService {
   async findById(id: string) {
     return prisma.workspace.findUnique({
       where: { id },
-      include: { sessions: true, task: { include: { project: true } } },
+      include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
   }
 
@@ -31,7 +34,7 @@ export class WorkspaceService {
 
     return prisma.workspace.findMany({
       where: { taskId },
-      include: { sessions: true },
+      include: { sessions: visibleSessionsFilter },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -278,9 +281,10 @@ export class WorkspaceService {
   /**
    * 合并 Workspace 到主分支（squash merge）
    *
+   * @param commitMessage - 可选的自定义 commit message
    * @returns squash commit 的 SHA
    */
-  async merge(id: string): Promise<string> {
+  async merge(id: string, commitMessage?: string): Promise<string> {
     const workspace = await prisma.workspace.findUnique({
       where: { id },
       include: { task: { include: { project: true } } },
@@ -290,10 +294,14 @@ export class WorkspaceService {
       throw new NotFoundError('Workspace', id);
     }
 
+    // 优先使用传入的 commitMessage，其次使用 AI 生成的缓存
+    const message = commitMessage || workspace.commitMessage || undefined;
+
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     const { sha } = await worktreeManager.merge(
       workspace.worktreePath,
-      workspace.task.project.mainBranch
+      workspace.task.project.mainBranch,
+      message ? { commitMessage: message } : undefined
     );
 
     // 更新 workspace：标记 MERGED，清空 worktreePath（物理目录已删除）
