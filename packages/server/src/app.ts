@@ -7,6 +7,7 @@ import { registerRoutes } from './routes/index.js';
 import { initializeSocket, closeSocket } from './socket/index.js';
 import { WorkspaceService } from './services/workspace.service.js';
 import { TunnelService } from './services/tunnel.service.js';
+import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,6 +22,9 @@ export async function buildApp() {
   await app.register(cors, {
     origin: true,
   });
+
+  // 隧道 token 认证钩子（仅拦截经 Cloudflare 隧道的请求）
+  app.addHook('onRequest', tunnelAuthHook);
 
   // 注册路由
   await registerRoutes(app);

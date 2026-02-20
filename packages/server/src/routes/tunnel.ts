@@ -1,22 +1,30 @@
 import type { FastifyInstance } from 'fastify';
 import { TunnelService } from '../services/tunnel.service.js';
+import { isTunnelRequest } from '../middleware/tunnel-auth.js';
 
 export async function tunnelRoutes(app: FastifyInstance) {
-  // 获取隧道状态
-  app.get('/tunnel/status', async () => {
-    return TunnelService.getStatus();
+  // 获取隧道状态（本地请求额外返回 token 和 shareableUrl）
+  app.get('/tunnel/status', async (request) => {
+    const status = TunnelService.getStatus();
+    const isLocal = !isTunnelRequest(request);
+    const token = isLocal ? TunnelService.getToken() : undefined;
+
+    return {
+      ...status,
+      token,
+      shareableUrl: token && status.url ? `${status.url}?token=${token}` : undefined,
+    };
   });
 
   // 启动隧道
   app.post<{ Body: { port?: number } }>('/tunnel/start', async (request, reply) => {
     try {
-      // 优先使用前端传来的端口（开发模式下是 Vite 端口），否则用服务端端口
       const port = request.body?.port
         ?? (typeof app.server.address() === 'object' && app.server.address()
           ? (app.server.address() as { port: number }).port
           : 0);
-      const result = await TunnelService.start(port);
-      return result;
+      const { url, token } = await TunnelService.start(port);
+      return { url, token, shareableUrl: `${url}?token=${token}` };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start tunnel';
       return reply.code(500).send({ error: message });

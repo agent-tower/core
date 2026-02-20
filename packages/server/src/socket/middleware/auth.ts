@@ -1,4 +1,5 @@
 import type { Socket } from 'socket.io'
+import { TunnelService } from '../../services/tunnel.service.js'
 
 type NextFunction = (err?: Error) => void
 
@@ -9,34 +10,35 @@ export interface AuthenticatedSocket extends Socket {
 
 /**
  * Socket 认证中间件
- * 验证连接时的 token 并附加用户信息到 socket
+ * 隧道请求（带 CF 头）必须携带有效 token，本地请求放行
  */
 export function authMiddleware(
   socket: AuthenticatedSocket,
   next: NextFunction
 ) {
-  const token = socket.handshake.auth.token
+  // 检查是否为隧道请求
+  const headers = socket.request.headers
+  const isTunnel = !!(headers['cf-connecting-ip'] || headers['cf-ray'])
 
-  // TODO: 实现真实的 token 验证逻辑
-  // 目前使用简单的 mock 实现
-  if (!token) {
-    // 允许匿名连接（开发阶段）
+  if (isTunnel && TunnelService.isRunning()) {
+    const token =
+      socket.handshake.auth?.token ??
+      (socket.handshake.query?.token as string | undefined)
+
+    if (!token || !TunnelService.validateToken(token)) {
+      return next(new Error('Unauthorized: valid tunnel token required'))
+    }
+  }
+
+  // 设置用户标识
+  const authToken = socket.handshake.auth?.token
+  if (authToken) {
+    socket.userId = authToken
+    socket.username = `User-${authToken.slice(0, 6)}`
+  } else {
     socket.userId = `anonymous-${socket.id.slice(0, 8)}`
     socket.username = 'Anonymous'
-    return next()
   }
 
-  try {
-    // TODO: 验证 JWT token
-    // const decoded = verifyToken(token)
-    // socket.userId = decoded.userId
-    // socket.username = decoded.username
-
-    // Mock: 从 token 中提取用户信息
-    socket.userId = token
-    socket.username = `User-${token.slice(0, 6)}`
-    next()
-  } catch {
-    next(new Error('Authentication failed'))
-  }
+  next()
 }

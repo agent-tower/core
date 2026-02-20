@@ -37,7 +37,7 @@ MCP 服务器是一个独立的 stdio 进程，通过 HTTP 代理调用后端 RE
   "mcpServers": {
     "agent_tower": {
       "command": "npx",
-      "args": ["tsx", "/path/to/agent-tower/packages/server/src/mcp/index.ts"]
+      "args": ["tsx", "/Users/shitian/Work/shitian/github/agent-tower/packages/server/src/mcp/index.ts"]
     }
   }
 }

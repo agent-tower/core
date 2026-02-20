@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Globe, Loader2, Copy, Check, X } from 'lucide-react'
+import { Globe, Loader2, Copy, Check, X, Shield } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useTunnelStatus, useStartTunnel, useStopTunnel } from '@/hooks/use-tunnel'
 
@@ -9,12 +9,15 @@ export function TunnelButton() {
   const startTunnel = useStartTunnel()
   const stopTunnel = useStopTunnel()
   const [showPopover, setShowPopover] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'url' | 'token' | null>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [popoverPos, setPopoverPos] = useState({ top: 0, right: 0 })
+  const [showToken, setShowToken] = useState(false)
 
   const isRunning = status?.running ?? false
   const isLoading = startTunnel.isPending
+  const shareableUrl = status?.shareableUrl
+  const token = status?.token
 
   useEffect(() => {
     if (showPopover && buttonRef.current) {
@@ -36,16 +39,24 @@ export function TunnelButton() {
     }
   }, [isRunning, startTunnel])
 
-  const handleCopy = useCallback(() => {
-    if (!status?.url) return
-    navigator.clipboard.writeText(status.url)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }, [status?.url])
+  const handleCopyUrl = useCallback(() => {
+    if (!shareableUrl) return
+    navigator.clipboard.writeText(shareableUrl)
+    setCopied('url')
+    setTimeout(() => setCopied(null), 2000)
+  }, [shareableUrl])
+
+  const handleCopyToken = useCallback(() => {
+    if (!token) return
+    navigator.clipboard.writeText(token)
+    setCopied('token')
+    setTimeout(() => setCopied(null), 2000)
+  }, [token])
 
   const handleStop = useCallback(() => {
     stopTunnel.mutate()
     setShowPopover(false)
+    setShowToken(false)
   }, [stopTunnel])
 
   return (
@@ -93,26 +104,65 @@ export function TunnelButton() {
                 <X size={14} />
               </button>
             </div>
-            {status?.url && (
-              <div className="flex justify-center py-3">
-                <QRCodeSVG value={status.url} size={160} />
+
+            {/* 安全提示 */}
+            {token && (
+              <div className="flex items-center gap-1.5 mb-2 px-2 py-1 bg-emerald-50 rounded text-xs text-emerald-700">
+                <Shield size={12} />
+                <span>Token protected</span>
               </div>
             )}
+
+            {/* QR 码（使用含 token 的分享链接） */}
+            {shareableUrl && (
+              <div className="flex justify-center py-3">
+                <QRCodeSVG value={shareableUrl} size={160} />
+              </div>
+            )}
+
+            {/* 分享链接（含 token） */}
             <div className="flex items-center gap-2">
               <input
                 readOnly
-                value={status?.url ?? ''}
+                value={shareableUrl ?? status?.url ?? ''}
                 className="flex-1 px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-md text-neutral-700 select-all"
                 onFocus={e => e.target.select()}
               />
               <button
-                onClick={handleCopy}
+                onClick={handleCopyUrl}
                 className="p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors"
-                title="Copy URL"
+                title="Copy shareable link"
               >
-                {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                {copied === 'url' ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
               </button>
             </div>
+
+            {/* Token 展开区域 */}
+            {token && (
+              <div className="mt-2">
+                <button
+                  onClick={() => setShowToken(!showToken)}
+                  className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
+                >
+                  {showToken ? 'Hide token' : 'Show token'}
+                </button>
+                {showToken && (
+                  <div className="flex items-center gap-2 mt-1">
+                    <code className="flex-1 px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-md text-neutral-600 break-all">
+                      {token}
+                    </code>
+                    <button
+                      onClick={handleCopyToken}
+                      className="p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors shrink-0"
+                      title="Copy token"
+                    >
+                      {copied === 'token' ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <button
               onClick={handleStop}
               disabled={stopTunnel.isPending}

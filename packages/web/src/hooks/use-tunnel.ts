@@ -6,6 +6,8 @@ interface TunnelStatus {
   running: boolean
   url: string | null
   startedAt: string | null
+  token?: string
+  shareableUrl?: string
 }
 
 export function useTunnelStatus() {
@@ -21,7 +23,7 @@ export function useStartTunnel() {
   return useMutation({
     mutationFn: () => {
       const port = parseInt(window.location.port || (window.location.protocol === 'https:' ? '443' : '80'), 10)
-      return apiClient.post<{ url: string }>('/tunnel/start', { port })
+      return apiClient.post<{ url: string; token: string; shareableUrl: string }>('/tunnel/start', { port })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tunnel.status })

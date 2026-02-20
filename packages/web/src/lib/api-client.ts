@@ -1,3 +1,5 @@
+import { getTunnelToken, isTunnelAccess } from './tunnel-token'
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
 type RequestOptions = RequestInit & {
@@ -24,6 +26,13 @@ class ApiClient {
     // 只有在有 body 时才设置 Content-Type
     if (init.body !== undefined) {
       headers['Content-Type'] = 'application/json'
+    }
+    // 隧道访问时自动携带 token
+    if (isTunnelAccess()) {
+      const token = getTunnelToken()
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
     }
 
     const response = await fetch(url, {

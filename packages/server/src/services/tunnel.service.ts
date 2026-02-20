@@ -1,10 +1,12 @@
 import { Tunnel } from 'cloudflared';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 interface TunnelState {
   url: string | null;
   running: boolean;
   tunnel: Tunnel | null;
   startedAt: string | null;
+  token: string | null;
 }
 
 const state: TunnelState = {
@@ -12,12 +14,13 @@ const state: TunnelState = {
   running: false,
   tunnel: null,
   startedAt: null,
+  token: null,
 };
 
 export const TunnelService = {
-  async start(port: number): Promise<{ url: string }> {
-    if (state.running && state.url) {
-      return { url: state.url };
+  async start(port: number): Promise<{ url: string; token: string }> {
+    if (state.running && state.url && state.token) {
+      return { url: state.url, token: state.token };
     }
 
     const t = Tunnel.quick(`http://localhost:${port}`);
@@ -43,15 +46,17 @@ export const TunnelService = {
     state.running = true;
     state.tunnel = t;
     state.startedAt = new Date().toISOString();
+    state.token = randomBytes(32).toString('base64url');
 
     t.on('exit', () => {
       state.url = null;
       state.running = false;
       state.tunnel = null;
       state.startedAt = null;
+      state.token = null;
     });
 
-    return { url };
+    return { url, token: state.token };
   },
 
   stop(): void {
@@ -61,6 +66,7 @@ export const TunnelService = {
     state.running = false;
     state.tunnel = null;
     state.startedAt = null;
+    state.token = null;
   },
 
   getStatus() {
@@ -69,5 +75,21 @@ export const TunnelService = {
       url: state.url,
       startedAt: state.startedAt,
     };
+  },
+
+  getToken(): string | null {
+    return state.token;
+  },
+
+  validateToken(candidate: string): boolean {
+    if (!state.token) return false;
+    const a = Buffer.from(state.token);
+    const b = Buffer.from(candidate);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  },
+
+  isRunning(): boolean {
+    return state.running;
   },
 };
