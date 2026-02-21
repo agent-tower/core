@@ -4,6 +4,7 @@ import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
 import 'streamdown/styles.css'
 
 interface LogStreamProps {
@@ -79,13 +80,23 @@ function groupConsecutiveTools(logs: LogEntry[]): RenderItem[] {
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
+/** 给 URL 追加隧道 token（如果处于隧道模式） */
+function withToken(url: string): string {
+  if (!isTunnelAccess()) return url
+  const token = getTunnelToken()
+  if (!token) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}token=${encodeURIComponent(token)}`
+}
+
 /**
  * 将磁盘绝对路径转换为 HTTP URL，使浏览器能显示附件图片。
  * 匹配 data/attachments/ 路径模式，转为 /api/attachments/by-path?path=... 请求。
+ * 隧道模式下自动追加 token。
  */
 const attachmentUrlTransform: UrlTransform = (url) => {
   if (url.includes('data/attachments/') || url.includes('data\\attachments\\')) {
-    return `${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`
+    return withToken(`${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`)
   }
   return url
 }

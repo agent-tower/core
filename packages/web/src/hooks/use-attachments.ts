@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react'
 import type { Attachment } from '@agent-tower/shared'
+import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
@@ -21,9 +22,16 @@ async function uploadFile(file: File): Promise<Attachment> {
   const formData = new FormData()
   formData.append('file', file)
 
+  const headers: Record<string, string> = {}
+  if (isTunnelAccess()) {
+    const token = getTunnelToken()
+    if (token) headers['Authorization'] = `Bearer ${token}`
+  }
+
   const res = await fetch(`${API_BASE_URL}/attachments/upload`, {
     method: 'POST',
     body: formData,
+    headers,
   })
 
   if (!res.ok) {

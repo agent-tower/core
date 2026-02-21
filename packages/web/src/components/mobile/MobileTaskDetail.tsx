@@ -15,6 +15,8 @@ import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
+import { useAttachments } from '@/hooks/use-attachments'
+import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { StartAgentDialog } from '@/components/task/StartAgentDialog'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { UITaskDetailData } from '@/components/task/types'
@@ -59,6 +61,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const logStreamRef = useRef<LogStreamHandle>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const scrollStateRef = useRef<'following' | 'user-scrolling' | 'programmatic'>('following')
@@ -166,6 +169,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   const { todos } = useTodos(entries)
 
+  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, hasFiles: hasAttachments, isUploading } = useAttachments()
+
   // Token usage — 取最新一条，回退到持久化值
   const initialTokenUsage = useMemo(() => {
     if (!activeSession?.tokenUsage) return undefined
@@ -258,10 +263,14 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   const sendingRef = useRef(false)
   const handleSend = useCallback(async () => {
-    if (!input.trim() || !sessionId || sendingRef.current) return
+    if ((!input.trim() && !hasAttachments) || !sessionId || sendingRef.current || isUploading) return
     sendingRef.current = true
-    const message = input.trim()
+
+    const attachmentLinks = buildMarkdownLinks()
+    const message = [input.trim(), attachmentLinks].filter(Boolean).join('\n\n')
+
     setInput('')
+    clearAttachments()
     if (textareaRef.current) textareaRef.current.style.height = '40px'
 
     sendMessageMutation.mutate(
@@ -271,13 +280,38 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         onSettled: () => { sendingRef.current = false },
       }
     )
-  }, [input, sessionId, sendMessageMutation, attach])
+  }, [input, sessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) return
     await stopSession.mutateAsync(sessionId)
     queryClient.invalidateQueries({ queryKey: ['workspaces'] })
   }, [sessionId, stopSession, queryClient])
+
+  // ============ File Upload Handlers ============
+
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files
+    if (fileList && fileList.length > 0) {
+      addFiles(Array.from(fileList))
+    }
+    e.target.value = ''
+  }, [addFiles])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items
+    const files: File[] = []
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) files.push(file)
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault()
+      addFiles(files)
+    }
+  }, [addFiles])
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -439,10 +473,13 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           {sessionId && (
             <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
               <div className="relative bg-white rounded-xl border border-neutral-200 shadow-sm focus-within:border-neutral-300">
+                <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
+
                 <textarea
                   ref={textareaRef}
                   value={input}
                   onChange={handleInput}
+                  onPaste={handlePaste}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey && !e.repeat && !e.nativeEvent.isComposing) {
                       e.preventDefault()
@@ -454,14 +491,26 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                   className="w-full px-3 pt-2.5 pb-1 bg-transparent border-none focus:outline-none resize-none text-[15px] text-neutral-900 placeholder-neutral-400"
                   style={{ minHeight: 40, maxHeight: 140 }}
                 />
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileInputChange}
+                />
+
                 <div className="flex items-center justify-between px-2 pb-1.5">
                   <div className="flex items-center gap-0.5">
-                    <button className="p-1 text-neutral-400 active:text-neutral-600 rounded-lg">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="p-1 text-neutral-400 active:text-neutral-600 rounded-lg"
+                    >
                       <Paperclip size={15} />
                     </button>
                     <TokenUsageIndicator usage={tokenUsage} />
                   </div>
-                  {isSessionActive && !input.trim() ? (
+                  {isSessionActive && !input.trim() && !hasAttachments ? (
                     <button
                       onClick={handleStop}
                       disabled={stopSession.isPending}
@@ -472,9 +521,9 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                   ) : (
                     <button
                       onClick={handleSend}
-                      disabled={!input.trim()}
+                      disabled={(!input.trim() && !hasAttachments) || isUploading}
                       className={`p-1.5 rounded-lg transition-colors ${
-                        input.trim()
+                        (input.trim() || hasAttachments) && !isUploading
                           ? 'bg-neutral-900 text-white active:bg-black'
                           : 'bg-transparent text-neutral-300'
                       }`}
