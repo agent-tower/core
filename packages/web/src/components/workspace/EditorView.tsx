@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Editor from '@monaco-editor/react'
-import { Loader2, X, PanelLeftOpen, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react'
+import { Loader2, X, PanelLeftOpen, ZoomIn, ZoomOut, Maximize } from 'lucide-react'
+import { TransformWrapper, TransformComponent, useControls, useTransformComponent } from 'react-zoom-pan-pinch'
 import { cn } from '@/lib/utils'
 import { FileTree } from './FileTree'
 import { useFileContent, useSaveFile } from '@/hooks/use-files'
@@ -36,32 +37,56 @@ function buildImageUrl(workingDir: string, filePath: string) {
   return `${base}/files/image?${params.toString()}`
 }
 
-const ZOOM_STEPS = [25, 50, 75, 100, 150, 200, 300, 500]
-const DEFAULT_ZOOM = 100
+const ZoomToolbar: React.FC<{ filePath: string }> = ({ filePath }) => {
+  const { zoomIn, zoomOut, centerView } = useControls()
+  const scale = useTransformComponent((ctx) => ctx.state.scale)
+  const pct = Math.round(scale * 100)
+
+  return (
+    <div className="flex items-center gap-1 px-3 py-1.5 border-b border-neutral-200 bg-neutral-50/80 shrink-0">
+      <button
+        type="button"
+        onClick={() => zoomOut(0.5)}
+        className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors"
+        title="Zoom out"
+      >
+        <ZoomOut size={14} />
+      </button>
+      <button
+        type="button"
+        onClick={() => centerView(1)}
+        className="px-1.5 py-0.5 rounded hover:bg-neutral-200 text-[11px] text-neutral-600 tabular-nums min-w-[40px] text-center transition-colors"
+        title="Reset zoom"
+      >
+        {pct}%
+      </button>
+      <button
+        type="button"
+        onClick={() => zoomIn(0.5)}
+        className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors"
+        title="Zoom in"
+      >
+        <ZoomIn size={14} />
+      </button>
+      <button
+        type="button"
+        onClick={() => centerView(1)}
+        className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors ml-1"
+        title="Fit to view"
+      >
+        <Maximize size={13} />
+      </button>
+      <span className="ml-2 text-[11px] text-neutral-400 truncate">{filePath}</span>
+    </div>
+  )
+}
 
 const ImagePreview: React.FC<{ workingDir: string; filePath: string }> = ({
   workingDir,
   filePath,
 }) => {
   const [error, setError] = useState(false)
-  const [zoom, setZoom] = useState(DEFAULT_ZOOM)
   const src = buildImageUrl(workingDir, filePath)
-
-  const zoomIn = useCallback(() => {
-    setZoom((z) => {
-      const next = ZOOM_STEPS.find((s) => s > z)
-      return next ?? z
-    })
-  }, [])
-
-  const zoomOut = useCallback(() => {
-    setZoom((z) => {
-      const prev = [...ZOOM_STEPS].reverse().find((s) => s < z)
-      return prev ?? z
-    })
-  }, [])
-
-  const resetZoom = useCallback(() => setZoom(DEFAULT_ZOOM), [])
 
   if (error) {
     return (
@@ -72,65 +97,31 @@ const ImagePreview: React.FC<{ workingDir: string; filePath: string }> = ({
   }
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Zoom toolbar */}
-      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-neutral-200 bg-neutral-50/80 shrink-0">
-        <button
-          type="button"
-          onClick={zoomOut}
-          disabled={zoom <= ZOOM_STEPS[0]}
-          className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          title="Zoom out"
-        >
-          <ZoomOut size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={resetZoom}
-          className="px-1.5 py-0.5 rounded hover:bg-neutral-200 text-[11px] text-neutral-600 tabular-nums min-w-[40px] text-center transition-colors"
-          title="Reset zoom"
-        >
-          {zoom}%
-        </button>
-        <button
-          type="button"
-          onClick={zoomIn}
-          disabled={zoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1]}
-          className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          title="Zoom in"
-        >
-          <ZoomIn size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={resetZoom}
-          className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors ml-1"
-          title="Fit to view"
-        >
-          <RotateCcw size={13} />
-        </button>
-        <span className="ml-2 text-[11px] text-neutral-400 truncate">{filePath}</span>
-      </div>
-      {/* Image area */}
-      <div className="flex-1 overflow-auto bg-[repeating-conic-gradient(#f3f3f3_0%_25%,#fff_0%_50%)] bg-[length:16px_16px]">
-        <div
-          className="min-h-full flex items-center justify-center p-4"
-          style={zoom === DEFAULT_ZOOM ? undefined : { minWidth: 'fit-content', minHeight: 'fit-content' }}
-        >
-          <img
-            src={src}
-            alt={filePath}
-            className="rounded shadow-sm"
-            style={
-              zoom === DEFAULT_ZOOM
-                ? { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }
-                : { width: `${zoom}%`, objectFit: 'contain' }
-            }
-            onError={() => setError(true)}
-          />
+    <TransformWrapper
+      initialScale={1}
+      minScale={0.1}
+      maxScale={10}
+      centerOnInit
+      doubleClick={{ mode: 'toggle' }}
+    >
+      <div className="h-full flex flex-col">
+        <ZoomToolbar filePath={filePath} />
+        <div className="flex-1 min-h-0 overflow-hidden bg-[repeating-conic-gradient(#f3f3f3_0%_25%,#fff_0%_50%)] bg-[length:16px_16px]">
+          <TransformComponent
+            wrapperStyle={{ width: '100%', height: '100%' }}
+            contentStyle={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <img
+              src={src}
+              alt={filePath}
+              className="max-w-full max-h-full object-contain rounded shadow-sm"
+              draggable={false}
+              onError={() => setError(true)}
+            />
+          </TransformComponent>
         </div>
       </div>
-    </div>
+    </TransformWrapper>
   )
 }
 
