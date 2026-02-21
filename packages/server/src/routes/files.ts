@@ -6,6 +6,22 @@ import * as path from 'node:path';
 
 type FileItem = { name: string; type: 'file' | 'directory' };
 
+const IMAGE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.avif',
+]);
+
+const MIME_MAP: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.avif': 'image/avif',
+};
+
 const IGNORED_DIRS = new Set([
   'node_modules',
   '.git',
@@ -265,6 +281,52 @@ export async function filesRoutes(app: FastifyInstance) {
 
       await fs.writeFile(abs, content, 'utf8');
       return { success: true };
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && (error as any).code === 'OUTSIDE_WORKING_DIR') {
+        reply.code(400);
+        return { error: 'Path is outside workingDir', code: 'OUTSIDE_WORKING_DIR' };
+      }
+      return handleError(error, reply);
+    }
+  });
+
+  /**
+   * GET /image?path=assets/logo.png&workingDir=/abs/path
+   * 返回图片文件的原始二进制数据
+   */
+  app.get('/image', async (request, reply) => {
+    try {
+      const { path: userFilePath, workingDir } = readQuerySchema.parse(request.query);
+      if (!fssync.existsSync(workingDir)) {
+        reply.code(400);
+        return { error: `workingDir does not exist: ${workingDir}`, code: 'WORKING_DIR_NOT_FOUND' };
+      }
+
+      const { baseReal, abs } = await resolveInWorkingDir(workingDir, userFilePath);
+      const fileReal = await fs.realpath(abs);
+      const relative = path.relative(baseReal, fileReal);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        reply.code(400);
+        return { error: 'Path is outside workingDir', code: 'OUTSIDE_WORKING_DIR' };
+      }
+
+      const stat = await fs.stat(fileReal);
+      if (!stat.isFile()) {
+        reply.code(400);
+        return { error: 'path is not a file', code: 'NOT_A_FILE' };
+      }
+
+      const ext = path.extname(fileReal).toLowerCase();
+      if (!IMAGE_EXTENSIONS.has(ext)) {
+        reply.code(400);
+        return { error: 'Not an image file', code: 'NOT_IMAGE' };
+      }
+
+      const mime = MIME_MAP[ext] || 'application/octet-stream';
+      const buffer = await fs.readFile(fileReal);
+      reply.header('Content-Type', mime);
+      reply.header('Cache-Control', 'no-cache');
+      return reply.send(buffer);
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && (error as any).code === 'OUTSIDE_WORKING_DIR') {
         reply.code(400);

@@ -8,9 +8,11 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  Image,
+  RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useFileTree, type FileTreeItem } from '@/hooks/use-files'
+import { useFileTree, useRefreshFileTree, type FileTreeItem } from '@/hooks/use-files'
 
 export interface FileTreeProps {
   workingDir?: string
@@ -29,9 +31,14 @@ function filePathFromDir(dir: DirPath, name: string) {
   return dir === '/' ? name : `${dir.slice(1)}/${name}`
 }
 
+const IMAGE_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'avif',
+])
+
 function fileIcon(item: FileTreeItem) {
   if (item.type === 'directory') return null
   const ext = item.name.split('.').pop()?.toLowerCase()
+  if (ext && IMAGE_EXTENSIONS.has(ext)) return Image
   if (ext === 'ts' || ext === 'tsx' || ext === 'js' || ext === 'jsx') return FileCode2
   if (ext === 'json') return FileJson2
   if (ext === 'md' || ext === 'mdx' || ext === 'txt') return FileText
@@ -143,6 +150,7 @@ const DirectoryNode: React.FC<{
         const fp = filePathFromDir(path, item.name)
         const Icon = fileIcon(item)
         const isActive = selectedFilePath === fp
+        const isImg = Icon === Image
         return (
           <TreeRow
             key={fp}
@@ -150,7 +158,7 @@ const DirectoryNode: React.FC<{
             active={isActive}
             onClick={() => onFileSelect(fp)}
             rightIcon={<span className="inline-block w-[14px]" />}
-            leftIcon={Icon ? <Icon size={14} className="text-sky-600" /> : null}
+            leftIcon={Icon ? <Icon size={14} className={isImg ? 'text-emerald-600' : 'text-sky-600'} /> : null}
             label={item.name}
           />
         )
@@ -166,6 +174,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
   selectedFilePath,
 }) => {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const refreshFileTree = useRefreshFileTree(workingDir)
 
   const toggleDir = useCallback((dir: DirPath) => {
     setExpanded((prev) => {
@@ -178,11 +187,23 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
   return (
     <div className={cn('h-full flex flex-col', className)}>
-      <div className="px-3 py-2 border-b border-neutral-200 bg-neutral-50/80">
-        <div className="text-[11px] font-semibold text-neutral-600 uppercase tracking-wider">
-          Files
+      <div className="px-3 py-2 border-b border-neutral-200 bg-neutral-50/80 flex items-center justify-between">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold text-neutral-600 uppercase tracking-wider">
+            Files
+          </div>
+          <div className="text-[11px] text-neutral-400 truncate">{workingDir || 'No workingDir'}</div>
         </div>
-        <div className="text-[11px] text-neutral-400 truncate">{workingDir || 'No workingDir'}</div>
+        {workingDir && (
+          <button
+            type="button"
+            onClick={refreshFileTree}
+            className="p-1 rounded hover:bg-neutral-200 text-neutral-400 hover:text-neutral-700 transition-colors shrink-0"
+            title="Refresh file tree"
+          >
+            <RefreshCw size={13} />
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto p-2">

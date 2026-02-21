@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
@@ -78,6 +79,14 @@ export function useFileContent(
       }),
     enabled: !!workingDir && !!filePath,
   })
+}
+
+export function useRefreshFileTree(workingDir: string | undefined) {
+  const queryClient = useQueryClient()
+  return useCallback(() => {
+    if (!workingDir) return
+    queryClient.invalidateQueries({ queryKey: ['files', 'tree', workingDir] })
+  }, [queryClient, workingDir])
 }
 
 export function useSaveFile() {

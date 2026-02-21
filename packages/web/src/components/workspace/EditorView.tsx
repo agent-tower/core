@@ -4,6 +4,16 @@ import { Loader2, X, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { FileTree } from './FileTree'
 import { useFileContent, useSaveFile } from '@/hooks/use-files'
+import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
+
+const IMAGE_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'avif',
+])
+
+function isImageFile(filePath: string) {
+  const ext = filePath.split('.').pop()?.toLowerCase()
+  return ext ? IMAGE_EXTENSIONS.has(ext) : false
+}
 
 type OpenTab = {
   path: string // relative, e.g. "src/auth/Login.tsx"
@@ -13,6 +23,44 @@ type OpenTab = {
   savedContent: string
   isDirty: boolean
   loaded: boolean
+  isImage: boolean
+}
+
+function buildImageUrl(workingDir: string, filePath: string) {
+  const base = import.meta.env.VITE_API_URL || '/api'
+  const params = new URLSearchParams({ workingDir, path: filePath })
+  if (isTunnelAccess()) {
+    const token = getTunnelToken()
+    if (token) params.set('token', token)
+  }
+  return `${base}/files/image?${params.toString()}`
+}
+
+const ImagePreview: React.FC<{ workingDir: string; filePath: string }> = ({
+  workingDir,
+  filePath,
+}) => {
+  const [error, setError] = useState(false)
+  const src = buildImageUrl(workingDir, filePath)
+
+  if (error) {
+    return (
+      <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
+        Failed to load image.
+      </div>
+    )
+  }
+
+  return (
+    <div className="h-full flex items-center justify-center p-4 overflow-auto bg-[repeating-conic-gradient(#f3f3f3_0%_25%,#fff_0%_50%)] bg-[length:16px_16px]">
+      <img
+        src={src}
+        alt={filePath}
+        className="max-w-full max-h-full object-contain rounded shadow-sm"
+        onError={() => setError(true)}
+      />
+    </div>
+  )
 }
 
 function basename(p: string) {
@@ -142,7 +190,10 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
     [tabs, activePath]
   )
 
-  const { data, isFetching, isError, error } = useFileContent(workingDir, activePath)
+  const { data, isFetching, isError, error } = useFileContent(
+    workingDir,
+    activeTab?.isImage ? null : activePath
+  )
 
   // Load content into active tab (only when not dirty and not loaded yet)
   useEffect(() => {
@@ -168,6 +219,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
     setTabs((prev) => {
       const existing = prev.find((t) => t.path === filePath)
       if (existing) return prev
+      const image = isImageFile(filePath)
       return [
         ...prev,
         {
@@ -177,7 +229,8 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
           content: '',
           savedContent: '',
           isDirty: false,
-          loaded: false,
+          loaded: image, // images don't need content loading
+          isImage: image,
         },
       ]
     })
@@ -343,6 +396,8 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
             <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
               Select a file from the tree to open.
             </div>
+          ) : activeTab.isImage ? (
+            <ImagePreview workingDir={workingDir} filePath={activeTab.path} />
           ) : (
             <>
               <Editor
