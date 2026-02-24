@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { SessionStatus, type Session } from '@agent-tower/shared'
 import type { ConflictOp } from '@agent-tower/shared'
+import { ServerEvents, ClientEvents, type SessionCompletedPayload, type TaskUpdatedPayload } from '@agent-tower/shared/socket'
 import { LogStream } from '@/components/agent'
 import type { LogStreamHandle } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
@@ -12,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces, useOpenInEditor, useGitStatus } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
+import { socketManager } from '@/lib/socket/manager'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
@@ -272,6 +274,40 @@ export function TaskDetail({ task, onDeleteTask, isDeleting }: TaskDetailProps) 
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }, [queryClient]),
   })
+
+  // 监听 session:completed 事件 — 后端 DB 状态已更新后才刷新，避免竞态
+  // 同时监听 task:updated 事件 — 后端 Task 状态推进（如 IN_REVIEW）后刷新
+  useEffect(() => {
+    if (!sessionId && !task?.id) return
+    const socket = socketManager.connect()
+
+    // 订阅 task room 以接收 TASK_UPDATED 事件
+    if (task?.id) {
+      socket.emit(ClientEvents.SUBSCRIBE, { topic: 'task', id: task.id })
+    }
+
+    const handleSessionCompleted = (payload: SessionCompletedPayload) => {
+      if (payload.sessionId !== sessionId) return
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+    }
+
+    const handleTaskUpdated = (payload: TaskUpdatedPayload) => {
+      if (payload.taskId !== task?.id) return
+      // 刷新 task 列表让 taskDetailData 重新计算（状态变更如 IN_REVIEW）
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    }
+
+    socket.on(ServerEvents.SESSION_COMPLETED, handleSessionCompleted)
+    socket.on(ServerEvents.TASK_UPDATED, handleTaskUpdated)
+
+    return () => {
+      socket.off(ServerEvents.SESSION_COMPLETED, handleSessionCompleted)
+      socket.off(ServerEvents.TASK_UPDATED, handleTaskUpdated)
+      if (task?.id) {
+        socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'task', id: task.id })
+      }
+    }
+  }, [sessionId, task?.id, queryClient])
 
   // Extract agent todos from the log stream
   const { todos } = useTodos(entries)

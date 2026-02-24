@@ -105,6 +105,12 @@ export class SocketGateway {
         exitCode: typeof exitCode === 'number' ? exitCode : 0,
       });
     };
+    const onSessionCompleted = ({ sessionId, status }: { sessionId: string; status: string }) => {
+      this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_COMPLETED, {
+        sessionId,
+        status,
+      });
+    };
     const onTask = ({ taskId, projectId, status }: { taskId: string; projectId: string; status: string }) => {
       const payload = { taskId, projectId, status };
       this.nsp.to(`task:${taskId}`).emit(ServerEvents.TASK_UPDATED, payload);
@@ -132,6 +138,7 @@ export class SocketGateway {
     this.eventBus.on('session:patch', onPatch);
     this.eventBus.on('session:sessionId', onSessionId);
     this.eventBus.on('session:exit', onExit);
+    this.eventBus.on('session:completed', onSessionCompleted);
     this.eventBus.on('task:updated', onTask);
     this.eventBus.on('task:deleted', onTaskDeleted);
     this.eventBus.on('terminal:stdout', onTerminalStdout);
@@ -142,6 +149,7 @@ export class SocketGateway {
       () => this.eventBus.off('session:patch', onPatch),
       () => this.eventBus.off('session:sessionId', onSessionId),
       () => this.eventBus.off('session:exit', onExit),
+      () => this.eventBus.off('session:completed', onSessionCompleted),
       () => this.eventBus.off('task:updated', onTask),
       () => this.eventBus.off('task:deleted', onTaskDeleted),
       () => this.eventBus.off('terminal:stdout', onTerminalStdout),

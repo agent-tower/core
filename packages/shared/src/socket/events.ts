@@ -20,6 +20,7 @@ export const ServerEvents = {
   SESSION_STDOUT: 'session:stdout',
   SESSION_PATCH: 'session:patch',
   SESSION_EXIT: 'session:exit',
+  SESSION_COMPLETED: 'session:completed',
   SESSION_ID: 'session:sessionId',
   SESSION_ERROR: 'session:error',
   TASK_UPDATED: 'task:updated',
@@ -66,6 +67,11 @@ export interface SessionPatchPayload {
 export interface SessionExitPayload {
   sessionId: string;
   exitCode: number;
+}
+
+export interface SessionCompletedPayload {
+  sessionId: string;
+  status: string;
 }
 
 export interface SessionIdPayload {

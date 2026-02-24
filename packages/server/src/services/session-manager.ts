@@ -598,10 +598,14 @@ export class SessionManager {
           error instanceof Error ? error.message : error
         );
       }
+      // 通知前端 session 已完成（DB 状态已更新）
+      this.eventBus.emit('session:completed', { sessionId, status: SessionStatus.COMPLETED });
     } else {
       // 正常 CHAT session: autoCommit → 持久化 → 检查 Task 推进 → 触发 commit message 生成
       await this.autoCommitChanges(sessionId);
       await this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED);
+      // 通知前端 session 已完成（DB 状态已更新）
+      this.eventBus.emit('session:completed', { sessionId, status: SessionStatus.COMPLETED });
       await this.checkTaskAutoAdvance(sessionId);
 
       // 每次 CHAT session 完成都触发 commit message 重新生成
