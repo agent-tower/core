@@ -96,6 +96,13 @@ export class TerminalManager {
     // Handle PTY exit
     const onExit = shell.onExit(({ exitCode }) => {
       this.eventBus.emit('terminal:exit', { terminalId, exitCode });
+      // Dispose all listeners before removing from map
+      const terminal = this.terminals.get(terminalId);
+      if (terminal) {
+        for (const cleanup of terminal.cleanups) {
+          cleanup.dispose();
+        }
+      }
       this.removeTerminal(terminalId);
     });
     cleanups.push(onExit);

@@ -9,7 +9,7 @@ import {
   addNormalizedEntry,
 } from '../output/index.js';
 import type { NormalizedConversation } from '../output/index.js';
-import type { SpawnedChild } from '../executors/index.js';
+import type { SpawnedChild, CancellationToken } from '../executors/index.js';
 import { AgentPipeline, type OutputParser } from '../pipeline/agent-pipeline.js';
 import { execGit } from '../git/git-cli.js';
 import type { EventBus } from '../core/event-bus.js';
@@ -19,6 +19,7 @@ const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
 
 export class SessionManager {
   private pipelines = new Map<string, AgentPipeline>();
+  private cancelTokens = new Map<string, CancellationToken>();
   private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private snapshotFlushChains = new Map<string, Promise<void>>();
   private pendingSnapshotStatus = new Map<string, SessionStatus>();
@@ -50,6 +51,7 @@ export class SessionManager {
         pipeline.destroy();
         this.pipelines.delete(sessionId);
       }
+      this.cancelTokens.delete(sessionId);
       this.handleSessionExit(sessionId).catch((error) => {
         console.error(`[SessionManager] post-exit handling failed for ${sessionId}:`, error);
       });
@@ -134,6 +136,7 @@ export class SessionManager {
       await this.flushSnapshotPersist(id);
       existing.destroy();
       this.pipelines.delete(id);
+      this.cancelTokens.delete(id);
     }
 
     const isNewStore = !sessionMsgStoreManager.has(id);
@@ -225,8 +228,14 @@ export class SessionManager {
 
     const pipeline = this.pipelines.get(id);
     if (pipeline) {
+      // Try graceful shutdown via SIGINT first
+      const cancel = this.cancelTokens.get(id);
+      if (cancel) {
+        cancel.cancel();
+      }
       pipeline.destroy();
       this.pipelines.delete(id);
+      this.cancelTokens.delete(id);
     }
 
     const msgStore = sessionMsgStoreManager.get(id);
@@ -264,6 +273,23 @@ export class SessionManager {
     pipeline.resize(cols, rows);
   }
 
+  /**
+   * Destroy all active pipelines. Called on graceful server shutdown.
+   */
+  destroyAll(): void {
+    if (this.pipelines.size === 0) return;
+    console.log(`[SessionManager] Destroying all ${this.pipelines.size} active pipelines`);
+    for (const [sessionId, pipeline] of this.pipelines) {
+      const cancel = this.cancelTokens.get(sessionId);
+      if (cancel) {
+        cancel.cancel();
+      }
+      pipeline.destroy();
+    }
+    this.pipelines.clear();
+    this.cancelTokens.clear();
+  }
+
   private resolveAgentSessionId(sessionId: string, logSnapshot: string | null): string | null {
     const msgStore = sessionMsgStoreManager.get(sessionId);
     if (msgStore) {
@@ -292,6 +318,9 @@ export class SessionManager {
     const parser = this.createParser(agentType, workingDir, msgStore);
     const pipeline = new AgentPipeline(sessionId, spawnResult.pty, parser, msgStore, this.eventBus);
     this.pipelines.set(sessionId, pipeline);
+    if (spawnResult.cancel) {
+      this.cancelTokens.set(sessionId, spawnResult.cancel);
+    }
   }
 
   private createParser(agentType: AgentType, workingDir: string, msgStore: ReturnType<typeof sessionMsgStoreManager.getOrCreate>): OutputParser | null {

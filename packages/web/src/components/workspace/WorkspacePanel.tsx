@@ -1,4 +1,4 @@
-import React, { useState } from "react"
+import React, { useState, useRef, useEffect } from "react"
 import { Code2, Terminal, Globe, GitGraph } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -90,6 +90,18 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     const tabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
     const [activeTab, setActiveTab] = useState<WorkspaceTab>(hideChanges ? "editor" : "changes")
 
+    // Track all workingDirs that have been seen so each gets its own
+    // TerminalTabs instance that stays mounted across task switches.
+    const [terminalDirs, setTerminalDirs] = useState<string[]>([])
+    const prevDirRef = useRef<string | undefined>(undefined)
+
+    useEffect(() => {
+      if (workingDir && workingDir !== prevDirRef.current) {
+        prevDirRef.current = workingDir
+        setTerminalDirs(prev => prev.includes(workingDir) ? prev : [...prev, workingDir])
+      }
+    }, [workingDir])
+
     return (
       <div className={cn("flex flex-col h-full bg-white", className)}>
         {/* Tab 栏 — folder style */}
@@ -112,12 +124,16 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
             <EditorView workingDir={workingDir} />
           )}
 
-          {/* Terminal Tab — multi-terminal with standalone PTYs */}
-          {activeTab === "terminal" && (
-            <div className="h-full">
-              <TerminalTabs cwd={workingDir} />
+          {/* Terminal Tab — one TerminalTabs per workingDir, kept mounted */}
+          {terminalDirs.map(dir => (
+            <div
+              key={dir}
+              className="h-full absolute inset-0"
+              style={{ display: activeTab === "terminal" && workingDir === dir ? 'block' : 'none' }}
+            >
+              <TerminalTabs cwd={dir} />
             </div>
-          )}
+          ))}
 
           {/* Preview Tab */}
           {activeTab === "preview" && (

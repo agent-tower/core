@@ -78,7 +78,17 @@ export function useStandaloneTerminal(
 
     const socket = socketManager.getSocket()
 
-    const handleConnect = () => setIsConnected(true)
+    const handleConnect = () => {
+      setIsConnected(true)
+      // After a reconnect the server has already destroyed our terminal
+      // (cleanupBySocket runs on disconnect). Clear stale state so the
+      // component can detect the terminal is gone and recreate it.
+      // This effect only runs when terminalId is truthy, so this is
+      // always a reconnect scenario (not the initial connect).
+      setIsAttached(false)
+      callbacksRef.current.onExit?.(-1)
+      setTerminalId(null)
+    }
     const handleDisconnect = () => {
       setIsConnected(false)
       setIsAttached(false)
