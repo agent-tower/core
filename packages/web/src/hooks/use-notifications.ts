@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
-import type { NotificationSettings, ThirdPartyChannel } from '@agent-tower/shared'
+import type { NotificationSettings } from '@agent-tower/shared'
 
 export type { NotificationSettings }
 

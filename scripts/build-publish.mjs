@@ -7,7 +7,7 @@
  */
 import { execSync } from 'node:child_process';
 import {
-  cpSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync,
+  cpSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, chmodSync,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +44,9 @@ mkdirSync(publishDir, { recursive: true });
 
 // 1. 复制 server 编译产物
 cpSync(resolve(serverDir, 'dist'), resolve(publishDir, 'dist'), { recursive: true });
+// 确保 bin 入口文件有执行权限
+chmodSync(resolve(publishDir, 'dist/cli.js'), 0o755);
+chmodSync(resolve(publishDir, 'dist/mcp/index.js'), 0o755);
 
 // 2. 复制前端构建产物到 dist/web/
 cpSync(resolve(webDir, 'dist'), resolve(publishDir, 'dist/web'), { recursive: true });
@@ -64,6 +67,43 @@ mkdirSync(sharedDest, { recursive: true });
 cpSync(resolve(sharedDir, 'dist'), resolve(sharedDest, 'dist'), { recursive: true });
 cpSync(resolve(sharedDir, 'package.json'), resolve(sharedDest, 'package.json'));
 
+// 6. 将预生成的 Prisma Client 打包进 node_modules（避免全局安装时 prisma generate 出错）
+const prismaClientSrc = resolve(root, 'node_modules/.pnpm/@prisma+client@5.22.0_prisma@5.22.0/node_modules');
+// @prisma/client — 包的入口，require('.prisma/client/default')
+const atPrismaClientSrc = resolve(prismaClientSrc, '@prisma/client');
+const atPrismaDest = resolve(publishDir, 'node_modules/@prisma/client');
+mkdirSync(atPrismaDest, { recursive: true });
+cpSync(atPrismaClientSrc, atPrismaDest, {
+  recursive: true,
+  filter: (src) => {
+    const rel = src.slice(atPrismaClientSrc.length);
+    return !rel.includes('node_modules');
+  },
+});
+// .prisma/client 放到 @prisma/client/node_modules/.prisma/client/ 下
+// 这样 require('.prisma/client/default') 能通过 Node 模块解析找到
+const dotPrismaDest = resolve(atPrismaDest, 'node_modules/.prisma/client');
+mkdirSync(dotPrismaDest, { recursive: true });
+cpSync(resolve(prismaClientSrc, '.prisma/client'), dotPrismaDest, { recursive: true });
+
+// 7. 将 prisma CLI 和 @prisma/engines 预打包（避免全局安装时 postinstall 脚本失败）
+const prismaSrc = resolve(root, 'node_modules/.pnpm/prisma@5.22.0/node_modules');
+// prisma CLI
+const prismaDest = resolve(publishDir, 'node_modules/prisma');
+mkdirSync(prismaDest, { recursive: true });
+cpSync(resolve(prismaSrc, 'prisma'), prismaDest, {
+  recursive: true,
+  filter: (src) => {
+    const rel = src.slice(resolve(prismaSrc, 'prisma').length);
+    return !rel.includes('node_modules');
+  },
+});
+// @prisma/engines 及其完整依赖链（@prisma/debug, @prisma/fetch-engine, @prisma/get-platform 等）
+const enginesFullSrc = resolve(root, 'node_modules/.pnpm/@prisma+engines@5.22.0/node_modules/@prisma');
+const enginesFullDest = resolve(prismaDest, 'node_modules/@prisma');
+mkdirSync(enginesFullDest, { recursive: true });
+cpSync(enginesFullSrc, enginesFullDest, { recursive: true, dereference: true });
+
 // 6. 生成发布用 package.json
 const serverPkg = JSON.parse(readFileSync(resolve(serverDir, 'package.json'), 'utf-8'));
 const sharedPkg = JSON.parse(readFileSync(resolve(sharedDir, 'package.json'), 'utf-8'));
@@ -71,7 +111,7 @@ const sharedPkg = JSON.parse(readFileSync(resolve(sharedDir, 'package.json'), 'u
 const deps = { ...serverPkg.dependencies };
 // 替换 workspace 协议为真实版本
 deps['@agent-tower/shared'] = sharedPkg.version;
-// prisma 从 devDependencies 提升到 dependencies（postinstall 和 db push 需要）
+// prisma 从 devDependencies 提升到 dependencies（bundledDependencies 需要在 deps 中声明）
 deps['prisma'] = serverPkg.devDependencies.prisma;
 
 const publishPkg = {
@@ -90,15 +130,17 @@ const publishPkg = {
     'prisma/',
     'scripts/',
     'node_modules/@agent-tower/',
+    'node_modules/@prisma/',
+    'node_modules/prisma/',
   ],
   scripts: {
-    postinstall: 'prisma generate && node scripts/postinstall.js',
+    postinstall: 'node scripts/postinstall.js',
   },
   dependencies: deps,
   optionalDependencies: {
     fsevents: '~2.3.3',
   },
-  bundledDependencies: ['@agent-tower/shared'],
+  bundledDependencies: ['@agent-tower/shared', '@prisma/client', 'prisma'],
   engines: {
     node: '>=18.0.0',
   },

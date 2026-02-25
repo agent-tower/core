@@ -32,7 +32,7 @@ export function NotificationSettingsPage() {
   })
   const [dirty, setDirty] = useState(false)
   const [testStatus, setTestStatus] = useState<'idle' | 'success' | 'error'>('idle')
-  const testTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const testTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   useEffect(() => {
     if (settings && !dirty) {

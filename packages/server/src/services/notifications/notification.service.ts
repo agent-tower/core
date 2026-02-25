@@ -75,7 +75,7 @@ export class NotificationService {
     const settings = await prisma.notificationSettings.findUnique({
       where: { id: 'singleton' },
     });
-    return settings ?? {
+    return (settings ?? {
       id: 'singleton',
       osNotificationEnabled: true,
       thirdPartyChannel: 'none',
@@ -83,7 +83,7 @@ export class NotificationService {
       thirdPartyBaseUrl: null,
       taskInReviewTitleTemplate: 'Agent Tower',
       taskInReviewBodyTemplate: '✅ "{taskTitle}" 已完成，等待审查',
-    };
+    }) as NotificationSettings;
   }
 
   async testChannel(channel: string, webhookUrl: string, baseUrl?: string): Promise<void> {
