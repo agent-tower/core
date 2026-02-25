@@ -49,6 +49,12 @@ interface ClaudeCodeMessage {
     }>
     model?: string
     stop_reason?: string
+    usage?: {
+      input_tokens?: number
+      output_tokens?: number
+      cache_creation_input_tokens?: number
+      cache_read_input_tokens?: number
+    }
   }
   tool_use_id?: string
   tool_result?: {
@@ -65,6 +71,15 @@ interface ClaudeCodeMessage {
   }
   model_usage?: Record<string, {
     context_window?: number
+    [key: string]: unknown
+  }>
+  modelUsage?: Record<string, {
+    inputTokens?: number
+    outputTokens?: number
+    cacheReadInputTokens?: number
+    cacheCreationInputTokens?: number
+    contextWindow?: number
+    maxOutputTokens?: number
     [key: string]: unknown
   }>
   event?: {
@@ -128,6 +143,8 @@ export class ClaudeCodeParser {
   // message_id → StreamingMessageState，用于 assistant 消息的 replace 机制
   private streamingMessages: Map<string, StreamingMessageState> = new Map()
   private streamingMessageId: string | null = null
+  // 最后一轮 assistant 消息的 per-turn usage（代表当前上下文窗口占用量）
+  private lastTurnUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null = null
 
   constructor(msgStore: MsgStore) {
     this.msgStore = msgStore
@@ -260,6 +277,19 @@ export class ClaudeCodeParser {
     // 清理已消费的 streaming state
     if (messageId) {
       this.streamingMessages.delete(messageId)
+    }
+
+    // 提取 per-turn usage（每条 assistant 消息携带该轮的 usage）
+    if (msg.message?.usage) {
+      const u = msg.message.usage
+      if (typeof u.input_tokens === 'number') {
+        this.lastTurnUsage = {
+          input_tokens: u.input_tokens || 0,
+          output_tokens: u.output_tokens || 0,
+          cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+          cache_read_input_tokens: u.cache_read_input_tokens || 0,
+        }
+      }
     }
   }
 
@@ -404,28 +434,47 @@ export class ClaudeCodeParser {
     }
 
     // 从 success result 中提取 token 用量
-    if (msg.subtype === 'success' && msg.usage) {
+    if (msg.subtype === 'success') {
       try {
-        const usage = msg.usage
-        const totalTokens =
-          (usage.input_tokens || 0) +
-          (usage.output_tokens || 0) +
-          (usage.cache_creation_input_tokens || 0) +
-          (usage.cache_read_input_tokens || 0)
-
-        // 从 model_usage 中提取真实的 context_window
+        // 提取 context window 大小
         let modelContextWindow: number | undefined
-        if (msg.model_usage) {
+        if (msg.modelUsage) {
+          const firstModel = Object.values(msg.modelUsage)[0]
+          if (firstModel?.contextWindow) {
+            modelContextWindow = firstModel.contextWindow
+          }
+        }
+        if (!modelContextWindow && msg.model_usage) {
           const firstModel = Object.values(msg.model_usage)[0]
           if (firstModel?.context_window) {
             modelContextWindow = firstModel.context_window
           }
         }
 
-        const entry = createTokenUsageInfo(totalTokens, modelContextWindow)
-        const index = this.indexProvider.next()
-        const patch = addNormalizedEntry(index, entry)
-        this.msgStore.pushPatch(patch)
+        // 计算当前上下文窗口占用量
+        // 优先使用 lastTurnUsage（最后一条 assistant 消息的 per-turn usage），
+        // 这与 Claude Code 自身 statusline 的计算方式一致：
+        // totalTokens = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+        let totalTokens: number | undefined
+        if (this.lastTurnUsage) {
+          const u = this.lastTurnUsage
+          totalTokens = u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens
+        } else if (msg.usage) {
+          // 回退：没有 assistant 消息时用 result.usage（累计值，不太准确）
+          const usage = msg.usage
+          totalTokens =
+            (usage.input_tokens || 0) +
+            (usage.output_tokens || 0) +
+            (usage.cache_creation_input_tokens || 0) +
+            (usage.cache_read_input_tokens || 0)
+        }
+
+        if (totalTokens != null) {
+          const entry = createTokenUsageInfo(totalTokens, modelContextWindow)
+          const index = this.indexProvider.next()
+          const patch = addNormalizedEntry(index, entry)
+          this.msgStore.pushPatch(patch)
+        }
       } catch {
         // token 提取失败不影响正常解析
       }

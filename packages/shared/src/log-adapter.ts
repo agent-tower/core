@@ -196,8 +196,8 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
 
     case 'token_usage_info':
       // token 使用信息 — 传递结构化数据供前端展示
-      if (entry.metadata?.tokenUsage && entry.metadata.tokenUsage.totalTokens) {
-        const { totalTokens, modelContextWindow } = entry.metadata.tokenUsage
+      if (entry.metadata?.tokenUsage) {
+        const { totalTokens = 0, modelContextWindow } = entry.metadata.tokenUsage
         return {
           id: entry.id,
           type: LogType.Info,
