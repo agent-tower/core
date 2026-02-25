@@ -480,7 +480,8 @@ export function ProjectKanbanPage() {
               <div>
                 <label className="block text-sm font-medium text-neutral-700 mb-1.5">Description</label>
                 <textarea rows={3} value={newTaskDescription} onChange={e => setNewTaskDescription(e.target.value)} placeholder="Optional..."
-                  className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 resize-none" disabled={createStep !== 'idle'} />
+                  className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 resize-none" disabled={createStep !== 'idle'}
+                  onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask() }} />
               </div>
             </div>
           </Modal>
@@ -693,6 +694,9 @@ export function ProjectKanbanPage() {
                 placeholder="Optional description..."
                 className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors resize-none"
                 disabled={createStep !== 'idle'}
+                onKeyDown={e => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
+                }}
               />
             </div>
             {createTask.isError && (
