@@ -24,6 +24,7 @@ import { UITaskStatus } from './types'
  * | IN_PROGRESS            | Running             |
  * | IN_REVIEW              | Review              |
  * | DONE                   | Done                |
+ * | CANCELLED              | Cancelled           |
  */
 export function mapTaskStatusToUI(status: SharedTaskStatus): UITaskStatus {
   switch (status) {
@@ -35,6 +36,8 @@ export function mapTaskStatusToUI(status: SharedTaskStatus): UITaskStatus {
       return UITaskStatus.Review
     case SharedTaskStatus.DONE:
       return UITaskStatus.Done
+    case SharedTaskStatus.CANCELLED:
+      return UITaskStatus.Cancelled
   }
 }
 
@@ -49,6 +52,8 @@ export function mapUIStatusToTask(status: UITaskStatus): SharedTaskStatus {
       return SharedTaskStatus.IN_REVIEW
     case UITaskStatus.Done:
       return SharedTaskStatus.DONE
+    case UITaskStatus.Cancelled:
+      return SharedTaskStatus.CANCELLED
   }
 }
 

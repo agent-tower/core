@@ -32,10 +32,11 @@ interface FindTasksParams {
  * 看板拖拽场景下允许任意状态互转，状态变更无危险副作用
  */
 const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
-  [TaskStatus.TODO]: [TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW, TaskStatus.DONE],
-  [TaskStatus.IN_PROGRESS]: [TaskStatus.TODO, TaskStatus.IN_REVIEW, TaskStatus.DONE],
-  [TaskStatus.IN_REVIEW]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.DONE],
-  [TaskStatus.DONE]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW],
+  [TaskStatus.TODO]: [TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW, TaskStatus.DONE, TaskStatus.CANCELLED],
+  [TaskStatus.IN_PROGRESS]: [TaskStatus.TODO, TaskStatus.IN_REVIEW, TaskStatus.DONE, TaskStatus.CANCELLED],
+  [TaskStatus.IN_REVIEW]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.DONE, TaskStatus.CANCELLED],
+  [TaskStatus.DONE]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW, TaskStatus.CANCELLED],
+  [TaskStatus.CANCELLED]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW, TaskStatus.DONE],
 };
 
 export class TaskService {
@@ -306,6 +307,7 @@ export class TaskService {
       inProgress: 0,
       inReview: 0,
       done: 0,
+      cancelled: 0,
     };
 
     for (const row of counts) {
@@ -323,6 +325,9 @@ export class TaskService {
           break;
         case TaskStatus.DONE:
           stats.done = count;
+          break;
+        case TaskStatus.CANCELLED:
+          stats.cancelled = count;
           break;
       }
     }

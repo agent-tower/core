@@ -11,6 +11,7 @@ export enum TaskStatus {
   IN_PROGRESS = 'IN_PROGRESS',
   IN_REVIEW = 'IN_REVIEW',
   DONE = 'DONE',
+  CANCELLED = 'CANCELLED',
 }
 
 /** 工作空间状态 */

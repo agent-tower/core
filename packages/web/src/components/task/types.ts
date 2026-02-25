@@ -19,6 +19,7 @@ export const UITaskStatus = {
   Running: 'Running',
   Pending: 'Pending',
   Done: 'Done',
+  Cancelled: 'Cancelled',
 } as const
 
 export type UITaskStatus = (typeof UITaskStatus)[keyof typeof UITaskStatus]

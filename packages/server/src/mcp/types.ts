@@ -11,8 +11,8 @@ export const ListProjectsInput = z.object({});
 
 export const ListTasksInput = z.object({
   project_id: z.string().describe('The ID of the project to list tasks from'),
-  status: z.enum(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE']).optional()
-    .describe("Optional status filter: 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE'"),
+  status: z.enum(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED']).optional()
+    .describe("Optional status filter: 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'"),
   limit: z.number().int().min(1).max(100).optional()
     .describe('Maximum number of tasks to return (default: 50)'),
 });
@@ -31,8 +31,8 @@ export const UpdateTaskInput = z.object({
   task_id: z.string().describe('The ID of the task to update'),
   title: z.string().min(1).optional().describe('New title for the task'),
   description: z.string().optional().describe('New description for the task'),
-  status: z.enum(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE']).optional()
-    .describe("New status: 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE'"),
+  status: z.enum(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED']).optional()
+    .describe("New status: 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'"),
 });
 
 export const DeleteTaskInput = z.object({

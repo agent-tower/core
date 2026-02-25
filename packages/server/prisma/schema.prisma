@@ -20,7 +20,7 @@ model Project {
 }
 
 // 任务
-// TaskStatus: TODO, IN_PROGRESS, IN_REVIEW, DONE
+// TaskStatus: TODO, IN_PROGRESS, IN_REVIEW, DONE, CANCELLED
 model Task {
   id          String      @id @default(uuid())
   title       String

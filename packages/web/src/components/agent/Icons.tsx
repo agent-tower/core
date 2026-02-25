@@ -29,6 +29,13 @@ export const IconDone = ({ className }: { className?: string }) => (
   </svg>
 )
 
+export const IconCancelled = ({ className }: { className?: string }) => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
+    <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M5.5 5.5L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+)
+
 export const IconAgentAction = ({ className }: { className?: string }) => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" className={className} xmlns="http://www.w3.org/2000/svg">
     <path d="M7 0L14 7L7 14L0 7L7 0Z" />

@@ -7,7 +7,7 @@ import { LogStream } from '@/components/agent'
 import type { LogStreamHandle } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
-import { IconRunning, IconReview, IconPending, IconDone } from '@/components/agent'
+import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
 import { Paperclip, ArrowUp, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
@@ -97,6 +97,10 @@ function StatusBadge({ status }: { status: UITaskStatus }) {
     [UITaskStatus.Done]: {
       className: 'bg-emerald-50 text-emerald-700 border-emerald-100',
       icon: <IconDone className="w-3 h-3" />,
+    },
+    [UITaskStatus.Cancelled]: {
+      className: 'bg-neutral-50 text-neutral-500 border-neutral-200',
+      icon: <IconCancelled className="w-3 h-3" />,
     },
   }
 

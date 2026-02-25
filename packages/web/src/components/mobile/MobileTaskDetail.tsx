@@ -39,6 +39,7 @@ function StatusDot({ status }: { status: UITaskStatus }) {
     [UITaskStatus.Review]: 'bg-amber-500',
     [UITaskStatus.Pending]: 'bg-neutral-400',
     [UITaskStatus.Done]: 'bg-emerald-500',
+    [UITaskStatus.Cancelled]: 'bg-neutral-400',
   }
   return <span className={`w-2.5 h-2.5 rounded-full ${colors[status]}`} />
 }

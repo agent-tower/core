@@ -39,6 +39,7 @@ function groupTasksByStatus(tasks: UITask[]) {
     [UITaskStatus.Running]: [],
     [UITaskStatus.Pending]: [],
     [UITaskStatus.Done]: [],
+    [UITaskStatus.Cancelled]: [],
   }
 
   for (const task of tasks) {
@@ -54,6 +55,7 @@ const TASK_GROUP_CONFIG = [
   { status: UITaskStatus.Running, title: 'Running', defaultOpen: true },
   { status: UITaskStatus.Pending, title: 'Pending', defaultOpen: false },
   { status: UITaskStatus.Done, title: 'Done', defaultOpen: false },
+  { status: UITaskStatus.Cancelled, title: 'Cancelled', defaultOpen: false },
 ] as const
 
 export function TaskList({

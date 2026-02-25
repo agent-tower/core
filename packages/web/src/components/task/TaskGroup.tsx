@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
-import { IconReview, IconRunning, IconPending, IconDone } from '../agent/Icons'
+import { IconReview, IconRunning, IconPending, IconDone, IconCancelled } from '../agent/Icons'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
 
@@ -57,6 +57,7 @@ function DraggableTaskCard({
         {status === UITaskStatus.Running && <IconRunning className="animate-pulse" />}
         {status === UITaskStatus.Pending && <IconPending />}
         {status === UITaskStatus.Done && <IconDone className="text-neutral-400" />}
+        {status === UITaskStatus.Cancelled && <IconCancelled className="text-neutral-400" />}
       </div>
 
       <div className="flex-1 min-w-0">
