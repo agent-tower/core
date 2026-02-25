@@ -7,6 +7,7 @@
     "setup": "pnpm install && pnpm --filter @agent-tower/shared build && pnpm db:push",
     "dev": "pnpm -r --parallel run dev",
     "build": "pnpm -r run build",
+    "build:publish": "node scripts/build-publish.mjs",
     "lint": "pnpm -r run lint",
     "clean": "pnpm -r run clean",
     "db:generate": "pnpm --filter @agent-tower/server run db:generate",

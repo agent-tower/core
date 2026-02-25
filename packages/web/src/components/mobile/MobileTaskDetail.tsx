@@ -442,7 +442,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                   {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded.'}
                 </div>
               ) : (
-                <LogStream ref={logStreamRef} logs={logs} scrollElementRef={scrollContainerRef} compact />
+                <LogStream ref={logStreamRef} logs={logs} scrollElementRef={scrollContainerRef} />
               )
             ) : (
               /* No session — show start agent CTA */

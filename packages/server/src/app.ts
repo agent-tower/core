@@ -36,7 +36,11 @@ export async function buildApp() {
 
   // 生产模式：托管前端静态文件
   if (process.env.NODE_ENV === 'production') {
-    const webDistPath = path.resolve(__dirname, '../../web/dist');
+    // npm 发布包: dist/web/  |  monorepo 开发: ../../web/dist
+    const webDistPath = path.resolve(
+      __dirname,
+      process.env.AGENT_TOWER_WEB_DIR || '../../web/dist',
+    );
     await app.register(fastifyStatic, {
       root: webDistPath,
       prefix: '/',

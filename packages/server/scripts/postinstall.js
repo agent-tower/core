@@ -65,41 +65,48 @@ function findFiles(dir, pattern, results = [], depth = 0, maxDepth = 10) {
  * 修复 spawn-helper 权限
  */
 function fixSpawnHelperPermissions() {
-  // 从脚本所在目录向上查找 monorepo 根目录
+  // 1. 优先查找包自身的 node_modules（npm 全局安装场景）
+  const packageRoot = join(__dirname, '..');
+  const localNodeModules = join(packageRoot, 'node_modules');
+
+  // 2. 尝试查找 monorepo 根目录（pnpm monorepo 场景）
   const monorepoRoot = findMonorepoRoot(__dirname);
+  const monorepoNodeModules = monorepoRoot ? join(monorepoRoot, 'node_modules') : null;
 
-  if (!monorepoRoot) {
-    console.log('[postinstall] 未找到 monorepo 根目录，跳过 spawn-helper 权限修复');
-    return;
+  // 收集所有需要搜索的 node_modules 目录（去重）
+  const searchDirs = [];
+  if (existsSync(localNodeModules)) {
+    searchDirs.push(localNodeModules);
+  }
+  if (monorepoNodeModules && monorepoNodeModules !== localNodeModules && existsSync(monorepoNodeModules)) {
+    searchDirs.push(monorepoNodeModules);
   }
 
-  const nodeModulesDir = join(monorepoRoot, 'node_modules');
-
-  if (!existsSync(nodeModulesDir)) {
-    console.log('[postinstall] node_modules 目录不存在，跳过');
+  if (searchDirs.length === 0) {
+    console.log('[postinstall] 未找到 node_modules 目录，跳过 spawn-helper 权限修复');
     return;
   }
-
-  console.log(`[postinstall] 在 ${nodeModulesDir} 中查找 spawn-helper...`);
-
-  const spawnHelpers = findFiles(nodeModulesDir, /^spawn-helper$/);
 
   let fixed = 0;
-  for (const file of spawnHelpers) {
-    // 只处理 node-pty 的 spawn-helper
-    if (!file.includes('node-pty')) continue;
+  for (const nodeModulesDir of searchDirs) {
+    console.log(`[postinstall] 在 ${nodeModulesDir} 中查找 spawn-helper...`);
+    const spawnHelpers = findFiles(nodeModulesDir, /^spawn-helper$/);
 
-    try {
-      const stats = statSync(file);
-      const isExecutable = (stats.mode & 0o111) !== 0;
+    for (const file of spawnHelpers) {
+      if (!file.includes('node-pty')) continue;
 
-      if (!isExecutable) {
-        chmodSync(file, 0o755);
-        console.log(`[postinstall] 已修复 spawn-helper 权限: ${file}`);
-        fixed++;
+      try {
+        const stats = statSync(file);
+        const isExecutable = (stats.mode & 0o111) !== 0;
+
+        if (!isExecutable) {
+          chmodSync(file, 0o755);
+          console.log(`[postinstall] 已修复 spawn-helper 权限: ${file}`);
+          fixed++;
+        }
+      } catch (err) {
+        console.warn(`[postinstall] 无法修复权限: ${file}`, err.message);
       }
-    } catch (err) {
-      console.warn(`[postinstall] 无法修复权限: ${file}`, err.message);
     }
   }
 

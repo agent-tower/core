@@ -9,7 +9,7 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
 /** 附件存储根目录 */
 function getStorageDir(): string {
-  const dataDir = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
+  const dataDir = process.env.AGENT_TOWER_DATA_DIR || process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
   return path.join(dataDir, 'attachments');
 }
 

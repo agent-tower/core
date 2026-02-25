@@ -40,13 +40,13 @@ let cachedProfiles: ExecutorProfiles | null = null;
 // ─── User overrides path ─────────────────────────────────────────
 
 function getUserProfilesPath(): string {
-  // 存放在 server 包根目录的 data 目录下（不在 dist 里，避免被 build 清除）
+  if (process.env.AGENT_TOWER_DATA_DIR) {
+    return path.join(process.env.AGENT_TOWER_DATA_DIR, 'profiles.json');
+  }
+  // 开发模式回退: server 包根目录的 data 目录
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  // 开发模式: src/executors/ → ../../data
-  // 编译模式: dist/executors/ → ../../data
   const serverRoot = path.resolve(__dirname, '..', '..');
-  const dataDir = path.join(serverRoot, 'data');
-  return path.join(dataDir, 'profiles.json');
+  return path.join(serverRoot, 'data', 'profiles.json');
 }
 
 // ─── Core functions ──────────────────────────────────────────────

@@ -160,3 +160,6 @@ test-screenshots/
 
 # Runtime data (src/data is dev-mode path)
 packages/server/src/data/
+
+# Publish build output
+packages/server/publish/
