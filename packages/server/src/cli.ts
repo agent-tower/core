@@ -7,7 +7,7 @@
  *   agent-tower --port 8080         # 指定端口
  *   agent-tower --data-dir /path    # 指定数据目录
  */
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -137,6 +137,16 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   await app.listen({ port, host: '0.0.0.0' });
+
+  // 写入端口文件，供 MCP 等外部进程发现
+  const portFile = path.join(dataDir, 'port');
+  writeFileSync(portFile, String(port), 'utf-8');
+
+  const cleanupPortFile = () => {
+    try { unlinkSync(portFile); } catch {}
+  };
+  process.on('exit', cleanupPortFile);
+
   console.log(`Agent Tower is running on http://localhost:${port}`);
 }
 

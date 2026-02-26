@@ -34,6 +34,10 @@ export async function tunnelAuthHook(
   if (!TunnelService.isRunning()) return;
   if (!isTunnelRequest(request)) return;
 
+  // 静态资源不需要认证（构建产物，不含敏感数据）
+  const url = request.url;
+  if (url.startsWith('/assets/') || url === '/vite.svg' || url === '/favicon.ico') return;
+
   const token = extractToken(request);
   if (!token || !TunnelService.validateToken(token)) {
     reply.code(401).send({
