@@ -80,6 +80,9 @@ export class WorkspaceService {
         // 复用 worktree 时重新执行文件复制（worktree 可能被重建）
         this.runCopyFiles(task.project.repoPath, worktreePath, task.project.copyFiles);
 
+        // 复用 worktree 时也执行 setup 脚本（fire-and-forget）
+        this.fireSetupScript(mergedWorkspace.id, taskId, worktreePath, task.project.setupScript);
+
         const updated = await prisma.workspace.update({
           where: { id: mergedWorkspace.id },
           data: {
@@ -123,9 +126,9 @@ export class WorkspaceService {
       // WorktreeManager.create 内部已做分支名合法性校验和重复检查
       const worktreePath = await worktreeManager.create(branch);
 
-      // worktree 创建后：复制文件 + 执行 setup 脚本
+      // worktree 创建后：复制文件 + 异步执行 setup 脚本（fire-and-forget）
       this.runCopyFiles(task.project.repoPath, worktreePath, task.project.copyFiles);
-      await this.runSetupScript(worktreePath, task.project.setupScript);
+      this.fireSetupScript(workspace.id, taskId, worktreePath, task.project.setupScript);
 
       // 更新数据库记录：填入真正的 branchName 和 worktreePath
       const updated = await prisma.workspace.update({
@@ -446,12 +449,30 @@ export class WorkspaceService {
   }
 
   /**
-   * 在 worktree 中执行 setup 脚本（逐行执行）
+   * 在 worktree 中执行 setup 脚本（逐行执行），通过 EventBus 推送进度
    */
-  private async runSetupScript(worktreePath: string, setupScript: string | null): Promise<void> {
+  private async runSetupScript(
+    workspaceId: string,
+    taskId: string,
+    worktreePath: string,
+    setupScript: string | null,
+  ): Promise<void> {
     if (!setupScript?.trim()) return;
     const commands = setupScript.split('\n').map((c) => c.trim()).filter(Boolean);
-    for (const cmd of commands) {
+    if (commands.length === 0) return;
+
+    for (let i = 0; i < commands.length; i++) {
+      const cmd = commands[i];
+      console.log(`[WorkspaceService] Setup [${i + 1}/${commands.length}] running: "${cmd}"`);
+      this.eventBus.emit('workspace:setup_progress', {
+        workspaceId,
+        taskId,
+        status: 'running',
+        currentCommand: cmd,
+        currentIndex: i + 1,
+        totalCommands: commands.length,
+      });
+
       try {
         await execAsync(cmd, { cwd: worktreePath, timeout: 300_000 });
       } catch (err) {
@@ -461,6 +482,36 @@ export class WorkspaceService {
         // 不中断，继续执行下一条
       }
     }
+
+    console.log(`[WorkspaceService] Setup completed (${commands.length} commands)`);
+    this.eventBus.emit('workspace:setup_progress', {
+      workspaceId,
+      taskId,
+      status: 'completed',
+      totalCommands: commands.length,
+    });
+  }
+
+  /**
+   * Fire-and-forget 包装：异步执行 setup 脚本，不阻塞调用方
+   */
+  private fireSetupScript(
+    workspaceId: string,
+    taskId: string,
+    worktreePath: string,
+    setupScript: string | null,
+  ): void {
+    if (!setupScript?.trim()) return;
+    this.runSetupScript(workspaceId, taskId, worktreePath, setupScript).catch((err) => {
+      console.error(`[WorkspaceService] Setup script unexpected error:`, err);
+      this.eventBus.emit('workspace:setup_progress', {
+        workspaceId,
+        taskId,
+        status: 'failed',
+        totalCommands: 0,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   /**

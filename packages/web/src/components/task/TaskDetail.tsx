@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces, useOpenInEditor, useGitStatus } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
+import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
 import { socketManager } from '@/lib/socket/manager'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
 import { useTodos } from '@/hooks/use-todos'
@@ -168,6 +169,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   // ============ Session Discovery ============
 
   const { data: workspaces, isLoading: isLoadingWorkspaces } = useWorkspaces(task?.id ?? '')
+  const setupProgress = useWorkspaceSetupProgress(task?.id)
 
   // Find the latest relevant session from active workspaces.
   // We prioritize RUNNING > PENDING > terminal states, and within each bucket
@@ -294,39 +296,41 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     }, [queryClient]),
   })
 
-  // 监听 session:completed 事件 — 后端 DB 状态已更新后才刷新，避免竞态
-  // 同时监听 task:updated 事件 — 后端 Task 状态推进（如 IN_REVIEW）后刷新
+  // ---- Task room 订阅（仅依赖 taskId，不受 sessionId 变化影响）----
+  // 拆分出来避免 sessionId 变化时 unsubscribe/resubscribe task room，
+  // 否则会导致 useWorkspaceSetupProgress 等依赖 task room 的 hook 丢失事件。
   useEffect(() => {
-    if (!sessionId && !task?.id) return
+    if (!task?.id) return
     const socket = socketManager.connect()
+    socket.emit(ClientEvents.SUBSCRIBE, { topic: 'task', id: task.id })
 
-    // 订阅 task room 以接收 TASK_UPDATED 事件
-    if (task?.id) {
-      socket.emit(ClientEvents.SUBSCRIBE, { topic: 'task', id: task.id })
+    const handleTaskUpdated = (payload: TaskUpdatedPayload) => {
+      if (payload.taskId !== task.id) return
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
     }
+    socket.on(ServerEvents.TASK_UPDATED, handleTaskUpdated)
+
+    return () => {
+      socket.off(ServerEvents.TASK_UPDATED, handleTaskUpdated)
+      socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'task', id: task.id })
+    }
+  }, [task?.id, queryClient])
+
+  // ---- Session 事件监听（依赖 sessionId）----
+  useEffect(() => {
+    if (!sessionId) return
+    const socket = socketManager.connect()
 
     const handleSessionCompleted = (payload: SessionCompletedPayload) => {
       if (payload.sessionId !== sessionId) return
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }
-
-    const handleTaskUpdated = (payload: TaskUpdatedPayload) => {
-      if (payload.taskId !== task?.id) return
-      // 刷新 task 列表让 taskDetailData 重新计算（状态变更如 IN_REVIEW）
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-    }
-
     socket.on(ServerEvents.SESSION_COMPLETED, handleSessionCompleted)
-    socket.on(ServerEvents.TASK_UPDATED, handleTaskUpdated)
 
     return () => {
       socket.off(ServerEvents.SESSION_COMPLETED, handleSessionCompleted)
-      socket.off(ServerEvents.TASK_UPDATED, handleTaskUpdated)
-      if (task?.id) {
-        socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'task', id: task.id })
-      }
     }
-  }, [sessionId, task?.id, queryClient])
+  }, [sessionId, queryClient])
 
   // Extract agent todos from the log stream
   const { todos } = useTodos(entries)
@@ -646,6 +650,27 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
               <div className="mb-4 pb-4 border-b border-neutral-100">
                 <p className="text-sm text-neutral-500 leading-relaxed">{task.description}</p>
               </div>
+
+              {/* Setup Script Progress */}
+              {setupProgress && (
+                <div className="flex items-center justify-center gap-2 py-3 text-neutral-400 text-sm">
+                  {setupProgress.status === 'running' && (
+                    <>
+                      <svg className="animate-spin h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      <span>Setup ({setupProgress.currentIndex}/{setupProgress.totalCommands}): <code>{setupProgress.currentCommand}</code></span>
+                    </>
+                  )}
+                  {setupProgress.status === 'completed' && (
+                    <span className="text-emerald-600">Setup 完成</span>
+                  )}
+                  {setupProgress.status === 'failed' && (
+                    <span className="text-red-500">Setup 失败: {setupProgress.error}</span>
+                  )}
+                </div>
+              )}
 
               {isLoadingWorkspaces ? (
                 <div className="flex items-center justify-center py-12 gap-3 text-neutral-400">

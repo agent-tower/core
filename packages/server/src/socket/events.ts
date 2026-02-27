@@ -24,6 +24,7 @@ export {
   type TerminalUnsubscribedPayload,
   type AgentStatus,
   type AgentStatusPayload,
+  type WorkspaceSetupProgressPayload,
   type AckResponse,
   type ClientEventType,
   type ServerEventType,

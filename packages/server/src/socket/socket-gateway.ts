@@ -134,6 +134,19 @@ export class SocketGateway {
       });
     };
 
+    // --- Workspace setup progress (broadcast to task room) ---
+    const onWorkspaceSetupProgress = (payload: {
+      workspaceId: string;
+      taskId: string;
+      status: string;
+      currentCommand?: string;
+      currentIndex?: number;
+      totalCommands: number;
+      error?: string;
+    }) => {
+      this.nsp.to(`task:${payload.taskId}`).emit(ServerEvents.WORKSPACE_SETUP_PROGRESS, payload);
+    };
+
     this.eventBus.on('session:stdout', onStdout);
     this.eventBus.on('session:patch', onPatch);
     this.eventBus.on('session:sessionId', onSessionId);
@@ -143,6 +156,7 @@ export class SocketGateway {
     this.eventBus.on('task:deleted', onTaskDeleted);
     this.eventBus.on('terminal:stdout', onTerminalStdout);
     this.eventBus.on('terminal:exit', onTerminalExit);
+    this.eventBus.on('workspace:setup_progress', onWorkspaceSetupProgress);
 
     this.cleanups.push(
       () => this.eventBus.off('session:stdout', onStdout),
@@ -154,6 +168,7 @@ export class SocketGateway {
       () => this.eventBus.off('task:deleted', onTaskDeleted),
       () => this.eventBus.off('terminal:stdout', onTerminalStdout),
       () => this.eventBus.off('terminal:exit', onTerminalExit),
+      () => this.eventBus.off('workspace:setup_progress', onWorkspaceSetupProgress),
     );
   }
 

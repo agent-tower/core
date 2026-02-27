@@ -31,6 +31,8 @@ export const ServerEvents = {
   TERMINAL_EXIT: 'terminal:exit',
   TERMINAL_SUBSCRIBED: 'terminal:subscribed',
   TERMINAL_UNSUBSCRIBED: 'terminal:unsubscribed',
+  // Workspace setup progress
+  WORKSPACE_SETUP_PROGRESS: 'workspace:setup_progress',
 } as const;
 
 export interface SubscribePayload {
@@ -157,6 +159,23 @@ export interface AckResponse<T = unknown> {
     code: string;
     message: string;
   };
+}
+
+// Workspace setup progress
+export type WorkspaceSetupStatus = 'running' | 'completed' | 'failed';
+
+export interface WorkspaceSetupProgressPayload {
+  workspaceId: string;
+  taskId: string;
+  status: WorkspaceSetupStatus;
+  /** 当前正在执行的命令 */
+  currentCommand?: string;
+  /** 当前命令序号（从 1 开始） */
+  currentIndex?: number;
+  /** 命令总数 */
+  totalCommands: number;
+  /** 失败时的错误信息 */
+  error?: string;
 }
 
 export type ClientEventType = typeof ClientEvents[keyof typeof ClientEvents];

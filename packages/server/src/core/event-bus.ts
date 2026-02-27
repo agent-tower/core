@@ -11,6 +11,16 @@ type EventMap = {
   // Standalone terminal events
   'terminal:stdout': { terminalId: string; data: string };
   'terminal:exit': { terminalId: string; exitCode?: number };
+  // Workspace setup progress
+  'workspace:setup_progress': {
+    workspaceId: string;
+    taskId: string;
+    status: 'running' | 'completed' | 'failed';
+    currentCommand?: string;
+    currentIndex?: number;
+    totalCommands: number;
+    error?: string;
+  };
 };
 
 type EventName = keyof EventMap;
