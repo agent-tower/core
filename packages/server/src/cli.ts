@@ -122,7 +122,13 @@ async function main() {
   const { buildApp } = await import('./app.js');
   const app = await buildApp();
 
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) {
+      console.log('\nForce exit.');
+      process.exit(1);
+    }
+    shuttingDown = true;
     console.log(`\n${signal} received, shutting down...`);
     try {
       await app.close();

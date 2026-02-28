@@ -38,12 +38,17 @@ async function main() {
   const app = await buildApp();
 
   // 优雅关闭处理
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) {
+      console.log('\nForce exit.');
+      process.exit(1);
+    }
+    shuttingDown = true;
     console.log(`\n${signal} received, shutting down gracefully...`);
     try {
       await app.close();
       console.log('Server closed');
-      // 等待 OS 释放端口
       await new Promise((resolve) => setTimeout(resolve, 200));
       process.exit(0);
     } catch (err) {
