@@ -45,6 +45,11 @@ export const queryKeys = {
     changes: (workingDir: string) => ['git', 'changes', workingDir] as const,
     diff: (workingDir: string, filePath: string, type: string) =>
       ['git', 'diff', workingDir, filePath, type] as const,
+    log: (workingDir: string) => ['git', 'log', workingDir] as const,
+    commitFiles: (workingDir: string, hash: string) =>
+      ['git', 'commitFiles', workingDir, hash] as const,
+    commitDiff: (workingDir: string, hash: string, filePath: string) =>
+      ['git', 'commitDiff', workingDir, hash, filePath] as const,
   },
 
   profiles: {

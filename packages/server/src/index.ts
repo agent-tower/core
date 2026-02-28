@@ -17,7 +17,7 @@ if (!existsSync(dataDir)) {
 }
 
 const dbPath = path.join(dataDir, 'data.db');
-process.env.DATABASE_URL = `file:${dbPath}`;
+process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
 process.env.AGENT_TOWER_DATA_DIR = dataDir;
 
 // 确保数据库 schema 与当前版本一致
@@ -26,7 +26,7 @@ const prismaBin = path.resolve(__dirname, '../node_modules/.bin/prisma');
 try {
   execFileSync(prismaBin, ['db', 'push', '--skip-generate', `--schema=${schemaPath}`], {
     stdio: 'pipe',
-    env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
+    env: { ...process.env, AGENT_TOWER_DATABASE_URL: `file:${dbPath}` },
   });
 } catch (err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);

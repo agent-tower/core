@@ -850,7 +850,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
         {/* Resizer — only visible when WorkspacePanel is open */}
         {isWorkspaceOpen && (
           <div
-            className="w-1 cursor-col-resize hover:bg-neutral-200 active:bg-blue-400 transition-colors z-30 flex-shrink-0"
+            className="w-1 cursor-col-resize hover:bg-neutral-200 active:bg-blue-400 transition-colors z-30 flex-shrink-0 border-l border-neutral-200"
             onMouseDown={handleMouseDownResize}
           />
         )}

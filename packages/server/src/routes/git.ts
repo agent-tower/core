@@ -51,24 +51,20 @@ function parseNameStatus(output: string): ChangeEntry[] {
     .filter((entry): entry is ChangeEntry => entry !== null);
 }
 
+const workingDirSchema = z
+  .string()
+  .min(1, 'workingDir is required')
+  .refine((v) => path.isAbsolute(v), { message: 'workingDir must be absolute' })
+  .refine((v) => !v.split(path.sep).includes('..'), {
+    message: 'Path traversal (..) is not allowed',
+  });
+
 const changesQuerySchema = z.object({
-  workingDir: z
-    .string()
-    .min(1, 'workingDir is required')
-    .refine((v) => path.isAbsolute(v), { message: 'workingDir must be absolute' })
-    .refine((v) => !v.split(path.sep).includes('..'), {
-      message: 'Path traversal (..) is not allowed',
-    }),
+  workingDir: workingDirSchema,
 });
 
 const diffQuerySchema = z.object({
-  workingDir: z
-    .string()
-    .min(1, 'workingDir is required')
-    .refine((v) => path.isAbsolute(v), { message: 'workingDir must be absolute' })
-    .refine((v) => !v.split(path.sep).includes('..'), {
-      message: 'Path traversal (..) is not allowed',
-    }),
+  workingDir: workingDirSchema,
   path: z
     .string()
     .min(1, 'path is required')
@@ -76,6 +72,28 @@ const diffQuerySchema = z.object({
       message: 'Path traversal (..) is not allowed',
     }),
   type: z.enum(['uncommitted', 'committed']),
+});
+
+const logQuerySchema = z.object({
+  workingDir: workingDirSchema,
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  skip: z.coerce.number().int().min(0).default(0),
+});
+
+const commitFilesQuerySchema = z.object({
+  workingDir: workingDirSchema,
+  hash: z.string().regex(/^[0-9a-f]{4,40}$/i, 'Invalid commit hash'),
+});
+
+const commitDiffQuerySchema = z.object({
+  workingDir: workingDirSchema,
+  hash: z.string().regex(/^[0-9a-f]{4,40}$/i, 'Invalid commit hash'),
+  path: z
+    .string()
+    .min(1, 'path is required')
+    .refine((v) => !v.split('/').includes('..'), {
+      message: 'Path traversal (..) is not allowed',
+    }),
 });
 
 export async function gitRoutes(app: FastifyInstance) {
@@ -170,6 +188,96 @@ export async function gitRoutes(app: FastifyInstance) {
         }
       } catch {
         // ignore — return empty diff
+      }
+
+      return { diff };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  /**
+   * GET /log?workingDir=/path&limit=50&skip=0
+   * Returns commit history of the current branch.
+   */
+  app.get('/log', async (request, reply) => {
+    try {
+      const { workingDir, limit, skip } = logQuerySchema.parse(request.query);
+
+      // NUL (\x00) as field separator; %x01 as record separator (body may contain newlines)
+      const format = '%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x01';
+      const args = ['log', `--format=${format}`, `--max-count=${limit}`, `--skip=${skip}`, 'HEAD'];
+
+      let output = '';
+      try {
+        output = await execGit(workingDir, args);
+      } catch {
+        // HEAD might not exist (empty repo)
+        return { commits: [] };
+      }
+
+      const commits = output
+        .split('\x01')
+        .map((rec) => rec.trim())
+        .filter((rec) => rec.length > 0)
+        .map((rec) => {
+          const parts = rec.split('\0');
+          const [hash, shortHash, author, email, timestamp, subject] = parts;
+          // body is everything after the 6th field, joined back (in case body itself contained \0)
+          const body = (parts.slice(6).join('\0') || '').trim();
+          return {
+            hash: hash || '',
+            shortHash: shortHash || '',
+            author: author || '',
+            email: email || '',
+            timestamp: Number(timestamp || 0),
+            message: subject || '',
+            body,
+          };
+        });
+
+      return { commits };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  /**
+   * GET /commit-files?workingDir=/path&hash=abc123
+   * Returns the list of files changed in a specific commit.
+   */
+  app.get('/commit-files', async (request, reply) => {
+    try {
+      const { workingDir, hash } = commitFilesQuerySchema.parse(request.query);
+
+      let files: ChangeEntry[] = [];
+      try {
+        const output = await execGit(workingDir, ['diff-tree', '--no-commit-id', '--name-status', '-r', hash]);
+        files = parseNameStatus(output);
+      } catch {
+        // ignore
+      }
+
+      return { files };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  /**
+   * GET /commit-diff?workingDir=/path&hash=abc123&path=src/index.ts
+   * Returns the diff of a specific file in a specific commit.
+   */
+  app.get('/commit-diff', async (request, reply) => {
+    try {
+      const { workingDir, hash, path: filePath } = commitDiffQuerySchema.parse(request.query);
+
+      let diff = '';
+      try {
+        // git show --format= shows only the diff portion, no commit header
+        diff = await execGit(workingDir, ['show', '--format=', hash, '--', filePath]);
+      } catch {
+        // ignore
       }
 
       return { diff };

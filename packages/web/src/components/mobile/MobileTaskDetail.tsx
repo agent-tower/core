@@ -5,11 +5,12 @@ import { SessionStatus, type Session } from '@agent-tower/shared'
 import { LogStream, TodoPanel, TokenUsageIndicator } from '@/components/agent'
 import {
   ArrowLeft, ArrowUp, ArrowDown, Paperclip, Play, Square,
-  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical,
+  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { MobileChangesView } from './MobileChangesView'
+import { MobileHistoryView } from './MobileHistoryView'
 import { useWorkspaces, useOpenInEditor } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
@@ -29,7 +30,7 @@ interface MobileTaskDetailProps {
   isDeleting?: boolean
 }
 
-type MobileTab = 'chat' | 'changes' | 'workspace'
+type MobileTab = 'chat' | 'changes' | 'history' | 'workspace'
 
 // ============ Status Badge ============
 
@@ -49,6 +50,7 @@ function StatusDot({ status }: { status: UITaskStatus }) {
 const TAB_CONFIG: { key: MobileTab; label: string; icon: typeof MessageSquare }[] = [
   { key: 'chat', label: 'Chat', icon: MessageSquare },
   { key: 'changes', label: 'Changes', icon: GitGraph },
+  { key: 'history', label: 'History', icon: History },
   { key: 'workspace', label: 'Workspace', icon: FolderOpen },
 ]
 
@@ -542,6 +544,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
       {activeTab === 'changes' && (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <MobileChangesView workingDir={workingDir} />
+        </div>
+      )}
+
+      {activeTab === 'history' && (
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <MobileHistoryView workingDir={workingDir} />
         </div>
       )}
 

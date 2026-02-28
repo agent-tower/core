@@ -1,14 +1,15 @@
 import React, { useState, useRef, useEffect, useMemo } from "react"
-import { Code2, Terminal, Globe, GitGraph } from "lucide-react"
+import { Code2, Terminal, Globe, GitGraph, History } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { TerminalTabs } from "./TerminalTabs"
 import { EditorView } from "./EditorView"
 import { ChangesView } from "./ChangesView"
+import { HistoryView } from "./HistoryView"
 import { useProject } from "@/hooks/use-projects"
 import type { QuickCommand } from "@agent-tower/shared"
 
-type WorkspaceTab = "editor" | "terminal" | "preview" | "changes"
+type WorkspaceTab = "editor" | "terminal" | "preview" | "changes" | "history"
 
 export interface WorkspacePanelProps {
   /** 自定义类名 */
@@ -34,12 +35,14 @@ interface TabConfig {
 
 const DESKTOP_TABS: TabConfig[] = [
   { key: "changes", label: "Changes", icon: <GitGraph size={14} /> },
+  { key: "history", label: "History", icon: <History size={14} /> },
   { key: "editor", label: "Editor", icon: <Code2 size={14} /> },
   { key: "terminal", label: "Terminal", icon: <Terminal size={14} /> },
   { key: "preview", label: "Preview", icon: <Globe size={14} /> },
 ]
 
 const MOBILE_TABS: TabConfig[] = [
+  { key: "history", label: "History", icon: <History size={14} /> },
   { key: "editor", label: "Editor", icon: <Code2 size={14} /> },
   { key: "terminal", label: "Terminal", icon: <Terminal size={14} /> },
   { key: "preview", label: "Preview", icon: <Globe size={14} /> },
@@ -93,7 +96,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     hideChanges,
   }) {
     const tabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
-    const [activeTab, setActiveTab] = useState<WorkspaceTab>(hideChanges ? "editor" : "changes")
+    const [activeTab, setActiveTab] = useState<WorkspaceTab>(hideChanges ? "history" : "changes")
 
     // Fetch project to get quickCommands
     const { data: project } = useProject(projectId ?? '')
@@ -158,6 +161,11 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
           {/* Changes Tab */}
           {activeTab === "changes" && (
             <ChangesView workingDir={workingDir} />
+          )}
+
+          {/* History Tab */}
+          {activeTab === "history" && (
+            <HistoryView workingDir={workingDir} />
           )}
         </div>
       </div>
