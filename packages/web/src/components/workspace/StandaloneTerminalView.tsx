@@ -59,6 +59,7 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
     const {
       terminalId,
       isAttached,
+      needsRecreate,
       create,
       sendInput,
       resize,
@@ -74,6 +75,16 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
         onExit?.(exitCode)
       }, [onExit]),
     })
+
+    // Auto-recreate terminal after socket reconnect
+    useEffect(() => {
+      if (!needsRecreate) return
+      const xterm = xtermRef.current
+      if (xterm) {
+        xterm.writeln('\r\n\x1b[33m[Terminal disconnected — reconnecting...]\x1b[0m')
+      }
+      create()
+    }, [needsRecreate, create])
 
     // Initialize xterm
     useLayoutEffect(() => {

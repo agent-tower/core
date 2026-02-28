@@ -32,7 +32,7 @@ export async function initializeSocket(fastify: FastifyInstance): Promise<Server
       methods: ['GET', 'POST'],
       credentials: true,
     },
-    pingTimeout: 60000,
+    pingTimeout: 300000,
     pingInterval: 25000,
   })
 

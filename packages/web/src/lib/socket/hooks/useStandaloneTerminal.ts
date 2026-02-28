@@ -34,6 +34,8 @@ export interface UseStandaloneTerminalReturn {
   isAttached: boolean
   /** Whether the terminal is being created */
   isCreating: boolean
+  /** Whether the terminal needs to be recreated after a reconnect */
+  needsRecreate: boolean
   /** Create a new terminal and subscribe to its events */
   create: () => Promise<string | null>
   /** Destroy the terminal */
@@ -61,6 +63,7 @@ export function useStandaloneTerminal(
   const [isConnected, setIsConnected] = useState(() => socketManager.isConnected())
   const [isAttached, setIsAttached] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
+  const [needsRecreate, setNeedsRecreate] = useState(false)
 
   // Stable refs for callbacks
   const callbacksRef = useRef({ onOutput, onExit })
@@ -81,13 +84,11 @@ export function useStandaloneTerminal(
     const handleConnect = () => {
       setIsConnected(true)
       // After a reconnect the server has already destroyed our terminal
-      // (cleanupBySocket runs on disconnect). Clear stale state so the
-      // component can detect the terminal is gone and recreate it.
-      // This effect only runs when terminalId is truthy, so this is
-      // always a reconnect scenario (not the initial connect).
+      // (cleanupBySocket runs on disconnect). Signal that a new terminal
+      // needs to be created instead of removing the tab via onExit.
       setIsAttached(false)
-      callbacksRef.current.onExit?.(-1)
       setTerminalId(null)
+      setNeedsRecreate(true)
     }
     const handleDisconnect = () => {
       setIsConnected(false)
@@ -172,6 +173,7 @@ export function useStandaloneTerminal(
         }
       )
       setTerminalId(result.terminalId)
+      setNeedsRecreate(false)
       return result.terminalId
     } catch (error) {
       console.error('[useStandaloneTerminal] Failed to create terminal:', error)
@@ -233,6 +235,7 @@ export function useStandaloneTerminal(
     isConnected,
     isAttached,
     isCreating,
+    needsRecreate,
     create,
     destroy,
     sendInput,

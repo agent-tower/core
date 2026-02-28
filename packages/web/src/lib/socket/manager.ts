@@ -12,6 +12,7 @@ const DEBUG_SOCKET = import.meta.env.DEV;
 class SocketManager {
   private socket: Socket | null = null
   private baseUrl: string
+  private visibilityHandler: (() => void) | null = null
 
   constructor() {
     // 开发环境使用相对路径，通过 Vite 代理；生产环境使用环境变量
@@ -79,6 +80,16 @@ class SocketManager {
     if (!socket.connected) {
       socket.connect()
     }
+    // Register visibilitychange handler to quickly reconnect when tab becomes visible
+    if (!this.visibilityHandler) {
+      this.visibilityHandler = () => {
+        if (document.visibilityState === 'visible' && this.socket && !this.socket.connected) {
+          console.log('[Socket] Page became visible, socket disconnected — reconnecting')
+          this.socket.connect()
+        }
+      }
+      document.addEventListener('visibilitychange', this.visibilityHandler)
+    }
     return socket
   }
 
@@ -86,6 +97,10 @@ class SocketManager {
    * 断开连接并清理 socket 引用
    */
   disconnect(): void {
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler)
+      this.visibilityHandler = null
+    }
     if (this.socket) {
       this.socket.disconnect()
       this.socket = null
