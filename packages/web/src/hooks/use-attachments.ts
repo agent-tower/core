@@ -102,7 +102,8 @@ export function useAttachments() {
         const att = f.attachment!
         const isImage = att.mimeType.startsWith('image/')
         const prefix = isImage ? '!' : ''
-        return `${prefix}[${att.originalName}](${att.storagePath})`
+        // 使用 HTTP URL 而不是磁盘路径，确保浏览器能正常访问
+        return `${prefix}[${att.originalName}](${API_BASE_URL}${att.url})`
       })
       .join('\n')
   }, [])

@@ -86,13 +86,26 @@ function withToken(url: string): string {
 
 /**
  * 将磁盘绝对路径转换为 HTTP URL，使浏览器能显示附件图片。
- * 匹配 data/attachments/ 路径模式，转为 /api/attachments/by-path?path=... 请求。
+ * 转换逻辑：排除 HTTP URL 和 API 路径，将绝对路径转为 /api/attachments/by-path?path=... 请求。
  * 隧道模式下自动追加 token。
  */
 const attachmentUrlTransform: UrlTransform = (url) => {
-  if (url.includes('data/attachments/') || url.includes('data\\attachments\\')) {
+  // 1. 如果是 HTTP/HTTPS URL，直接返回
+  if (url.includes('://')) {
+    return url
+  }
+
+  // 2. 如果已经是 API 路径，直接返回
+  if (url.startsWith('/api/')) {
+    return url
+  }
+
+  // 3. 如果是绝对路径（以 / 开头），转换为 HTTP URL
+  if (url.startsWith('/')) {
     return withToken(`${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`)
   }
+
+  // 4. 相对路径保持原样
   return url
 }
 
@@ -346,7 +359,7 @@ AgentText.displayName = 'AgentText'
 // 5. Assistant Message — Streamdown 渲染 markdown
 const AssistantMessage = memo(({ content, compact }: { content: string; compact?: boolean }) => (
   <div className={`text-neutral-800 min-w-0 ${compact ? 'text-[13px] leading-6 mb-1' : 'text-sm leading-7 mb-2'}`}>
-    <Streamdown>{content}</Streamdown>
+    <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>{content}</Streamdown>
   </div>
 ))
 AssistantMessage.displayName = 'AssistantMessage'
