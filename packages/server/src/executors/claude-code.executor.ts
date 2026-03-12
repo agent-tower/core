@@ -16,6 +16,7 @@ import {
   SpawnedChild,
 } from './base.executor.js';
 import { CommandBuilder, applyOverrides, CmdOverrides } from './command-builder.js';
+import { parsePromptWithImages, buildUserMessageNDJSON } from './image-utils.js';
 
 /**
  * Claude Code 权限模式
@@ -124,7 +125,7 @@ export class ClaudeCodeExecutor extends BaseExecutor {
   }
 
   /**
-   * 构建命令
+   * 构建命令（用于普通文本 prompt）
    */
   protected buildCommandBuilder(): CommandBuilder {
     const useRouter = this.config.claudeCodeRouter ?? false;
@@ -167,17 +168,73 @@ export class ClaudeCodeExecutor extends BaseExecutor {
   }
 
   /**
+   * 构建命令（用于包含图片的 stream-json 输入）
+   * 使用 -p 模式配合 --input-format=stream-json
+   */
+  protected buildCommandBuilderForStreamJson(): CommandBuilder {
+    const useRouter = this.config.claudeCodeRouter ?? false;
+    let builder = CommandBuilder.new(getBaseCommand(useRouter));
+
+    // 使用 -p 参数（print 模式）
+    builder.setParams(['-p']);
+
+    // 权限模式设置
+    const plan = this.config.plan ?? false;
+    const approvals = this.config.approvals ?? false;
+
+    if (plan || approvals) {
+      builder.extendParams(['--permission-prompt-tool=stdio']);
+      builder.extendParams([`--permission-mode=${PermissionMode.BypassPermissions}`]);
+    }
+
+    // 跳过权限检查
+    if (this.config.dangerouslySkipPermissions) {
+      builder.extendParams(['--dangerously-skip-permissions']);
+    }
+
+    // 模型选择
+    if (this.config.model) {
+      builder.extendParams(['--model', this.config.model]);
+    }
+
+    // 输出格式 - 使用 stream-json 进行双向通信
+    builder.extendParams([
+      '--verbose',
+      '--output-format=stream-json',
+      '--input-format=stream-json',
+      '--include-partial-messages',
+      '--replay-user-messages',
+      '--disallowedTools=AskUserQuestion',
+    ]);
+
+    // 应用覆盖
+    return applyOverrides(builder, this.cmdOverrides);
+  }
+
+  /**
    * 启动新会话
    */
   async spawn(config: ExecutorSpawnConfig): Promise<SpawnedChild> {
-    const commandBuilder = this.buildCommandBuilder();
-    const commandParts = commandBuilder.buildInitial();
-
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
-    const newConfig = { ...config, prompt };
 
-    return this.spawnInternal(newConfig, commandParts);
+    // 检测是否包含图片
+    const parsedPrompt = await parsePromptWithImages(prompt);
+
+    if (parsedPrompt.hasImages) {
+      console.log('[ClaudeCodeExecutor] Detected images in prompt, using stdin JSON format');
+      // 使用 stdin JSON 格式发送
+      const commandBuilder = this.buildCommandBuilderForStreamJson();
+      const commandParts = commandBuilder.buildInitial();
+      const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
+      return this.spawnWithStdin(config, commandParts, userMessage);
+    } else {
+      // 保持原有方式
+      const commandBuilder = this.buildCommandBuilder();
+      const commandParts = commandBuilder.buildInitial();
+      const newConfig = { ...config, prompt };
+      return this.spawnInternal(newConfig, commandParts);
+    }
   }
 
   /**
@@ -188,22 +245,34 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     sessionId: string,
     resetToMessageId?: string
   ): Promise<SpawnedChild> {
-    const commandBuilder = this.buildCommandBuilder();
-
-    const additionalArgs = ['--resume', sessionId];
-
-    // 支持回滚到指定消息
-    if (resetToMessageId) {
-      additionalArgs.push('--resume-session-at', resetToMessageId);
-    }
-
-    const commandParts = commandBuilder.buildFollowUp(additionalArgs);
-
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
-    const newConfig = { ...config, prompt };
 
-    return this.spawnInternal(newConfig, commandParts);
+    // 检测是否包含图片
+    const parsedPrompt = await parsePromptWithImages(prompt);
+
+    if (parsedPrompt.hasImages) {
+      console.log('[ClaudeCodeExecutor] Detected images in follow-up, using stdin JSON format');
+      // 使用 stdin JSON 格式发送
+      const commandBuilder = this.buildCommandBuilderForStreamJson();
+      const additionalArgs = ['--resume', sessionId];
+      if (resetToMessageId) {
+        additionalArgs.push('--resume-session-at', resetToMessageId);
+      }
+      const commandParts = commandBuilder.buildFollowUp(additionalArgs);
+      const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
+      return this.spawnWithStdin(config, commandParts, userMessage);
+    } else {
+      // 保持原有方式
+      const commandBuilder = this.buildCommandBuilder();
+      const additionalArgs = ['--resume', sessionId];
+      if (resetToMessageId) {
+        additionalArgs.push('--resume-session-at', resetToMessageId);
+      }
+      const commandParts = commandBuilder.buildFollowUp(additionalArgs);
+      const newConfig = { ...config, prompt };
+      return this.spawnInternal(newConfig, commandParts);
+    }
   }
 
   /**

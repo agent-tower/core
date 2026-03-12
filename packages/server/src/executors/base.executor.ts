@@ -247,6 +247,72 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
   }
 
   /**
+   * 通过 stdin 发送数据启动进程
+   * 用于需要通过 stdin 传递结构化数据的场景（如图片）
+   */
+  protected async spawnWithStdin(
+    config: ExecutorSpawnConfig,
+    commandParts: CommandParts,
+    stdinData: string
+  ): Promise<SpawnedChild> {
+    const { programPath, args } = await resolveCommandParts(commandParts);
+    const env = config.env.withProfile(this.cmdOverrides);
+
+    const cancel = new CancellationToken();
+
+    // 不添加 prompt 到参数列表，因为会通过 stdin 发送
+    const fullArgs = [...args];
+
+    // 使用 echo 通过管道传递 stdin 数据
+    // 这样可以正确地将数据传递给 Claude CLI 的 stdin
+    const escapedStdinData = stdinData.replace(/'/g, "'\\''");
+    const shellCommand = `echo '${escapedStdinData}' | ${programPath} ${fullArgs.map(arg => `'${arg.replace(/'/g, "'\\''")}'`).join(' ')}`;
+
+    console.log('[BaseExecutor] Spawning with stdin via pipe');
+    console.log('[BaseExecutor] Command length:', shellCommand.length);
+    console.log('[BaseExecutor] Stdin data length:', stdinData.length);
+    console.log('[BaseExecutor] Stdin data preview:', stdinData.substring(0, 500));
+
+    const shell = pty.spawn('/bin/bash', ['-c', shellCommand], {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd: config.workingDir,
+      env: env.getFullEnv(),
+    });
+
+    // 添加调试输出监听
+    let outputBuffer = '';
+    shell.onData((data) => {
+      outputBuffer += data;
+      // 只打印前1000个字符，避免日志过多
+      if (outputBuffer.length < 1000) {
+        console.log('[BaseExecutor] PTY output:', data.substring(0, 200));
+      }
+    });
+
+    // 监听退出事件
+    shell.onExit(({ exitCode, signal }) => {
+      console.log('[BaseExecutor] PTY exited, code:', exitCode, 'signal:', signal);
+      console.log('[BaseExecutor] Total output length:', outputBuffer.length);
+      if (outputBuffer.length < 2000) {
+        console.log('[BaseExecutor] Full output:', outputBuffer);
+      }
+    });
+
+    // 监听取消信号
+    cancel.onCancelled(() => {
+      shell.kill('SIGINT');
+    });
+
+    return {
+      pid: shell.pid,
+      pty: shell,
+      cancel,
+    };
+  }
+
+  /**
    * 向 PTY 发送消息
    */
   sendMessage(ptyInstance: IPty, message: string): void {

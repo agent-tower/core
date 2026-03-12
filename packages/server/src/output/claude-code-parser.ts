@@ -46,6 +46,14 @@ interface ClaudeCodeMessage {
       name?: string
       input?: unknown
       tool_use_id?: string
+      // 图片相关字段
+      source?: {
+        type: 'base64' | 'url' | 'file'
+        media_type?: string
+        data?: string
+        url?: string
+        file_id?: string
+      }
     }>
     model?: string
     stop_reason?: string
