@@ -13,12 +13,14 @@ import { useStartSession } from '@/hooks/use-sessions'
 import { useTaskRealtimeSync } from '@/lib/socket/hooks/useTaskRealtimeSync'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
-import { Settings } from 'lucide-react'
+import { Settings, Paperclip } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { MobileTaskDetail } from '@/components/mobile'
 import { TunnelButton } from '@/components/TunnelButton'
 import { Select } from '@/components/ui/select'
+import { useAttachments } from '@/hooks/use-attachments'
+import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 
 interface AgentInfo {
   type: string
@@ -110,6 +112,10 @@ export function ProjectKanbanPage() {
   const [newTaskAgent, setNewTaskAgent] = useState<string>('')
   const [availableAgents, setAvailableAgents] = useState<AgentInfo[]>([])
   const [createStep, setCreateStep] = useState<CreateStep>('idle')
+
+  // Attachments for task creation
+  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, isUploading } = useAttachments()
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // === rerender-use-ref-transient-values: resize 过程中的 mouse position 使用 ref ===
   const isDraggingRef = useRef(false)
@@ -287,7 +293,8 @@ export function ProjectKanbanPage() {
     setNewTaskProjectId('')
     setNewTaskAgent('')
     setCreateStep('idle')
-  }, [createStep])
+    clearAttachments()
+  }, [createStep, clearAttachments])
 
   const handleSubmitProject = useCallback(async () => {
     if (!newProjectName.trim() || !newProjectRepoPath.trim()) return
@@ -307,16 +314,20 @@ export function ProjectKanbanPage() {
   const handleSubmitTask = useCallback(async () => {
     if (!newTaskTitle.trim() || !newTaskProjectId) return
     try {
+      // 拼接附件 markdown 链接到 description 末尾
+      const attachmentLinks = buildMarkdownLinks()
+      const description = [newTaskDescription.trim(), attachmentLinks].filter(Boolean).join('\n\n')
+
       // Step 1: 创建任务
       setCreateStep('creating-task')
       const task = await createTask.mutateAsync({
         title: newTaskTitle.trim(),
-        description: newTaskDescription.trim() || undefined,
+        description: description || undefined,
       })
 
       // 如果选了 agent，自动启动
       if (newTaskAgent) {
-        const prompt = [newTaskTitle.trim(), newTaskDescription.trim()].filter(Boolean).join('\n\n')
+        const prompt = [newTaskTitle.trim(), description].filter(Boolean).join('\n\n')
 
         // Step 2: 创建 workspace
         setCreateStep('creating-workspace')
@@ -344,10 +355,57 @@ export function ProjectKanbanPage() {
       setNewTaskDescription('')
       setNewTaskProjectId('')
       setNewTaskAgent('')
+      clearAttachments()
     } catch {
       setCreateStep('idle')
     }
-  }, [newTaskTitle, newTaskDescription, newTaskProjectId, newTaskAgent, createTask, startSession, queryClient])
+  }, [newTaskTitle, newTaskDescription, newTaskProjectId, newTaskAgent, createTask, startSession, queryClient, buildMarkdownLinks, clearAttachments])
+
+  // ============ File Upload Handlers ============
+
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files
+    if (fileList && fileList.length > 0) {
+      addFiles(Array.from(fileList))
+    }
+    e.target.value = ''
+  }, [addFiles])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items
+    const files: File[] = []
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) files.push(file)
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault()
+      addFiles(files)
+    }
+  }, [addFiles])
+
+  const [isDragOver, setIsDragOver] = useState(false)
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    const fileList = e.dataTransfer.files
+    if (fileList.length > 0) {
+      addFiles(Array.from(fileList))
+    }
+  }, [addFiles])
 
   const isLoading = isProjectsLoading || isFilteredTasksLoading || isAllTasksLoading
 
@@ -480,9 +538,52 @@ export function ProjectKanbanPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-neutral-700 mb-1.5">Description</label>
-                <textarea rows={3} value={newTaskDescription} onChange={e => setNewTaskDescription(e.target.value)} placeholder="Optional..."
-                  className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 resize-none" disabled={createStep !== 'idle'}
-                  onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask() }} />
+                <div
+                  className={`relative border rounded-lg transition-colors ${
+                    isDragOver ? 'border-neutral-400 bg-neutral-50' : 'border-neutral-200'
+                  }`}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                >
+                  <textarea
+                    rows={3}
+                    value={newTaskDescription}
+                    onChange={e => setNewTaskDescription(e.target.value)}
+                    onPaste={handlePaste}
+                    placeholder="Optional..."
+                    className="w-full px-3 py-2 text-sm focus:outline-none bg-transparent resize-none"
+                    disabled={createStep !== 'idle'}
+                    onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask() }}
+                  />
+                  {isDragOver && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-neutral-50/90 pointer-events-none">
+                      <p className="text-sm text-neutral-600">Drop files here</p>
+                    </div>
+                  )}
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={createStep !== 'idle' || isUploading}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-600 active:text-neutral-900 active:bg-neutral-100 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Paperclip size={14} />
+                    Attach files
+                  </button>
+                  <span className="text-xs text-neutral-400">
+                    or paste files
+                  </span>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={handleFileInputChange}
+                  className="hidden"
+                />
+                <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
               </div>
             </div>
           </Modal>
@@ -690,17 +791,54 @@ export function ProjectKanbanPage() {
               <label className="block text-sm font-medium text-neutral-700 mb-1.5">
                 Description
               </label>
-              <textarea
-                rows={3}
-                value={newTaskDescription}
-                onChange={e => setNewTaskDescription(e.target.value)}
-                placeholder="Optional description..."
-                className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors resize-none"
-                disabled={createStep !== 'idle'}
-                onKeyDown={e => {
-                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
-                }}
+              <div
+                className={`relative border rounded-lg transition-colors ${
+                  isDragOver ? 'border-neutral-400 bg-neutral-50' : 'border-neutral-200'
+                }`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
+                <textarea
+                  rows={3}
+                  value={newTaskDescription}
+                  onChange={e => setNewTaskDescription(e.target.value)}
+                  onPaste={handlePaste}
+                  placeholder="Optional description..."
+                  className="w-full px-3 py-2 text-sm focus:outline-none bg-transparent resize-none"
+                  disabled={createStep !== 'idle'}
+                  onKeyDown={e => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
+                  }}
+                />
+                {isDragOver && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-neutral-50/90 pointer-events-none">
+                    <p className="text-sm text-neutral-600">Drop files here</p>
+                  </div>
+                )}
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={createStep !== 'idle' || isUploading}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Paperclip size={14} />
+                  Attach files
+                </button>
+                <span className="text-xs text-neutral-400">
+                  or paste/drag files
+                </span>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                onChange={handleFileInputChange}
+                className="hidden"
               />
+              <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
             </div>
             {createTask.isError && (
               <p className="text-xs text-red-500">

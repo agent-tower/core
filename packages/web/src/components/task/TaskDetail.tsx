@@ -27,6 +27,47 @@ import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsD
 import { GitOperationsDialog } from '@/components/workspace/GitOperationsDialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
+import { Streamdown } from 'streamdown'
+import type { UrlTransform } from 'streamdown'
+import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
+import 'streamdown/styles.css'
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+
+/** 给 URL 追加隧道 token（如果处于隧道模式） */
+function withToken(url: string): string {
+  if (!isTunnelAccess()) return url
+  const token = getTunnelToken()
+  if (!token) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}token=${encodeURIComponent(token)}`
+}
+
+/**
+ * 将磁盘绝对路径转换为 HTTP URL，使浏览器能显示附件图片。
+ */
+const attachmentUrlTransform: UrlTransform = (url) => {
+  if (url.includes('://')) return url
+  if (url.startsWith('/api/')) return url
+  if (url.startsWith('/')) {
+    return withToken(`${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`)
+  }
+  return url
+}
+
+/** 自定义 img 渲染：限制图片尺寸，点击可查看原图 */
+const MarkdownImage = ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => (
+  <a href={src} target="_blank" rel="noopener noreferrer" className="inline-block">
+    <img
+      src={src}
+      alt={alt}
+      {...props}
+      className="max-w-[300px] max-h-[200px] object-contain rounded-lg border border-neutral-200 cursor-pointer hover:opacity-90 transition-opacity"
+    />
+  </a>
+)
+
+const streamdownComponents = { img: MarkdownImage }
 
 interface TaskDetailProps {
   task: UITaskDetailData | null
@@ -667,7 +708,15 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             <div ref={contentRef} className="w-full">
               {/* Task Description */}
               <div className="mb-4 pb-4 border-b border-neutral-100">
-                <p className="text-sm text-neutral-500 leading-relaxed">{task.description}</p>
+                {task.description ? (
+                  <div className="text-sm text-neutral-500 leading-relaxed prose prose-sm max-w-none">
+                    <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
+                      {task.description}
+                    </Streamdown>
+                  </div>
+                ) : (
+                  <p className="text-sm text-neutral-400 italic">No description</p>
+                )}
               </div>
 
               {/* Setup Script Progress */}
