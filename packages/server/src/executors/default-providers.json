@@ -1,0 +1,49 @@
+{
+  "providers": [
+    {
+      "id": "claude-code-default",
+      "name": "Claude Code",
+      "agentType": "CLAUDE_CODE",
+      "env": {},
+      "config": {
+        "dangerouslySkipPermissions": true
+      },
+      "isDefault": true,
+      "builtIn": true
+    },
+    {
+      "id": "gemini-cli-default",
+      "name": "Gemini CLI",
+      "agentType": "GEMINI_CLI",
+      "env": {},
+      "config": {
+        "yolo": true
+      },
+      "isDefault": true,
+      "builtIn": true
+    },
+    {
+      "id": "cursor-agent-default",
+      "name": "Cursor Agent",
+      "agentType": "CURSOR_AGENT",
+      "env": {},
+      "config": {
+        "force": true,
+        "model": "auto"
+      },
+      "isDefault": true,
+      "builtIn": true
+    },
+    {
+      "id": "codex-default",
+      "name": "Codex",
+      "agentType": "CODEX",
+      "env": {},
+      "config": {
+        "fullAuto": true
+      },
+      "isDefault": true,
+      "builtIn": true
+    }
+  ]
+}

@@ -39,14 +39,16 @@ export const DeleteTaskInput = z.object({
   task_id: z.string().describe('The ID of the task to delete'),
 });
 
+// ── Providers ──
+
+export const ListProvidersInput = z.object({});
+
 // ── Workspaces ──
 
 export const StartWorkspaceSessionInput = z.object({
   task_id: z.string().describe('The ID of the task to start a workspace session for'),
-  agent_type: z.enum(['CLAUDE_CODE', 'GEMINI_CLI', 'CURSOR_AGENT', 'CODEX'])
-    .describe("The AI agent type: 'CLAUDE_CODE', 'GEMINI_CLI', 'CURSOR_AGENT', 'CODEX'"),
   prompt: z.string().min(1).describe('The prompt/instruction for the AI agent'),
-  variant: z.string().optional().describe('Optional executor variant'),
+  provider_id: z.string().describe('The provider ID to use for the AI agent session. Use list_providers to get available provider IDs.'),
 });
 
 export const GetWorkspaceDiffInput = z.object({

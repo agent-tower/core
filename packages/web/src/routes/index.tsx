@@ -8,6 +8,7 @@ const ProjectKanbanPage = lazy(() => import('@/pages/ProjectKanbanPage').then(m 
 const DemoPage = lazy(() => import('@/pages/DemoPage').then(m => ({ default: m.DemoPage })))
 const AgentDemoPage = lazy(() => import('@/pages/AgentDemoPage').then(m => ({ default: m.AgentDemoPage })))
 const ProfileSettingsPage = lazy(() => import('@/pages/ProfileSettingsPage').then(m => ({ default: m.ProfileSettingsPage })))
+const ProviderSettingsPage = lazy(() => import('@/pages/ProviderSettingsPage').then(m => ({ default: m.ProviderSettingsPage })))
 const NotificationSettingsPage = lazy(() => import('@/pages/NotificationSettingsPage').then(m => ({ default: m.NotificationSettingsPage })))
 const ProjectSettingsPage = lazy(() => import('@/pages/ProjectSettingsPage').then(m => ({ default: m.ProjectSettingsPage })))
 
@@ -47,6 +48,14 @@ const router = createBrowserRouter([
           { index: true, element: <Navigate to="agents" replace /> },
           {
             path: 'agents',
+            element: (
+              <Suspense fallback={<div className="p-8">Loading...</div>}>
+                <ProviderSettingsPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: 'agents-legacy',
             element: (
               <Suspense fallback={<div className="p-8">Loading...</div>}>
                 <ProfileSettingsPage />

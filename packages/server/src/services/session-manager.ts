@@ -1,6 +1,6 @@
 import { prisma } from '../utils/index.js';
 import { AgentType, SessionStatus, SessionPurpose, TaskStatus } from '../types/index.js';
-import { getExecutor, ExecutionEnv } from '../executors/index.js';
+import { getExecutor, getExecutorByProvider, getProviderById, ExecutionEnv } from '../executors/index.js';
 import {
   sessionMsgStoreManager,
   createClaudeCodeParser,
@@ -72,12 +72,13 @@ export class SessionManager {
     });
   }
 
-  async create(workspaceId: string, agentType: AgentType, prompt: string, variant: string = 'DEFAULT') {
+  async create(workspaceId: string, agentType: AgentType, prompt: string, variant: string = 'DEFAULT', providerId?: string) {
     return prisma.session.create({
       data: {
         workspaceId,
         agentType,
         variant,
+        providerId: providerId ?? null,
         prompt,
         status: SessionStatus.PENDING,
       },
@@ -106,18 +107,30 @@ export class SessionManager {
     });
 
     const agentType = session.agentType as AgentType;
-    const executor = getExecutor(agentType, session.variant ?? 'DEFAULT');
+    const executor = session.providerId
+      ? getExecutorByProvider(session.providerId)
+      : getExecutor(agentType, session.variant ?? 'DEFAULT');
     if (!executor) {
-      throw new Error(`Executor not found for agent type: ${session.agentType}`);
+      throw new Error(`Executor not found for agent type: ${session.agentType}${session.providerId ? ` (provider: ${session.providerId})` : ''}`);
     }
 
     console.log('[SessionManager] ✅ Executor found, spawning process...');
 
     const workingDir = session.workspace.worktreePath;
+    const env = ExecutionEnv.default(workingDir);
+
+    // 如果有 provider，注入 provider 的环境变量
+    if (session.providerId) {
+      const provider = getProviderById(session.providerId);
+      if (provider && Object.keys(provider.env).length > 0) {
+        env.merge(provider.env);
+      }
+    }
+
     const spawnResult = await executor.spawn({
       workingDir,
       prompt: session.prompt,
-      env: ExecutionEnv.default(workingDir),
+      env,
     });
 
     await prisma.executionProcess.create({
@@ -206,16 +219,28 @@ export class SessionManager {
 
     const agentSessionId = this.resolveAgentSessionId(id, session.logSnapshot);
     const agentType = session.agentType as AgentType;
-    const executor = getExecutor(agentType, session.variant ?? 'DEFAULT');
+    const executor = session.providerId
+      ? getExecutorByProvider(session.providerId)
+      : getExecutor(agentType, session.variant ?? 'DEFAULT');
     if (!executor) {
-      throw new Error(`Executor not found for agent type: ${session.agentType}`);
+      throw new Error(`Executor not found for agent type: ${session.agentType}${session.providerId ? ` (provider: ${session.providerId})` : ''}`);
     }
 
     const workingDir = session.workspace.worktreePath;
+    const env = ExecutionEnv.default(workingDir);
+
+    // 如果有 provider，注入 provider 的环境变量
+    if (session.providerId) {
+      const provider = getProviderById(session.providerId);
+      if (provider && Object.keys(provider.env).length > 0) {
+        env.merge(provider.env);
+      }
+    }
+
     const spawnConfig = {
       workingDir,
       prompt: message,
-      env: ExecutionEnv.default(workingDir),
+      env,
     };
 
     let spawnResult: SpawnedChild;

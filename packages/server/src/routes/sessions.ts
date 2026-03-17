@@ -4,6 +4,7 @@ import { getSessionManager } from '../core/container.js';
 import { AgentType } from '../types/index.js';
 import { sessionMsgStoreManager } from '../output/index.js';
 import { prisma } from '../utils/index.js';
+import { getProviderById } from '../executors/index.js';
 
 /**
  * Parse tokenUsage JSON string on a session object (or nested sessions).
@@ -21,9 +22,10 @@ export function parseSessionTokenUsage<T extends { tokenUsage?: string | null }>
 }
 
 const createSessionSchema = z.object({
-  agentType: z.nativeEnum(AgentType),
+  agentType: z.nativeEnum(AgentType).optional(),
   prompt: z.string().min(1),
   variant: z.string().optional(),
+  providerId: z.string().optional(),
 });
 
 const sendMessageSchema = z.object({
@@ -38,11 +40,29 @@ export async function sessionRoutes(app: FastifyInstance) {
     '/workspaces/:workspaceId/sessions',
     async (request, reply) => {
       const body = createSessionSchema.parse(request.body);
+
+      // 如果提供了 providerId，从 provider 推导 agentType
+      let agentType: AgentType;
+      if (body.providerId) {
+        const provider = getProviderById(body.providerId);
+        if (!provider) {
+          reply.code(400);
+          return { error: `Provider not found: ${body.providerId}` };
+        }
+        agentType = provider.agentType as AgentType;
+      } else if (body.agentType) {
+        agentType = body.agentType;
+      } else {
+        reply.code(400);
+        return { error: 'Either agentType or providerId must be provided' };
+      }
+
       const session = await sessionService.create(
         request.params.workspaceId,
-        body.agentType,
+        agentType,
         body.prompt,
-        body.variant
+        body.variant,
+        body.providerId
       );
       reply.code(201);
       return session;

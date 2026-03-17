@@ -60,6 +60,11 @@ export const queryKeys = {
       ['profiles', 'variant', agentType, variant] as const,
   },
 
+  providers: {
+    all: ['providers'] as const,
+    detail: (id: string) => ['providers', 'detail', id] as const,
+  },
+
   tunnel: {
     status: ['tunnel', 'status'] as const,
   },

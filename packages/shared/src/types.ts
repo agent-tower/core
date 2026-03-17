@@ -46,6 +46,20 @@ export enum SessionPurpose {
   COMMIT_MSG = 'COMMIT_MSG',
 }
 
+
+// ============ Provider ============
+
+/** Provider 配置 */
+export interface Provider {
+  id: string;
+  name: string;
+  agentType: AgentType | string;
+  env: Record<string, string>;
+  config: Record<string, unknown>;
+  isDefault: boolean;
+  builtIn?: boolean;
+  createdAt?: string;
+}
 // ============ 核心实体类型 ============
 
 /** 终端快捷命令 */

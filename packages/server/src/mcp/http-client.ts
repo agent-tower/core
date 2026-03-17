@@ -87,13 +87,18 @@ export class AgentTowerClient {
     return this.request<{ success: boolean; sha: string }>('POST', `/api/workspaces/${workspaceId}/merge`);
   }
 
+  // ── Providers ──
+
+  async listProviders() {
+    return this.request<any[]>('GET', '/api/providers');
+  }
+
   // ── Sessions ──
 
-  async createSession(workspaceId: string, agentType: string, prompt: string, variant?: string) {
+  async createSession(workspaceId: string, prompt: string, providerId: string) {
     return this.request<any>('POST', `/api/workspaces/${workspaceId}/sessions`, {
-      agentType,
       prompt,
-      ...(variant ? { variant } : {}),
+      providerId,
     });
   }
 

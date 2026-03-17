@@ -1,6 +1,6 @@
 {
   "name": "@agent-tower/server",
-  "version": "0.1.16",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "bin": {
@@ -10,7 +10,7 @@
   "scripts": {
     "postinstall": "prisma generate && node scripts/postinstall.js",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc && cp src/executors/default-profiles.json dist/executors/",
+    "build": "tsc && cp src/executors/default-profiles.json dist/executors/ && cp src/executors/default-providers.json dist/executors/",
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
     "db:generate": "prisma generate",

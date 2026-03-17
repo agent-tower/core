@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo, lazy, Suspense } from 'react'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
-import type { Task, AgentType } from '@agent-tower/shared'
+import type { Task } from '@agent-tower/shared'
 import { TaskList } from '@/components/task'
 import { TaskDetail } from '@/components/task/TaskDetail'
 import type { UITaskDetailData } from '@/components/task/types'
@@ -19,15 +19,9 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { MobileTaskDetail } from '@/components/mobile'
 import { TunnelButton } from '@/components/TunnelButton'
 import { Select } from '@/components/ui/select'
+import { useProviders } from '@/hooks/use-providers'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
-
-interface AgentInfo {
-  type: string
-  name: string
-  available: boolean
-  version?: string
-}
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-workspace' | 'creating-session' | 'starting-session'
 
@@ -109,8 +103,7 @@ export function ProjectKanbanPage() {
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDescription, setNewTaskDescription] = useState('')
   const [newTaskProjectId, setNewTaskProjectId] = useState<string>('')
-  const [newTaskAgent, setNewTaskAgent] = useState<string>('')
-  const [availableAgents, setAvailableAgents] = useState<AgentInfo[]>([])
+  const [newTaskProviderId, setNewTaskProviderId] = useState<string>('')
   const [createStep, setCreateStep] = useState<CreateStep>('idle')
 
   // Attachments for task creation
@@ -124,6 +117,7 @@ export function ProjectKanbanPage() {
   const containerRef = useRef<HTMLDivElement>(null)
 
   const queryClient = useQueryClient()
+  const { data: providersData, isLoading: isProvidersLoading } = useProviders()
 
   // === API 数据 ===
   const { data: projectsData, isLoading: isProjectsLoading } = useProjects()
@@ -268,16 +262,12 @@ export function ProjectKanbanPage() {
   const handleCreateTask = useCallback(() => {
     // 默认选中当前筛选的项目，或第一个项目
     setNewTaskProjectId(filterProjectId ?? projects[0]?.id ?? '')
-    setNewTaskAgent('')
+    // 默认选中第一个可用的 provider
+    const available = providersData?.find(p => p.availability.type !== 'NOT_FOUND')
+    setNewTaskProviderId(available?.provider.id ?? '')
     setCreateStep('idle')
     setIsCreateTaskOpen(true)
-    // 加载可用 agents
-    apiClient.get<{ agents: AgentInfo[] }>('/demo/agents').then(res => {
-      setAvailableAgents(res.agents)
-      const available = res.agents.find(a => a.available)
-      if (available) setNewTaskAgent(available.type)
-    })
-  }, [filterProjectId, projects])
+  }, [filterProjectId, projects, providersData])
 
   const handleCloseProjectModal = useCallback(() => {
     setIsCreateProjectOpen(false)
@@ -291,7 +281,7 @@ export function ProjectKanbanPage() {
     setNewTaskTitle('')
     setNewTaskDescription('')
     setNewTaskProjectId('')
-    setNewTaskAgent('')
+    setNewTaskProviderId('')
     setCreateStep('idle')
     clearAttachments()
   }, [createStep, clearAttachments])
@@ -325,19 +315,19 @@ export function ProjectKanbanPage() {
         description: description || undefined,
       })
 
-      // 如果选了 agent，自动启动
-      if (newTaskAgent) {
+      // 如果选了 provider，自动启动
+      if (newTaskProviderId) {
         const prompt = [newTaskTitle.trim(), description].filter(Boolean).join('\n\n')
 
         // Step 2: 创建 workspace
         setCreateStep('creating-workspace')
         const workspace = await apiClient.post<{ id: string }>(`/tasks/${task.id}/workspaces`, {})
 
-        // Step 3: 创建 session
+        // Step 3: 创建 session (使用 providerId)
         setCreateStep('creating-session')
         const session = await apiClient.post<{ id: string }>(
           `/workspaces/${workspace.id}/sessions`,
-          { agentType: newTaskAgent as AgentType, prompt },
+          { providerId: newTaskProviderId, prompt },
         )
 
         // Step 4: 启动 session
@@ -354,12 +344,12 @@ export function ProjectKanbanPage() {
       setNewTaskTitle('')
       setNewTaskDescription('')
       setNewTaskProjectId('')
-      setNewTaskAgent('')
+      setNewTaskProviderId('')
       clearAttachments()
     } catch {
       setCreateStep('idle')
     }
-  }, [newTaskTitle, newTaskDescription, newTaskProjectId, newTaskAgent, createTask, startSession, queryClient, buildMarkdownLinks, clearAttachments])
+  }, [newTaskTitle, newTaskDescription, newTaskProjectId, newTaskProviderId, createTask, startSession, queryClient, buildMarkdownLinks, clearAttachments])
 
   // ============ File Upload Handlers ============
 
@@ -524,10 +514,10 @@ export function ProjectKanbanPage() {
                     placeholder="Select project..." disabled={createStep !== 'idle'} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">Agent</label>
-                  <Select value={newTaskAgent} onChange={setNewTaskAgent}
-                    options={availableAgents.map(a => ({ value: a.type, label: a.name + (a.available && a.version ? ` (${a.version})` : ''), disabled: !a.available }))}
-                    placeholder={availableAgents.length === 0 ? 'Loading...' : 'Select agent...'} disabled={createStep !== 'idle'} />
+                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">Provider</label>
+                  <Select value={newTaskProviderId} onChange={setNewTaskProviderId}
+                    options={(providersData ?? []).map(({ provider, availability }) => ({ value: provider.id, label: provider.name + (availability.type === 'NOT_FOUND' ? ' (不可用)' : ''), disabled: availability.type === 'NOT_FOUND' }))}
+                    placeholder={isProvidersLoading ? 'Loading...' : 'Select provider...'} disabled={createStep !== 'idle'} />
                 </div>
               </div>
               <div>
@@ -759,14 +749,14 @@ export function ProjectKanbanPage() {
                   Agent
                 </label>
                 <Select
-                  value={newTaskAgent}
-                  onChange={setNewTaskAgent}
-                  options={availableAgents.map(a => ({
-                    value: a.type,
-                    label: a.name + (a.available && a.version ? ` (${a.version})` : ''),
-                    disabled: !a.available,
+                  value={newTaskProviderId}
+                  onChange={setNewTaskProviderId}
+                  options={(providersData ?? []).map(({ provider, availability }) => ({
+                    value: provider.id,
+                    label: provider.name + (availability.type === 'NOT_FOUND' ? ' (不可用)' : ''),
+                    disabled: availability.type === 'NOT_FOUND',
                   }))}
-                  placeholder={availableAgents.length === 0 ? 'Loading...' : 'Select agent...'}
+                  placeholder={isProvidersLoading ? 'Loading...' : 'Select provider...'}
                   disabled={createStep !== 'idle'}
                 />
               </div>

@@ -3,18 +3,10 @@ import { useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
 import { useCreateWorkspace } from '@/hooks/use-workspaces'
 import { useStartSession } from '@/hooks/use-sessions'
+import { useProviders } from '@/hooks/use-providers'
 import { queryKeys } from '@/hooks/query-keys'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
-import type { AgentType } from '@agent-tower/shared'
-
-interface Agent {
-  type: string
-  name: string
-  available: boolean
-  version?: string
-  error?: string
-}
 
 interface StartAgentDialogProps {
   isOpen: boolean
@@ -33,8 +25,7 @@ export function StartAgentDialog({
   taskTitle,
   taskDescription,
 }: StartAgentDialogProps) {
-  const [agents, setAgents] = useState<Agent[]>([])
-  const [selectedAgent, setSelectedAgent] = useState<string>('')
+  const [selectedProviderId, setSelectedProviderId] = useState<string>('')
   const [prompt, setPrompt] = useState('')
   const [step, setStep] = useState<StartStep>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -42,18 +33,16 @@ export function StartAgentDialog({
   const queryClient = useQueryClient()
   const createWorkspace = useCreateWorkspace(taskId)
   const startSession = useStartSession()
+  const { data: providersData, isLoading } = useProviders()
 
-  // 加载可用 agents
+  // 打开时选择第一个可用的 provider
   useEffect(() => {
-    if (!isOpen) return
-    apiClient.get<{ agents: Agent[] }>('/demo/agents').then(res => {
-      setAgents(res.agents)
-      const available = res.agents.find(a => a.available)
-      if (available) {
-        setSelectedAgent(available.type)
-      }
-    })
-  }, [isOpen])
+    if (!isOpen || !providersData) return
+    const available = providersData.find(p => p.availability.type !== 'NOT_FOUND')
+    if (available) {
+      setSelectedProviderId(available.provider.id)
+    }
+  }, [isOpen, providersData])
 
   // 打开时用任务信息预填 prompt
   useEffect(() => {
@@ -69,7 +58,7 @@ export function StartAgentDialog({
   const isStarting = step !== 'idle'
 
   const handleStart = async () => {
-    if (!selectedAgent || !prompt.trim()) return
+    if (!selectedProviderId || !prompt.trim()) return
 
     setError(null)
 
@@ -78,11 +67,11 @@ export function StartAgentDialog({
       setStep('creating-workspace')
       const workspace = await createWorkspace.mutateAsync({})
 
-      // Step 2: 创建 Session
+      // Step 2: 创建 Session (使用 providerId)
       setStep('creating-session')
       const session = await apiClient.post<{ id: string }>(
         `/workspaces/${workspace.id}/sessions`,
-        { agentType: selectedAgent as AgentType, prompt: prompt.trim() },
+        { providerId: selectedProviderId, prompt: prompt.trim() },
       )
 
       // Step 3: 启动 Session
@@ -120,7 +109,7 @@ export function StartAgentDialog({
           </Button>
           <Button
             onClick={handleStart}
-            disabled={isStarting || !selectedAgent || !prompt.trim()}
+            disabled={isStarting || !selectedProviderId || !prompt.trim()}
           >
             {stepLabel[step]}
           </Button>
@@ -128,28 +117,30 @@ export function StartAgentDialog({
       }
     >
       <div className="space-y-5">
-        {/* Agent 选择 */}
+        {/* Provider 选择 */}
         <div>
           <label className="block text-sm font-medium text-neutral-700 mb-2">
-            选择 Agent
+            选择 Provider
           </label>
           <div className="flex gap-2 flex-wrap">
-            {agents.length === 0 && (
+            {isLoading && (
               <span className="text-sm text-neutral-400">加载中...</span>
             )}
-            {agents.map(agent => (
-              <Button
-                key={agent.type}
-                variant={selectedAgent === agent.type ? 'default' : 'outline'}
-                size="sm"
-                disabled={!agent.available || isStarting}
-                onClick={() => setSelectedAgent(agent.type)}
-              >
-                {agent.name}
-                {agent.available && agent.version && ` (${agent.version})`}
-                {!agent.available && ' (不可用)'}
-              </Button>
-            ))}
+            {providersData?.map(({ provider, availability }) => {
+              const isAvailable = availability.type !== 'NOT_FOUND'
+              return (
+                <Button
+                  key={provider.id}
+                  variant={selectedProviderId === provider.id ? 'default' : 'outline'}
+                  size="sm"
+                  disabled={!isAvailable || isStarting}
+                  onClick={() => setSelectedProviderId(provider.id)}
+                >
+                  {provider.name}
+                  {!isAvailable && ' (不可用)'}
+                </Button>
+              )
+            })}
           </div>
         </div>
 

@@ -68,6 +68,7 @@ model Session {
   workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   agentType    String
   variant      String             @default("DEFAULT")
+  providerId   String?
   prompt       String
   status       String             @default("PENDING")
   purpose      String             @default("CHAT")  // CHAT: 正常会话, COMMIT_MSG: 生成提交消息

@@ -9,6 +9,7 @@ import { filesystemRoutes } from './filesystem.js';
 import { filesRoutes } from './files.js';
 import { gitRoutes } from './git.js';
 import { profileRoutes } from './profiles.js';
+import { providerRoutes } from './providers.js';
 import { terminalRoutes } from './terminals.js';
 import { tunnelRoutes } from './tunnel.js';
 import { attachmentRoutes } from './attachments.js';
@@ -42,8 +43,11 @@ export async function registerRoutes(app: FastifyInstance) {
   // Git 变更查看路由
   await app.register(gitRoutes, { prefix: '/api/git' });
 
-  // Profile 配置路由
+  // Profile 配置路由 (deprecated)
   await app.register(profileRoutes, { prefix: '/api' });
+
+  // Provider 配置路由
+  await app.register(providerRoutes, { prefix: '/api' });
 
   // Standalone terminal 路由
   await app.register(terminalRoutes, { prefix: '/api' });

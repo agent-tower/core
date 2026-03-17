@@ -21,9 +21,8 @@ export function registerWorkspaceTools(server: McpServer, client: AgentTowerClie
         // 2. 创建会话
         const session = await client.createSession(
           workspace.id,
-          params.agent_type,
           params.prompt,
-          params.variant
+          params.provider_id
         );
         // 3. 启动会话
         await client.startSession(session.id);

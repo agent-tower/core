@@ -11,6 +11,7 @@ import { GeminiCliExecutor, type GeminiCliConfig } from './gemini-cli.executor.j
 import { CursorAgentExecutor, type CursorAgentConfig } from './cursor-agent.executor.js';
 import { CodexExecutor, type CodexConfig } from './codex.executor.js';
 import { getVariantConfig, type VariantConfig } from './profiles.js';
+import { getProviderById, getDefaultProvider, getAllProviders, type Provider } from './providers.js';
 
 // ─── Executor Factory ────────────────────────────────────────────
 
@@ -46,6 +47,40 @@ export function getExecutor(agentType: AgentType, variant: string = 'DEFAULT'): 
     if (!defaultConfig) return undefined;
     return createExecutor(agentType, defaultConfig);
   }
+  return createExecutor(agentType, config);
+}
+
+/**
+ * 根据 provider ID 创建 executor
+ * provider 的 env 会通过 CmdOverrides.env 注入，config 作为 executor 配置
+ */
+export function getExecutorByProvider(providerId: string): BaseExecutor | undefined {
+  const provider = getProviderById(providerId);
+  if (!provider) return undefined;
+  return createExecutorFromProvider(provider);
+}
+
+/**
+ * 根据 agentType 找默认 provider 创建 executor
+ */
+export function getExecutorByAgentType(agentType: AgentType): BaseExecutor | undefined {
+  const provider = getDefaultProvider(agentType);
+  if (!provider) return undefined;
+  return createExecutorFromProvider(provider);
+}
+
+/**
+ * 从 Provider 创建 executor 实例
+ */
+function createExecutorFromProvider(provider: Provider): BaseExecutor {
+  const agentType = provider.agentType as AgentType;
+  const config: VariantConfig = {
+    ...provider.config,
+    // 将 provider.env 注入到 cmd.env，这样会在 spawnInternal 时通过 withProfile 合并到环境变量
+    cmd: {
+      env: provider.env,
+    },
+  };
   return createExecutor(agentType, config);
 }
 
@@ -105,6 +140,37 @@ export async function getAllExecutorsAvailability(): Promise<
   return results;
 }
 
+/**
+ * 获取所有 providers 的可用性信息（用于前端选择 provider）
+ */
+export async function getAllProvidersAvailability(): Promise<
+  Array<{
+    provider: Provider;
+    availability: AvailabilityInfo;
+  }>
+> {
+  const providers = getAllProviders();
+  const results = [];
+
+  // 缓存每种 agentType 的可用性结果，避免重复检查
+  const availabilityCache = new Map<string, AvailabilityInfo>();
+
+  for (const provider of providers) {
+    const agentType = provider.agentType as AgentType;
+    let availability = availabilityCache.get(agentType);
+
+    if (!availability) {
+      const executor = createExecutorFromProvider(provider);
+      availability = await executor.getAvailabilityInfo();
+      availabilityCache.set(agentType, availability);
+    }
+
+    results.push({ provider, availability });
+  }
+
+  return results;
+}
+
 // 导出类
 export { BaseExecutor, CancellationToken } from './base.executor.js';
 export { ClaudeCodeExecutor, PermissionMode } from './claude-code.executor.js';
@@ -114,7 +180,7 @@ export { CodexExecutor } from './codex.executor.js';
 export { CommandBuilder } from './command-builder.js';
 export { ExecutionEnv } from './execution-env.js';
 
-// 导出 profiles
+// 导出 profiles (deprecated — 保留向后兼容)
 export {
   getProfiles,
   loadProfiles,
@@ -126,6 +192,20 @@ export {
   getDefaultProfiles,
 } from './profiles.js';
 
+// 导出 providers
+export {
+  getAllProviders,
+  getProviderById,
+  getProvidersByAgentType,
+  getDefaultProvider,
+  createProvider,
+  updateProvider,
+  deleteProvider,
+  loadProviders,
+  reloadProviders,
+  getDefaultProviders,
+} from './providers.js';
+
 // 导出类型
 export type { AvailabilityInfo, SpawnedChild, ExecutorSpawnConfig, AgentCapability } from './base.executor.js';
 export type { ClaudeCodeConfig } from './claude-code.executor.js';
@@ -135,3 +215,4 @@ export type { CodexConfig } from './codex.executor.js';
 export type { CmdOverrides, CommandParts } from './command-builder.js';
 export type { RepoContext } from './execution-env.js';
 export type { ExecutorProfiles, VariantConfig, AgentVariants } from './profiles.js';
+export type { Provider, ProvidersData } from './providers.js';
