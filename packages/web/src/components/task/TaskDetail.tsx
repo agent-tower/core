@@ -8,7 +8,7 @@ import { LogStream } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
-import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork } from 'lucide-react'
+import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, Cpu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { useWorkspaces, useOpenInEditor, useGitStatus } from '@/hooks/use-workspaces'
@@ -16,6 +16,7 @@ import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
 import { socketManager } from '@/lib/socket/manager'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
+import { useProviders } from '@/hooks/use-providers'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
@@ -259,6 +260,16 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
   const sessionId = activeSession?.id ?? ''
   const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
+
+  // ============ Provider Info ============
+
+  const { data: providers } = useProviders()
+  const activeProviderName = useMemo(() => {
+    const pid = activeSession?.providerId
+    if (!pid || !providers) return null
+    const match = providers.find((p) => p.provider.id === pid)
+    return match?.provider.name ?? null
+  }, [activeSession?.providerId, providers])
 
   // Whether the displayed session comes from a MERGED workspace (read-only history, no active worktree)
   const isReadOnlySession = useMemo(() => {
@@ -864,10 +875,16 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                   >
                     <Paperclip size={18} />
                   </button>
-                  <TokenUsageIndicator usage={tokenUsage} />
                 </div>
 
                 <div className="flex items-center gap-2">
+                  {activeProviderName && (
+                    <span className="flex items-center gap-1 text-xs text-neutral-400 px-2 py-1.5 max-w-[120px] select-none">
+                      <Cpu size={14} className="shrink-0" />
+                      <span className="truncate">{activeProviderName}</span>
+                    </span>
+                  )}
+                  <TokenUsageIndicator usage={tokenUsage} />
                   {isSessionActive && !input.trim() && !hasAttachments ? (
                     <button
                       onClick={handleStop}

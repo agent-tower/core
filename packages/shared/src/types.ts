@@ -130,6 +130,8 @@ export interface Session {
   status: SessionStatus
   /** 会话用途 */
   purpose?: SessionPurpose
+  /** 使用的 Provider ID */
+  providerId?: string | null
   tokenUsage?: { totalTokens: number; modelContextWindow?: number } | null
   startedAt?: string
   endedAt?: string
