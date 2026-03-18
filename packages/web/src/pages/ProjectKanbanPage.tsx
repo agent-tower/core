@@ -163,6 +163,51 @@ export function ProjectKanbanPage() {
     return allTasks
   }, [filterProjectId, filteredTasksData, allProjectTaskQueries])
 
+  // 按活跃度排序 projects：根据最近创建的任务时间
+  const sortedProjects = useMemo(() => {
+    // 计算每个 project 的最新任务时间
+    const projectLastTaskTime = new Map<string, number>()
+    for (const task of rawTasks) {
+      const taskTime = task.createdAt ? new Date(task.createdAt).getTime() : 0
+      const currentMax = projectLastTaskTime.get(task.projectId) ?? 0
+      if (taskTime > currentMax) {
+        projectLastTaskTime.set(task.projectId, taskTime)
+      }
+    }
+
+    // 排序：有任务的项目按最新任务时间降序，没有任务的项目按创建时间降序
+    return [...projects].sort((a, b) => {
+      const aTime = projectLastTaskTime.get(a.id) ?? (a.createdAt ? new Date(a.createdAt).getTime() : 0)
+      const bTime = projectLastTaskTime.get(b.id) ?? (b.createdAt ? new Date(b.createdAt).getTime() : 0)
+      return bTime - aTime
+    })
+  }, [projects, rawTasks])
+
+  // 按使用频率排序 providers：根据 localStorage 中记录的使用次数
+  const sortedProviders = useMemo(() => {
+    if (!providersData) return []
+
+    // 从 localStorage 读取使用次数
+    const usageCountStr = localStorage.getItem('providerUsageCount')
+    const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
+
+    // 排序：可用的 provider 按使用次数降序，不可用的排在最后
+    return [...providersData].sort((a, b) => {
+      const aAvailable = a.availability.type !== 'NOT_FOUND'
+      const bAvailable = b.availability.type !== 'NOT_FOUND'
+
+      // 不可用的排在最后
+      if (aAvailable !== bAvailable) {
+        return aAvailable ? -1 : 1
+      }
+
+      // 都可用或都不可用时，按使用次数降序
+      const aCount = usageCount[a.provider.id] ?? 0
+      const bCount = usageCount[b.provider.id] ?? 0
+      return bCount - aCount
+    })
+  }, [providersData])
+
   const uiTasks = useMemo(() => rawTasks.map(adaptTaskForList), [rawTasks])
 
   // 根据 agent-store 中正在运行的 session 计算活跃任务 ID 集合
@@ -260,14 +305,26 @@ export function ProjectKanbanPage() {
   }, [])
 
   const handleCreateTask = useCallback(() => {
-    // 默认选中当前筛选的项目，或第一个项目
-    setNewTaskProjectId(filterProjectId ?? projects[0]?.id ?? '')
-    // 默认选中第一个可用的 provider
-    const available = providersData?.find(p => p.availability.type !== 'NOT_FOUND')
-    setNewTaskProviderId(available?.provider.id ?? '')
+    // 从 localStorage 读取上次选择
+    const lastProjectId = localStorage.getItem('lastSelectedProjectId')
+    const lastProviderId = localStorage.getItem('lastSelectedProviderId')
+
+    // 优先使用上次选择，其次是当前筛选的项目，最后是第一个项目（已排序）
+    const projectId = (lastProjectId && sortedProjects.find(p => p.id === lastProjectId))
+      ? lastProjectId
+      : (filterProjectId ?? sortedProjects[0]?.id ?? '')
+    setNewTaskProjectId(projectId)
+
+    // 优先使用上次选择的 provider，其次是第一个可用的 provider（已排序）
+    const available = sortedProviders?.find(p => p.availability.type !== 'NOT_FOUND')
+    const providerId = (lastProviderId && sortedProviders?.find(p => p.provider.id === lastProviderId && p.availability.type !== 'NOT_FOUND'))
+      ? lastProviderId
+      : (available?.provider.id ?? '')
+    setNewTaskProviderId(providerId)
+
     setCreateStep('idle')
     setIsCreateTaskOpen(true)
-  }, [filterProjectId, projects, providersData])
+  }, [filterProjectId, sortedProjects, sortedProviders])
 
   const handleCloseProjectModal = useCallback(() => {
     setIsCreateProjectOpen(false)
@@ -314,6 +371,18 @@ export function ProjectKanbanPage() {
         title: newTaskTitle.trim(),
         description: description || undefined,
       })
+
+      // 保存本次选择到 localStorage
+      localStorage.setItem('lastSelectedProjectId', newTaskProjectId)
+      if (newTaskProviderId) {
+        localStorage.setItem('lastSelectedProviderId', newTaskProviderId)
+
+        // 更新 provider 使用次数
+        const usageCountStr = localStorage.getItem('providerUsageCount')
+        const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
+        usageCount[newTaskProviderId] = (usageCount[newTaskProviderId] ?? 0) + 1
+        localStorage.setItem('providerUsageCount', JSON.stringify(usageCount))
+      }
 
       // 如果选了 provider，自动启动
       if (newTaskProviderId) {
@@ -510,13 +579,13 @@ export function ProjectKanbanPage() {
                 <div className="flex-1 min-w-0">
                   <label className="block text-sm font-medium text-neutral-700 mb-1.5">Project</label>
                   <Select value={newTaskProjectId} onChange={setNewTaskProjectId}
-                    options={projects.map(p => ({ value: p.id, label: p.name }))}
+                    options={sortedProjects.map(p => ({ value: p.id, label: p.name }))}
                     placeholder="Select project..." disabled={createStep !== 'idle'} />
                 </div>
                 <div className="flex-1 min-w-0">
                   <label className="block text-sm font-medium text-neutral-700 mb-1.5">Provider</label>
                   <Select value={newTaskProviderId} onChange={setNewTaskProviderId}
-                    options={(providersData ?? []).map(({ provider, availability }) => ({ value: provider.id, label: provider.name + (availability.type === 'NOT_FOUND' ? ' (不可用)' : ''), disabled: availability.type === 'NOT_FOUND' }))}
+                    options={sortedProviders.map(({ provider, availability }) => ({ value: provider.id, label: provider.name + (availability.type === 'NOT_FOUND' ? ' (不可用)' : ''), disabled: availability.type === 'NOT_FOUND' }))}
                     placeholder={isProvidersLoading ? 'Loading...' : 'Select provider...'} disabled={createStep !== 'idle'} />
                 </div>
               </div>
@@ -739,7 +808,7 @@ export function ProjectKanbanPage() {
                 <Select
                   value={newTaskProjectId}
                   onChange={setNewTaskProjectId}
-                  options={projects.map(p => ({ value: p.id, label: p.name }))}
+                  options={sortedProjects.map(p => ({ value: p.id, label: p.name }))}
                   placeholder="Select project..."
                   disabled={createStep !== 'idle'}
                 />
@@ -751,7 +820,7 @@ export function ProjectKanbanPage() {
                 <Select
                   value={newTaskProviderId}
                   onChange={setNewTaskProviderId}
-                  options={(providersData ?? []).map(({ provider, availability }) => ({
+                  options={sortedProviders.map(({ provider, availability }) => ({
                     value: provider.id,
                     label: provider.name + (availability.type === 'NOT_FOUND' ? ' (不可用)' : ''),
                     disabled: availability.type === 'NOT_FOUND',
