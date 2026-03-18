@@ -5,7 +5,7 @@ import { SessionStatus, type Session } from '@agent-tower/shared'
 import { LogStream, TodoPanel, TokenUsageIndicator } from '@/components/agent'
 import {
   ArrowLeft, ArrowUp, ArrowDown, Paperclip, Play, Square,
-  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History,
+  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History, Cpu,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
@@ -14,9 +14,11 @@ import { MobileHistoryView } from './MobileHistoryView'
 import { useWorkspaces, useOpenInEditor } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
+import { useActiveProviderName } from '@/hooks/use-active-provider-name'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
+import { truncateMiddle } from '@/lib/utils'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { StartAgentDialog } from '@/components/task/StartAgentDialog'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -161,6 +163,10 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   const sessionId = activeSession?.id ?? ''
   const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
+
+  // ============ Provider Info ============
+
+  const activeProviderName = useActiveProviderName(activeSession)
 
   const workingDir = useMemo(() => {
     if (!workspaces) return undefined
@@ -560,29 +566,37 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                     >
                       <Paperclip size={15} />
                     </button>
-                    <TokenUsageIndicator usage={tokenUsage} />
                   </div>
-                  {isSessionActive && !input.trim() && !hasAttachments ? (
-                    <button
-                      onClick={handleStop}
-                      disabled={stopSession.isPending}
-                      className="p-1.5 rounded-lg bg-red-500 text-white active:bg-red-600 disabled:opacity-50"
-                    >
-                      <Square size={12} />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleSend}
-                      disabled={(!input.trim() && !hasAttachments) || isUploading}
-                      className={`p-1.5 rounded-lg transition-colors ${
-                        (input.trim() || hasAttachments) && !isUploading
-                          ? 'bg-neutral-900 text-white active:bg-black'
-                          : 'bg-transparent text-neutral-300'
-                      }`}
-                    >
-                      <ArrowUp size={15} />
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {activeProviderName && (
+                      <span className="flex items-center gap-0.5 text-[11px] text-neutral-400 px-1.5 py-0.5 select-none">
+                        <Cpu size={12} className="shrink-0" />
+                        <span>{truncateMiddle(activeProviderName, 10)}</span>
+                      </span>
+                    )}
+                    <TokenUsageIndicator usage={tokenUsage} />
+                    {isSessionActive && !input.trim() && !hasAttachments ? (
+                      <button
+                        onClick={handleStop}
+                        disabled={stopSession.isPending}
+                        className="p-1.5 rounded-lg bg-red-500 text-white active:bg-red-600 disabled:opacity-50"
+                      >
+                        <Square size={12} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleSend}
+                        disabled={(!input.trim() && !hasAttachments) || isUploading}
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          (input.trim() || hasAttachments) && !isUploading
+                            ? 'bg-neutral-900 text-white active:bg-black'
+                            : 'bg-transparent text-neutral-300'
+                        }`}
+                      >
+                        <ArrowUp size={15} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

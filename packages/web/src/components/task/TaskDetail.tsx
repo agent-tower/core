@@ -18,7 +18,7 @@ import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
 import { socketManager } from '@/lib/socket/manager'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
-import { useProviders } from '@/hooks/use-providers'
+import { useActiveProviderName } from '@/hooks/use-active-provider-name'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
@@ -265,13 +265,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
   // ============ Provider Info ============
 
-  const { data: providers } = useProviders()
-  const activeProviderName = useMemo(() => {
-    const pid = activeSession?.providerId
-    if (!pid || !providers) return null
-    const match = providers.find((p) => p.provider.id === pid)
-    return match?.provider.name ?? null
-  }, [activeSession?.providerId, providers])
+  const activeProviderName = useActiveProviderName(activeSession)
 
   // Whether the displayed session comes from a MERGED workspace (read-only history, no active worktree)
   const isReadOnlySession = useMemo(() => {
