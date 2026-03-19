@@ -71,6 +71,8 @@ interface ClaudeCodeMessage {
   }
   content?: string
   error?: string
+  result?: string
+  is_error?: boolean
   usage?: {
     input_tokens?: number
     output_tokens?: number
@@ -97,6 +99,14 @@ interface ClaudeCodeMessage {
     delta?: { type: string; thinking?: string; text?: string }
     message?: { id?: string; role?: string }
   }
+  // api_retry 字段
+  attempt?: number
+  max_retries?: number
+  retry_delay_ms?: number
+  error_status?: number
+  // result 统计字段
+  duration_api_ms?: number
+  num_turns?: number
 }
 
 /**
@@ -153,6 +163,13 @@ export class ClaudeCodeParser {
   private streamingMessageId: string | null = null
   // 最后一轮 assistant 消息的 per-turn usage（代表当前上下文窗口占用量）
   private lastTurnUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null = null
+  // 是否解析到了有效的 JSON 消息
+  private hasValidMessages = false
+  // 收集非 JSON 输出行（用于进程异常退出时展示错误）
+  private nonJsonLines: string[] = []
+  // API 重试条目的 entry index（用于 replace 更新，避免刷屏）
+  private apiRetryEntryIndex: number | null = null
+  private apiRetryEntryId: string | null = null
 
   constructor(msgStore: MsgStore) {
     this.msgStore = msgStore
@@ -197,11 +214,16 @@ export class ClaudeCodeParser {
       if (DEBUG_PARSER) {
         console.log(`[Parser:parseLine] t=${now} type=${msg.type} subtype=${msg.subtype || '-'}`);
       }
+      this.hasValidMessages = true
       this.handleMessage(msg)
     } catch {
-      // 非 JSON 行 — 剥离 ANSI 转义序列后，如果仍有可读文本则忽略（Claude Code 不输出非 JSON 系统消息）
+      // 非 JSON 行 — 剥离 ANSI 转义序列后收集，用于进程异常退出时展示
+      const stripped = stripAnsiSequences(line).trim();
+      // 过滤掉 PTY 初始化残留的单字符噪音（如 `u` 来自 \x1b[?u 键盘协议查询被分块传输）
+      if (stripped.length >= 4) {
+        this.nonJsonLines.push(stripped)
+      }
       if (DEBUG_PARSER && line.length > 0) {
-        const stripped = stripAnsiSequences(line).trim();
         console.log(`[Parser:parseLine] t=${now} non-JSON line len=${line.length} stripped="${stripped.slice(0, 50)}${stripped.length > 50 ? '...' : ''}"`);
       }
     }
@@ -216,21 +238,33 @@ export class ClaudeCodeParser {
         this.handleSystemMessage(msg)
         break
       case 'assistant':
+        this.clearApiRetryState()
         this.handleAssistantMessage(msg)
         break
       case 'user':
+        this.clearApiRetryState()
         this.handleUserMessage(msg)
         break
       case 'result':
         this.handleResultMessage(msg)
         break
       case 'error':
+        this.clearApiRetryState()
         this.handleErrorMessage(msg)
         break
       case 'stream_event':
+        this.clearApiRetryState()
         this.handleStreamEvent(msg)
         break
     }
+  }
+
+  /**
+   * 清除 API 重试状态（收到正常消息时调用）
+   */
+  private clearApiRetryState(): void {
+    this.apiRetryEntryIndex = null
+    this.apiRetryEntryId = null
   }
 
   /**
@@ -241,6 +275,37 @@ export class ClaudeCodeParser {
       this.msgStore.pushSessionId(msg.session_id)
       const patch = setSessionId(msg.session_id)
       this.msgStore.pushPatch(patch)
+    } else if (msg.subtype === 'api_retry') {
+      this.handleApiRetry(msg)
+    }
+  }
+
+  /**
+   * 处理 API 重试消息
+   * 使用单条 entry 原地更新，避免每次重试刷屏
+   */
+  private handleApiRetry(msg: ClaudeCodeMessage): void {
+    const attempt = msg.attempt ?? 0
+    const maxRetries = msg.max_retries ?? 10
+    const errorStatus = msg.error_status ?? 0
+    const errorType = msg.error ?? 'unknown_error'
+
+    const content = `API error (${errorStatus} ${errorType}), retrying ${attempt}/${maxRetries}...`
+    const errorDetail = `HTTP ${errorStatus}: ${errorType}`
+
+    if (this.apiRetryEntryIndex != null && this.apiRetryEntryId != null) {
+      // 更新已有的 entry
+      const entry = createErrorMessage(content, errorDetail, this.apiRetryEntryId)
+      const patch = replaceNormalizedEntry(this.apiRetryEntryIndex, entry)
+      this.msgStore.pushPatch(patch)
+    } else {
+      // 创建新的 entry
+      const entry = createErrorMessage(content, errorDetail)
+      const index = this.indexProvider.next()
+      const patch = addNormalizedEntry(index, entry)
+      this.msgStore.pushPatch(patch)
+      this.apiRetryEntryIndex = index
+      this.apiRetryEntryId = entry.id
     }
   }
 
@@ -441,6 +506,35 @@ export class ClaudeCodeParser {
       }
     }
 
+    // 最终错误结果（如 API 重试全部失败后）
+    if (msg.is_error && msg.result) {
+      const content = msg.result
+      // 如果有 api_retry entry，替换它为最终错误；否则新建
+      if (this.apiRetryEntryIndex != null && this.apiRetryEntryId != null) {
+        const entry = createErrorMessage(content, content, this.apiRetryEntryId)
+        const patch = replaceNormalizedEntry(this.apiRetryEntryIndex, entry)
+        this.msgStore.pushPatch(patch)
+      } else {
+        const entry = createErrorMessage(content, content)
+        const index = this.indexProvider.next()
+        const patch = addNormalizedEntry(index, entry)
+        this.msgStore.pushPatch(patch)
+      }
+      this.clearApiRetryState()
+    }
+
+    // success result 中如果有 result 文本且之前没有 assistant 消息输出，显示该文本
+    // 例如 "Unknown skill: testsdfs" 这类 Claude Code 直接返回的结果
+    if (msg.subtype === 'success' && msg.result && !msg.is_error) {
+      // 检查是否有过 assistant 消息（num_turns <= 0 或 duration_api_ms === 0 表示没有实际 API 调用）
+      if (msg.duration_api_ms === 0 || msg.num_turns === 0) {
+        const entry = createAssistantMessage(msg.result)
+        const index = this.indexProvider.next()
+        const patch = addNormalizedEntry(index, entry)
+        this.msgStore.pushPatch(patch)
+      }
+    }
+
     // 从 success result 中提取 token 用量
     if (msg.subtype === 'success') {
       try {
@@ -619,13 +713,29 @@ export class ClaudeCodeParser {
 
   /**
    * 完成解析
+   * exitCode 非 0 且没有解析到有效 JSON 消息时，将非 JSON 输出作为错误推送
    */
-  finish(): void {
+  finish(exitCode?: number): void {
     // 处理剩余的缓冲区
     if (this.buffer.trim()) {
       this.parseLine(this.buffer)
     }
     this.flushAssistantText()
+
+    // 进程异常退出时，将收集到的非 JSON 输出作为错误信息推送
+    const isFailed = typeof exitCode === 'number' && exitCode !== 0
+    if (isFailed && this.nonJsonLines.length > 0) {
+      const errorText = this.nonJsonLines.join('\n').trim()
+      if (errorText) {
+        const entry = createErrorMessage(
+          `Agent process exited with code ${exitCode}:\n${errorText}`,
+          errorText
+        )
+        const index = this.indexProvider.next()
+        const patch = addNormalizedEntry(index, entry)
+        this.msgStore.pushPatch(patch)
+      }
+    }
   }
 }
 

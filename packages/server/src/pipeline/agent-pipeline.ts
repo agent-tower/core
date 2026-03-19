@@ -4,7 +4,7 @@ import type { EventBus } from '../core/event-bus.js';
 
 export interface OutputParser {
   processData(data: string): void;
-  finish(): void;
+  finish(exitCode?: number): void;
 }
 
 /**
@@ -39,7 +39,7 @@ export class AgentPipeline {
 
     this.offExit = this.pty.onExit(({ exitCode }) => {
       if (this.destroyed) return;
-      this.parser?.finish();
+      this.parser?.finish(exitCode);
       this.msgStore.pushFinished();
       this.eventBus.emit('session:exit', { sessionId: this.sessionId, exitCode });
       // Self-cleanup: remove MsgStore listeners so stale references don't accumulate.

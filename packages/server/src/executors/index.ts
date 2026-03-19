@@ -80,6 +80,8 @@ function createExecutorFromProvider(provider: Provider): BaseExecutor {
     cmd: {
       env: provider.env,
     },
+    // CLI 原生配置（如 Claude Code 的 settings.json 覆盖）
+    settings: provider.settings,
   };
   return createExecutor(agentType, config);
 }

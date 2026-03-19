@@ -40,10 +40,10 @@ export class SessionManager {
       this.scheduleSnapshotPersist(sessionId);
     });
 
-    this.eventBus.on('session:exit', ({ sessionId }) => {
+    this.eventBus.on('session:exit', ({ sessionId, exitCode }) => {
       const pipeline = this.pipelines.get(sessionId);
       if (DEBUG_SNAPSHOT) {
-        console.log(`[SessionManager:snapshot] session:exit sessionId=${sessionId} hasPipeline=${Boolean(pipeline)}`);
+        console.log(`[SessionManager:snapshot] session:exit sessionId=${sessionId} exitCode=${exitCode} hasPipeline=${Boolean(pipeline)}`);
       }
       if (pipeline) {
         // Must call destroy() to remove MsgStore onPatch/onSessionId listeners.
@@ -53,7 +53,7 @@ export class SessionManager {
         this.pipelines.delete(sessionId);
       }
       this.cancelTokens.delete(sessionId);
-      this.handleSessionExit(sessionId).catch((error) => {
+      this.handleSessionExit(sessionId, exitCode).catch((error) => {
         console.error(`[SessionManager] post-exit handling failed for ${sessionId}:`, error);
       });
     });
@@ -666,42 +666,58 @@ export class SessionManager {
   /**
    * Session 退出后的统一处理入口。
    * 根据 session purpose 走不同的后处理路径。
+   * exitCode 非 0 时标记为 FAILED。
    */
-  private async handleSessionExit(sessionId: string): Promise<void> {
+  private async handleSessionExit(sessionId: string, exitCode?: number): Promise<void> {
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       select: { purpose: true },
     });
 
+    // exitCode 非 0 且非 undefined 视为失败
+    const isFailed = typeof exitCode === 'number' && exitCode !== 0;
+    const finalStatus = isFailed ? SessionStatus.FAILED : SessionStatus.COMPLETED;
+
+    if (isFailed) {
+      console.warn(`[SessionManager] Session ${sessionId} exited with code ${exitCode}, marking as FAILED`);
+    }
+
     if (session?.purpose === SessionPurpose.COMMIT_MSG) {
       // COMMIT_MSG session: 只需持久化快照，然后提取 commit message
-      await this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED);
-      try {
-        const commitMessageService = getCommitMessageService();
-        await commitMessageService.extractAndCache(sessionId);
-      } catch (error) {
-        console.warn(
-          `[SessionManager] Failed to extract commit message from session ${sessionId}:`,
-          error instanceof Error ? error.message : error
-        );
+      await this.flushSnapshotPersist(sessionId, finalStatus);
+      if (!isFailed) {
+        try {
+          const commitMessageService = getCommitMessageService();
+          await commitMessageService.extractAndCache(sessionId);
+        } catch (error) {
+          console.warn(
+            `[SessionManager] Failed to extract commit message from session ${sessionId}:`,
+            error instanceof Error ? error.message : error
+          );
+        }
       }
-      // 通知前端 session 已完成（DB 状态已更新）
-      this.eventBus.emit('session:completed', { sessionId, status: SessionStatus.COMPLETED });
+      // 通知前端 session 状态（DB 状态已更新）
+      this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
     } else {
       // 正常 CHAT session: autoCommit → 持久化 → 检查 Task 推进 → 触发 commit message 生成
-      await this.autoCommitChanges(sessionId);
-      await this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED);
-      // 通知前端 session 已完成（DB 状态已更新）
-      this.eventBus.emit('session:completed', { sessionId, status: SessionStatus.COMPLETED });
-      await this.checkTaskAutoAdvance(sessionId);
+      if (!isFailed) {
+        await this.autoCommitChanges(sessionId);
+      }
+      await this.flushSnapshotPersist(sessionId, finalStatus);
+      // 通知前端 session 状态（DB 状态已更新）
+      this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
 
-      // 每次 CHAT session 完成都触发 commit message 重新生成
-      const sess = await prisma.session.findUnique({
-        where: { id: sessionId },
-        select: { workspaceId: true },
-      });
-      if (sess?.workspaceId) {
-        this.triggerCommitMessageGeneration(sess.workspaceId);
+      if (!isFailed) {
+        await this.checkTaskAutoAdvance(sessionId);
+
+        // 每次 CHAT session 完成都触发 commit message 重新生成
+        const sess = await prisma.session.findUnique({
+          where: { id: sessionId },
+          select: { workspaceId: true },
+        });
+        if (sess?.workspaceId) {
+          this.triggerCommitMessageGeneration(sess.workspaceId);
+        }
       }
     }
   }

@@ -50,6 +50,8 @@ export interface ClaudeCodeConfig {
   disableApiKey?: boolean;
   /** 命令覆盖 */
   cmd?: CmdOverrides;
+  /** CLI 原生配置，直接传给 --settings */
+  settings?: Record<string, unknown>;
 }
 
 /**
@@ -125,6 +127,42 @@ export class ClaudeCodeExecutor extends BaseExecutor {
   }
 
   /**
+   * 构建 --settings 参数，用于覆盖 ~/.claude/settings.json 中的 env 配置
+   *
+   * 优先使用 config.settings（用户通过 CLI 原生配置面板填写的完整 settings），
+   * 同时将 cmdOverrides.env 中的 ANTHROPIC_* 合并到 settings.env 中。
+   * 无 settings 时 fallback 到原有逻辑：从 env 中提取 ANTHROPIC_* 构造 settings。
+   */
+  private buildSettingsOverride(): string[] {
+    // 从 cmdOverrides.env 提取 ANTHROPIC_* 变量
+    const envOverrides = this.cmdOverrides?.env;
+    const anthropicEnv: Record<string, string> = {};
+    if (envOverrides) {
+      for (const [key, value] of Object.entries(envOverrides)) {
+        if (key.startsWith('ANTHROPIC_')) {
+          anthropicEnv[key] = value;
+        }
+      }
+    }
+
+    if (this.config.settings) {
+      // 有 settings 时：以 settings 为基础，将 ANTHROPIC_* env 合并进去
+      const settings = structuredClone(this.config.settings);
+      if (Object.keys(anthropicEnv).length > 0) {
+        const existingEnv = (settings.env as Record<string, string>) ?? {};
+        settings.env = { ...existingEnv, ...anthropicEnv };
+      }
+      return ['--settings', JSON.stringify(settings)];
+    }
+
+    // fallback: 无 settings 时，仅注入 ANTHROPIC_* 变量
+    if (Object.keys(anthropicEnv).length === 0) {
+      return [];
+    }
+    return ['--settings', JSON.stringify({ env: anthropicEnv })];
+  }
+
+  /**
    * 构建命令（用于普通文本 prompt）
    */
   protected buildCommandBuilder(): CommandBuilder {
@@ -152,6 +190,9 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     if (this.config.model) {
       builder.extendParams(['--model', this.config.model]);
     }
+
+    // 通过 --settings 覆盖 ~/.claude/settings.json 中的 ANTHROPIC_* env
+    builder.extendParams(this.buildSettingsOverride());
 
     // 输出格式 - 使用 stream-json 进行双向通信
     builder.extendParams([
@@ -201,6 +242,9 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     if (this.config.model) {
       builder.extendParams(['--model', this.config.model]);
     }
+
+    // 通过 --settings 覆盖 ~/.claude/settings.json 中的 ANTHROPIC_* env
+    builder.extendParams(this.buildSettingsOverride());
 
     // 输出格式 - 使用 stream-json 进行双向通信
     builder.extendParams([

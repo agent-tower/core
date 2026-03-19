@@ -366,6 +366,19 @@ const AssistantMessage = memo(({ content, compact }: { content: string; compact?
 ))
 AssistantMessage.displayName = 'AssistantMessage'
 
+// 6. Error Message — 醒目的红色错误区块
+const ErrorMessage = memo(({ content }: { content: string }) => (
+  <div className="my-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+    <div className="flex items-start gap-2">
+      <svg className="shrink-0 mt-0.5 w-4 h-4 text-red-500" viewBox="0 0 16 16" fill="currentColor">
+        <path fillRule="evenodd" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM7.25 5a.75.75 0 011.5 0v3a.75.75 0 01-1.5 0V5zm.75 6.25a.75.75 0 100-1.5.75.75 0 000 1.5z" clipRule="evenodd" />
+      </svg>
+      <pre className="text-xs text-red-700 leading-relaxed whitespace-pre-wrap break-all min-w-0">{content}</pre>
+    </div>
+  </div>
+))
+ErrorMessage.displayName = 'ErrorMessage'
+
 // ============ RenderItem renderer ============
 
 function renderItem(item: RenderItem, compact?: boolean): React.ReactNode {
@@ -400,6 +413,9 @@ function renderItem(item: RenderItem, compact?: boolean): React.ReactNode {
             // 跳过 token_usage_info 条目的文本渲染（已由 TokenUsageIndicator 聚合展示）
             if (log.tokenUsage) return null
       return <AgentText content={log.content} compact={compact} />
+
+    case LogType.Error:
+      return <ErrorMessage content={log.content} />
 
     case LogType.Cursor:
       return (

@@ -108,12 +108,29 @@ export class ExecutionEnv {
   /**
    * 获取完整的环境变量（包含 process.env）
    * 过滤掉会阻止 Agent CLI 嵌套启动的环境变量
+   * 当 provider 设置了 ANTHROPIC_* 变量时，清除 process.env 中残留的同类变量，
+   * 避免 Claude Code 优先使用错误的认证信息
    */
   getFullEnv(): Record<string, string> {
+    const providerVars = this.toObject();
+    const hasProviderAnthropicVars = Object.keys(providerVars).some(k => k.startsWith('ANTHROPIC_'));
+
     const env = {
       ...process.env as Record<string, string>,
-      ...this.toObject(),
     };
+
+    // 如果 provider 设置了任何 ANTHROPIC_* 变量，先清除 process.env 中所有 ANTHROPIC_* 残留
+    // 再用 provider 的值覆盖，确保不会混用不同 provider 的认证信息
+    if (hasProviderAnthropicVars) {
+      for (const key of Object.keys(env)) {
+        if (key.startsWith('ANTHROPIC_')) {
+          delete env[key];
+        }
+      }
+    }
+
+    Object.assign(env, providerVars);
+
     // Claude Code 检测 CLAUDECODE 环境变量来阻止嵌套启动
     delete env.CLAUDECODE;
     return env;

@@ -11,7 +11,8 @@ export enum LogType {
   Info = 'Info',         // ◇ Agent Explanation/Thinking
   Tool = 'Tool',         // ▶ Tool Call
   User = 'User',         // User Message
-  Cursor = 'Cursor'      // █ Output Cursor
+  Cursor = 'Cursor',     // █ Output Cursor
+  Error = 'Error'        // ✗ Error Message
 }
 
 export interface LogEntry {
@@ -175,8 +176,8 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
     case 'error_message':
       return {
         id: entry.id,
-        type: LogType.Info,
-        content: `❌ ${entry.content}${entry.metadata?.error ? `\n${entry.metadata.error}` : ''}`,
+        type: LogType.Error,
+        content: entry.content,
       }
 
     case 'system_message':

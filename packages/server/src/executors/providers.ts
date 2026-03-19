@@ -26,6 +26,8 @@ export interface Provider {
   env: Record<string, string>;
   /** Agent 运行参数（如 dangerouslySkipPermissions、model、plan 等） */
   config: Record<string, unknown>;
+  /** CLI 原生配置（如 Claude Code 的 settings.json 覆盖） */
+  settings?: Record<string, unknown>;
   /** 是否为该 AgentType 的默认 provider */
   isDefault: boolean;
   /** 是否内置（不可删除） */

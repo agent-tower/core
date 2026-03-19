@@ -6,9 +6,18 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import { EventEmitter } from 'events';
+import { appendFileSync } from 'node:fs';
 import { AgentType } from '../types/index.js';
 import { ExecutionEnv } from './execution-env.js';
 import { CommandBuilder, CommandParts, CmdOverrides, resolveCommandParts } from './command-builder.js';
+import { stripAnsiSequences } from '../output/utils/ansi.js';
+
+const PTY_LOG_FILE = '/tmp/agent-tower-pty.log';
+function ptyLog(pid: number, msg: string): void {
+  const line = `[${new Date().toISOString()}][pid=${pid}] ${msg}\n`;
+  process.stdout.write(line);
+  try { appendFileSync(PTY_LOG_FILE, line); } catch { /* ignore */ }
+}
 
 /**
  * Agent 可用性信息
@@ -225,12 +234,43 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       `'${arg.replace(/'/g, "'\\''")}'`
     ).join(' ');
 
+    const fullEnv = env.getFullEnv();
+    ptyLog(0, `Spawning: ${programPath} ${fullArgs.slice(0, -1).join(' ')} ... <prompt>`);
+    ptyLog(0, `ENV ANTHROPIC_BASE_URL=${fullEnv.ANTHROPIC_BASE_URL || '(not set)'}`);
+    ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? fullEnv.ANTHROPIC_API_KEY.slice(0, 12) + '...' : '(not set)'}`);
+    ptyLog(0, `ENV ANTHROPIC_AUTH_TOKEN=${fullEnv.ANTHROPIC_AUTH_TOKEN ? fullEnv.ANTHROPIC_AUTH_TOKEN.slice(0, 12) + '...' : '(not set)'}`);
+
     const shell = pty.spawn('/bin/bash', ['-c', shellArgs], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
       cwd: config.workingDir,
-      env: env.getFullEnv(),
+      env: fullEnv,
+    });
+
+    ptyLog(shell.pid, `Process spawned`);
+
+    // 收集并实时记录 PTY 输出（写入 /tmp/agent-tower-pty.log 方便诊断）
+    let outputBuffer = '';
+    const offData = shell.onData((data) => {
+      if (outputBuffer.length < 8000) {
+        outputBuffer += data;
+      }
+      const cleaned = stripAnsiSequences(data).replace(/\s+/g, ' ').trim();
+      if (cleaned) {
+        ptyLog(shell.pid, `PTY> ${cleaned.slice(0, 300)}`);
+      }
+    });
+
+    shell.onExit(({ exitCode, signal }) => {
+      offData.dispose();
+      ptyLog(shell.pid, `PTY exited code=${exitCode} signal=${signal}`);
+      if (exitCode !== 0) {
+        const cleaned = stripAnsiSequences(outputBuffer).replace(/\s+/g, ' ').trim();
+        if (cleaned) {
+          ptyLog(shell.pid, `full output: ${cleaned.slice(0, 1000)}`);
+        }
+      }
     });
 
     // 监听取消信号

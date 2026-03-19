@@ -27,6 +27,7 @@ const createProviderSchema = z.object({
   agentType: z.nativeEnum(AgentType),
   env: z.record(z.string()).default({}),
   config: z.record(z.unknown()).default({}),
+  settings: z.record(z.unknown()).optional(),
   isDefault: z.boolean().default(false),
 });
 
@@ -34,6 +35,7 @@ const updateProviderSchema = z.object({
   name: z.string().min(1).optional(),
   env: z.record(z.string()).optional(),
   config: z.record(z.unknown()).optional(),
+  settings: z.record(z.unknown()).optional(),
   isDefault: z.boolean().optional(),
 });
 
