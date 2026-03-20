@@ -56,8 +56,8 @@ export interface Provider {
   agentType: AgentType | string;
   env: Record<string, string>;
   config: Record<string, unknown>;
-  /** CLI 原生配置（如 Claude Code 的 settings.json 覆盖） */
-  settings?: Record<string, unknown>;
+  /** CLI 原生配置字符串（Claude Code: JSON, Codex: TOML） */
+  settings?: string;
   isDefault: boolean;
   builtIn?: boolean;
   createdAt?: string;

@@ -19,7 +19,7 @@ export interface CreateProviderInput {
   agentType: AgentType
   env?: Record<string, string>
   config?: Record<string, unknown>
-  settings?: Record<string, unknown>
+  settings?: string
   isDefault?: boolean
 }
 
@@ -27,7 +27,7 @@ export interface UpdateProviderInput {
   name?: string
   env?: Record<string, string>
   config?: Record<string, unknown>
-  settings?: Record<string, unknown>
+  settings?: string
   isDefault?: boolean
 }
 

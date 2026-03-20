@@ -50,8 +50,8 @@ export interface ClaudeCodeConfig {
   disableApiKey?: boolean;
   /** 命令覆盖 */
   cmd?: CmdOverrides;
-  /** CLI 原生配置，直接传给 --settings */
-  settings?: Record<string, unknown>;
+  /** CLI 原生配置 JSON 字符串，直接传给 --settings */
+  settings?: string;
 }
 
 /**
@@ -147,7 +147,7 @@ export class ClaudeCodeExecutor extends BaseExecutor {
 
     if (this.config.settings) {
       // 有 settings 时：以 settings 为基础，将 ANTHROPIC_* env 合并进去
-      const settings = structuredClone(this.config.settings);
+      const settings = JSON.parse(this.config.settings) as Record<string, unknown>;
       if (Object.keys(anthropicEnv).length > 0) {
         const existingEnv = (settings.env as Record<string, string>) ?? {};
         settings.env = { ...existingEnv, ...anthropicEnv };

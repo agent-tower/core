@@ -26,8 +26,8 @@ export interface Provider {
   env: Record<string, string>;
   /** Agent 运行参数（如 dangerouslySkipPermissions、model、plan 等） */
   config: Record<string, unknown>;
-  /** CLI 原生配置（如 Claude Code 的 settings.json 覆盖） */
-  settings?: Record<string, unknown>;
+  /** CLI 原生配置字符串（Claude Code: JSON, Codex: TOML） */
+  settings?: string;
   /** 是否为该 AgentType 的默认 provider */
   isDefault: boolean;
   /** 是否内置（不可删除） */
@@ -140,6 +140,14 @@ export function loadProviders(): Provider[] {
   }
 
   cachedProviders = mergeProviders(builtIns, userProviders);
+
+  // 旧数据兼容：settings 从 Record<string, unknown> 迁移为 string
+  for (const p of cachedProviders) {
+    if (p.settings && typeof p.settings === 'object') {
+      (p as any).settings = JSON.stringify(p.settings, null, 2);
+    }
+  }
+
   return cachedProviders;
 }
 

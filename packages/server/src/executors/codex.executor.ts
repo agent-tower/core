@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { parse as parseToml } from 'smol-toml';
 import { AgentType } from '../types/index.js';
 import { which } from '../utils/index.js';
 import {
@@ -16,6 +17,47 @@ import {
   SpawnedChild,
 } from './base.executor.js';
 import { CommandBuilder, applyOverrides, CmdOverrides } from './command-builder.js';
+
+/**
+ * 将嵌套对象展平为 dotted path 键值对（递归到标量叶子）
+ * { model_providers: { azure: { name: "A", query_params: { "api-version": "v1" } } } }
+ * → [
+ *     ["model_providers.azure.name", "A"],
+ *     ["model_providers.azure.query_params.api-version", "v1"],
+ *   ]
+ */
+function flattenObject(obj: Record<string, unknown>, prefix = ''): [string, unknown][] {
+  const entries: [string, unknown][] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    const fullPath = prefix ? `${prefix}.${key}` : key;
+    if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+      entries.push(...flattenObject(value as Record<string, unknown>, fullPath));
+    } else {
+      entries.push([fullPath, value]);
+    }
+  }
+  return entries;
+}
+
+/**
+ * 将 JS 值转为 TOML 字面量字符串（用于 -c 参数）
+ * 对象转为 TOML inline table: { key = "value", key2 = 123 }
+ */
+function toTomlLiteral(value: unknown): string {
+  if (typeof value === 'string') return `"${value}"`;
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(v => toTomlLiteral(v)).join(', ')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    // TOML inline table: { key = "value", key2 = 123 }
+    const pairs = Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${k} = ${toTomlLiteral(v)}`)
+      .join(', ');
+    return `{${pairs}}`;
+  }
+  return String(value);
+}
 
 /**
  * Codex CLI 配置
@@ -33,6 +75,10 @@ export interface CodexConfig {
   fullAuto?: boolean;
   /** 启用实时网络搜索 */
   liveSearch?: boolean;
+  /** 配置 profile 名称，对应 ~/.codex/config.toml 中的 [profiles.xxx] */
+  profile?: string;
+  /** CLI 原生配置 (TOML 格式字符串)，通过 -c 参数注入 */
+  settings?: string;
   /** 命令覆盖 */
   cmd?: CmdOverrides;
 }
@@ -107,10 +153,38 @@ export class CodexExecutor extends BaseExecutor {
   }
 
   /**
+   * 构建 TOML 配置覆盖参数（--profile 和 -c）
+   */
+  private buildConfigOverrides(): string[] {
+    const args: string[] = [];
+
+    // --profile
+    if (this.config.profile) {
+      args.push('--profile', this.config.profile);
+    }
+
+    // settings (TOML) → -c 参数
+    if (this.config.settings) {
+      const parsed = parseToml(this.config.settings);
+      for (const [key, value] of flattenObject(parsed as Record<string, unknown>)) {
+        args.push('-c', `${key}=${toTomlLiteral(value)}`);
+      }
+    }
+
+    return args;
+  }
+
+  /**
    * 构建命令
    */
   protected buildCommandBuilder(): CommandBuilder {
     let builder = CommandBuilder.new(getBaseCommand());
+
+    // 配置覆盖（--profile、-c 参数）— 放在最前面
+    const configArgs = this.buildConfigOverrides();
+    if (configArgs.length > 0) {
+      builder.extendParams(configArgs);
+    }
 
     // 模型选择
     if (this.config.model) {

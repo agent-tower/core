@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { parse as parseToml } from 'smol-toml'
 import { useProviders, useCreateProvider, useUpdateProvider, useDeleteProvider } from '@/hooks/use-providers'
 import type { CreateProviderInput, UpdateProviderInput } from '@/hooks/use-providers'
 import { Button } from '@/components/ui/button'
@@ -59,6 +60,7 @@ const AGENT_CONFIG_FIELDS: Record<string, ConfigFieldMeta[]> = {
   [AgentType.CODEX]: [
     { key: 'fullAuto', label: '全自动模式', type: 'switch' },
     { key: 'model', label: '模型', type: 'input', placeholder: 'o3' },
+    { key: 'profile', label: 'Profile', type: 'input', placeholder: '~/.codex/config.toml 中的 profile 名称' },
     APPEND_PROMPT_FIELD,
   ],
 }
@@ -73,6 +75,52 @@ const CLAUDE_CODE_SETTINGS_TEMPLATE = JSON.stringify(
   null,
   2
 )
+
+const CODEX_SETTINGS_TEMPLATE = `# Codex config.toml 配置片段 — 通过 -c 参数注入，不会修改 ~/.codex/config.toml
+# 参考: https://developers.openai.com/codex/config-sample
+
+# ─── 模型与推理 ─────────────────────────────────────────────
+# model_reasoning_effort = "medium"     # minimal | low | medium | high | xhigh
+# model_reasoning_summary = "auto"      # auto | concise | detailed | none
+# model_verbosity = "medium"            # low | medium | high
+# service_tier = "flex"                 # fast | flex
+
+# ─── 自定义 Model Provider ──────────────────────────────────
+# model_provider = "azure"
+#
+# [model_providers.azure]
+# name = "Azure OpenAI"
+# base_url = "https://YOUR_PROJECT.openai.azure.com/openai"
+# env_key = "AZURE_OPENAI_API_KEY"
+# env_key_instructions = "Set AZURE_OPENAI_API_KEY in Provider env"
+# wire_api = "responses"
+# query_params = { api-version = "2025-04-01-preview" }
+
+# ─── OpenAI 数据驻留 ────────────────────────────────────────
+# [model_providers.openai-us]
+# name = "OpenAI US"
+# base_url = "https://us.api.openai.com/v1"
+# wire_api = "responses"
+# requires_openai_auth = true
+
+# ─── 本地 OSS (Ollama) ──────────────────────────────────────
+# [model_providers.ollama]
+# name = "Ollama"
+# base_url = "http://localhost:11434/v1"
+# wire_api = "responses"
+`
+
+/** 根据 agentType 获取默认 settings 模板 */
+function getSettingsTemplate(agentType: AgentType): string {
+  if (agentType === AgentType.CLAUDE_CODE) return CLAUDE_CODE_SETTINGS_TEMPLATE
+  if (agentType === AgentType.CODEX) return CODEX_SETTINGS_TEMPLATE
+  return ''
+}
+
+/** 是否显示 CLI 原生配置面板 */
+function hasSettingsPanel(agentType: AgentType): boolean {
+  return agentType === AgentType.CLAUDE_CODE || agentType === AgentType.CODEX
+}
 
 // ─── 从 AGENT_CONFIG_FIELDS 自动生成友好标签映射 ────────────────
 
@@ -112,7 +160,8 @@ interface ProviderFormData {
   name: string
   agentType: AgentType
   config: Record<string, unknown>
-  settings: string // JSON string for Monaco/textarea
+  settings: string // Claude Code: JSON string, Codex: TOML string
+  env: Array<{ key: string; value: string }> // 环境变量
   isDefault: boolean
 }
 
@@ -226,15 +275,19 @@ function ProviderFormModal({
       agentType: AgentType.CLAUDE_CODE,
       config: {},
       settings: '',
+      env: [],
       isDefault: false,
     }
   )
   const [settingsError, setSettingsError] = useState('')
 
-  // 新建 Claude Code 时自动填充 settings 模板
+  // 新建时自动填充 settings 模板
   useEffect(() => {
-    if (!initialData && formData.agentType === AgentType.CLAUDE_CODE && !formData.settings) {
-      setFormData(prev => ({ ...prev, settings: CLAUDE_CODE_SETTINGS_TEMPLATE }))
+    if (!initialData && !formData.settings) {
+      const template = getSettingsTemplate(formData.agentType)
+      if (template) {
+        setFormData(prev => ({ ...prev, settings: template }))
+      }
     }
   }, [])
 
@@ -244,7 +297,7 @@ function ProviderFormModal({
       ...prev,
       agentType: type,
       config: {},
-      settings: type === AgentType.CLAUDE_CODE ? CLAUDE_CODE_SETTINGS_TEMPLATE : '',
+      settings: getSettingsTemplate(type),
     }))
   }
 
@@ -259,23 +312,41 @@ function ProviderFormModal({
       }
     }
 
-    // 解析 settings JSON
-    let settings: Record<string, unknown> | undefined
+    // 校验 settings 格式
     const settingsStr = formData.settings.trim()
     if (settingsStr) {
-      try {
-        settings = JSON.parse(settingsStr)
-      } catch {
-        setSettingsError('JSON 语法错误')
-        return
+      if (formData.agentType === AgentType.CODEX) {
+        // TOML 校验
+        try {
+          parseToml(settingsStr)
+        } catch (e) {
+          setSettingsError(`TOML 语法错误: ${e instanceof Error ? e.message : String(e)}`)
+          return
+        }
+      } else if (formData.agentType === AgentType.CLAUDE_CODE) {
+        // JSON 校验
+        try {
+          JSON.parse(settingsStr)
+        } catch {
+          setSettingsError('JSON 语法错误')
+          return
+        }
       }
+    }
+
+    // 将 env 数组转为 Record，过滤掉空行
+    const envRecord: Record<string, string> = {}
+    for (const { key, value } of formData.env) {
+      const k = key.trim()
+      if (k) envRecord[k] = value
     }
 
     const data: CreateProviderInput = {
       name: formData.name,
       agentType: formData.agentType,
       config: cleanConfig,
-      settings,
+      settings: settingsStr || undefined,
+      env: Object.keys(envRecord).length > 0 ? envRecord : undefined,
       isDefault: formData.isDefault,
     }
 
@@ -284,7 +355,8 @@ function ProviderFormModal({
 
   if (!isOpen) return null
 
-  const isClaudeCode = formData.agentType === AgentType.CLAUDE_CODE
+  const showSettingsPanel = hasSettingsPanel(formData.agentType)
+  const isCodex = formData.agentType === AgentType.CODEX
 
   return (
     <Modal
@@ -345,13 +417,76 @@ function ProviderFormModal({
           />
         </CollapsibleSection>
 
-        {/* CLI 原生配置 — 仅 Claude Code */}
-        {isClaudeCode && (
-          <CollapsibleSection title="CLI 原生配置 (settings.json)">
+        {/* 环境变量 */}
+        <CollapsibleSection title="环境变量" defaultOpen={formData.env.length > 0}>
+          <p className="text-xs text-neutral-500 mb-2">
+            注入到 Agent 进程的环境变量。Codex 的 <code className="bg-neutral-100 px-1 rounded">env_key</code> 指定的是变量名，实际值需在此处设置。
+          </p>
+          <div className="space-y-2">
+            {formData.env.map((row, i) => (
+              <div key={i} className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  value={row.key}
+                  onChange={e => {
+                    const next = [...formData.env]
+                    next[i] = { ...next[i], key: e.target.value }
+                    setFormData(prev => ({ ...prev, env: next }))
+                  }}
+                  placeholder="变量名，如 AZURE_OPENAI_API_KEY"
+                  className="flex-1 px-3 py-1.5 text-sm font-mono border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900"
+                />
+                <input
+                  type="text"
+                  value={row.value}
+                  onChange={e => {
+                    const next = [...formData.env]
+                    next[i] = { ...next[i], value: e.target.value }
+                    setFormData(prev => ({ ...prev, env: next }))
+                  }}
+                  placeholder="值"
+                  className="flex-1 px-3 py-1.5 text-sm font-mono border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = formData.env.filter((_, j) => j !== i)
+                    setFormData(prev => ({ ...prev, env: next }))
+                  }}
+                  className="p-1.5 text-neutral-400 hover:text-red-500"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setFormData(prev => ({ ...prev, env: [...prev.env, { key: '', value: '' }] }))}
+            >
+              <Plus size={12} className="mr-1" />
+              添加变量
+            </Button>
+          </div>
+        </CollapsibleSection>
+
+        {/* CLI 原生配置 — Claude Code (JSON) 或 Codex (TOML) */}
+        {showSettingsPanel && (
+          <CollapsibleSection title={isCodex ? 'CLI 原生配置 (config.toml)' : 'CLI 原生配置 (settings.json)'}>
             <p className="text-xs text-neutral-500 mb-2">
-              对应 Claude Code 的 <code className="bg-neutral-100 px-1 rounded">~/.claude/settings.json</code>，
-              通过 <code className="bg-neutral-100 px-1 rounded">--settings</code> 参数注入。
-              在 <code className="bg-neutral-100 px-1 rounded">env</code> 中设置 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等。
+              {isCodex ? (
+                <>
+                  直接填写 Codex <code className="bg-neutral-100 px-1 rounded">config.toml</code> 格式的配置片段，
+                  通过 <code className="bg-neutral-100 px-1 rounded">-c</code> 参数注入。
+                  不会修改你的 <code className="bg-neutral-100 px-1 rounded">~/.codex/config.toml</code> 文件。
+                </>
+              ) : (
+                <>
+                  对应 Claude Code 的 <code className="bg-neutral-100 px-1 rounded">~/.claude/settings.json</code>，
+                  通过 <code className="bg-neutral-100 px-1 rounded">--settings</code> 参数注入。
+                  在 <code className="bg-neutral-100 px-1 rounded">env</code> 中设置 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等。
+                </>
+              )}
             </p>
             <textarea
               value={formData.settings}
@@ -361,7 +496,7 @@ function ProviderFormModal({
               }}
               rows={10}
               className="w-full px-3 py-2 text-sm font-mono border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900 bg-neutral-50"
-              placeholder={CLAUDE_CODE_SETTINGS_TEMPLATE}
+              placeholder={getSettingsTemplate(formData.agentType)}
             />
             {settingsError && (
               <p className="mt-1 text-xs text-red-600">{settingsError}</p>
@@ -414,13 +549,18 @@ export function ProviderSettingsPage() {
 
   const openEdit = (provider: any) => {
     const p = provider.provider
+    // 将 env Record 转为数组形式
+    const envEntries = p.env
+      ? Object.entries(p.env as Record<string, string>).map(([key, value]) => ({ key, value }))
+      : []
     setEditModal({
       id: p.id,
       data: {
         name: p.name,
         agentType: p.agentType as AgentType,
         config: { ...p.config },
-        settings: p.settings ? JSON.stringify(p.settings, null, 2) : '',
+        settings: p.settings ?? '',
+        env: envEntries,
         isDefault: p.isDefault,
       },
     })
@@ -494,7 +634,7 @@ export function ProviderSettingsPage() {
                         ))}
                       </div>
                     )}
-                    {provider.settings && Object.keys(provider.settings).length > 0 && (
+                    {provider.settings?.trim() && (
                       <div className="text-xs text-neutral-600">
                         <span className="font-medium">CLI 配置:</span> 已配置
                       </div>
