@@ -83,6 +83,37 @@ export async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * 从 Markdown prompt 中提取图片路径并返回纯文本 prompt
+ * 用于 Codex CLI 等通过 --image 参数传入图片文件路径的场景
+ */
+export async function extractImagePaths(prompt: string): Promise<{
+  textPrompt: string;
+  imagePaths: string[];
+}> {
+  const imageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  const imagePaths: string[] = [];
+  let textPrompt = prompt;
+
+  let match: RegExpExecArray | null;
+  while ((match = imageRegex.exec(prompt)) !== null) {
+    const [, , imagePath] = match;
+    const exists = await fileExists(imagePath);
+    if (exists) {
+      imagePaths.push(imagePath);
+    } else {
+      console.warn(`[image-utils] Image file not found: ${imagePath}`);
+    }
+  }
+
+  // 移除所有图片语法，保留纯文本
+  if (imagePaths.length > 0) {
+    textPrompt = prompt.replace(imageRegex, '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  return { textPrompt, imagePaths };
+}
+
+/**
  * 解析 Markdown 中的图片语法并转换为 content blocks
  * 支持格式：![alt](path)
  */

@@ -17,6 +17,7 @@ import {
   SpawnedChild,
 } from './base.executor.js';
 import { CommandBuilder, applyOverrides, CmdOverrides } from './command-builder.js';
+import { extractImagePaths } from './image-utils.js';
 
 /**
  * 将嵌套对象展平为 dotted path 键值对（递归到标量叶子）
@@ -224,11 +225,21 @@ export class CodexExecutor extends BaseExecutor {
     // Codex 使用 exec 子命令进行非交互式执行
     commandBuilder.extendParams(['exec', '--json', '--skip-git-repo-check']);
 
-    const commandParts = commandBuilder.buildInitial();
-
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
-    const newConfig = { ...config, prompt };
+
+    // 检测并提取图片路径（-i <FILE>... 是 variadic 参数，会贪婪消费后续参数，
+    // 必须用 -- 分隔，防止 prompt 被当成文件路径）
+    const { textPrompt, imagePaths } = await extractImagePaths(prompt);
+    for (const imgPath of imagePaths) {
+      commandBuilder.extendParams(['-i', imgPath]);
+    }
+    if (imagePaths.length > 0) {
+      commandBuilder.extendParams(['--']);
+    }
+
+    const commandParts = commandBuilder.buildInitial();
+    const newConfig = { ...config, prompt: textPrompt };
 
     return this.spawnInternal(newConfig, commandParts);
   }
@@ -253,11 +264,21 @@ export class CodexExecutor extends BaseExecutor {
     // 注意：Codex 的 exec resume 不支持 --from 参数
     // resetToMessageId 参数暂时忽略
 
-    const commandParts = commandBuilder.buildFollowUp(additionalArgs);
-
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
-    const newConfig = { ...config, prompt };
+
+    // 检测并提取图片路径（-i <FILE>... 是 variadic 参数，会贪婪消费后续参数，
+    // 必须用 -- 分隔，防止 prompt 被当成文件路径）
+    const { textPrompt, imagePaths } = await extractImagePaths(prompt);
+    for (const imgPath of imagePaths) {
+      additionalArgs.push('-i', imgPath);
+    }
+    if (imagePaths.length > 0) {
+      additionalArgs.push('--');
+    }
+
+    const commandParts = commandBuilder.buildFollowUp(additionalArgs);
+    const newConfig = { ...config, prompt: textPrompt };
 
     return this.spawnInternal(newConfig, commandParts);
   }
