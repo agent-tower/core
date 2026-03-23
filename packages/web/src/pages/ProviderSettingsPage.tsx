@@ -45,18 +45,6 @@ const APPEND_PROMPT_FIELD: ConfigFieldMeta = {
   placeholder: '追加到每次 prompt 末尾的文本',
 }
 
-const CODEX_SANDBOX_OPTIONS = [
-  { value: 'read-only', label: '只读' },
-  { value: 'workspace-write', label: '工作区可写' },
-  { value: 'danger-full-access', label: '完全开放' },
-]
-
-const CODEX_APPROVAL_OPTIONS = [
-  { value: 'untrusted', label: '仅不受信命令需审批' },
-  { value: 'on-request', label: '按需审批' },
-  { value: 'never', label: '从不审批' },
-]
-
 const AGENT_CONFIG_FIELDS: Record<string, ConfigFieldMeta[]> = {
   [AgentType.CLAUDE_CODE]: [
     { key: 'dangerouslySkipPermissions', label: '跳过权限确认', type: 'switch' },
@@ -84,41 +72,22 @@ const AGENT_CONFIG_FIELDS: Record<string, ConfigFieldMeta[]> = {
     APPEND_PROMPT_FIELD,
   ],
   [AgentType.CODEX]: [
-    { key: 'sandbox', label: '执行沙盒', type: 'select', options: CODEX_SANDBOX_OPTIONS },
-    { key: 'approvalPolicy', label: '命令审批', type: 'select', options: CODEX_APPROVAL_OPTIONS },
+    { key: 'dangerouslyBypassApprovalsAndSandbox', label: '跳过所有确认和沙盒', type: 'switch' },
     { key: 'model', label: '模型', type: 'input', placeholder: 'o3' },
     { key: 'profile', label: 'Profile', type: 'input', placeholder: '~/.codex/config.toml 中的 profile 名称' },
     APPEND_PROMPT_FIELD,
   ],
 }
 
-function getDefaultConfigForAgentType(agentType: AgentType): Record<string, unknown> {
-  if (agentType === AgentType.CODEX) {
-    return {
-      sandbox: 'workspace-write',
-      approvalPolicy: 'on-request',
-    }
-  }
+function getDefaultConfigForAgentType(): Record<string, unknown> {
   return {}
 }
 
 function normalizeProviderConfig(
-  agentType: AgentType | string,
+  _agentType: AgentType | string,
   config: Record<string, unknown>
 ): Record<string, unknown> {
-  const next = { ...config }
-
-  if (agentType === AgentType.CODEX && next.fullAuto === true) {
-    if (typeof next.sandbox !== 'string' || !next.sandbox) {
-      next.sandbox = 'workspace-write'
-    }
-    if (typeof next.approvalPolicy !== 'string' || !next.approvalPolicy) {
-      next.approvalPolicy = 'on-request'
-    }
-  }
-
-  delete next.fullAuto
-  return next
+  return { ...config }
 }
 
 const CLAUDE_CODE_SETTINGS_TEMPLATE = JSON.stringify(
@@ -381,7 +350,7 @@ function ProviderFormModal({
     initialData ?? {
       name: '',
       agentType: AgentType.CLAUDE_CODE,
-      config: getDefaultConfigForAgentType(AgentType.CLAUDE_CODE),
+      config: getDefaultConfigForAgentType(),
       settings: '',
       env: [],
       isDefault: false,
@@ -404,7 +373,7 @@ function ProviderFormModal({
     setFormData(prev => ({
       ...prev,
       agentType: type,
-      config: getDefaultConfigForAgentType(type),
+      config: getDefaultConfigForAgentType(),
       settings: getSettingsTemplate(type),
     }))
   }
@@ -588,7 +557,6 @@ function ProviderFormModal({
                   直接填写 Codex <code className="bg-neutral-100 px-1 rounded">config.toml</code> 格式的配置片段，
                   通过 <code className="bg-neutral-100 px-1 rounded">-c</code> 参数注入。
                   不会修改你的 <code className="bg-neutral-100 px-1 rounded">~/.codex/config.toml</code> 文件。
-                  如与上方“执行沙盒”或“命令审批”重复，以上方运行配置为准。
                 </>
               ) : (
                 <>

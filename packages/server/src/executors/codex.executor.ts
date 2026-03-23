@@ -68,12 +68,8 @@ export interface CodexConfig {
   appendPrompt?: string;
   /** 模型选择 (gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.1-codex-max) */
   model?: string;
-  /** 沙箱模式 (read-only, workspace-write, danger-full-access) */
-  sandbox?: string;
-  /** 审批策略 (untrusted, on-request, never, reject) */
-  approvalPolicy?: string;
-  /** 兼容旧配置：全自动模式，相当于 on-request + workspace-write */
-  fullAuto?: boolean;
+  /** 跳过所有确认提示并在无沙箱环境下执行命令（危险，仅用于外部已隔离的环境） */
+  dangerouslyBypassApprovalsAndSandbox?: boolean;
   /** 启用实时网络搜索 */
   liveSearch?: boolean;
   /** 配置 profile 名称，对应 ~/.codex/config.toml 中的 [profiles.xxx] */
@@ -196,19 +192,9 @@ export class CodexExecutor extends BaseExecutor {
       builder.extendParams(['--model', this.config.model]);
     }
 
-    // 沙箱模式
-    if (this.config.sandbox) {
-      builder.extendParams(['--sandbox', this.config.sandbox]);
-    }
-
-    // 审批策略
-    if (this.config.approvalPolicy) {
-      builder.extendParams(['--ask-for-approval', this.config.approvalPolicy]);
-    }
-
-    // 全自动模式
-    if (this.config.fullAuto) {
-      builder.extendParams(['--full-auto']);
+    // 跳过所有确认提示并在无沙箱环境下执行命令（危险模式，类似 Claude Code 的 --dangerously-skip-permissions）
+    if (this.config.dangerouslyBypassApprovalsAndSandbox) {
+      builder.extendParams(['--dangerously-bypass-approvals-and-sandbox']);
     }
 
     // 实时搜索
