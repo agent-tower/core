@@ -117,26 +117,30 @@ export class CodexExecutor extends BaseExecutor {
     const configPath = path.join(os.homedir(), '.codex', 'config.toml');
     const authPath = path.join(os.homedir(), '.codex', 'auth.json');
 
-    try {
-      // 检查认证文件
-      if (fs.existsSync(authPath)) {
+    // 检查认证文件
+    if (fs.existsSync(authPath)) {
+      try {
         const stats = fs.statSync(authPath);
         const timestamp = Math.floor(stats.mtimeMs / 1000);
         return {
           type: 'LOGIN_DETECTED',
           lastAuthTimestamp: timestamp,
         };
-      }
-
-      // 检查配置文件
-      if (fs.existsSync(configPath)) {
+      } catch {
         return { type: 'INSTALLATION_FOUND' };
       }
-
-      return { type: 'NOT_FOUND', error: 'Codex CLI not authenticated' };
-    } catch {
-      return { type: 'NOT_FOUND', error: 'Codex CLI not configured' };
     }
+
+    // 仅当 provider 显式依赖 profile 时，才要求本地 config.toml 存在。
+    // 其他场景下，Codex 也可能通过 provider 的 settings/env 在运行时注入配置。
+    if (this.config.profile && !fs.existsSync(configPath)) {
+      return {
+        type: 'NOT_FOUND',
+        error: 'Codex profile requires ~/.codex/config.toml',
+      };
+    }
+
+    return { type: 'INSTALLATION_FOUND' };
   }
 
   /**
