@@ -153,4 +153,4 @@ pnpm dev            # Start all services in dev mode
 
 ## License
 
-<!-- TODO: License to be determined -->
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.

@@ -153,4 +153,4 @@ pnpm dev            # 启动所有服务的开发模式
 
 ## 许可证
 
-<!-- TODO: 开源协议待讨论确定 -->
+本项目基于 Apache License 2.0 开源，详情见 [LICENSE](./LICENSE)。

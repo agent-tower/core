@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "AI Agent 任务管理面板",
+  "license": "Apache-2.0",
   "scripts": {
     "setup": "pnpm install && pnpm --filter @agent-tower/shared build",
     "dev": "pnpm -r --parallel run dev",
