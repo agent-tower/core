@@ -19,7 +19,7 @@ import {
 import { apiClient } from '../../api-client.js'
 
 // Debug 日志开关
-const DEBUG_LOGS = true;
+const DEBUG_LOGS = import.meta.env.VITE_DEBUG_LOGS === 'true'
 
 interface NormalizedConversation {
   sessionId?: string

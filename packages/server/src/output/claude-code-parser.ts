@@ -6,7 +6,7 @@
 import type { MsgStore } from './msg-store.js'
 
 // Debug 日志开关
-const DEBUG_PARSER = process.env.DEBUG_PARSER === 'true';
+const DEBUG_PARSER = process.env.DEBUG_PARSER === 'true'
 import {
   type NormalizedEntry,
   type ActionType,
@@ -335,6 +335,10 @@ export class ClaudeCodeParser {
         const existingIndex = streamingState?.contents.get(contentIndex)?.entryIndex
         this.handleToolUse(block.name, block.input, msg.message.id, existingIndex)
       } else if (block.type === 'text' && block.text) {
+        if (isPartialMessage) {
+          continue
+        }
+
         // 优先用完整内容 replace stream_event 阶段的 entry；
         // 某些 provider 不返回 content_block_*，此时直接补建 assistant entry。
         const existingIndex = streamingState?.contents.get(contentIndex)?.entryIndex
@@ -342,25 +346,25 @@ export class ClaudeCodeParser {
           const entry = createAssistantMessage(block.text)
           const patch = replaceNormalizedEntry(existingIndex, entry)
           this.msgStore.pushPatch(patch)
-        } else if (!streamingState && !isPartialMessage) {
-          // 仅当确实没走过 stream_event 且不是 partial 消息时才补建 entry。
-          // partial 消息的 content 数组不完整（仅含最新 block），contentIndex 与
-          // stream event index 不匹配，会导致 lookup 失败而误创建重复 entry。
-          const entry = createAssistantMessage(block.text)
+        } else if (!streamingState) {
           const index = this.indexProvider.next()
+          const entry = createAssistantMessage(block.text)
           const patch = addNormalizedEntry(index, entry)
           this.msgStore.pushPatch(patch)
         }
       } else if (block.type === 'thinking' && block.thinking) {
+        if (isPartialMessage) {
+          continue
+        }
+
         const existingIndex = streamingState?.contents.get(contentIndex)?.entryIndex
         if (existingIndex != null) {
           const entry = createThinking(block.thinking)
           const patch = replaceNormalizedEntry(existingIndex, entry)
           this.msgStore.pushPatch(patch)
-        } else if (!streamingState && !isPartialMessage) {
-          // 同上：仅无 streaming state 且非 partial 时才补建
-          const entry = createThinking(block.thinking)
+        } else if (!streamingState) {
           const index = this.indexProvider.next()
+          const entry = createThinking(block.thinking)
           const patch = addNormalizedEntry(index, entry)
           this.msgStore.pushPatch(patch)
         }
