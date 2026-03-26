@@ -19,6 +19,10 @@ function getAssistantEntries(store: MsgStore) {
   return snap.entries.filter((e) => e.entryType === 'assistant_message')
 }
 
+function getEntries(store: MsgStore) {
+  return store.getSnapshot().entries
+}
+
 describe('Claude Code Token - 使用 assistant 消息的 per-turn usage', () => {
   it('should use last assistant message usage (not cumulative result usage)', () => {
     const store = new MsgStore()
@@ -162,6 +166,112 @@ describe('Claude Code Parser - provider compatibility', () => {
     const entries = getAssistantEntries(store)
     expect(entries).toHaveLength(1)
     expect(entries[0].content).toBe('最终回复仍然应该显示')
+  })
+
+  it('should keep thinking visible when partial tool_use arrives after thinking stream', () => {
+    const store = new MsgStore()
+    const parser = new ClaudeCodeParser(store)
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: { id: 'msg-1', role: 'assistant' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: '先检查当前文件内容' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '，再决定下一步' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'assistant',
+      message: {
+        id: 'msg-1',
+        role: 'assistant',
+        stop_reason: null,
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'Read',
+            input: { file_path: '/tmp/demo.ts' },
+          },
+        ],
+      },
+    })
+
+    const entries = getEntries(store)
+    expect(entries).toHaveLength(2)
+    expect(entries[0].entryType).toBe('thinking')
+    expect(entries[0].content).toBe('先检查当前文件内容，再决定下一步')
+    expect(entries[1].entryType).toBe('tool_use')
+    expect(entries[1].metadata?.toolName).toBe('Read')
+  })
+
+  it('should reuse tool entry by tool_use id and update its status from tool_result', () => {
+    const store = new MsgStore()
+    const parser = new ClaudeCodeParser(store)
+
+    feedLine(parser, {
+      type: 'assistant',
+      message: {
+        id: 'msg-1',
+        role: 'assistant',
+        stop_reason: null,
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'Read',
+            input: { file_path: '/tmp/demo.ts' },
+          },
+        ],
+      },
+    })
+
+    feedLine(parser, {
+      type: 'assistant',
+      message: {
+        id: 'msg-1',
+        role: 'assistant',
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'Read',
+            input: { file_path: '/tmp/demo.ts' },
+          },
+        ],
+      },
+    })
+
+    feedLine(parser, {
+      type: 'result',
+      subtype: 'tool_result',
+      tool_use_id: 'toolu_1',
+      tool_result: { content: 'ok', is_error: false },
+    })
+
+    const entries = getEntries(store)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].entryType).toBe('tool_use')
+    expect(entries[0].metadata?.status).toBe('success')
   })
 })
 

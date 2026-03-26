@@ -40,6 +40,7 @@ interface ClaudeCodeMessage {
     id?: string
     role?: string
     content?: Array<{
+      id?: string
       type: string
       text?: string
       thinking?: string
@@ -331,9 +332,12 @@ export class ClaudeCodeParser {
 
       if (block.type === 'tool_use' && block.name) {
         this.flushAssistantText()
-        // tool_use 可能已有 streaming entry index（虽然目前 Claude 不流式传 tool_use）
-        const existingIndex = streamingState?.contents.get(contentIndex)?.entryIndex
-        this.handleToolUse(block.name, block.input, msg.message.id, existingIndex)
+        // partial assistant 消息的 content 数组会从 0 重新编号，不能再用 contentIndex
+        // 去回查 stream_event 阶段的 block，否则会把已有的 thinking/text entry 误替换掉。
+        // tool_use 应该用 block 级别 id（tool_use_id / id）做稳定关联；缺失时再回退到 messageId。
+        const toolCallId = block.tool_use_id || block.id
+        const existingIndex = toolCallId ? this.toolEntryMap.get(toolCallId) : undefined
+        this.handleToolUse(block.name, block.input, toolCallId || messageId, existingIndex)
       } else if (block.type === 'text' && block.text) {
         if (isPartialMessage) {
           continue
@@ -423,25 +427,25 @@ export class ClaudeCodeParser {
   /**
    * 处理工具使用
    */
-  private handleToolUse(toolName: string, input: unknown, messageId?: string, existingIndex?: number): void {
+  private handleToolUse(toolName: string, input: unknown, toolCallId?: string, existingIndex?: number): void {
     const action = toolNameToAction(toolName)
     const content = this.formatToolContent(toolName, input)
 
     // Extract todos from TodoWrite tool call
     const extras = this.extractTodoExtras(toolName, input)
-    const entry = createToolUse(toolName, content, action, messageId, undefined, extras)
+    const entry = createToolUse(toolName, content, action, toolCallId, undefined, extras)
 
     if (existingIndex != null) {
       // replace stream_event 阶段创建的 entry
       const patch = replaceNormalizedEntry(existingIndex, entry)
       this.msgStore.pushPatch(patch)
-      if (messageId) {
-        this.toolEntryMap.set(messageId, existingIndex)
+      if (toolCallId) {
+        this.toolEntryMap.set(toolCallId, existingIndex)
       }
     } else {
       const index = this.indexProvider.next()
-      if (messageId) {
-        this.toolEntryMap.set(messageId, index)
+      if (toolCallId) {
+        this.toolEntryMap.set(toolCallId, index)
       }
       const patch = addNormalizedEntry(index, entry)
       this.msgStore.pushPatch(patch)
