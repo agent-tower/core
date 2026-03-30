@@ -17,7 +17,6 @@ import type { MsgStore } from './msg-store.js'
 import type { ActionType, ToolStatus } from './types.js'
 import {
   createAssistantMessage,
-  createUserMessage,
   createSystemMessage,
   createToolUse,
   createThinking,
@@ -232,6 +231,23 @@ interface CursorJsonThinking {
   session_id?: string
 }
 
+interface CursorJsonConnection {
+  type: 'connection'
+  subtype?: string
+  session_id?: string
+  timestamp_ms?: number
+}
+
+interface CursorJsonRetry {
+  type: 'retry'
+  subtype?: string
+  session_id?: string
+  timestamp_ms?: number
+  attempt?: number
+  is_resume?: boolean
+  checkpoint_turn_count?: number
+}
+
 interface CursorJsonToolCall {
   type: 'tool_call'
   subtype?: string
@@ -254,6 +270,8 @@ type CursorJsonMessage =
   | CursorJsonUser
   | CursorJsonAssistant
   | CursorJsonThinking
+  | CursorJsonConnection
+  | CursorJsonRetry
   | CursorJsonToolCall
   | CursorJsonResult
   | { type: string; [key: string]: unknown } // Unknown
@@ -450,6 +468,10 @@ export class CursorAgentParser {
   private currentAssistantIndex: number | null = null;
   private currentThinkingBuffer: string = '';
   private currentThinkingIndex: number | null = null;
+  private lastAssistantIndex: number | null = null;
+  private lastThinkingIndex: number | null = null;
+  private retryEntryIndex: number | null = null;
+  private retryEntryId: string | null = null;
 
   // 工具调用 call_id -> entry index 映射
   private callIndexMap: Map<string, number> = new Map();
@@ -504,21 +526,60 @@ export class CursorAgentParser {
    * 解析单行 JSON
    */
   private parseLine(line: string): void {
-    let msg: CursorJsonMessage;
-    try {
-      msg = JSON.parse(line) as CursorJsonMessage;
-    } catch {
-      // 非 JSON 行（PTY echo、ANSI 控制序列等）— 丢弃，不产出 entry
-      // Agent CLI 的所有有效输出都是 JSONL 格式
-      if (DEBUG_PARSER) {
-        const stripped = stripAnsiSequences(line).trim();
-        if (stripped) {
-          console.log(`[CursorAgentParser] Skipping non-JSON line: "${stripped.slice(0, 80)}"`);
-        }
-      }
+    if (this.parseJsonSegments(line)) {
       return;
     }
 
+    // 非 JSON 行（PTY echo、ANSI 控制序列等）— 丢弃，不产出 entry
+    // Agent CLI 的所有有效输出都是 JSONL 格式
+    if (DEBUG_PARSER) {
+      const stripped = stripAnsiSequences(line).trim();
+      if (stripped) {
+        console.log(`[CursorAgentParser] Skipping non-JSON line: "${stripped.slice(0, 80)}"`);
+      }
+    }
+  }
+
+  /**
+   * 一行中可能包含多个 JSON 对象（Cursor 在 retry/resume 时偶尔会拼到同一行）
+   */
+  private parseJsonSegments(line: string): boolean {
+    const trimmed = line.trim()
+    if (!trimmed) return true
+
+    try {
+      const msg = JSON.parse(trimmed) as CursorJsonMessage
+      this.handleMessage(msg, trimmed)
+      return true
+    } catch {
+      // 可能是多个 JSON 拼接，继续拆分尝试
+    }
+
+    const segments = trimmed.split(/\}\s*\{/).map((seg, i, arr) => {
+      if (arr.length === 1) return seg
+      if (i === 0) return seg + '}'
+      if (i === arr.length - 1) return '{' + seg
+      return '{' + seg + '}'
+    })
+
+    let parsedCount = 0
+    for (const segment of segments) {
+      try {
+        const msg = JSON.parse(segment) as CursorJsonMessage
+        this.handleMessage(msg, segment)
+        parsedCount += 1
+      } catch {
+        // ignore invalid segment; caller will log if none parsed
+      }
+    }
+
+    return parsedCount > 0
+  }
+
+  /**
+   * 处理已解析的 JSON 消息
+   */
+  private handleMessage(msg: CursorJsonMessage, rawLine: string): void {
     // 推送 session_id
     if (!this.sessionIdReported) {
       const sessionId = extractSessionId(msg);
@@ -533,11 +594,12 @@ export class CursorAgentParser {
     // 判断是否需要刷新 assistant / thinking 缓冲区
     const isAssistant = msg.type === 'assistant';
     const isThinking = msg.type === 'thinking';
+    const isControlEvent = msg.type === 'connection' || msg.type === 'retry';
 
-    if (!isAssistant && this.currentAssistantIndex !== null) {
+    if (!isAssistant && !isControlEvent && this.currentAssistantIndex !== null) {
       this.flushAssistant();
     }
-    if (!isThinking && this.currentThinkingIndex !== null) {
+    if (!isThinking && !isControlEvent && this.currentThinkingIndex !== null) {
       this.flushThinking();
     }
 
@@ -553,12 +615,21 @@ export class CursorAgentParser {
         this.handleAssistant(msg as CursorJsonAssistant);
         break;
       case 'thinking':
+        this.clearRetryState();
         this.handleThinking(msg as CursorJsonThinking);
         break;
+      case 'connection':
+        this.handleConnection(msg as CursorJsonConnection);
+        break;
+      case 'retry':
+        this.handleRetry(msg as CursorJsonRetry);
+        break;
       case 'tool_call':
+        this.clearRetryState();
         this.handleToolCall(msg as CursorJsonToolCall);
         break;
       case 'result': {
+        this.clearRetryState();
         // 从 result 消息中提取 token 用量（如果有）
         const resultMsg = msg as CursorJsonResult
         if (resultMsg.result && typeof resultMsg.result === 'object') {
@@ -587,7 +658,7 @@ export class CursorAgentParser {
       default:
         // 未知类型 - 作为系统消息输出
         {
-          const entry = createSystemMessage(line);
+          const entry = createSystemMessage(rawLine);
           const index = this.indexProvider.next();
           const patch = addNormalizedEntry(index, entry);
           this.msgStore.pushPatch(patch);
@@ -610,15 +681,45 @@ export class CursorAgentParser {
   }
 
   /**
-   * 处理 user 消息 — 由 Agent CLI 输出 { type: "user" } 时产出 user_message entry
+   * 处理 user 消息
+   * 跳过 — 用户消息已由 SessionManager.sendMessage() 主动写入 MsgStore，
+   * 这里如果再处理 Cursor Agent 的 user 回显会导致前端显示重复。
    */
-  private handleUser(msg: CursorJsonUser): void {
-    const text = concatMessageText(msg.message);
-    if (!text) return;
-    const entry = createUserMessage(text);
-    const index = this.indexProvider.next();
-    const patch = addNormalizedEntry(index, entry);
-    this.msgStore.pushPatch(patch);
+  private handleUser(_msg: CursorJsonUser): void {
+    // noop: avoid duplicating the user message already injected by SessionManager
+  }
+
+  /**
+   * 处理连接状态消息
+   * 这类事件仅用于底层重连控制，不应直接暴露到聊天流。
+   */
+  private handleConnection(_msg: CursorJsonConnection): void {
+    // noop
+  }
+
+  /**
+   * 处理重试状态消息
+   * 使用单条可更新的 entry，避免把原始 JSON 暴露给前端。
+   */
+  private handleRetry(msg: CursorJsonRetry): void {
+    this.beginReplayFromRetry()
+
+    const entry = createErrorMessage(
+      this.formatRetryContent(msg),
+      this.formatRetryDetail(msg),
+      this.retryEntryId ?? undefined
+    )
+
+    if (this.retryEntryIndex != null && this.retryEntryId != null) {
+      const patch = replaceNormalizedEntry(this.retryEntryIndex, entry)
+      this.msgStore.pushPatch(patch)
+    } else {
+      const index = this.indexProvider.next()
+      const patch = addNormalizedEntry(index, entry)
+      this.msgStore.pushPatch(patch)
+      this.retryEntryIndex = index
+      this.retryEntryId = entry.id
+    }
   }
 
   /**
@@ -634,6 +735,7 @@ export class CursorAgentParser {
       // 更新现有条目
       const patch = updateEntryContent(this.currentAssistantIndex, this.currentAssistantBuffer);
       this.msgStore.pushPatch(patch);
+      this.lastAssistantIndex = this.currentAssistantIndex;
     } else {
       // 创建新条目
       const entry = createAssistantMessage(this.currentAssistantBuffer);
@@ -641,6 +743,7 @@ export class CursorAgentParser {
       this.currentAssistantIndex = index;
       const patch = addNormalizedEntry(index, entry);
       this.msgStore.pushPatch(patch);
+      this.lastAssistantIndex = index;
     }
   }
 
@@ -656,6 +759,7 @@ export class CursorAgentParser {
       // 更新现有条目
       const patch = updateEntryContent(this.currentThinkingIndex, this.currentThinkingBuffer);
       this.msgStore.pushPatch(patch);
+      this.lastThinkingIndex = this.currentThinkingIndex;
     } else {
       // 创建新条目
       const entry = createThinking(this.currentThinkingBuffer);
@@ -663,6 +767,7 @@ export class CursorAgentParser {
       this.currentThinkingIndex = index;
       const patch = addNormalizedEntry(index, entry);
       this.msgStore.pushPatch(patch);
+      this.lastThinkingIndex = index;
     }
   }
 
@@ -712,6 +817,46 @@ export class CursorAgentParser {
       })),
       todoOperation: 'write',
     };
+  }
+
+  /**
+   * 收到 retry 时，后续 assistant/thinking 往往是从头重放。
+   * 复用上一条 entry index，并从空 buffer 重新覆盖内容，避免出现重复消息。
+   */
+  private beginReplayFromRetry(): void {
+    this.currentAssistantIndex = this.lastAssistantIndex
+    this.currentAssistantBuffer = ''
+    this.currentThinkingIndex = this.lastThinkingIndex
+    this.currentThinkingBuffer = ''
+  }
+
+  private clearRetryState(): void {
+    this.retryEntryIndex = null
+    this.retryEntryId = null
+  }
+
+  private formatRetryContent(msg: CursorJsonRetry): string {
+    const attemptSuffix = msg.attempt != null ? ` (attempt ${msg.attempt})` : ''
+    const checkpointSuffix =
+      msg.checkpoint_turn_count != null ? ` from checkpoint turn ${msg.checkpoint_turn_count}` : ''
+
+    switch (msg.subtype?.toLowerCase()) {
+      case 'starting':
+        return `Connection lost, retrying request${attemptSuffix}...`
+      case 'resuming':
+        return `Resuming request${attemptSuffix}${checkpointSuffix}...`
+      default:
+        return `Retrying request${attemptSuffix}...`
+    }
+  }
+
+  private formatRetryDetail(msg: CursorJsonRetry): string {
+    const detail: string[] = []
+    if (msg.subtype) detail.push(`subtype=${msg.subtype}`)
+    if (msg.attempt != null) detail.push(`attempt=${msg.attempt}`)
+    if (msg.is_resume != null) detail.push(`is_resume=${String(msg.is_resume)}`)
+    if (msg.checkpoint_turn_count != null) detail.push(`checkpoint_turn_count=${msg.checkpoint_turn_count}`)
+    return detail.join(', ')
   }
 
   /**
