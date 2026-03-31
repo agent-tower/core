@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Circle, Check, CircleDot, ChevronDown } from 'lucide-react'
 import type { TodoItem } from '@/hooks/use-todos'
+import { useI18n } from '@/lib/i18n'
 
 const TODO_PANEL_OPEN_KEY = 'agent-tower-todo-panel-open'
 
@@ -20,6 +21,7 @@ interface TodoPanelProps {
 }
 
 export function TodoPanel({ todos, compact }: TodoPanelProps) {
+  const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(() => {
     if (compact) return false
     const stored = localStorage.getItem(TODO_PANEL_OPEN_KEY)
@@ -46,7 +48,7 @@ export function TodoPanel({ todos, compact }: TodoPanelProps) {
         <div className={`bg-neutral-50/80 border border-neutral-100 rounded-lg flex items-center justify-between hover:bg-neutral-100/80 transition-colors ${compact ? 'px-3 py-1.5' : 'px-3 py-2'}`}>
           <div className="flex items-center gap-2 min-w-0">
             <span className={`text-neutral-500 font-medium ${compact ? 'text-xs' : 'text-xs'}`}>
-              待办
+              {t('待办')}
             </span>
             <span className={`text-neutral-400 tabular-nums ${compact ? 'text-xs' : 'text-xs'}`}>
               {completedCount}/{todos.length}

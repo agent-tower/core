@@ -5,6 +5,7 @@ import { Select } from '@/components/ui/select'
 import { FilePathListInput } from '@/components/ui/file-path-list-input'
 import { QuickCommandsEditor } from '@/components/ui/quick-commands-editor'
 import type { Project, QuickCommand } from '@agent-tower/shared'
+import { useI18n } from '@/lib/i18n'
 
 interface FormState {
   copyFiles: string[]
@@ -23,6 +24,7 @@ function parseQuickCommands(raw: string | null | undefined): QuickCommand[] {
 }
 
 export function ProjectSettingsPage() {
+  const { t } = useI18n()
   const { data: projectsData, isLoading } = useProjects({ limit: 100 })
   const updateProject = useUpdateProject()
 
@@ -50,11 +52,11 @@ export function ProjectSettingsPage() {
   }, [selected, dirty])
 
   if (isLoading) {
-    return <div className="p-6 text-sm text-neutral-400">加载中...</div>
+    return <div className="p-6 text-sm text-neutral-400">{t('加载中...')}</div>
   }
 
   if (projects.length === 0) {
-    return <div className="p-6 text-sm text-neutral-400">暂无项目，请先创建项目</div>
+    return <div className="p-6 text-sm text-neutral-400">{t('暂无项目，请先创建项目')}</div>
   }
 
   const projectOptions = projects.map((p) => ({ value: p.id, label: p.name }))
@@ -81,20 +83,20 @@ export function ProjectSettingsPage() {
     <div className="px-10 py-6 mx-auto w-full max-w-3xl space-y-8">
       {/* 项目选择 */}
       <section>
-        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">选择项目</h3>
+        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('选择项目')}</h3>
         <Select
           value={selectedId}
           onChange={handleProjectChange}
           options={projectOptions}
-          placeholder="选择项目..."
+          placeholder={t('选择项目...')}
         />
       </section>
 
       {/* 自动复制文件 */}
       <section>
-        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">自动复制文件</h3>
+        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('自动复制文件')}</h3>
         <p className="text-[12px] text-neutral-400 mb-3">
-          创建 worktree 时自动从主仓库复制的文件或目录。支持 glob 模式。
+          {t('创建 worktree 时自动从主仓库复制的文件或目录。支持 glob 模式。')}
         </p>
         <FilePathListInput
           value={form.copyFiles}
@@ -102,15 +104,15 @@ export function ProjectSettingsPage() {
           repoPath={selected?.repoPath ?? ''}
         />
         <p className="text-[11px] text-neutral-400 mt-2">
-          适用于不在 git 管理中但启动必需的文件，如 .env、node_modules、数据库文件等
+          {t('适用于不在 git 管理中但启动必需的文件，如 .env、node_modules、数据库文件等')}
         </p>
       </section>
 
       {/* Setup 脚本 */}
       <section>
-        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">Setup 脚本</h3>
+        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('Setup 脚本')}</h3>
         <p className="text-[12px] text-neutral-400 mb-3">
-          创建 worktree 后自动执行的命令，每行一条，按顺序执行。
+          {t('创建 worktree 后自动执行的命令，每行一条，按顺序执行。')}
         </p>
         <textarea
           value={form.setupScript}
@@ -120,15 +122,15 @@ export function ProjectSettingsPage() {
           className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-neutral-300 resize-none"
         />
         <p className="text-[11px] text-neutral-400 mt-1">
-          命令在 worktree 目录下执行，单条命令超时 5 分钟，失败不会阻断后续命令
+          {t('命令在 worktree 目录下执行，单条命令超时 5 分钟，失败不会阻断后续命令')}
         </p>
       </section>
 
       {/* 常用命令 */}
       <section>
-        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">常用命令</h3>
+        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('常用命令')}</h3>
         <p className="text-[12px] text-neutral-400 mb-3">
-          在终端中可快速执行的命令，不会自动运行。
+          {t('在终端中可快速执行的命令，不会自动运行。')}
         </p>
         <QuickCommandsEditor
           value={form.quickCommands}
@@ -144,7 +146,7 @@ export function ProjectSettingsPage() {
             onClick={handleSave}
             disabled={updateProject.isPending}
           >
-            {updateProject.isPending ? '保存中...' : '保存'}
+            {updateProject.isPending ? t('保存中...') : t('保存')}
           </Button>
         </div>
       )}

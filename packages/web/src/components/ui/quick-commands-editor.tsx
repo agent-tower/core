@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X, Plus } from 'lucide-react'
 import type { QuickCommand } from '@agent-tower/shared'
+import { useI18n } from '@/lib/i18n'
 
 export interface QuickCommandsEditorProps {
   value: QuickCommand[]
@@ -8,6 +9,7 @@ export interface QuickCommandsEditorProps {
 }
 
 export function QuickCommandsEditor({ value, onChange }: QuickCommandsEditorProps) {
+  const { t } = useI18n()
   const [newName, setNewName] = useState('')
   const [newCommand, setNewCommand] = useState('')
 
@@ -58,7 +60,7 @@ export function QuickCommandsEditor({ value, onChange }: QuickCommandsEditorProp
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="名称"
+          placeholder={t('名称')}
           className="w-28 shrink-0 px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-neutral-300"
         />
         <input
@@ -66,7 +68,7 @@ export function QuickCommandsEditor({ value, onChange }: QuickCommandsEditorProp
           value={newCommand}
           onChange={(e) => setNewCommand(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="命令"
+          placeholder={t('命令')}
           className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-neutral-300"
         />
         <button
@@ -75,7 +77,7 @@ export function QuickCommandsEditor({ value, onChange }: QuickCommandsEditorProp
           className="flex items-center gap-1 px-3 py-2 text-sm bg-neutral-900 text-white rounded-lg hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
         >
           <Plus size={14} />
-          <span>添加</span>
+          <span>{t('添加')}</span>
         </button>
       </div>
     </div>

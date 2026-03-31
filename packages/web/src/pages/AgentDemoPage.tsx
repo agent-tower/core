@@ -8,6 +8,7 @@ import { useAgentVariants } from '@/hooks/use-profiles'
 import { useTodos } from '@/hooks/use-todos'
 import { Link } from 'react-router-dom'
 import { Send, Square, Paperclip, AtSign, Hash, Globe, ChevronDown, ChevronUp, Settings } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 
 // Debug 日志开关
 const DEBUG_PAGE = true;
@@ -23,6 +24,7 @@ interface Agent {
 type SessionStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'error'
 
 export function AgentDemoPage() {
+  const { t } = useI18n()
   const [agents, setAgents] = useState<Agent[]>([])
   const [selectedAgent, setSelectedAgent] = useState<string>('')
   const [selectedVariant, setSelectedVariant] = useState<string>('DEFAULT')
@@ -195,7 +197,7 @@ export function AgentDemoPage() {
             </span>
             <span className="text-neutral-300 text-sm">/</span>
             <span className="text-xl font-bold text-neutral-900 tracking-tight">
-              {hasSession ? (prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '')) : '新会话'}
+              {hasSession ? (prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '')) : t('新会话')}
             </span>
           </div>
 
@@ -253,12 +255,12 @@ export function AgentDemoPage() {
 
         {/* Row 3: Meta Info */}
         <div className="flex items-center gap-6 mt-3">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-neutral-400 font-medium">Agent</span>
-            <div className="flex items-center gap-1.5 text-neutral-900 font-medium bg-neutral-50 px-2 py-1 rounded border border-neutral-100">
-              {currentAgent?.name || selectedAgent || '未选择'}
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-neutral-400 font-medium">Agent</span>
+              <div className="flex items-center gap-1.5 text-neutral-900 font-medium bg-neutral-50 px-2 py-1 rounded border border-neutral-100">
+              {currentAgent?.name || selectedAgent || t('未选择')}
+              </div>
             </div>
-          </div>
           {selectedVariant !== 'DEFAULT' && (
             <div className="flex items-center gap-2 text-xs">
               <span className="text-neutral-400 font-medium">Variant</span>
@@ -276,18 +278,18 @@ export function AgentDemoPage() {
             </div>
           )}
           <div className="flex items-center gap-2 text-xs">
-            <span className="text-neutral-400 font-medium">连接</span>
+            <span className="text-neutral-400 font-medium">{t('连接')}</span>
             <div className={`flex items-center gap-1.5 font-medium px-2 py-1 rounded border ${
               isConnected
                 ? 'text-emerald-700 bg-emerald-50 border-emerald-100'
                 : 'text-neutral-500 bg-neutral-50 border-neutral-100'
             }`}>
-              {isConnected ? (isAttached ? '已连接' : '连接中...') : '未连接'}
+              {isConnected ? (isAttached ? t('已连接') : t('连接中...')) : t('未连接')}
             </div>
           </div>
           {hasSession && (
             <Button variant="outline" size="sm" onClick={handleReset} className="ml-auto">
-              新会话
+              {t('新会话')}
             </Button>
           )}
           <Link
@@ -295,7 +297,7 @@ export function AgentDemoPage() {
             className={`flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors ${hasSession ? '' : 'ml-auto'}`}
           >
             <Settings size={14} />
-            <span>Profiles 设置</span>
+            <span>{t('Profiles 设置')}</span>
           </Link>
         </div>
       </div>
@@ -306,7 +308,7 @@ export function AgentDemoPage() {
           /* Agent Selection & Prompt Input */
           <div className="max-w-2xl mx-auto space-y-6">
             <div>
-              <h2 className="text-lg font-semibold mb-3 text-neutral-900">选择 Agent</h2>
+              <h2 className="text-lg font-semibold mb-3 text-neutral-900">{t('选择 Agent')}</h2>
               <div className="flex gap-2 flex-wrap">
                 {agents.map(agent => (
                   <Button
@@ -317,14 +319,14 @@ export function AgentDemoPage() {
                   >
                     {agent.name}
                     {agent.available && agent.version && ` (${agent.version})`}
-                    {!agent.available && ' (不可用)'}
+                    {!agent.available && t(' (不可用)')}
                   </Button>
                 ))}
               </div>
             </div>
 
             <div>
-              <h2 className="text-lg font-semibold mb-3 text-neutral-900">配置变体 (Profile Variant)</h2>
+              <h2 className="text-lg font-semibold mb-3 text-neutral-900">{t('配置变体 (Profile Variant)')}</h2>
               <div className="flex gap-2 flex-wrap">
                 {variantNames.map(v => (
                   <button
@@ -350,13 +352,13 @@ export function AgentDemoPage() {
             </div>
 
             <div>
-              <h2 className="text-lg font-semibold mb-3 text-neutral-900">输入任务</h2>
+              <h2 className="text-lg font-semibold mb-3 text-neutral-900">{t('输入任务')}</h2>
               <div className="relative border border-neutral-200 rounded-xl shadow-sm bg-white focus-within:ring-1 focus-within:ring-neutral-300 focus-within:border-neutral-300 transition-all duration-200">
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
                   rows={4}
-                  placeholder="描述你想让 Agent 完成的任务..."
+                  placeholder={t('描述你想让 Agent 完成的任务...')}
                   className="w-full px-4 py-3 bg-transparent border-none focus:outline-none focus:ring-0 resize-none text-neutral-900 placeholder-neutral-400 leading-relaxed text-sm"
                 />
                 <div className="flex items-center justify-end px-3 pb-3 pt-1">
@@ -364,7 +366,7 @@ export function AgentDemoPage() {
                     onClick={handleStart}
                     disabled={sessionStatus === 'starting' || !selectedAgent || !prompt.trim()}
                   >
-                    {sessionStatus === 'starting' ? '启动中...' : '开始'}
+                    {sessionStatus === 'starting' ? t('启动中...') : t('开始')}
                   </Button>
                 </div>
               </div>
@@ -374,7 +376,7 @@ export function AgentDemoPage() {
           /* Log Stream */
           <div className="min-h-[200px]">
             {logs.length === 0 ? (
-              <div className="text-neutral-400 text-center py-8">等待 Agent 响应...</div>
+              <div className="text-neutral-400 text-center py-8">{t('等待 Agent 响应...')}</div>
             ) : (
               <LogStream ref={logStreamRef} logs={logs} scrollElementRef={scrollContainerRef} />
             )}
@@ -398,7 +400,7 @@ export function AgentDemoPage() {
               value={input}
               onChange={handleInput}
               rows={3}
-              placeholder="发送消息给 Agent..."
+              placeholder={t('发送消息给 Agent...')}
               className="w-full px-4 py-3 bg-transparent border-none focus:outline-none focus:ring-0 resize-none text-neutral-900 placeholder-neutral-400 leading-relaxed text-sm scrollbar-thin scrollbar-thumb-neutral-200 scrollbar-track-transparent"
               style={{ minHeight: '80px', maxHeight: '210px' }}
               onKeyDown={(e) => {
@@ -435,7 +437,7 @@ export function AgentDemoPage() {
                     className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"
                   >
                     <Square size={12} fill="currentColor" />
-                    <span>Stop</span>
+                    <span>{t('停止')}</span>
                   </button>
                 )}
                 <button
@@ -447,7 +449,7 @@ export function AgentDemoPage() {
                       : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
                   }`}
                 >
-                  <span>Send</span>
+                  <span>{t('发送')}</span>
                   <Send size={14} />
                 </button>
               </div>

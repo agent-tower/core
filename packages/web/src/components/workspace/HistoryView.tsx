@@ -6,6 +6,7 @@ import { useGitCommitFiles, useGitCommitDiff, type GitChangeEntry } from '@/hook
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
 import type { GitLogResponse } from '@/hooks/use-git'
+import { translate, useI18n } from '@/lib/i18n'
 
 const PAGE_SIZE = 50
 
@@ -19,10 +20,10 @@ const STATUS_COLOR_MAP: Record<string, string> = {
 function timeAgo(ts: number): string {
   const now = Math.floor(Date.now() / 1000)
   const diff = now - ts
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`
+  if (diff < 60) return translate('{count}s ago', { count: diff })
+  if (diff < 3600) return translate('{count}m ago', { count: Math.floor(diff / 60) })
+  if (diff < 86400) return translate('{count}h ago', { count: Math.floor(diff / 3600) })
+  if (diff < 604800) return translate('{count}d ago', { count: Math.floor(diff / 86400) })
   return new Date(ts * 1000).toLocaleDateString()
 }
 
@@ -67,15 +68,16 @@ const DiffLine: React.FC<{ line: string; lineNum: number }> = ({ line, lineNum }
 
 /** Diff viewer for a file in a commit */
 const CommitDiffViewer: React.FC<{ workingDir: string; hash: string; filePath: string }> = ({ workingDir, hash, filePath }) => {
+  const { t } = useI18n()
   const { data, isLoading, isError } = useGitCommitDiff(workingDir, hash, filePath)
   if (isLoading) return (
     <div className="flex-1 flex items-center justify-center text-neutral-500">
-      <Loader2 size={16} className="animate-spin mr-2" /><span className="text-xs">Loading diff...</span>
+      <Loader2 size={16} className="animate-spin mr-2" /><span className="text-xs">{t('Loading diff...')}</span>
     </div>
   )
-  if (isError) return <div className="flex-1 flex items-center justify-center text-red-500 text-xs">Failed to load diff.</div>
+  if (isError) return <div className="flex-1 flex items-center justify-center text-red-500 text-xs">{t('Failed to load diff.')}</div>
   const diff = data?.diff || ''
-  if (!diff.trim()) return <div className="flex-1 flex items-center justify-center text-neutral-400 text-xs">No diff content available.</div>
+  if (!diff.trim()) return <div className="flex-1 flex items-center justify-center text-neutral-400 text-xs">{t('No diff content available.')}</div>
   const lines = diff.split('\n')
   return (
     <div className="flex-1 overflow-auto history-scroll font-mono text-xs leading-5">
@@ -88,14 +90,15 @@ const CommitDiffViewer: React.FC<{ workingDir: string; hash: string; filePath: s
 const CommitFileList: React.FC<{
   workingDir: string; hash: string; selectedPath: string | null; onSelectFile: (path: string) => void
 }> = ({ workingDir, hash, selectedPath, onSelectFile }) => {
+  const { t } = useI18n()
   const { data, isLoading } = useGitCommitFiles(workingDir, hash)
   if (isLoading) return (
     <div className="pl-7 py-1 text-xs text-neutral-400 flex items-center gap-1">
-      <Loader2 size={12} className="animate-spin" /><span>Loading...</span>
+      <Loader2 size={12} className="animate-spin" /><span>{t('Loading...')}</span>
     </div>
   )
   const files = data?.files || []
-  if (files.length === 0) return <div className="pl-7 py-1 text-xs text-neutral-400">No files changed</div>
+  if (files.length === 0) return <div className="pl-7 py-1 text-xs text-neutral-400">{t('No files changed')}</div>
   return (
     <div className="pl-7 pb-1 space-y-0.5">
       {files.map((f: GitChangeEntry) => {
@@ -125,6 +128,7 @@ const CommitFileList: React.FC<{
 
 /** History Tab main component */
 export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) => {
+  const { t } = useI18n()
   const {
     data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
@@ -174,19 +178,19 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
   const scrollRef = useRef<HTMLDivElement>(null)
 
   if (!workingDir) return (
-    <div className="flex-1 flex items-center justify-center text-neutral-500 text-sm bg-white h-full">No workspace selected.</div>
+    <div className="flex-1 flex items-center justify-center text-neutral-500 text-sm bg-white h-full">{t('No workspace selected.')}</div>
   )
   if (isLoading) return (
     <div className="flex-1 flex items-center justify-center text-neutral-500 bg-white h-full">
-      <Loader2 size={16} className="animate-spin mr-2" /><span className="text-sm">Loading history...</span>
+      <Loader2 size={16} className="animate-spin mr-2" /><span className="text-sm">{t('Loading history...')}</span>
     </div>
   )
   if (isError) return (
-    <div className="flex-1 flex items-center justify-center text-red-500 text-sm bg-white h-full">Failed to load history.</div>
+    <div className="flex-1 flex items-center justify-center text-red-500 text-sm bg-white h-full">{t('Failed to load history.')}</div>
   )
   if (commits.length === 0) return (
     <div className="flex-1 flex flex-col items-center justify-center py-12 text-neutral-400 bg-white h-full">
-      <History size={28} className="mb-2" /><span className="text-xs">No commit history</span>
+      <History size={28} className="mb-2" /><span className="text-xs">{t('No commit history')}</span>
     </div>
   )
 
@@ -201,7 +205,7 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
         <div className="px-3 py-2.5 border-b border-neutral-100 shrink-0">
           <div className="flex items-center gap-2">
             <History size={14} className="text-neutral-500" />
-            <span className="text-xs font-semibold text-neutral-900">History</span>
+            <span className="text-xs font-semibold text-neutral-900">{t('History')}</span>
             <span className="text-[10px] bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-500">{commits.length}</span>
           </div>
         </div>
@@ -264,7 +268,7 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
               disabled={isFetchingNextPage}
               className="w-full py-2 text-xs text-neutral-500 hover:text-neutral-700 hover:bg-neutral-50 rounded transition-colors flex items-center justify-center gap-1.5"
             >
-              {isFetchingNextPage ? <><Loader2 size={12} className="animate-spin" /> Loading...</> : 'Load more'}
+              {isFetchingNextPage ? <><Loader2 size={12} className="animate-spin" /> {t('Loading...')}</> : t('Load more')}
             </button>
           )}
         </div>
@@ -291,7 +295,7 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
           <div className="flex-1 flex items-center justify-center text-neutral-400">
             <div className="flex flex-col items-center gap-2">
               <FileCode2 size={28} />
-              <span className="text-xs">{selectedHash ? 'Select a file to view diff' : 'Select a commit to view changes'}</span>
+              <span className="text-xs">{selectedHash ? t('Select a file to view diff') : t('Select a commit to view changes')}</span>
             </div>
           </div>
         )}

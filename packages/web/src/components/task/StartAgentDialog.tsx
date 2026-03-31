@@ -7,6 +7,7 @@ import { useProviders } from '@/hooks/use-providers'
 import { queryKeys } from '@/hooks/query-keys'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/lib/i18n'
 
 interface StartAgentDialogProps {
   isOpen: boolean
@@ -25,6 +26,7 @@ export function StartAgentDialog({
   taskTitle,
   taskDescription,
 }: StartAgentDialogProps) {
+  const { t } = useI18n()
   const [selectedProviderId, setSelectedProviderId] = useState<string>('')
   const [prompt, setPrompt] = useState('')
   const [step, setStep] = useState<StartStep>('idle')
@@ -86,26 +88,26 @@ export function StartAgentDialog({
       onClose()
     } catch (err) {
       setStep('idle')
-      setError(err instanceof Error ? err.message : '启动失败，请重试')
+      setError(err instanceof Error ? err.message : t('启动失败，请重试'))
     }
   }
 
   const stepLabel: Record<StartStep, string> = {
-    idle: '启动',
-    'creating-workspace': '创建工作空间...',
-    'creating-session': '创建会话...',
-    'starting-session': '启动 Agent...',
+    idle: t('启动'),
+    'creating-workspace': t('创建工作空间...'),
+    'creating-session': t('创建会话...'),
+    'starting-session': t('启动 Agent...'),
   }
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={isStarting ? () => {} : onClose}
-      title="启动 Agent"
+      title={t('启动 Agent')}
       action={
         <>
           <Button variant="outline" onClick={onClose} disabled={isStarting}>
-            取消
+            {t('取消')}
           </Button>
           <Button
             onClick={handleStart}
@@ -120,11 +122,11 @@ export function StartAgentDialog({
         {/* Provider 选择 */}
         <div>
           <label className="block text-sm font-medium text-neutral-700 mb-2">
-            选择 Provider
+            {t('选择 Provider')}
           </label>
           <div className="flex gap-2 flex-wrap">
             {isLoading && (
-              <span className="text-sm text-neutral-400">加载中...</span>
+              <span className="text-sm text-neutral-400">{t('加载中...')}</span>
             )}
             {providersData?.map(({ provider, availability }) => {
               const isAvailable = availability.type !== 'NOT_FOUND'
@@ -137,7 +139,7 @@ export function StartAgentDialog({
                   onClick={() => setSelectedProviderId(provider.id)}
                 >
                   {provider.name}
-                  {!isAvailable && ' (不可用)'}
+                  {!isAvailable && t(' (不可用)')}
                 </Button>
               )
             })}
@@ -147,14 +149,14 @@ export function StartAgentDialog({
         {/* Prompt 输入 */}
         <div>
           <label className="block text-sm font-medium text-neutral-700 mb-2">
-            任务描述
+            {t('任务描述')}
           </label>
           <textarea
             value={prompt}
             onChange={e => setPrompt(e.target.value)}
             rows={5}
             disabled={isStarting}
-            placeholder="描述你想让 Agent 完成的任务..."
+            placeholder={t('描述你想让 Agent 完成的任务...')}
             className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm text-neutral-900 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-neutral-300 focus:border-neutral-300 resize-none disabled:opacity-50 disabled:bg-neutral-50"
           />
         </div>

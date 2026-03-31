@@ -2,6 +2,7 @@ import { AlertTriangle } from 'lucide-react'
 import type { GitOperationStatus } from '@agent-tower/shared'
 import { useAbortOperation } from '@/hooks/use-workspaces'
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/lib/i18n'
 
 interface ConflictBannerProps {
   workspaceId: string
@@ -10,6 +11,7 @@ interface ConflictBannerProps {
 }
 
 export function ConflictBanner({ workspaceId, gitStatus, onResolve }: ConflictBannerProps) {
+  const { t } = useI18n()
   const abortOperation = useAbortOperation()
 
   // 无冲突时不渲染
@@ -24,7 +26,7 @@ export function ConflictBanner({ workspaceId, gitStatus, onResolve }: ConflictBa
       <AlertTriangle size={18} className="text-amber-600 shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-amber-900">
-          {opLabel} 冲突 — {gitStatus.conflictedFiles.length} 个文件
+          {t('{opLabel} 冲突 — {count} 个文件', { opLabel, count: gitStatus.conflictedFiles.length })}
         </p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
@@ -34,10 +36,10 @@ export function ConflictBanner({ workspaceId, gitStatus, onResolve }: ConflictBa
           onClick={() => abortOperation.mutate(workspaceId)}
           disabled={abortOperation.isPending}
         >
-          中止操作
+          {t('中止操作')}
         </Button>
         <Button size="sm" onClick={onResolve}>
-          解决冲突
+          {t('解决冲突')}
         </Button>
       </div>
     </div>

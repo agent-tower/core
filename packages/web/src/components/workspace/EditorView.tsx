@@ -3,6 +3,7 @@ import Editor from '@monaco-editor/react'
 import { Loader2, X, PanelLeftOpen, ZoomIn, ZoomOut, Maximize } from 'lucide-react'
 import { TransformWrapper, TransformComponent, useControls, useTransformComponent } from 'react-zoom-pan-pinch'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/lib/i18n'
 import { FileTree } from './FileTree'
 import { useFileContent, useSaveFile } from '@/hooks/use-files'
 import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
@@ -38,6 +39,7 @@ function buildImageUrl(workingDir: string, filePath: string) {
 }
 
 const ZoomToolbar: React.FC<{ filePath: string }> = ({ filePath }) => {
+  const { t } = useI18n()
   const { zoomIn, zoomOut, centerView } = useControls()
   const scale = useTransformComponent((ctx) => ctx.state.scale)
   const pct = Math.round(scale * 100)
@@ -48,7 +50,7 @@ const ZoomToolbar: React.FC<{ filePath: string }> = ({ filePath }) => {
         type="button"
         onClick={() => zoomOut(0.5)}
         className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors"
-        title="Zoom out"
+        title={t('Zoom out')}
       >
         <ZoomOut size={14} />
       </button>
@@ -56,7 +58,7 @@ const ZoomToolbar: React.FC<{ filePath: string }> = ({ filePath }) => {
         type="button"
         onClick={() => centerView(1)}
         className="px-1.5 py-0.5 rounded hover:bg-neutral-200 text-[11px] text-neutral-600 tabular-nums min-w-[40px] text-center transition-colors"
-        title="Reset zoom"
+        title={t('Reset zoom')}
       >
         {pct}%
       </button>
@@ -64,7 +66,7 @@ const ZoomToolbar: React.FC<{ filePath: string }> = ({ filePath }) => {
         type="button"
         onClick={() => zoomIn(0.5)}
         className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors"
-        title="Zoom in"
+        title={t('Zoom in')}
       >
         <ZoomIn size={14} />
       </button>
@@ -72,7 +74,7 @@ const ZoomToolbar: React.FC<{ filePath: string }> = ({ filePath }) => {
         type="button"
         onClick={() => centerView(1)}
         className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors ml-1"
-        title="Fit to view"
+        title={t('Fit to view')}
       >
         <Maximize size={13} />
       </button>
@@ -85,13 +87,14 @@ const ImagePreview: React.FC<{ workingDir: string; filePath: string }> = ({
   workingDir,
   filePath,
 }) => {
+  const { t } = useI18n()
   const [error, setError] = useState(false)
   const src = buildImageUrl(workingDir, filePath)
 
   if (error) {
     return (
       <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
-        Failed to load image.
+        {t('Failed to load image.')}
       </div>
     )
   }
@@ -174,34 +177,39 @@ const FileTabButton: React.FC<{
   isDirty: boolean
   onClick: () => void
   onClose: (e: React.MouseEvent) => void
-}> = ({ active, name, isDirty, onClick, onClose }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    className={cn(
-      'group flex items-center gap-2 px-3 py-2 rounded-t-md border-t border-x -mb-px min-w-[120px] max-w-[240px]',
-      active
-        ? 'bg-white border-neutral-200 text-neutral-900'
-        : 'bg-neutral-100/60 border-transparent text-neutral-500 hover:text-neutral-700 hover:bg-neutral-100'
-    )}
-  >
-    <span className={cn('w-2 h-2 rounded-full', isDirty ? 'bg-amber-500' : 'bg-transparent')} />
-    <span className="truncate flex-1 text-left text-xs">{name}</span>
-    <span
-      onClick={onClose}
-      className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-neutral-200 rounded transition-all shrink-0"
-      aria-label="Close tab"
-      title="Close"
+}> = ({ active, name, isDirty, onClick, onClose }) => {
+  const { t } = useI18n()
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'group flex items-center gap-2 px-3 py-2 rounded-t-md border-t border-x -mb-px min-w-[120px] max-w-[240px]',
+        active
+          ? 'bg-white border-neutral-200 text-neutral-900'
+          : 'bg-neutral-100/60 border-transparent text-neutral-500 hover:text-neutral-700 hover:bg-neutral-100'
+      )}
     >
-      <X size={12} />
-    </span>
-  </button>
-)
+      <span className={cn('w-2 h-2 rounded-full', isDirty ? 'bg-amber-500' : 'bg-transparent')} />
+      <span className="truncate flex-1 text-left text-xs">{name}</span>
+      <span
+        onClick={onClose}
+        className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-neutral-200 rounded transition-all shrink-0"
+        aria-label={t('Close tab')}
+        title={t('Close')}
+      >
+        <X size={12} />
+      </span>
+    </button>
+  )
+}
 
 export const EditorView: React.FC<{ workingDir?: string; className?: string }> = ({
   workingDir,
   className,
 }) => {
+  const { t } = useI18n()
   const [tabs, setTabs] = useState<OpenTab[]>([])
   const [activePath, setActivePath] = useState<string | null>(null)
   const saveMutation = useSaveFile()
@@ -375,7 +383,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
               type="button"
               onClick={toggleCollapse}
               className="p-1.5 rounded hover:bg-neutral-100 text-neutral-500 hover:text-neutral-700 transition-colors"
-              title="Expand file tree"
+              title={t('Expand file tree')}
             >
               <PanelLeftOpen size={16} />
             </button>
@@ -409,7 +417,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
         {/* Tab bar */}
         <div className="flex items-center gap-1 px-2 pt-2 border-b border-neutral-200 bg-neutral-100/80 overflow-x-auto shrink-0">
           {tabs.length === 0 ? (
-            <div className="px-2 pb-2 text-xs text-neutral-500">No open files</div>
+            <div className="px-2 pb-2 text-xs text-neutral-500">{t('No open files')}</div>
           ) : (
             tabs.map((t) => (
               <FileTabButton
@@ -430,11 +438,11 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
             {saveMutation.isPending && (
               <span className="flex items-center gap-2 text-xs text-neutral-500">
                 <Loader2 size={14} className="animate-spin" />
-                Saving
+                {t('Saving')}
               </span>
             )}
             {activeTab?.isDirty && !saveMutation.isPending && (
-              <span className="text-[11px] text-amber-600">Unsaved</span>
+              <span className="text-[11px] text-amber-600">{t('Unsaved')}</span>
             )}
           </div>
         </div>
@@ -443,11 +451,11 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
         <div className="flex-1 min-h-0 relative">
           {!workingDir ? (
             <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
-              No workspace selected.
+              {t('No workspace selected.')}
             </div>
           ) : !activeTab ? (
             <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
-              Select a file from the tree to open.
+              {t('Select a file from the tree to open.')}
             </div>
           ) : activeTab.isImage ? (
             <ImagePreview workingDir={workingDir} filePath={activeTab.path} />
@@ -474,14 +482,14 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
                 <div className="absolute inset-0 bg-white/60 flex items-center justify-center">
                   <div className="flex items-center gap-2 text-xs text-neutral-600">
                     <Loader2 size={14} className="animate-spin" />
-                    Loading file...
+                    {t('Loading file...')}
                   </div>
                 </div>
               )}
 
               {isError && (
                 <div className="absolute bottom-2 left-2 right-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
-                  Failed to load file{error instanceof Error ? `: ${error.message}` : ''}.
+                  {t('Failed to load file')}{error instanceof Error ? `: ${error.message}` : ''}
                 </div>
               )}
             </>
@@ -491,4 +499,3 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
     </div>
   )
 }
-

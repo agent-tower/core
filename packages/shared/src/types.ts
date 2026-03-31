@@ -245,6 +245,15 @@ export interface Attachment {
 
 // ============ 通知类型 ============
 
+/** 应用支持的语言 */
+export type AppLocale = 'zh-CN' | 'en'
+
+/** 全局应用设置 */
+export interface AppSettings {
+  id: string
+  locale: AppLocale | null
+}
+
 /** 第三方通知渠道 */
 export type ThirdPartyChannel = 'none' | 'feishu'
 

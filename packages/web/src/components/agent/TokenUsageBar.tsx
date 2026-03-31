@@ -1,6 +1,7 @@
 import { Gauge } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
 import type { TokenUsageInfo } from '../../hooks/useTokenUsage'
+import { useI18n } from '@/lib/i18n'
 
 interface TokenUsageIndicatorProps {
   usage: TokenUsageInfo | null
@@ -19,6 +20,7 @@ function getUsageColor(ratio: number): string {
 }
 
 export function TokenUsageIndicator({ usage }: TokenUsageIndicatorProps) {
+  const { t } = useI18n()
   if (!usage) return null
 
   const maxCtx = usage.modelContextWindow
@@ -27,8 +29,8 @@ export function TokenUsageIndicator({ usage }: TokenUsageIndicatorProps) {
   const colorClass = maxCtx ? getUsageColor(ratio) : 'text-neutral-400'
 
   const tooltipContent = maxCtx
-    ? <span>上下文: {formatNumber(usage.totalTokens)} / {formatNumber(maxCtx)} tokens</span>
-    : <span>已使用: {formatNumber(usage.totalTokens)} tokens</span>
+    ? <span>{t('上下文: {used} / {max} tokens', { used: formatNumber(usage.totalTokens), max: formatNumber(maxCtx) })}</span>
+    : <span>{t('已使用: {used} tokens', { used: formatNumber(usage.totalTokens) })}</span>
 
   return (
     <Tooltip content={tooltipContent}>

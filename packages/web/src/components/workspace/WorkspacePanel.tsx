@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from "react"
 import { Code2, Terminal, Globe, GitGraph, History } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useI18n } from "@/lib/i18n"
 import { TerminalTabs } from "./TerminalTabs"
 import { EditorView } from "./EditorView"
 import { ChangesView } from "./ChangesView"
@@ -77,15 +78,19 @@ const TabButton: React.FC<{
 const ComingSoonPlaceholder: React.FC<{
   icon: React.ReactNode
   title: string
-}> = ({ icon, title }) => (
-  <div className="flex-1 flex items-center justify-center bg-white">
-    <div className="flex flex-col items-center gap-2 text-neutral-400">
-      {icon}
-      <span className="text-sm font-medium text-neutral-500">{title}</span>
-      <span className="text-xs">Coming soon...</span>
+}> = ({ icon, title }) => {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex-1 flex items-center justify-center bg-white">
+      <div className="flex flex-col items-center gap-2 text-neutral-400">
+        {icon}
+        <span className="text-sm font-medium text-neutral-500">{t(title)}</span>
+        <span className="text-xs">{t('Coming soon...')}</span>
+      </div>
     </div>
-  </div>
-)
+  )
+}
 
 export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
   function WorkspacePanel({
@@ -95,6 +100,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     projectId,
     hideChanges,
   }) {
+    const { t } = useI18n()
     const tabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
     const [activeTab, setActiveTab] = useState<WorkspaceTab>(hideChanges ? "history" : "changes")
 
@@ -127,7 +133,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
               active={activeTab === tab.key}
               onClick={() => setActiveTab(tab.key)}
               icon={tab.icon}
-              label={tab.label}
+              label={t(tab.label)}
             />
           ))}
         </div>

@@ -2,9 +2,11 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Globe, Loader2, Copy, Check, X, Shield } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
+import { useI18n } from '@/lib/i18n'
 import { useTunnelStatus, useStartTunnel, useStopTunnel } from '@/hooks/use-tunnel'
 
 export function TunnelButton() {
+  const { t } = useI18n()
   const { data: status } = useTunnelStatus()
   const startTunnel = useStartTunnel()
   const stopTunnel = useStopTunnel()
@@ -70,7 +72,7 @@ export function TunnelButton() {
             ? 'text-emerald-600 hover:bg-emerald-50'
             : 'text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100'
         }`}
-        title={isRunning ? 'Tunnel active' : 'Share via tunnel'}
+        title={isRunning ? t('Tunnel active') : t('Share via tunnel')}
       >
         {isLoading ? (
           <Loader2 size={16} className="animate-spin" />
@@ -95,7 +97,7 @@ export function TunnelButton() {
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-medium text-emerald-600 flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
-                Tunnel Active
+                {t('Tunnel Active')}
               </span>
               <button
                 onClick={() => setShowPopover(false)}
@@ -109,7 +111,7 @@ export function TunnelButton() {
             {token && (
               <div className="flex items-center gap-1.5 mb-2 px-2 py-1 bg-emerald-50 rounded text-xs text-emerald-700">
                 <Shield size={12} />
-                <span>Token protected</span>
+                <span>{t('Token protected')}</span>
               </div>
             )}
 
@@ -131,7 +133,7 @@ export function TunnelButton() {
               <button
                 onClick={handleCopyUrl}
                 className="p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors"
-                title="Copy shareable link"
+                title={t('Copy shareable link')}
               >
                 {copied === 'url' ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
               </button>
@@ -144,7 +146,7 @@ export function TunnelButton() {
                   onClick={() => setShowToken(!showToken)}
                   className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
                 >
-                  {showToken ? 'Hide token' : 'Show token'}
+                  {showToken ? t('Hide token') : t('Show token')}
                 </button>
                 {showToken && (
                   <div className="flex items-center gap-2 mt-1">
@@ -154,7 +156,7 @@ export function TunnelButton() {
                     <button
                       onClick={handleCopyToken}
                       className="p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors shrink-0"
-                      title="Copy token"
+                      title={t('Copy token')}
                     >
                       {copied === 'token' ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
                     </button>
@@ -168,7 +170,7 @@ export function TunnelButton() {
               disabled={stopTunnel.isPending}
               className="mt-2 w-full px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 rounded-md transition-colors"
             >
-              {stopTunnel.isPending ? 'Stopping...' : 'Stop Tunnel'}
+              {stopTunnel.isPending ? t('Stopping...') : t('Stop Tunnel')}
             </button>
           </div>
         </>,

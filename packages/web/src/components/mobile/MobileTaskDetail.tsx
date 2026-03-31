@@ -27,6 +27,7 @@ import { UITaskStatus } from '@/components/task/types'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
+import { useI18n } from '@/lib/i18n'
 import 'streamdown/styles.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -100,6 +101,7 @@ const TAB_CONFIG: { key: MobileTab; label: string; icon: typeof MessageSquare }[
 // ============ Main Component ============
 
 export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: MobileTaskDetailProps) {
+  const { t } = useI18n()
   const [activeTab, setActiveTab] = useState<MobileTab>('chat')
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
@@ -197,15 +199,15 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         ws.sessions?.some(s => s.status === SessionStatus.RUNNING || s.status === SessionStatus.PENDING)
       )
 
-      if (hasRunning) warnings.push('正在运行的 Agent 将被停止')
+      if (hasRunning) warnings.push(t('正在运行的 Agent 将被停止'))
       if (hasActive) {
-        warnings.push('分支上未合并的变更将丢失')
-        warnings.push('关联的工作目录（worktree）将被清理')
+        warnings.push(t('分支上未合并的变更将丢失'))
+        warnings.push(t('关联的工作目录（worktree）将被清理'))
       }
     }
 
     return warnings
-  }, [workspaces])
+  }, [workspaces, t])
 
   // ============ Mutations ============
 
@@ -435,7 +437,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 active:bg-red-50"
                   >
                     <Trash2 size={15} />
-                    <span>删除任务</span>
+                    <span>{t('删除任务')}</span>
                   </button>
                 </div>
               )}
@@ -500,13 +502,13 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                 <div className="w-12 h-12 bg-neutral-50 rounded-xl border border-neutral-100 flex items-center justify-center mb-4">
                   <Play size={20} className="text-neutral-400 ml-0.5" />
                 </div>
-                <h3 className="text-sm font-medium text-neutral-900 mb-1">尚未启动 Agent</h3>
+                <h3 className="text-sm font-medium text-neutral-900 mb-1">{t('尚未启动 Agent')}</h3>
                 <p className="text-xs text-neutral-500 mb-5 max-w-[240px]">
-                  选择一个 Agent 来执行此任务
+                  {t('选择一个 Agent 来执行此任务')}
                 </p>
                 <Button onClick={() => setIsStartDialogOpen(true)}>
                   <Play size={16} className="mr-1.5" />
-                  启动 Agent
+                  {t('启动 Agent')}
                 </Button>
               </div>
             )}
@@ -521,7 +523,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                 aria-label="Scroll to bottom"
               >
                 <ArrowDown size={12} />
-                <span>回到底部</span>
+                <span>{t('回到底部')}</span>
               </button>
             )}
           </div>
@@ -647,10 +649,10 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           onDeleteTask?.(task.id)
           setIsDeleteConfirmOpen(false)
         }}
-        title="删除任务"
+        title={t('删除任务')}
         description={
           <>
-            <p>确认删除任务「{task.title}」？此操作不可撤销。</p>
+            <p>{t('确认删除任务「{title}」？此操作不可撤销。', { title: task.title })}</p>
             {deleteDescription.length > 0 && (
               <ul className="mt-2 space-y-1">
                 {deleteDescription.map((w, i) => (
@@ -663,7 +665,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
             )}
           </>
         }
-        confirmText="删除"
+        confirmText={t('删除')}
         variant="danger"
         isLoading={isDeleting}
       />

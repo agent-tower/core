@@ -22,6 +22,7 @@ import { Select } from '@/components/ui/select'
 import { useProviders } from '@/hooks/use-providers'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
+import { useI18n } from '@/lib/i18n'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-workspace' | 'creating-session' | 'starting-session'
 
@@ -90,6 +91,7 @@ interface PaginatedResponse<T> {
 }
 
 export function ProjectKanbanPage() {
+  const { t } = useI18n()
   // === 状态 ===
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [filterProjectId, setFilterProjectId] = useState<string | null>(null)
@@ -265,11 +267,11 @@ export function ProjectKanbanPage() {
       { id: taskId, status: mapUIStatusToTask(newStatus) },
       {
         onError: () => {
-          toast.error('状态变更失败，该操作不被允许')
+          toast.error(t('状态变更失败，该操作不被允许'))
         },
       },
     )
-  }, [updateTaskStatus])
+  }, [updateTaskStatus, t])
 
   // === rerender-defer-reads: 侧边栏宽度只在 resize handler 中读取 ===
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -493,22 +495,22 @@ export function ProjectKanbanPage() {
           />
           {/* Modals 在移动端也需要 */}
           <Suspense fallback={null}>
-            <Modal isOpen={isCreateProjectOpen} onClose={handleCloseProjectModal} title="Create New Project"
+            <Modal isOpen={isCreateProjectOpen} onClose={handleCloseProjectModal} title={t('Create New Project')}
               action={<>
-                <button onClick={handleCloseProjectModal} className="px-4 py-2 text-sm text-neutral-600">Cancel</button>
+                <button onClick={handleCloseProjectModal} className="px-4 py-2 text-sm text-neutral-600">{t('Cancel')}</button>
                 <button onClick={handleSubmitProject} disabled={!newProjectName.trim() || !newProjectRepoPath.trim() || createProject.isPending}
                   className={`px-4 py-2 text-sm font-medium rounded-lg ${newProjectName.trim() && newProjectRepoPath.trim() && !createProject.isPending ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'}`}>
-                  {createProject.isPending ? 'Creating...' : 'Create'}
+                  {createProject.isPending ? t('Creating...') : t('Create')}
                 </button>
               </>}>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">Project Name</label>
-                  <input type="text" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} placeholder="e.g., Agent Tower"
+                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project Name')}</label>
+                  <input type="text" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} placeholder={t('e.g., Agent Tower')}
                     className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400" autoFocus />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">Repository Path</label>
+                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Repository Path')}</label>
                   <FolderPicker value={newProjectRepoPath} onChange={setNewProjectRepoPath} />
                 </div>
               </div>
@@ -537,7 +539,7 @@ export function ProjectKanbanPage() {
           </header>
 
           {isLoading && uiTasks.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center text-sm text-neutral-400">Loading...</div>
+            <div className="flex-1 flex items-center justify-center text-sm text-neutral-400">{t('Loading...')}</div>
           ) : (
             <TaskList
               tasks={uiTasks}
@@ -555,57 +557,57 @@ export function ProjectKanbanPage() {
           )}
         </div>
         <Suspense fallback={null}>
-          <Modal isOpen={isCreateProjectOpen} onClose={handleCloseProjectModal} title="Create New Project"
+          <Modal isOpen={isCreateProjectOpen} onClose={handleCloseProjectModal} title={t('Create New Project')}
             action={<>
-              <button onClick={handleCloseProjectModal} className="px-4 py-2 text-sm text-neutral-600">Cancel</button>
+              <button onClick={handleCloseProjectModal} className="px-4 py-2 text-sm text-neutral-600">{t('Cancel')}</button>
               <button onClick={handleSubmitProject} disabled={!newProjectName.trim() || !newProjectRepoPath.trim() || createProject.isPending}
                 className={`px-4 py-2 text-sm font-medium rounded-lg ${newProjectName.trim() && newProjectRepoPath.trim() && !createProject.isPending ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'}`}>
-                {createProject.isPending ? 'Creating...' : 'Create'}
+                {createProject.isPending ? t('Creating...') : t('Create')}
               </button>
             </>}>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">Project Name</label>
-                <input type="text" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} placeholder="e.g., Agent Tower"
+                <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project Name')}</label>
+                <input type="text" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} placeholder={t('e.g., Agent Tower')}
                   className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400" autoFocus />
               </div>
               <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">Repository Path</label>
+                <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Repository Path')}</label>
                 <FolderPicker value={newProjectRepoPath} onChange={setNewProjectRepoPath} />
               </div>
             </div>
           </Modal>
-          <Modal isOpen={isCreateTaskOpen} onClose={handleCloseTaskModal} title="Create New Task"
+          <Modal isOpen={isCreateTaskOpen} onClose={handleCloseTaskModal} title={t('Create New Task')}
             action={<>
-              <button onClick={handleCloseTaskModal} disabled={createStep !== 'idle'} className="px-4 py-2 text-sm text-neutral-600 disabled:opacity-50">Cancel</button>
+              <button onClick={handleCloseTaskModal} disabled={createStep !== 'idle'} className="px-4 py-2 text-sm text-neutral-600 disabled:opacity-50">{t('Cancel')}</button>
               <button onClick={handleSubmitTask} disabled={!newTaskTitle.trim() || !newTaskProjectId || createStep !== 'idle'}
                 className={`px-4 py-2 text-sm font-medium rounded-lg ${newTaskTitle.trim() && newTaskProjectId && createStep === 'idle' ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'}`}>
-                {CREATE_STEP_LABEL[createStep]}
+                {t(CREATE_STEP_LABEL[createStep])}
               </button>
             </>}>
             <div className="space-y-4">
               <div className="flex gap-3">
                 <div className="flex-1 min-w-0">
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">Project</label>
+                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project')}</label>
                   <Select value={newTaskProjectId} onChange={setNewTaskProjectId}
                     options={sortedProjects.map(p => ({ value: p.id, label: p.name }))}
-                    placeholder="Select project..." disabled={createStep !== 'idle'} />
+                    placeholder={t('Select project...')} disabled={createStep !== 'idle'} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">Provider</label>
+                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Provider')}</label>
                   <Select value={newTaskProviderId} onChange={setNewTaskProviderId}
-                    options={sortedProviders.map(({ provider, availability }) => ({ value: provider.id, label: provider.name + (availability.type === 'NOT_FOUND' ? ' (不可用)' : ''), disabled: availability.type === 'NOT_FOUND' }))}
-                    placeholder={isProvidersLoading ? 'Loading...' : 'Select provider...'} disabled={createStep !== 'idle'} />
+                    options={sortedProviders.map(({ provider, availability }) => ({ value: provider.id, label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''), disabled: availability.type === 'NOT_FOUND' }))}
+                    placeholder={isProvidersLoading ? t('Loading...') : t('Select provider...')} disabled={createStep !== 'idle'} />
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">Task Title</label>
-                <input type="text" value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)} placeholder="e.g., Implement login flow"
+                <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Task Title')}</label>
+                <input type="text" value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)} placeholder={t('e.g., Implement login flow')}
                   className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400" disabled={createStep !== 'idle'}
                   onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask() }} />
               </div>
               <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">Description</label>
+                <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Description')}</label>
                 <div
                   className={`relative border rounded-lg transition-colors ${
                     isDragOver ? 'border-neutral-400 bg-neutral-50' : 'border-neutral-200'
@@ -619,14 +621,14 @@ export function ProjectKanbanPage() {
                     value={newTaskDescription}
                     onChange={e => setNewTaskDescription(e.target.value)}
                     onPaste={handlePaste}
-                    placeholder="Optional..."
+                    placeholder={t('Optional...')}
                     className="w-full px-3 py-2 text-sm focus:outline-none bg-transparent resize-none"
                     disabled={createStep !== 'idle'}
                     onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask() }}
                   />
                   {isDragOver && (
                     <div className="absolute inset-0 flex items-center justify-center bg-neutral-50/90 pointer-events-none">
-                      <p className="text-sm text-neutral-600">Drop files here</p>
+                      <p className="text-sm text-neutral-600">{t('Drop files here')}</p>
                     </div>
                   )}
                 </div>
@@ -638,10 +640,10 @@ export function ProjectKanbanPage() {
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-600 active:text-neutral-900 active:bg-neutral-100 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Paperclip size={14} />
-                    Attach files
+                    {t('Attach files')}
                   </button>
                   <span className="text-xs text-neutral-400">
-                    or paste files
+                    {t('or paste files')}
                   </span>
                 </div>
                 <input
@@ -685,7 +687,7 @@ export function ProjectKanbanPage() {
             className="h-full flex items-center justify-center text-sm text-neutral-400 border-r border-neutral-200 flex-shrink-0"
             style={{ width: sidebarWidth }}
           >
-            Loading...
+            {t('Loading...')}
           </div>
         ) : (
           <TaskList
@@ -708,7 +710,7 @@ export function ProjectKanbanPage() {
         <div
           onMouseDown={handleMouseDown}
           className="w-1 cursor-col-resize hover:bg-neutral-300 active:bg-neutral-400 transition-colors z-50 -ml-[2px] flex-shrink-0 h-full"
-          title="Drag to resize"
+          title={t('Drag to resize')}
         />
 
         {/* 右侧: TaskDetail */}
@@ -726,14 +728,14 @@ export function ProjectKanbanPage() {
         <Modal
           isOpen={isCreateProjectOpen}
           onClose={handleCloseProjectModal}
-          title="Create New Project"
+          title={t('Create New Project')}
           action={
             <>
               <button
                 onClick={handleCloseProjectModal}
                 className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors"
               >
-                Cancel
+                {t('Cancel')}
               </button>
               <button
                 onClick={handleSubmitProject}
@@ -744,7 +746,7 @@ export function ProjectKanbanPage() {
                     : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
                 }`}
               >
-                {createProject.isPending ? 'Creating...' : 'Create Project'}
+                {createProject.isPending ? t('Creating...') : t('Create Project')}
               </button>
             </>
           }
@@ -752,20 +754,20 @@ export function ProjectKanbanPage() {
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                Project Name
+                {t('Project Name')}
               </label>
               <input
                 type="text"
                 value={newProjectName}
                 onChange={e => setNewProjectName(e.target.value)}
-                placeholder="e.g., Agent Tower"
+                placeholder={t('e.g., Agent Tower')}
                 className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors"
                 autoFocus
               />
             </div>
             <div>
               <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                Repository Path
+                {t('Repository Path')}
               </label>
               <FolderPicker
                 value={newProjectRepoPath}
@@ -774,7 +776,7 @@ export function ProjectKanbanPage() {
             </div>
             {createProject.isError && (
               <p className="text-xs text-red-500">
-                {createProject.error instanceof Error ? createProject.error.message : 'Failed to create project'}
+                {createProject.error instanceof Error ? createProject.error.message : t('Failed to create project')}
               </p>
             )}
           </div>
@@ -784,7 +786,7 @@ export function ProjectKanbanPage() {
         <Modal
           isOpen={isCreateTaskOpen}
           onClose={handleCloseTaskModal}
-          title="Create New Task"
+          title={t('Create New Task')}
           action={
             <>
               <button
@@ -792,7 +794,7 @@ export function ProjectKanbanPage() {
                 disabled={createStep !== 'idle'}
                 className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
               >
-                Cancel
+                {t('Cancel')}
               </button>
               <button
                 onClick={handleSubmitTask}
@@ -803,7 +805,7 @@ export function ProjectKanbanPage() {
                     : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
                 }`}
               >
-                {CREATE_STEP_LABEL[createStep]}
+                {t(CREATE_STEP_LABEL[createStep])}
               </button>
             </>
           }
@@ -812,42 +814,42 @@ export function ProjectKanbanPage() {
             <div className="flex gap-3">
               <div className="flex-1 min-w-0">
                 <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                  Project
+                  {t('Project')}
                 </label>
                 <Select
                   value={newTaskProjectId}
                   onChange={setNewTaskProjectId}
                   options={sortedProjects.map(p => ({ value: p.id, label: p.name }))}
-                  placeholder="Select project..."
+                  placeholder={t('Select project...')}
                   disabled={createStep !== 'idle'}
                 />
               </div>
               <div className="flex-1 min-w-0">
                 <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                  Agent
+                  {t('Agent')}
                 </label>
                 <Select
                   value={newTaskProviderId}
                   onChange={setNewTaskProviderId}
                   options={sortedProviders.map(({ provider, availability }) => ({
                     value: provider.id,
-                    label: provider.name + (availability.type === 'NOT_FOUND' ? ' (不可用)' : ''),
+                    label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''),
                     disabled: availability.type === 'NOT_FOUND',
                   }))}
-                  placeholder={isProvidersLoading ? 'Loading...' : 'Select provider...'}
+                  placeholder={isProvidersLoading ? t('Loading...') : t('Select provider...')}
                   disabled={createStep !== 'idle'}
                 />
               </div>
             </div>
             <div>
               <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                Task Title
+                {t('Task Title')}
               </label>
               <input
                 type="text"
                 value={newTaskTitle}
                 onChange={e => setNewTaskTitle(e.target.value)}
-                placeholder="e.g., Implement login flow"
+                placeholder={t('e.g., Implement login flow')}
                 className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors"
                 disabled={createStep !== 'idle'}
                 onKeyDown={e => {
@@ -857,7 +859,7 @@ export function ProjectKanbanPage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                Description
+                {t('Description')}
               </label>
               <div
                 className={`relative border rounded-lg transition-colors ${
@@ -872,7 +874,7 @@ export function ProjectKanbanPage() {
                   value={newTaskDescription}
                   onChange={e => setNewTaskDescription(e.target.value)}
                   onPaste={handlePaste}
-                  placeholder="Optional description..."
+                  placeholder={t('Optional description...')}
                   className="w-full px-3 py-2 text-sm focus:outline-none bg-transparent resize-none"
                   disabled={createStep !== 'idle'}
                   onKeyDown={e => {
@@ -881,7 +883,7 @@ export function ProjectKanbanPage() {
                 />
                 {isDragOver && (
                   <div className="absolute inset-0 flex items-center justify-center bg-neutral-50/90 pointer-events-none">
-                    <p className="text-sm text-neutral-600">Drop files here</p>
+                    <p className="text-sm text-neutral-600">{t('Drop files here')}</p>
                   </div>
                 )}
               </div>
@@ -893,10 +895,10 @@ export function ProjectKanbanPage() {
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Paperclip size={14} />
-                  Attach files
+                  {t('Attach files')}
                 </button>
                 <span className="text-xs text-neutral-400">
-                  or paste/drag files
+                  {t('or paste/drag files')}
                 </span>
               </div>
               <input

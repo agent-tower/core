@@ -3,6 +3,7 @@ import { OSNotificationChannel } from './os-channel.js';
 import { FeishuChannel } from './feishu-channel.js';
 import type { NotificationEvent } from './types.js';
 import type { NotificationSettings } from '@agent-tower/shared';
+import { getDefaultNotificationSettings } from './defaults.js';
 
 export class NotificationService {
   private osChannel = new OSNotificationChannel();
@@ -78,15 +79,12 @@ export class NotificationService {
     if (settings) {
       return settings as unknown as NotificationSettings;
     }
-    return {
-      id: 'singleton',
-      osNotificationEnabled: true,
-      thirdPartyChannel: 'none',
-      feishuWebhookUrl: null,
-      thirdPartyBaseUrl: null,
-      taskInReviewTitleTemplate: 'Agent Tower',
-      taskInReviewBodyTemplate: '✅ "{taskTitle}" 已完成，等待审查',
-    };
+
+    const appSettings = await prisma.appSettings.findUnique({
+      where: { id: 'singleton' },
+    });
+
+    return getDefaultNotificationSettings(appSettings?.locale === 'en' ? 'en' : 'zh-CN');
   }
 
   async testChannel(channel: string, webhookUrl: string, baseUrl?: string): Promise<void> {

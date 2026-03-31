@@ -7,11 +7,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 import { CheckCircle2, AlertCircle, Loader2, Link } from 'lucide-react'
-
-const CHANNEL_OPTIONS = [
-  { value: 'none', label: '无' },
-  { value: 'feishu', label: '飞书' },
-]
+import { useI18n } from '@/lib/i18n'
 
 interface FormState {
   webhookUrl: string
@@ -21,9 +17,14 @@ interface FormState {
 }
 
 export function NotificationSettingsPage() {
+  const { t } = useI18n()
   const { data: settings, isLoading } = useNotificationSettings()
   const updateSettings = useUpdateNotificationSettings()
   const testChannel = useTestNotificationChannel()
+  const channelOptions = [
+    { value: 'none', label: t('无') },
+    { value: 'feishu', label: t('飞书') },
+  ]
 
   const [form, setForm] = useState<FormState>({
     webhookUrl: '',
@@ -59,7 +60,7 @@ export function NotificationSettingsPage() {
   }, [testChannel.isSuccess, testChannel.isError])
 
   if (isLoading) {
-    return <div className="p-6 text-sm text-neutral-400">加载中...</div>
+    return <div className="p-6 text-sm text-neutral-400">{t('加载中...')}</div>
   }
 
   const osEnabled = settings?.osNotificationEnabled ?? true
@@ -84,7 +85,7 @@ export function NotificationSettingsPage() {
         feishuWebhookUrl: form.webhookUrl.trim() || null,
         thirdPartyBaseUrl: form.baseUrl.trim() || null,
         taskInReviewTitleTemplate: form.titleTemplate.trim() || 'Agent Tower',
-        taskInReviewBodyTemplate: form.bodyTemplate.trim() || '✅ "{taskTitle}" 已完成，等待审查',
+        taskInReviewBodyTemplate: form.bodyTemplate.trim() || t('✅ "{taskTitle}" 已完成，等待审查'),
       },
       { onSuccess: () => setDirty(false) },
     )
@@ -103,8 +104,8 @@ export function NotificationSettingsPage() {
     <div className="px-10 py-6 mx-auto w-full max-w-3xl space-y-8">
       {/* 系统通知 */}
       <section>
-        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">系统通知</h3>
-        <p className="text-[12px] text-neutral-400 mb-3">任务完成时弹出桌面通知</p>
+        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('系统通知')}</h3>
+        <p className="text-[12px] text-neutral-400 mb-3">{t('任务完成时弹出桌面通知')}</p>
         <button
           onClick={handleOsToggle}
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
@@ -121,13 +122,13 @@ export function NotificationSettingsPage() {
 
       {/* 第三方通知 */}
       <section>
-        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">第三方通知</h3>
-        <p className="text-[12px] text-neutral-400 mb-3">选择一个第三方渠道接收通知</p>
+        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('第三方通知')}</h3>
+        <p className="text-[12px] text-neutral-400 mb-3">{t('选择一个第三方渠道接收通知')}</p>
 
         <Select
           value={channel}
           onChange={(v) => handleChannelChange(v)}
-          options={CHANNEL_OPTIONS}
+          options={channelOptions}
         />
 
         {/* 飞书配置 */}
@@ -157,19 +158,19 @@ export function NotificationSettingsPage() {
                   disabled={!form.webhookUrl.trim() || testChannel.isPending}
                 >
                   {testChannel.isPending && <Loader2 size={12} className="animate-spin mr-1" />}
-                  测试发送
+                  {t('测试发送')}
                 </Button>
 
                 {testStatus === 'success' && (
                   <span className="flex items-center gap-1 text-xs text-green-600">
                     <CheckCircle2 size={12} />
-                    发送成功
+                    {t('发送成功')}
                   </span>
                 )}
                 {testStatus === 'error' && (
                   <span className="flex items-center gap-1 text-xs text-red-500">
                     <AlertCircle size={12} />
-                    发送失败
+                    {t('发送失败')}
                   </span>
                 )}
               </div>
@@ -179,7 +180,7 @@ export function NotificationSettingsPage() {
             <div className="p-4 border border-neutral-100 rounded-lg space-y-3">
               <div>
                 <label className="block text-[13px] font-medium text-neutral-700 mb-1">
-                  跳转地址（用于生成任务链接）
+                  {t('跳转地址（用于生成任务链接）')}
                 </label>
                 <input
                   type="text"
@@ -189,7 +190,9 @@ export function NotificationSettingsPage() {
                   className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-neutral-300"
                 />
                 <p className="text-[11px] text-neutral-400 mt-1">
-                  通知卡片中的"查看任务"按钮将跳转到 {"{baseUrl}/projects/{projectId}/tasks/{taskId}"}
+                  {t('通知卡片中的"查看任务"按钮将跳转到 {path}', {
+                    path: '{baseUrl}/projects/{projectId}/tasks/{taskId}',
+                  })}
                 </p>
               </div>
             </div>
@@ -199,15 +202,21 @@ export function NotificationSettingsPage() {
 
       {/* 通知模板 */}
       <section>
-        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">通知模板</h3>
+        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('通知模板')}</h3>
         <p className="text-[12px] text-neutral-400 mb-3">
-          支持变量: {"{taskTitle}"}, {"{taskId}"}, {"{projectId}"}, {"{projectName}"}, {"{status}"}
+          {t('支持变量: {taskTitle}, {taskId}, {projectId}, {projectName}, {status}', {
+            taskTitle: '{taskTitle}',
+            taskId: '{taskId}',
+            projectId: '{projectId}',
+            projectName: '{projectName}',
+            status: '{status}',
+          })}
         </p>
 
         <div className="space-y-4">
           <div>
             <label className="block text-[13px] font-medium text-neutral-700 mb-1">
-              标题模板
+              {t('标题模板')}
             </label>
             <input
               type="text"
@@ -220,12 +229,12 @@ export function NotificationSettingsPage() {
 
           <div>
             <label className="block text-[13px] font-medium text-neutral-700 mb-1">
-              内容模板
+              {t('内容模板')}
             </label>
             <textarea
               value={form.bodyTemplate}
               onChange={(e) => updateField('bodyTemplate', e.target.value)}
-              placeholder='✅ "{taskTitle}" 已完成，等待审查'
+              placeholder={t('✅ "{taskTitle}" 已完成，等待审查')}
               rows={2}
               className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-neutral-300 resize-none"
             />
@@ -241,7 +250,7 @@ export function NotificationSettingsPage() {
             onClick={handleSaveAll}
             disabled={updateSettings.isPending}
           >
-            {updateSettings.isPending ? '保存中...' : '保存所有更改'}
+            {updateSettings.isPending ? t('保存中...') : t('保存所有更改')}
           </Button>
         </div>
       )}

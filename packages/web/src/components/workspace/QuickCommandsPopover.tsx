@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Zap, Play, ChevronDown } from 'lucide-react'
 import type { QuickCommand } from '@agent-tower/shared'
+import { useI18n } from '@/lib/i18n'
 
 export interface QuickCommandsPopoverProps {
   commands: QuickCommand[]
@@ -9,6 +10,7 @@ export interface QuickCommandsPopoverProps {
 
 export const QuickCommandsPopover: React.FC<QuickCommandsPopoverProps> = React.memo(
   function QuickCommandsPopover({ commands, onSelect }) {
+    const { t } = useI18n()
     const [open, setOpen] = useState(false)
     const popoverRef = useRef<HTMLDivElement>(null)
     const buttonRef = useRef<HTMLButtonElement>(null)
@@ -43,7 +45,7 @@ export const QuickCommandsPopover: React.FC<QuickCommandsPopoverProps> = React.m
             }`}
           >
             <Zap size={12} />
-            <span>快捷命令</span>
+            <span>{t('快捷命令')}</span>
             <ChevronDown size={10} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
           </button>
 

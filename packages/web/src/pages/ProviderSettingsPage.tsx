@@ -23,6 +23,7 @@ import {
 } from '@agent-tower/shared'
 import { toast } from 'sonner'
 import { CursorAgentModelField } from '@/components/provider/CursorAgentModelField'
+import { translate, useI18n } from '@/lib/i18n'
 
 const AGENT_TYPE_LABELS: Record<string, string> = {
   CLAUDE_CODE: 'Claude Code',
@@ -158,7 +159,7 @@ const CONFIG_FIELD_OPTION_LABELS: Record<string, Record<string, string>> = Objec
   }, {})
 
 function formatConfigValue(key: string, value: unknown): string {
-  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'boolean') return value ? translate('是') : translate('否')
   if (typeof value === 'string' && value) {
     return CONFIG_FIELD_OPTION_LABELS[key]?.[value] ?? value
   }
@@ -209,18 +210,19 @@ function getImportActionMeta(action: ProviderImportAction) {
 // ─── 组件 ───────────────────────────────────────────────────────
 
 function AvailabilityBadge({ type }: { type: string }) {
+  const { t } = useI18n()
   if (type === 'LOGIN_DETECTED' || type === 'INSTALLATION_FOUND') {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-green-700 bg-green-50 rounded">
         <CheckCircle2 size={12} />
-        可用
+        {t('可用')}
       </span>
     )
   }
   return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-neutral-500 bg-neutral-50 rounded">
       <XCircle size={12} />
-      不可用
+      {t('不可用')}
     </span>
   )
 }
@@ -268,8 +270,9 @@ function ConfigFieldsForm({
   config: Record<string, unknown>
   onChange: (config: Record<string, unknown>) => void
 }) {
+  const { t } = useI18n()
   const fields = AGENT_CONFIG_FIELDS[agentType] ?? []
-  if (fields.length === 0) return <p className="text-xs text-neutral-400">该类型暂无运行配置</p>
+  if (fields.length === 0) return <p className="text-xs text-neutral-400">{t('该类型暂无运行配置')}</p>
 
   const updateField = (key: string, value: unknown) => {
     onChange({ ...config, [key]: value })
@@ -280,18 +283,18 @@ function ConfigFieldsForm({
       {fields.map(field =>
         field.type === 'textarea' ? (
           <div key={field.key}>
-            <label className="block text-sm text-neutral-700 mb-1">{field.label}</label>
+            <label className="block text-sm text-neutral-700 mb-1">{t(field.label)}</label>
             <textarea
               value={(config[field.key] as string) ?? ''}
               onChange={e => updateField(field.key, e.target.value || undefined)}
-              placeholder={field.placeholder}
+              placeholder={field.placeholder ? t(field.placeholder) : undefined}
               rows={field.rows ?? 3}
               className="w-full px-3 py-1.5 text-sm border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900"
             />
           </div>
         ) : field.type === 'cursor_model' ? (
           <div key={field.key} className="flex flex-col gap-2 sm:flex-row sm:items-start">
-            <label className="text-sm text-neutral-700 w-32 shrink-0 sm:pt-2">{field.label}</label>
+            <label className="text-sm text-neutral-700 w-32 shrink-0 sm:pt-2">{t(field.label)}</label>
             <CursorAgentModelField
               value={(config[field.key] as string) ?? ''}
               onChange={v => updateField(field.key, v)}
@@ -299,7 +302,7 @@ function ConfigFieldsForm({
           </div>
         ) : (
           <div key={field.key} className="flex items-center gap-3">
-            <label className="text-sm text-neutral-700 w-32 shrink-0">{field.label}</label>
+            <label className="text-sm text-neutral-700 w-32 shrink-0">{t(field.label)}</label>
             {field.type === 'switch' && (
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
@@ -316,7 +319,7 @@ function ConfigFieldsForm({
                 type="text"
                 value={(config[field.key] as string) ?? ''}
                 onChange={e => updateField(field.key, e.target.value || undefined)}
-                placeholder={field.placeholder}
+                placeholder={field.placeholder ? t(field.placeholder) : undefined}
                 className="flex-1 px-3 py-1.5 text-sm border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900"
               />
             )}
@@ -325,7 +328,7 @@ function ConfigFieldsForm({
                 value={(config[field.key] as string) ?? ''}
                 onChange={value => updateField(field.key, value || undefined)}
                 options={field.options}
-                placeholder="选择..."
+                placeholder={t('选择...')}
               />
             )}
           </div>
@@ -346,6 +349,7 @@ function ProviderFormModal({
   initialData?: ProviderFormData
   onSave: (data: CreateProviderInput | UpdateProviderInput) => void
 }) {
+  const { t } = useI18n()
   const [formData, setFormData] = useState<ProviderFormData>(
     initialData ?? {
       name: '',
@@ -398,7 +402,7 @@ function ProviderFormModal({
         try {
           parseToml(settingsStr)
         } catch (e) {
-          setSettingsError(`TOML 语法错误: ${e instanceof Error ? e.message : String(e)}`)
+          setSettingsError(t('TOML 语法错误: {message}', { message: e instanceof Error ? e.message : String(e) }))
           return
         }
       } else if (formData.agentType === AgentType.CLAUDE_CODE) {
@@ -406,7 +410,7 @@ function ProviderFormModal({
         try {
           JSON.parse(settingsStr)
         } catch {
-          setSettingsError('JSON 语法错误')
+          setSettingsError(t('JSON 语法错误'))
           return
         }
       }
@@ -440,25 +444,25 @@ function ProviderFormModal({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={initialData ? '编辑 Provider' : '新建 Provider'}
+      title={initialData ? t('编辑 Provider') : t('新建 Provider')}
       className="max-w-2xl"
     >
       <div className="space-y-4">
         {/* 基本信息 */}
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs font-medium text-neutral-700 mb-1">名称</label>
+            <label className="block text-xs font-medium text-neutral-700 mb-1">{t('名称')}</label>
             <input
               type="text"
               value={formData.name}
               onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
               className="w-full px-3 py-2 text-sm border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900"
-              placeholder="例如: Claude Code (官方)"
+              placeholder={t('例如: Claude Code (官方)')}
             />
           </div>
           {!initialData && (
             <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">Agent 类型</label>
+              <label className="block text-xs font-medium text-neutral-700 mb-1">{t('Agent 类型')}</label>
               <Select
                 value={formData.agentType}
                 onChange={value => handleAgentTypeChange(value as AgentType)}
@@ -466,7 +470,7 @@ function ProviderFormModal({
                   value: type,
                   label: AGENT_TYPE_LABELS[type] ?? type,
                 }))}
-                placeholder="选择 Agent 类型"
+                placeholder={t('选择 Agent 类型')}
               />
             </div>
           )}
@@ -482,12 +486,12 @@ function ProviderFormModal({
             className="w-4 h-4"
           />
           <label htmlFor="isDefault" className="text-sm text-neutral-700">
-            设为该类型的默认 Provider
+            {t('设为该类型的默认 Provider')}
           </label>
         </div>
 
         {/* 运行配置 */}
-        <CollapsibleSection title="运行配置" defaultOpen>
+        <CollapsibleSection title={t('运行配置')} defaultOpen>
           <ConfigFieldsForm
             agentType={formData.agentType}
             config={formData.config}
@@ -496,9 +500,9 @@ function ProviderFormModal({
         </CollapsibleSection>
 
         {/* 环境变量 */}
-        <CollapsibleSection title="环境变量" defaultOpen={formData.env.length > 0}>
+        <CollapsibleSection title={t('环境变量')} defaultOpen={formData.env.length > 0}>
           <p className="text-xs text-neutral-500 mb-2">
-            注入到 Agent 进程的环境变量。Codex 的 <code className="bg-neutral-100 px-1 rounded">env_key</code> 指定的是变量名，实际值需在此处设置。
+            {t('注入到 Agent 进程的环境变量。Codex 的')} <code className="bg-neutral-100 px-1 rounded">env_key</code> {t('指定的是变量名，实际值需在此处设置。')}
           </p>
           <div className="space-y-2">
             {formData.env.map((row, i) => (
@@ -511,7 +515,7 @@ function ProviderFormModal({
                     next[i] = { ...next[i], key: e.target.value }
                     setFormData(prev => ({ ...prev, env: next }))
                   }}
-                  placeholder="变量名，如 AZURE_OPENAI_API_KEY"
+                  placeholder={t('变量名，如 AZURE_OPENAI_API_KEY')}
                   className="flex-1 px-3 py-1.5 text-sm font-mono border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900"
                 />
                 <input
@@ -522,7 +526,7 @@ function ProviderFormModal({
                     next[i] = { ...next[i], value: e.target.value }
                     setFormData(prev => ({ ...prev, env: next }))
                   }}
-                  placeholder="值"
+                  placeholder={t('值')}
                   className="flex-1 px-3 py-1.5 text-sm font-mono border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900"
                 />
                 <button
@@ -543,26 +547,22 @@ function ProviderFormModal({
               onClick={() => setFormData(prev => ({ ...prev, env: [...prev.env, { key: '', value: '' }] }))}
             >
               <Plus size={12} className="mr-1" />
-              添加变量
+              {t('添加变量')}
             </Button>
           </div>
         </CollapsibleSection>
 
         {/* CLI 原生配置 — Claude Code (JSON) 或 Codex (TOML) */}
         {showSettingsPanel && (
-          <CollapsibleSection title={isCodex ? 'CLI 原生配置 (config.toml)' : 'CLI 原生配置 (settings.json)'}>
+          <CollapsibleSection title={isCodex ? t('CLI 原生配置 (config.toml)') : t('CLI 原生配置 (settings.json)')}>
             <p className="text-xs text-neutral-500 mb-2">
               {isCodex ? (
                 <>
-                  直接填写 Codex <code className="bg-neutral-100 px-1 rounded">config.toml</code> 格式的配置片段，
-                  通过 <code className="bg-neutral-100 px-1 rounded">-c</code> 参数注入。
-                  不会修改你的 <code className="bg-neutral-100 px-1 rounded">~/.codex/config.toml</code> 文件。
+                  {t('直接填写 Codex')} <code className="bg-neutral-100 px-1 rounded">config.toml</code> {t('格式的配置片段，通过')} <code className="bg-neutral-100 px-1 rounded">-c</code> {t('参数注入。不会修改你的')} <code className="bg-neutral-100 px-1 rounded">~/.codex/config.toml</code> {t('文件。')}
                 </>
               ) : (
                 <>
-                  对应 Claude Code 的 <code className="bg-neutral-100 px-1 rounded">~/.claude/settings.json</code>，
-                  通过 <code className="bg-neutral-100 px-1 rounded">--settings</code> 参数注入。
-                  在 <code className="bg-neutral-100 px-1 rounded">env</code> 中设置 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等。
+                  {t('对应 Claude Code 的')} <code className="bg-neutral-100 px-1 rounded">~/.claude/settings.json</code>，{t('通过')} <code className="bg-neutral-100 px-1 rounded">--settings</code> {t('参数注入。在')} <code className="bg-neutral-100 px-1 rounded">env</code> {t('中设置 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等。')}
                 </>
               )}
             </p>
@@ -585,10 +585,10 @@ function ProviderFormModal({
         {/* Actions */}
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="outline" onClick={onClose}>
-            取消
+            {t('取消')}
           </Button>
           <Button onClick={handleSave} disabled={!formData.name.trim()}>
-            保存
+            {t('保存')}
           </Button>
         </div>
       </div>
@@ -611,30 +611,31 @@ function ExportBackupModal({
   onAcknowledgedChange: (checked: boolean) => void
   isLoading: boolean
 }) {
+  const { t } = useI18n()
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="导出 Provider 备份"
+      title={t('导出 Provider 备份')}
       className="max-w-xl"
       action={
         <>
           <Button variant="outline" onClick={onClose} disabled={isLoading}>
-            取消
+            {t('取消')}
           </Button>
           <Button onClick={onConfirm} disabled={!acknowledged || isLoading}>
-            {isLoading ? '导出中...' : '导出备份'}
+            {isLoading ? t('导出中...') : t('导出备份')}
           </Button>
         </>
       }
     >
       <div className="space-y-4">
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          导出的备份文件将包含完整的 Provider 配置，包括环境变量、CLI settings 等敏感信息。任何拿到文件的人都可能直接使用这些 Provider。
+          {t('导出的备份文件将包含完整的 Provider 配置，包括环境变量、CLI settings 等敏感信息。任何拿到文件的人都可能直接使用这些 Provider。')}
         </div>
         <div className="text-sm text-neutral-600 space-y-2">
-          <p>这个功能用于备份和迁移，不用于分享配置。</p>
-          <p>导出内容只包含用户层配置：自定义 Provider，以及对内置 Provider 的覆盖。</p>
+          <p>{t('这个功能用于备份和迁移，不用于分享配置。')}</p>
+          <p>{t('导出内容只包含用户层配置：自定义 Provider，以及对内置 Provider 的覆盖。')}</p>
         </div>
         <label className="flex items-start gap-3 rounded-lg border border-neutral-200 px-4 py-3 text-sm text-neutral-700">
           <input
@@ -643,7 +644,7 @@ function ExportBackupModal({
             onChange={e => onAcknowledgedChange(e.target.checked)}
             className="mt-0.5 h-4 w-4"
           />
-          <span>我已知晓该备份文件包含敏感信息，只会保存在安全位置。</span>
+          <span>{t('我已知晓该备份文件包含敏感信息，只会保存在安全位置。')}</span>
         </label>
       </div>
     </Modal>
@@ -665,6 +666,7 @@ function ImportPreviewModal({
   onConfirm: () => void
   isLoading: boolean
 }) {
+  const { t } = useI18n()
   if (!preview || !backup) return null
 
   const importableCount = preview.summary.create + preview.summary.overwrite
@@ -681,37 +683,37 @@ function ImportPreviewModal({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="导入 Provider 备份"
+      title={t('导入 Provider 备份')}
       className="max-w-3xl"
       action={
         <>
           <Button variant="outline" onClick={onClose} disabled={isLoading}>
-            取消
+            {t('取消')}
           </Button>
           <Button onClick={onConfirm} disabled={importableCount === 0 || isLoading}>
-            {isLoading ? '导入中...' : `确认导入 ${importableCount} 项`}
+            {isLoading ? t('导入中...') : t('确认导入 {count} 项', { count: importableCount })}
           </Button>
         </>
       }
     >
       <div className="space-y-4">
         <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
-          <div>导出时间：{new Date(backup.exportedAt).toLocaleString()}</div>
-          <div>模式：完整备份（含敏感信息）</div>
-          <div>文件内 Provider 数量：{backup.providers.length}</div>
+          <div>{t('导出时间：{value}', { value: new Date(backup.exportedAt).toLocaleString() })}</div>
+          <div>{t('模式：完整备份（含敏感信息）')}</div>
+          <div>{t('文件内 Provider 数量：{count}', { count: backup.providers.length })}</div>
         </div>
 
         <div className="grid grid-cols-3 gap-3">
           <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3">
-            <div className="text-xs text-green-700">新增</div>
+            <div className="text-xs text-green-700">{t('新增')}</div>
             <div className="text-lg font-semibold text-green-900">{preview.summary.create}</div>
           </div>
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-            <div className="text-xs text-amber-700">覆盖</div>
+            <div className="text-xs text-amber-700">{t('覆盖')}</div>
             <div className="text-lg font-semibold text-amber-900">{preview.summary.overwrite}</div>
           </div>
           <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3">
-            <div className="text-xs text-neutral-500">跳过</div>
+            <div className="text-xs text-neutral-500">{t('跳过')}</div>
             <div className="text-lg font-semibold text-neutral-900">{preview.summary.skip}</div>
           </div>
         </div>
@@ -726,7 +728,7 @@ function ImportPreviewModal({
                     <div className="flex items-center gap-2">
                       <h4 className="truncate text-sm font-medium text-neutral-900">{item.incoming.name}</h4>
                       <span className={`inline-flex rounded px-2 py-0.5 text-xs ${meta.className}`}>
-                        {meta.label}
+                        {t(meta.label)}
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-neutral-500">
@@ -739,17 +741,17 @@ function ImportPreviewModal({
 
                 {item.action === 'OVERWRITE' && item.existing && (
                   <p className="mt-2 text-xs text-amber-700">
-                    将覆盖当前已有的 Provider：{item.existing.name}
+                    {t('将覆盖当前已有的 Provider：{name}', { name: item.existing.name })}
                   </p>
                 )}
                 {item.action === 'SKIP' && (
                   <p className="mt-2 text-xs text-neutral-500">
-                    当前同 ID Provider 配置一致，本次不会重复写入。
+                    {t('当前同 ID Provider 配置一致，本次不会重复写入。')}
                   </p>
                 )}
                 {item.action === 'CREATE' && (
                   <p className="mt-2 text-xs text-green-700">
-                    当前不存在同 ID Provider，将直接新增。
+                    {t('当前不存在同 ID Provider，将直接新增。')}
                   </p>
                 )}
               </div>
@@ -762,6 +764,7 @@ function ImportPreviewModal({
 }
 
 export function ProviderSettingsPage() {
+  const { t } = useI18n()
   const { data: providersData, isLoading } = useProviders()
   const createProvider = useCreateProvider()
   const updateProvider = useUpdateProvider()
@@ -800,7 +803,7 @@ export function ProviderSettingsPage() {
     const canDelete = provider.deletable ?? !provider.builtIn
 
     if (!canDelete) {
-      toast.error('系统内置 Provider 不可删除')
+      toast.error(t('系统内置 Provider 不可删除'))
       return
     }
 
@@ -816,11 +819,11 @@ export function ProviderSettingsPage() {
 
     deleteProvider.mutate(deleteConfirm.id, {
       onSuccess: () => {
-        toast.success(deleteConfirm.builtIn ? '已恢复默认 Provider 配置' : 'Provider 已删除')
+        toast.success(deleteConfirm.builtIn ? t('已恢复默认 Provider 配置') : t('Provider 已删除'))
         setDeleteConfirm(null)
       },
       onError: error => {
-        toast.error(getErrorMessage(error, '删除 Provider 失败'))
+        toast.error(getErrorMessage(error, t('删除 Provider 失败')))
       },
     })
   }
@@ -838,11 +841,11 @@ export function ProviderSettingsPage() {
     exportProviderBackup.mutate(undefined, {
       onSuccess: backup => {
         downloadJsonFile(formatBackupFilename(backup.exportedAt), backup)
-        toast.success('Provider 备份已导出')
+        toast.success(t('Provider 备份已导出'))
         closeExportBackup()
       },
       onError: error => {
-        toast.error(getErrorMessage(error, '导出 Provider 备份失败'))
+        toast.error(getErrorMessage(error, t('导出 Provider 备份失败')))
       },
     })
   }
@@ -864,7 +867,7 @@ export function ProviderSettingsPage() {
     try {
       parsed = JSON.parse(await file.text()) as ProviderBackupFile
     } catch {
-      toast.error('备份文件不是有效的 JSON')
+      toast.error(t('备份文件不是有效的 JSON'))
       return
     }
 
@@ -873,7 +876,7 @@ export function ProviderSettingsPage() {
         setImportPreviewState({ backup: parsed, preview })
       },
       onError: error => {
-        toast.error(getErrorMessage(error, '导入预览失败'))
+        toast.error(getErrorMessage(error, t('导入预览失败')))
       },
     })
   }
@@ -886,13 +889,17 @@ export function ProviderSettingsPage() {
         const totalImported = result.summary.create + result.summary.overwrite
         toast.success(
           totalImported === 0
-            ? '导入完成，当前配置无需变更'
-            : `导入完成：新增 ${result.summary.create}，覆盖 ${result.summary.overwrite}，跳过 ${result.summary.skip}`
+            ? t('导入完成，当前配置无需变更')
+            : t('导入完成：新增 {create}，覆盖 {overwrite}，跳过 {skip}', {
+                create: result.summary.create,
+                overwrite: result.summary.overwrite,
+                skip: result.summary.skip,
+              })
         )
         closeImportPreview()
       },
       onError: error => {
-        toast.error(getErrorMessage(error, '导入 Provider 备份失败'))
+        toast.error(getErrorMessage(error, t('导入 Provider 备份失败')))
       },
     })
   }
@@ -917,7 +924,7 @@ export function ProviderSettingsPage() {
   }
 
   if (isLoading) {
-    return <div className="p-6 text-sm text-neutral-400">加载中...</div>
+    return <div className="p-6 text-sm text-neutral-400">{t('加载中...')}</div>
   }
 
   const providers = providersData ?? []
@@ -934,30 +941,30 @@ export function ProviderSettingsPage() {
 
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-lg font-semibold text-neutral-900">Provider 配置</h2>
+          <h2 className="text-lg font-semibold text-neutral-900">{t('Provider 配置')}</h2>
           <p className="text-sm text-neutral-500 mt-1">
-            管理 AI Agent 的连接配置和运行参数
+            {t('管理 AI Agent 的连接配置和运行参数')}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={handleOpenImportFile} disabled={previewProviderImport.isPending || importProviderBackup.isPending}>
             <Upload size={14} />
-            导入备份
+            {t('导入备份')}
           </Button>
           <Button variant="outline" onClick={() => setIsExportBackupOpen(true)} disabled={exportProviderBackup.isPending}>
             <Download size={14} />
-            导出备份
+            {t('导出备份')}
           </Button>
           <Button onClick={() => setEditModal({})}>
             <Plus size={14} className="mr-1" />
-            新建 Provider
+            {t('新建 Provider')}
           </Button>
         </div>
       </div>
 
       {providers.length === 0 ? (
         <div className="text-center py-12 text-sm text-neutral-400">
-          暂无 Provider 配置
+          {t('暂无 Provider 配置')}
         </div>
       ) : (
         <div className="space-y-3">
@@ -981,12 +988,12 @@ export function ProviderSettingsPage() {
                       <AvailabilityBadge type={availability.type} />
                       {provider.isDefault && (
                         <span className="px-2 py-0.5 text-xs text-blue-700 bg-blue-50 rounded">
-                          默认
+                          {t('默认')}
                         </span>
                       )}
                       {provider.builtIn && (
                         <span className="px-2 py-0.5 text-xs text-neutral-500 bg-neutral-50 rounded">
-                          内置
+                          {t('内置')}
                         </span>
                       )}
                     </div>
@@ -997,7 +1004,7 @@ export function ProviderSettingsPage() {
                       <div className="text-xs text-neutral-600 mb-1">
                         {configEntries.map(([k, v]) => (
                           <span key={k} className="inline-flex items-center mr-3">
-                            <span className="font-medium">{CONFIG_FIELD_LABELS[k] ?? k}:</span>{' '}
+                            <span className="font-medium">{t(CONFIG_FIELD_LABELS[k] ?? k)}:</span>{' '}
                             {formatConfigValue(k, v)}
                           </span>
                         ))}
@@ -1005,13 +1012,13 @@ export function ProviderSettingsPage() {
                     )}
                     {provider.settings?.trim() && (
                       <div className="text-xs text-neutral-600">
-                        <span className="font-medium">CLI 配置:</span> 已配置
+                        <span className="font-medium">{t('CLI 配置:')}</span> {t('已配置')}
                       </div>
                     )}
                     {/* 兼容旧数据：显示 env */}
                     {Object.keys(provider.env).length > 0 && !provider.settings && (
                       <div className="text-xs text-neutral-600">
-                        <span className="font-medium">环境变量:</span>{' '}
+                        <span className="font-medium">{t('环境变量:')}</span>{' '}
                         {Object.keys(provider.env).join(', ')}
                       </div>
                     )}
@@ -1020,14 +1027,14 @@ export function ProviderSettingsPage() {
                     <button
                       onClick={() => openEdit(item)}
                       className="p-2 text-neutral-400 hover:text-neutral-900 transition-colors"
-                      title="编辑"
+                      title={t('编辑')}
                     >
                       <Pencil size={14} />
                     </button>
                     <button
                       onClick={() => handleDelete(provider)}
                       className="p-2 text-neutral-400 hover:text-red-600 transition-colors"
-                      title={provider.deletable === false ? '系统内置 Provider 不可删除' : provider.builtIn ? '删除自定义覆盖并恢复默认' : '删除'}
+                      title={provider.deletable === false ? t('系统内置 Provider 不可删除') : provider.builtIn ? t('删除自定义覆盖并恢复默认') : t('删除')}
                       disabled={provider.deletable === false}
                     >
                       <Trash2 size={14} />
@@ -1063,14 +1070,14 @@ export function ProviderSettingsPage() {
           }
         }}
         onConfirm={handleConfirmDelete}
-        title={deleteConfirm?.builtIn ? '恢复默认 Provider' : '删除 Provider'}
+        title={deleteConfirm?.builtIn ? t('恢复默认 Provider') : t('删除 Provider')}
         description={
           deleteConfirm?.builtIn
-            ? `确定删除 "${deleteConfirm?.name}" 的自定义覆盖，并恢复系统默认配置？`
-            : `确定删除 "${deleteConfirm?.name}"？此操作不可撤销。`
+            ? t('确定删除 "{name}" 的自定义覆盖，并恢复系统默认配置？', { name: deleteConfirm?.name })
+            : t('确定删除 "{name}"？此操作不可撤销。', { name: deleteConfirm?.name })
         }
-        confirmText={deleteConfirm?.builtIn ? '恢复默认' : '删除'}
-        cancelText="取消"
+        confirmText={deleteConfirm?.builtIn ? t('恢复默认') : t('删除')}
+        cancelText={t('取消')}
         variant="danger"
         isLoading={deleteProvider.isPending}
       />

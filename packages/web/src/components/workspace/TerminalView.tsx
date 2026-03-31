@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import { Terminal, Wifi, WifiOff, Loader2 } from "lucide-react"
 import "xterm/css/xterm.css"
 
+import { useI18n } from "@/lib/i18n"
 import { useTerminal } from "@/lib/socket/hooks/useTerminal"
 
 // ============================================================
@@ -22,6 +23,7 @@ export interface TerminalViewProps {
 type ConnectionStatus = "disconnected" | "connecting" | "connected"
 
 const StatusIndicator: React.FC<{ status: ConnectionStatus }> = ({ status }) => {
+  const { t } = useI18n()
   const config = {
     disconnected: {
       icon: <WifiOff size={12} />,
@@ -49,7 +51,7 @@ const StatusIndicator: React.FC<{ status: ConnectionStatus }> = ({ status }) => 
     <div className={`flex items-center gap-1.5 text-[11px] ${textClass}`}>
       <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
       {icon}
-      <span>{label}</span>
+      <span>{t(label)}</span>
     </div>
   )
 }
@@ -58,17 +60,21 @@ const StatusIndicator: React.FC<{ status: ConnectionStatus }> = ({ status }) => 
 // 空状态占位
 // ============================================================
 
-const NoSessionPlaceholder: React.FC = () => (
-  <div className="flex-1 flex items-center justify-center bg-[#1e1e1e]">
-    <div className="flex flex-col items-center gap-3 text-neutral-500">
-      <Terminal size={32} />
-      <span className="text-sm">No active session</span>
-      <span className="text-xs text-neutral-600 max-w-[280px] text-center">
-        Create a workspace and start a session to see terminal output.
-      </span>
+const NoSessionPlaceholder: React.FC = () => {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex-1 flex items-center justify-center bg-[#1e1e1e]">
+      <div className="flex flex-col items-center gap-3 text-neutral-500">
+        <Terminal size={32} />
+        <span className="text-sm">{t('No active session')}</span>
+        <span className="text-xs text-neutral-600 max-w-[280px] text-center">
+          {t('Create a workspace and start a session to see terminal output.')}
+        </span>
+      </div>
     </div>
-  </div>
-)
+  )
+}
 
 // ============================================================
 // 主组件
@@ -92,6 +98,7 @@ interface TerminalInstanceProps {
 }
 
 const TerminalInstance: React.FC<TerminalInstanceProps> = ({ sessionId }) => {
+  const { t } = useI18n()
   const terminalRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -103,12 +110,12 @@ const TerminalInstance: React.FC<TerminalInstanceProps> = ({ sessionId }) => {
     }, []),
     onExit: useCallback((exitCode: number) => {
       xtermRef.current?.writeln(
-        `\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m`
+        `\r\n\x1b[90m[${t('Process exited with code {code}', { code: exitCode })}]\x1b[0m`
       )
-    }, []),
+    }, [t]),
     onError: useCallback((message: string) => {
-      xtermRef.current?.writeln(`\r\n\x1b[31m[Error: ${message}]\x1b[0m`)
-    }, []),
+      xtermRef.current?.writeln(`\r\n\x1b[31m[${t('Error: {message}', { message })}]\x1b[0m`)
+    }, [t]),
   })
 
   // 计算连接状态
@@ -246,7 +253,7 @@ const TerminalInstance: React.FC<TerminalInstanceProps> = ({ sessionId }) => {
         <div className="flex items-center gap-2">
           <Terminal size={13} className="text-neutral-500" />
           <span className="text-[11px] text-neutral-400 select-none">
-            Session: {sessionId.slice(0, 8)}...
+            {t('Session: {id}', { id: `${sessionId.slice(0, 8)}...` })}
           </span>
         </div>
         <StatusIndicator status={connectionStatus} />

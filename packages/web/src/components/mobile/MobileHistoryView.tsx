@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { useGitCommitFiles, useGitCommitDiff, type GitChangeEntry, type GitLogResponse } from '@/hooks/use-git'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
+import { translate, useI18n } from '@/lib/i18n'
 
 const PAGE_SIZE = 50
 
@@ -18,10 +19,10 @@ const STATUS_COLOR: Record<string, string> = {
 function timeAgo(ts: number): string {
   const now = Math.floor(Date.now() / 1000)
   const diff = now - ts
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`
+  if (diff < 60) return translate('{count}s ago', { count: diff })
+  if (diff < 3600) return translate('{count}m ago', { count: Math.floor(diff / 60) })
+  if (diff < 86400) return translate('{count}h ago', { count: Math.floor(diff / 3600) })
+  if (diff < 604800) return translate('{count}d ago', { count: Math.floor(diff / 86400) })
   return new Date(ts * 1000).toLocaleDateString()
 }
 
@@ -37,17 +38,18 @@ function dirname(p: string) {
 
 /** Inline diff for a file in a commit (dark theme, same as MobileChangesView) */
 function InlineCommitDiff({ workingDir, hash, filePath }: { workingDir: string; hash: string; filePath: string }) {
+  const { t } = useI18n()
   const { data, isLoading, isError } = useGitCommitDiff(workingDir, hash, filePath)
 
   if (isLoading) return (
     <div className="flex items-center gap-2 px-3 py-4 text-neutral-400">
-      <Loader2 size={14} className="animate-spin" /><span className="text-xs">Loading diff...</span>
+      <Loader2 size={14} className="animate-spin" /><span className="text-xs">{t('Loading diff...')}</span>
     </div>
   )
-  if (isError) return <div className="px-3 py-3 text-xs text-red-500">Failed to load diff.</div>
+  if (isError) return <div className="px-3 py-3 text-xs text-red-500">{t('Failed to load diff.')}</div>
 
   const diff = data?.diff || ''
-  if (!diff.trim()) return <div className="px-3 py-3 text-xs text-neutral-400">No diff content.</div>
+  if (!diff.trim()) return <div className="px-3 py-3 text-xs text-neutral-400">{t('No diff content available.')}</div>
 
   const lines = diff.split('\n')
   return (
@@ -98,6 +100,7 @@ function ExpandableFileItem({ entry, workingDir, hash }: { entry: GitChangeEntry
 
 /** Expandable commit item: shows commit info, expands to file list */
 function CommitItem({ commit, workingDir }: { commit: { hash: string; shortHash: string; author: string; timestamp: number; message: string; body: string }; workingDir: string }) {
+  const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
   const { data, isLoading } = useGitCommitFiles(workingDir, isOpen ? commit.hash : null)
   const files = data?.files || []
@@ -135,10 +138,10 @@ function CommitItem({ commit, workingDir }: { commit: { hash: string; shortHash:
           )}
           {isLoading ? (
             <div className="flex items-center gap-2 px-3 py-3 text-neutral-400">
-              <Loader2 size={14} className="animate-spin" /><span className="text-xs">Loading files...</span>
+              <Loader2 size={14} className="animate-spin" /><span className="text-xs">{t('Loading files...')}</span>
             </div>
           ) : files.length === 0 ? (
-            <div className="px-3 py-3 text-xs text-neutral-400">No files changed</div>
+            <div className="px-3 py-3 text-xs text-neutral-400">{t('No files changed')}</div>
           ) : (
             <div className="divide-y divide-neutral-100">
               {files.map((f: GitChangeEntry) => (
@@ -154,6 +157,7 @@ function CommitItem({ commit, workingDir }: { commit: { hash: string; shortHash:
 
 /** Main component */
 export function MobileHistoryView({ workingDir }: { workingDir?: string }) {
+  const { t } = useI18n()
   const {
     data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
@@ -171,19 +175,19 @@ export function MobileHistoryView({ workingDir }: { workingDir?: string }) {
   const commits = data?.pages.flatMap(p => p.commits) || []
 
   if (!workingDir) return (
-    <div className="flex-1 flex items-center justify-center text-neutral-400 text-sm">No workspace selected.</div>
+    <div className="flex-1 flex items-center justify-center text-neutral-400 text-sm">{t('No workspace selected.')}</div>
   )
   if (isLoading) return (
     <div className="flex-1 flex items-center justify-center text-neutral-400">
-      <Loader2 size={16} className="animate-spin mr-2" /><span className="text-sm">Loading history...</span>
+      <Loader2 size={16} className="animate-spin mr-2" /><span className="text-sm">{t('Loading history...')}</span>
     </div>
   )
   if (isError) return (
-    <div className="flex-1 flex items-center justify-center text-red-500 text-sm">Failed to load history.</div>
+    <div className="flex-1 flex items-center justify-center text-red-500 text-sm">{t('Failed to load history.')}</div>
   )
   if (commits.length === 0) return (
     <div className="flex-1 flex flex-col items-center justify-center text-neutral-400 py-16">
-      <History size={28} className="mb-3" /><span className="text-sm">No commit history</span>
+      <History size={28} className="mb-3" /><span className="text-sm">{t('No commit history')}</span>
     </div>
   )
 
@@ -202,7 +206,7 @@ export function MobileHistoryView({ workingDir }: { workingDir?: string }) {
           disabled={isFetchingNextPage}
           className="w-full py-4 text-sm text-neutral-500 active:text-neutral-700 active:bg-neutral-50 flex items-center justify-center gap-2"
         >
-          {isFetchingNextPage ? <><Loader2 size={14} className="animate-spin" /> Loading...</> : 'Load more'}
+          {isFetchingNextPage ? <><Loader2 size={14} className="animate-spin" /> {t('Loading...')}</> : t('Load more')}
         </button>
       )}
     </div>

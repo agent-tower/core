@@ -13,6 +13,7 @@ import { providerRoutes } from './providers.js';
 import { terminalRoutes } from './terminals.js';
 import { tunnelRoutes } from './tunnel.js';
 import { attachmentRoutes } from './attachments.js';
+import { appSettingsRoutes } from './app-settings.js';
 import { notificationRoutes } from './notifications.js';
 
 export async function registerRoutes(app: FastifyInstance) {
@@ -57,6 +58,9 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // 附件路由
   await app.register(attachmentRoutes, { prefix: '/api/attachments' });
+
+  // 应用设置路由
+  await app.register(appSettingsRoutes, { prefix: '/api' });
 
   // 通知配置路由
   await app.register(notificationRoutes, { prefix: '/api' });

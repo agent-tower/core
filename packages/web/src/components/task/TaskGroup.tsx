@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useRef, useEffect } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
 import { IconReview, IconRunning, IconPending, IconDone, IconCancelled } from '../agent/Icons'
+import { useI18n } from '@/lib/i18n'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
 
@@ -52,6 +53,7 @@ function DraggableTaskCard({
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   onDeleteTask?: (taskId: string) => void
 }) {
+  const { t } = useI18n()
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
     data: { task, fromStatus: status },
@@ -131,7 +133,7 @@ function DraggableTaskCard({
           {onTaskStatusChange && (
             <>
               <div className="px-3 py-1.5 text-[10px] font-semibold text-neutral-400 uppercase tracking-wider">
-                移动到
+                {t('Move to')}
               </div>
               {CONTEXT_MENU_OPTIONS.filter(o => o.status !== status).map(opt => {
                 const Icon = opt.icon
@@ -142,7 +144,7 @@ function DraggableTaskCard({
                     className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-neutral-50 transition-colors"
                   >
                     <Icon className={`w-3.5 h-3.5 ${opt.color}`} />
-                    <span className="text-neutral-700">{opt.label}</span>
+                    <span className="text-neutral-700">{t(opt.label)}</span>
                   </button>
                 )
               })}
@@ -158,7 +160,7 @@ function DraggableTaskCard({
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
                   <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
                 </svg>
-                <span>删除任务</span>
+                <span>{t('Delete Task')}</span>
               </button>
             </>
           )}
@@ -182,6 +184,7 @@ export const TaskGroup = memo(function TaskGroup({
   onTaskStatusChange,
   onDeleteTask,
 }: TaskGroupProps) {
+  const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(defaultOpen)
 
   const isEmpty = tasks.length === 0
@@ -194,6 +197,7 @@ export const TaskGroup = memo(function TaskGroup({
   })
 
   const isReview = status === UITaskStatus.Review
+  const translatedTitle = t(title)
 
   // 来源分组：保持原样展示（拖走的卡片会半透明）
   // 目标分组：折叠为紧凑 drop zone
@@ -209,7 +213,7 @@ export const TaskGroup = memo(function TaskGroup({
         <span className="mr-2 text-neutral-400">
           {shouldShowContent ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
-        <span className="flex-1 text-left">{title}</span>
+        <span className="flex-1 text-left">{translatedTitle}</span>
         {isReview && !isEmpty ? (
           <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-bold rounded-full animate-hop">
             {tasks.length}
@@ -230,7 +234,7 @@ export const TaskGroup = memo(function TaskGroup({
             }`}
         >
           <span className="text-xs font-medium">
-            {isOver ? `放入 ${title}` : `拖到此处`}
+            {isOver ? t('Drop into {title}', { title: translatedTitle }) : t('Drop here')}
           </span>
         </div>
       )}
@@ -244,7 +248,7 @@ export const TaskGroup = memo(function TaskGroup({
             ${isEmpty && isGlobalDragging ? 'border border-dashed border-neutral-300' : ''}`}
         >
           {isEmpty ? (
-            <span className="text-xs text-neutral-300 py-2 pl-8">No tasks</span>
+            <span className="text-xs text-neutral-300 py-2 pl-8">{t('No tasks')}</span>
           ) : (
             tasks.map(task => {
               const project = projects.find(p => p.id === task.projectId)

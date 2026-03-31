@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef } from "react"
 import { Terminal, Plus, X } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useI18n } from "@/lib/i18n"
 import { StandaloneTerminalView } from "./StandaloneTerminalView"
 import { QuickCommandsPopover } from "./QuickCommandsPopover"
 import type { QuickCommand } from "@agent-tower/shared"
@@ -11,7 +12,7 @@ import type { QuickCommand } from "@agent-tower/shared"
 
 interface TerminalTab {
   id: string
-  label: string
+  order: number
 }
 
 export interface TerminalTabsProps {
@@ -27,8 +28,12 @@ export interface TerminalTabsProps {
 
 let tabCounter = 0
 
-function nextTabId(): string {
-  return `shell-${++tabCounter}`
+function nextTab(): TerminalTab {
+  tabCounter += 1
+  return {
+    id: `shell-${tabCounter}`,
+    order: tabCounter,
+  }
 }
 
 // ============================================================
@@ -37,10 +42,10 @@ function nextTabId(): string {
 
 export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
   function TerminalTabs({ cwd, quickCommands = [] }) {
+    const { t } = useI18n()
     // Start with one terminal tab by default
     const [tabs, setTabs] = useState<TerminalTab[]>(() => {
-      const id = nextTabId()
-      return [{ id, label: "Shell 1" }]
+      return [nextTab()]
     })
     const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0].id)
     // Map of tab id -> sendInput function
@@ -48,14 +53,10 @@ export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
 
     // Add a new terminal tab
     const handleAddTab = useCallback(() => {
-      const id = nextTabId()
-      const newTab: TerminalTab = {
-        id,
-        label: `Shell ${tabs.length + 1}`,
-      }
+      const newTab = nextTab()
       setTabs(prev => [...prev, newTab])
-      setActiveTabId(id)
-    }, [tabs.length])
+      setActiveTabId(newTab.id)
+    }, [])
 
     // Close a terminal tab
     const handleCloseTab = useCallback((tabId: string, e: React.MouseEvent) => {
@@ -112,7 +113,7 @@ export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
                 )}
               >
                 <Terminal size={11} className="shrink-0" />
-                <span>{tab.label}</span>
+                <span>{t('Shell {count}', { count: tab.order })}</span>
                 {tabs.length > 1 && (
                   <span
                     onClick={(e) => handleCloseTab(tab.id, e)}
@@ -129,7 +130,7 @@ export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
           <button
             onClick={handleAddTab}
             className="flex items-center justify-center px-2 py-1.5 text-neutral-500 hover:text-neutral-300 hover:bg-[#333] transition-colors shrink-0"
-            title="New Terminal"
+            title={t('New Terminal')}
           >
             <Plus size={14} />
           </button>
@@ -149,12 +150,12 @@ export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
             <div className="flex-1 flex items-center justify-center h-full text-neutral-500">
               <div className="flex flex-col items-center gap-2">
                 <Terminal size={28} />
-                <span className="text-xs">No terminals open</span>
+                <span className="text-xs">{t('No terminals open')}</span>
                 <button
                   onClick={handleAddTab}
                   className="mt-1 px-3 py-1 text-xs bg-[#333] hover:bg-[#444] rounded transition-colors text-neutral-300"
                 >
-                  New Terminal
+                  {t('New Terminal')}
                 </button>
               </div>
             </div>

@@ -13,6 +13,7 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/lib/i18n'
 import { useFileTree, useRefreshFileTree, type FileTreeItem } from '@/hooks/use-files'
 
 export interface FileTreeProps {
@@ -87,6 +88,7 @@ const DirectoryNode: React.FC<{
   onFileSelect,
   selectedFilePath,
 }) => {
+  const { t } = useI18n()
   const { data, isLoading, isError } = useFileTree(workingDir, path)
 
   const items = useMemo(() => data?.items ?? [], [data?.items])
@@ -94,7 +96,7 @@ const DirectoryNode: React.FC<{
   if (isLoading) {
     return (
       <div className="text-xs text-neutral-400 px-2 py-1" style={{ paddingLeft: 8 + depth * 14 }}>
-        Loading...
+        {t('Loading...')}
       </div>
     )
   }
@@ -102,7 +104,7 @@ const DirectoryNode: React.FC<{
   if (isError) {
     return (
       <div className="text-xs text-red-600 px-2 py-1" style={{ paddingLeft: 8 + depth * 14 }}>
-        Failed to load
+        {t('Failed to load')}
       </div>
     )
   }
@@ -176,6 +178,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
   selectedFilePath,
   onCollapse,
 }) => {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const refreshFileTree = useRefreshFileTree(workingDir)
 
@@ -193,9 +196,9 @@ export const FileTree: React.FC<FileTreeProps> = ({
       <div className="px-3 py-2 border-b border-neutral-200 bg-neutral-50/80 flex items-center justify-between">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold text-neutral-600 uppercase tracking-wider">
-            Files
+            {t('Files')}
           </div>
-          <div className="text-[11px] text-neutral-400 truncate">{workingDir || 'No workingDir'}</div>
+          <div className="text-[11px] text-neutral-400 truncate">{workingDir || t('No working directory')}</div>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
           {workingDir && (
@@ -203,7 +206,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               type="button"
               onClick={refreshFileTree}
               className="p-1 rounded hover:bg-neutral-200 text-neutral-400 hover:text-neutral-700 transition-colors"
-              title="Refresh file tree"
+              title={t('Refresh file tree')}
             >
               <RefreshCw size={13} />
             </button>
@@ -213,7 +216,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               type="button"
               onClick={onCollapse}
               className="p-1 rounded hover:bg-neutral-200 text-neutral-400 hover:text-neutral-700 transition-colors"
-              title="Collapse file tree"
+              title={t('Collapse file tree')}
             >
               <PanelLeftClose size={13} />
             </button>
@@ -234,11 +237,10 @@ export const FileTree: React.FC<FileTreeProps> = ({
           />
         ) : (
           <div className="text-xs text-neutral-500 px-2 py-2">
-            No workspace selected.
+            {t('No workspace selected.')}
           </div>
         )}
       </div>
     </div>
   )
 }
-

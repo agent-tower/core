@@ -39,6 +39,7 @@ import { UITaskStatus } from './types'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
+import { useI18n } from '@/lib/i18n'
 import 'streamdown/styles.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -96,40 +97,44 @@ const CHAT_WIDTH_MAX = 1200
 
 // ============ Empty State (hoisted JSX) ============
 
-const EMPTY_STATE = (
-  <div className="flex-1 flex flex-col items-center justify-center bg-white text-neutral-400 select-none">
-    <div className="w-16 h-16 bg-neutral-50 rounded-2xl border border-neutral-100 flex items-center justify-center mb-6">
-      <svg
-        width="28"
-        height="28"
-        viewBox="0 0 24 24"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        className="text-neutral-300"
-      >
-        <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="currentColor" />
-        <path
-          d="M2 17L12 22L22 17"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M2 12L12 17L22 12"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
+function EmptyState() {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center bg-white text-neutral-400 select-none">
+      <div className="w-16 h-16 bg-neutral-50 rounded-2xl border border-neutral-100 flex items-center justify-center mb-6">
+        <svg
+          width="28"
+          height="28"
+          viewBox="0 0 24 24"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          className="text-neutral-300"
+        >
+          <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="currentColor" />
+          <path
+            d="M2 17L12 22L22 17"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M2 12L12 17L22 12"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+      <h3 className="text-neutral-900 font-medium mb-2 text-lg">Agent Tower</h3>
+      <p className="text-sm max-w-sm text-center text-neutral-500 leading-relaxed">
+        {t('Select a task from the sidebar to view logs, monitor execution, or interact with an agent.')}
+      </p>
     </div>
-    <h3 className="text-neutral-900 font-medium mb-2 text-lg">Agent Tower</h3>
-    <p className="text-sm max-w-sm text-center text-neutral-500 leading-relaxed">
-      Select a task from the sidebar to view logs, monitor execution, or interact with an agent.
-    </p>
-  </div>
-)
+  )
+}
 
 // ============ Status Badge Helper ============
 
@@ -142,6 +147,7 @@ const STATUS_OPTIONS = [
 ] as const
 
 function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChangeStatus?: (newStatus: UITaskStatus) => void }) {
+  const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -163,7 +169,7 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
         className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${current.className} ${onChangeStatus ? 'cursor-pointer hover:opacity-80' : ''}`}
       >
         {current.icon}
-        <span>{status}</span>
+        <span>{t(status)}</span>
         {onChangeStatus && (
           <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" className={`ml-0.5 transition-transform ${isOpen ? 'rotate-180' : ''}`}>
             <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
@@ -180,7 +186,7 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
               className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium transition-colors ${opt.hoverClass}`}
             >
               <span className={opt.className.split(' ').find(c => c.startsWith('text-'))}>{opt.icon}</span>
-              <span className="text-neutral-700">{opt.status}</span>
+              <span className="text-neutral-700">{t(opt.status)}</span>
             </button>
           ))}
         </div>
@@ -192,6 +198,7 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
 // ============ TaskDetail Component ============
 
 export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange }: TaskDetailProps) {
+  const { t } = useI18n()
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
@@ -619,17 +626,17 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       )
       const hasUnmerged = workspaces.some(ws => ws.status === 'ACTIVE')
 
-      if (hasRunning) warnings.push('正在运行的 Agent 将被停止')
-      if (hasUnmerged) warnings.push('分支上未合并的变更将丢失')
-      if (hasActive) warnings.push('关联的工作目录（worktree）将被清理')
+      if (hasRunning) warnings.push(t('正在运行的 Agent 将被停止'))
+      if (hasUnmerged) warnings.push(t('分支上未合并的变更将丢失'))
+      if (hasActive) warnings.push(t('关联的工作目录（worktree）将被清理'))
     }
 
     return warnings
-  }, [workspaces])
+  }, [workspaces, t])
 
   // Early return for null task
   if (!task) {
-    return EMPTY_STATE
+    return <EmptyState />
   }
 
   return (
@@ -658,7 +665,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             <button
               onClick={() => setIsGitDialogOpen(true)}
               className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
-              title="Git 操作"
+              title={t('Git 操作')}
             >
               <GitFork size={18} />
             </button>
@@ -669,7 +676,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             onClick={handleOpenInIde}
             disabled={!activeWorkspaceId}
             className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Open in IDE"
+            title={t('Open in IDE')}
           >
             <Code2 size={18} />
           </button>
@@ -678,7 +685,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           <button
             onClick={handleToggleWorkspace}
             className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
-            title="Toggle Workspace"
+            title={t('Toggle Workspace')}
           >
             {isWorkspaceOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
           </button>
@@ -689,7 +696,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
               <button
                 onClick={() => setIsMoreMenuOpen(v => !v)}
                 className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
-                title="More actions"
+                title={t('More actions')}
               >
                 <MoreVertical size={18} />
               </button>
@@ -703,7 +710,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
                   >
                     <Trash2 size={15} />
-                    <span>删除任务</span>
+                    <span>{t('删除任务')}</span>
                   </button>
                 </div>
               )}
@@ -744,7 +751,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                     </Streamdown>
                   </div>
                 ) : (
-                  <p className="text-sm text-neutral-400 italic">No description</p>
+                  <p className="text-sm text-neutral-400 italic">{t('No description')}</p>
                 )}
               </div>
 
@@ -757,14 +764,18 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                       </svg>
-                      <span>Setup ({setupProgress.currentIndex}/{setupProgress.totalCommands}): <code>{setupProgress.currentCommand}</code></span>
+                      <span>{t('Setup ({current}/{total}): {command}', {
+                        current: setupProgress.currentIndex,
+                        total: setupProgress.totalCommands,
+                        command: setupProgress.currentCommand,
+                      })}</span>
                     </>
                   )}
                   {setupProgress.status === 'completed' && (
-                    <span className="text-emerald-600">Setup 完成</span>
+                    <span className="text-emerald-600">{t('Setup 完成')}</span>
                   )}
                   {setupProgress.status === 'failed' && (
-                    <span className="text-red-500">Setup 失败: {setupProgress.error}</span>
+                    <span className="text-red-500">{t('Setup 失败: {error}', { error: setupProgress.error })}</span>
                   )}
                 </div>
               )}
@@ -775,7 +786,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  <span className="text-sm">Loading...</span>
+                  <span className="text-sm">{t('Loading...')}</span>
                 </div>
               ) : sessionId ? (
                 isLoadingSnapshot ? (
@@ -784,11 +795,11 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    <span className="text-sm">Loading logs...</span>
+                    <span className="text-sm">{t('Loading logs...')}</span>
                   </div>
                 ) : logs.length === 0 ? (
                   <div className="text-neutral-400 text-center py-8">
-                    {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded for this session.'}
+                    {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                   </div>
                 ) : (
                   <LogStream logs={logs} />
@@ -799,14 +810,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                     <Play size={24} className="text-neutral-400 ml-0.5" />
                   </div>
                   <h3 className="text-base font-medium text-neutral-900 mb-1.5">
-                    尚未启动 Agent
+                    {t('尚未启动 Agent')}
                   </h3>
                   <p className="text-sm text-neutral-500 mb-6 max-w-xs">
-                    选择一个 Agent 来执行此任务，Agent 将自动创建工作空间并开始工作。
+                    {t('选择一个 Agent 来执行此任务，Agent 将自动创建工作空间并开始工作。')}
                   </p>
                   <Button onClick={() => setIsStartDialogOpen(true)}>
                     <Play size={16} className="mr-1.5" />
-                    启动 Agent
+                    {t('启动 Agent')}
                   </Button>
                 </div>
               )}
@@ -818,10 +829,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
               <button
                 onClick={() => scrollToBottom()}
                 className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-white/90 backdrop-blur-sm border border-neutral-200 rounded-full shadow-md text-xs text-neutral-600 hover:bg-white hover:text-neutral-900 transition-all"
-                aria-label="Scroll to bottom"
+                aria-label={t('Scroll to bottom')}
               >
                 <ArrowDown size={14} />
-                <span>回到底部</span>
+                <span>{t('回到底部')}</span>
               </button>
             )}
           </div>
@@ -837,10 +848,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           {isReadOnlySession ? (
             <div className="p-6 pt-3 bg-white flex-shrink-0 w-full z-10 pb-6 border-t border-neutral-100">
               <div className="flex items-center justify-between bg-neutral-50 rounded-xl border border-neutral-200 px-4 py-3">
-                <span className="text-sm text-neutral-500">代码已合并，以上为历史沟通记录</span>
+                <span className="text-sm text-neutral-500">{t('代码已合并，以上为历史沟通记录')}</span>
                 <Button size="sm" onClick={() => setIsStartDialogOpen(true)}>
                   <Play size={14} className="mr-1.5" />
-                  启动新 Agent
+                  {t('启动新 Agent')}
                 </Button>
               </div>
             </div>
@@ -869,7 +880,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                   }
                 }}
                 rows={1}
-                placeholder={isDragOver ? 'Drop files here...' : sessionId && !isSessionActive ? 'Continue conversation...' : 'Message Agent...'}
+                placeholder={isDragOver ? t('Drop files here...') : sessionId && !isSessionActive ? t('Continue conversation...') : t('Message Agent...')}
                 className="w-full px-4 pt-4 pb-2 bg-transparent border-none focus:outline-none resize-none text-sm text-neutral-900 placeholder-neutral-400 leading-relaxed"
                 style={{ minHeight: '60px', maxHeight: '300px' }}
               />
@@ -889,7 +900,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     className="p-2 text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors"
-                    title="Upload file"
+                    title={t('Upload file')}
                   >
                     <Paperclip size={18} />
                   </button>
@@ -991,10 +1002,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
         isOpen={isDeleteConfirmOpen}
         onClose={() => setIsDeleteConfirmOpen(false)}
         onConfirm={handleDeleteTask}
-        title="删除任务"
+        title={t('删除任务')}
         description={
           <>
-            <p>确认删除任务「{task.title}」？此操作不可撤销。</p>
+            <p>{t('确认删除任务「{title}」？此操作不可撤销。', { title: task.title })}</p>
             {deleteDescription.length > 0 && (
               <ul className="mt-2 space-y-1">
                 {deleteDescription.map((w, i) => (
@@ -1007,7 +1018,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             )}
           </>
         }
-        confirmText="删除"
+        confirmText={t('删除')}
         variant="danger"
         isLoading={isDeleting}
       />

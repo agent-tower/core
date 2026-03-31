@@ -10,6 +10,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../utils/index.js';
 import { getNotificationService } from '../core/container.js';
+import { getDefaultNotificationSettings } from '../services/notifications/defaults.js';
 
 const updateSettingsSchema = z.object({
   osNotificationEnabled: z.boolean().optional(),
@@ -36,9 +37,13 @@ export async function notificationRoutes(app: FastifyInstance) {
   // 更新通知配置
   app.put('/notifications/settings', async (request) => {
     const data = updateSettingsSchema.parse(request.body);
+    const appSettings = await prisma.appSettings.findUnique({
+      where: { id: 'singleton' },
+    });
+    const defaults = getDefaultNotificationSettings(appSettings?.locale === 'en' ? 'en' : 'zh-CN');
     const settings = await prisma.notificationSettings.upsert({
       where: { id: 'singleton' },
-      create: { id: 'singleton', ...data },
+      create: { ...defaults, ...data },
       update: data,
     });
     return settings;

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Cpu, ChevronDown, Check } from 'lucide-react'
 import { truncateMiddle } from '@/lib/utils'
 import type { ProviderWithAvailability } from '@/hooks/use-providers'
+import { useI18n } from '@/lib/i18n'
 
 interface ProviderSelectorProps {
   providers: ProviderWithAvailability[]
@@ -16,6 +17,7 @@ export function ProviderSelector({
   agentType,
   onSelect,
 }: ProviderSelectorProps) {
+  const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
@@ -68,7 +70,7 @@ export function ProviderSelector({
       {isOpen && (
         <div className="absolute bottom-full right-0 mb-1 bg-white rounded-lg border border-neutral-200 shadow-lg py-1 min-w-[160px] z-50">
           <div className="px-2 py-1 text-xs text-neutral-400 border-b border-neutral-100">
-            切换渠道
+            {t('切换渠道')}
           </div>
           {filteredProviders.map((item) => (
             <button
@@ -81,12 +83,12 @@ export function ProviderSelector({
                 item.provider.id === currentProviderId ? 'bg-blue-50 text-blue-600' : 'text-neutral-700'
               }`}
             >
-              <span className="flex items-center gap-2">
-                <span className="truncate max-w-[120px]">{item.provider.name}</span>
-                {item.provider.isDefault && (
-                  <span className="text-xs text-neutral-400">(默认)</span>
-                )}
-              </span>
+                <span className="flex items-center gap-2">
+                  <span className="truncate max-w-[120px]">{item.provider.name}</span>
+                  {item.provider.isDefault && (
+                  <span className="text-xs text-neutral-400">{t('(默认)')}</span>
+                  )}
+                </span>
               {item.provider.id === currentProviderId && (
                 <Check size={14} className="shrink-0" />
               )}

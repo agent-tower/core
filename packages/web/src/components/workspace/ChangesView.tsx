@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { GitGraph, Loader2, FileCode2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/lib/i18n'
 import { useGitChanges, useGitDiff, type GitChangeEntry } from '@/hooks/use-git'
 
 type DiffType = 'uncommitted' | 'committed'
@@ -35,6 +36,7 @@ const FileItem: React.FC<{
   selected: boolean
   onClick: () => void
 }> = ({ entry, selected, onClick }) => {
+  const { t } = useI18n()
   const colorClass = STATUS_COLOR_MAP[entry.status] || STATUS_COLOR_MAP.M
   const label = STATUS_LABEL_MAP[entry.status] || entry.status
   const dir = dirname(entry.path)
@@ -53,7 +55,7 @@ const FileItem: React.FC<{
           'w-4 h-4 flex items-center justify-center text-[10px] font-bold border rounded-sm shrink-0',
           colorClass
         )}
-        title={label}
+        title={t(label)}
       >
         {entry.status}
       </span>
@@ -77,13 +79,14 @@ const FileGroup: React.FC<{
   selectedKey: string | null
   onSelect: (path: string, type: DiffType) => void
 }> = ({ title, entries, type, selectedKey, onSelect }) => {
+  const { t } = useI18n()
   if (entries.length === 0) return null
 
   return (
     <div>
       <div className="flex items-center gap-2 px-2 py-1.5">
         <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">
-          {title}
+          {t(title)}
         </span>
         <span className="text-[10px] text-neutral-400">{entries.length}</span>
       </div>
@@ -138,13 +141,14 @@ const DiffViewer: React.FC<{
   filePath: string
   type: DiffType
 }> = ({ workingDir, filePath, type }) => {
+  const { t } = useI18n()
   const { data, isLoading, isError } = useGitDiff(workingDir, filePath, type)
 
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center text-neutral-500">
         <Loader2 size={16} className="animate-spin mr-2" />
-        <span className="text-xs">Loading diff...</span>
+        <span className="text-xs">{t('Loading diff...')}</span>
       </div>
     )
   }
@@ -152,7 +156,7 @@ const DiffViewer: React.FC<{
   if (isError) {
     return (
       <div className="flex-1 flex items-center justify-center text-red-500 text-xs">
-        Failed to load diff.
+        {t('Failed to load diff.')}
       </div>
     )
   }
@@ -161,7 +165,7 @@ const DiffViewer: React.FC<{
   if (!diff.trim()) {
     return (
       <div className="flex-1 flex items-center justify-center text-neutral-400 text-xs">
-        No diff content available.
+        {t('No diff content available.')}
       </div>
     )
   }
@@ -179,6 +183,7 @@ const DiffViewer: React.FC<{
 
 /** Changes Tab 主组件 */
 export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) => {
+  const { t } = useI18n()
   const { data, isLoading, isError } = useGitChanges(workingDir)
   const [selected, setSelected] = useState<{ path: string; type: DiffType } | null>(null)
   const [treeWidth, setTreeWidth] = useState(260)
@@ -213,7 +218,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
   if (!workingDir) {
     return (
       <div className="flex-1 flex items-center justify-center text-neutral-500 text-sm bg-white h-full">
-        No workspace selected.
+        {t('No workspace selected.')}
       </div>
     )
   }
@@ -222,7 +227,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
     return (
       <div className="flex-1 flex items-center justify-center text-neutral-500 bg-white h-full">
         <Loader2 size={16} className="animate-spin mr-2" />
-        <span className="text-sm">Loading changes...</span>
+        <span className="text-sm">{t('Loading changes...')}</span>
       </div>
     )
   }
@@ -230,7 +235,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
   if (isError) {
     return (
       <div className="flex-1 flex items-center justify-center text-red-500 text-sm bg-white h-full">
-        Failed to load changes.
+        {t('Failed to load changes.')}
       </div>
     )
   }
@@ -247,7 +252,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
         <div className="px-3 py-2.5 border-b border-neutral-100 shrink-0">
           <div className="flex items-center gap-2">
             <GitGraph size={14} className="text-neutral-500" />
-            <span className="text-xs font-semibold text-neutral-900">Changes</span>
+            <span className="text-xs font-semibold text-neutral-900">{t('Changes')}</span>
             {totalChanges > 0 && (
               <span className="text-[10px] bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-500">
                 {totalChanges}
@@ -261,7 +266,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
           {totalChanges === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-neutral-400">
               <GitGraph size={28} className="mb-2" />
-              <span className="text-xs">No pending changes</span>
+              <span className="text-xs">{t('No pending changes')}</span>
             </div>
           ) : (
             <div className="space-y-2">
@@ -304,7 +309,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
                 {selected.path}
               </span>
               <span className="text-[10px] text-neutral-400">
-                ({selected.type})
+                ({t(selected.type === 'uncommitted' ? 'Uncommitted' : 'Committed')})
               </span>
             </div>
             <DiffViewer
@@ -317,7 +322,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
           <div className="flex-1 flex items-center justify-center text-neutral-400">
             <div className="flex flex-col items-center gap-2">
               <FileCode2 size={28} />
-              <span className="text-xs">Select a file to view diff</span>
+              <span className="text-xs">{t('Select a file to view diff')}</span>
             </div>
           </div>
         )}

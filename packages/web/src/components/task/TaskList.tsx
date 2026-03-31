@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { ChevronDown, Plus, Layers, Check } from 'lucide-react'
 import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core'
+import { useI18n } from '@/lib/i18n'
 import { TaskGroup } from './TaskGroup'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
@@ -23,13 +24,6 @@ interface TaskListProps {
   /** 删除任务回调 */
   onDeleteTask?: (taskId: string) => void
 }
-
-/** 空状态 placeholder - 提升到组件外避免重复创建 */
-const EmptyFooter = (
-  <div className="p-4 border-t border-neutral-100 text-xs text-neutral-400 flex items-center justify-between">
-    <span>0 tasks</span>
-  </div>
-)
 
 /**
  * 单次遍历将任务按状态分组
@@ -74,6 +68,7 @@ export function TaskList({
   onTaskStatusChange,
   onDeleteTask,
 }: TaskListProps) {
+  const { t } = useI18n()
   const [isFilterOpen, setIsFilterOpen] = useState(false)
   const [activeDragTask, setActiveDragTask] = useState<UITask | null>(null)
   const [activeDragFromStatus, setActiveDragFromStatus] = useState<UITaskStatus | null>(null)
@@ -141,7 +136,7 @@ export function TaskList({
             ) : (
               <>
                 <Layers size={16} className="text-neutral-500 group-hover:text-neutral-800" />
-                <span>All Projects</span>
+                <span>{t('All Projects')}</span>
               </>
             )}
             <ChevronDown
@@ -159,7 +154,7 @@ export function TaskList({
               {/* Menu */}
               <div className="absolute left-0 top-full mt-1 w-56 bg-white border border-neutral-200 rounded-lg shadow-xl shadow-neutral-200/50 z-40 py-1 animate-in fade-in zoom-in-95 duration-100 origin-top-left">
                 <div className="px-3 py-2 text-[10px] font-semibold text-neutral-400 uppercase tracking-wider">
-                  Select View
+                  {t('Select View')}
                 </div>
 
                 <button
@@ -171,7 +166,7 @@ export function TaskList({
                       <Layers size={12} />
                     </div>
                     <span className={filterProjectId === null ? 'text-neutral-900 font-medium' : 'text-neutral-600'}>
-                      All Projects
+                      {t('All Projects')}
                     </span>
                   </div>
                   {filterProjectId === null ? <Check size={14} className="text-neutral-900" /> : null}
@@ -208,7 +203,7 @@ export function TaskList({
                   className="w-full text-left px-3 py-2 text-xs flex items-center gap-2 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50 transition-colors"
                 >
                   <Plus size={14} />
-                  <span>Create New Project...</span>
+                  <span>{t('Create New Project...')}</span>
                 </button>
               </div>
             </>
@@ -218,7 +213,7 @@ export function TaskList({
         <button
           onClick={onCreateTask}
           className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors flex-shrink-0"
-          title="New Task"
+          title={t('New Task')}
         >
           <Plus size={18} />
         </button>
@@ -258,17 +253,21 @@ export function TaskList({
       {/* Footer */}
       {filteredTasks.length > 0 ? (
         <div className="p-4 border-t border-neutral-100 text-xs text-neutral-400 flex items-center justify-between">
-          <span>{filteredTasks.length} tasks</span>
+          <span>{t('{count} tasks', { count: filteredTasks.length })}</span>
           {filterProjectId ? (
             <button
               onClick={() => setFilterProjectId(null)}
               className="hover:text-neutral-800 underline decoration-neutral-300 underline-offset-2"
             >
-              Clear filter
+              {t('Clear filter')}
             </button>
           ) : null}
         </div>
-      ) : EmptyFooter}
+      ) : (
+        <div className="p-4 border-t border-neutral-100 text-xs text-neutral-400 flex items-center justify-between">
+          <span>{t('{count} tasks', { count: 0 })}</span>
+        </div>
+      )}
     </div>
   )
 }

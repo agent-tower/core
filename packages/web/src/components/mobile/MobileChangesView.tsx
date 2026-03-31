@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { GitGraph, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/lib/i18n'
 import { useGitChanges, useGitDiff, type GitChangeEntry } from '@/hooks/use-git'
 
 type DiffType = 'uncommitted' | 'committed'
@@ -25,21 +26,22 @@ function dirname(p: string) {
 // ============ Inline Diff ============
 
 function InlineDiff({ workingDir, filePath, type }: { workingDir: string; filePath: string; type: DiffType }) {
+  const { t } = useI18n()
   const { data, isLoading, isError } = useGitDiff(workingDir, filePath, type)
 
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 px-3 py-4 text-neutral-400">
         <Loader2 size={14} className="animate-spin" />
-        <span className="text-xs">Loading diff...</span>
+        <span className="text-xs">{t('Loading diff...')}</span>
       </div>
     )
   }
 
-  if (isError) return <div className="px-3 py-3 text-xs text-red-500">Failed to load diff.</div>
+  if (isError) return <div className="px-3 py-3 text-xs text-red-500">{t('Failed to load diff.')}</div>
 
   const diff = data?.diff || ''
-  if (!diff.trim()) return <div className="px-3 py-3 text-xs text-neutral-400">No diff content.</div>
+  if (!diff.trim()) return <div className="px-3 py-3 text-xs text-neutral-400">{t('No diff content available.')}</div>
 
   const lines = diff.split('\n')
 
@@ -117,6 +119,7 @@ function ChangeGroup({
   workingDir: string
   defaultOpen: boolean
 }) {
+  const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(defaultOpen)
 
   if (entries.length === 0) return null
@@ -130,7 +133,7 @@ function ChangeGroup({
         <span className="text-neutral-400">
           {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
-        <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">{title}</span>
+        <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">{t(title)}</span>
         <span className="text-[10px] bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-500">{entries.length}</span>
       </button>
       {isOpen && (
@@ -147,12 +150,13 @@ function ChangeGroup({
 // ============ Main Component ============
 
 export function MobileChangesView({ workingDir }: { workingDir?: string }) {
+  const { t } = useI18n()
   const { data, isLoading, isError } = useGitChanges(workingDir)
 
   if (!workingDir) {
     return (
       <div className="flex-1 flex items-center justify-center text-neutral-400 text-sm">
-        No workspace selected.
+        {t('No workspace selected.')}
       </div>
     )
   }
@@ -161,7 +165,7 @@ export function MobileChangesView({ workingDir }: { workingDir?: string }) {
     return (
       <div className="flex-1 flex items-center justify-center text-neutral-400">
         <Loader2 size={16} className="animate-spin mr-2" />
-        <span className="text-sm">Loading changes...</span>
+        <span className="text-sm">{t('Loading changes...')}</span>
       </div>
     )
   }
@@ -169,7 +173,7 @@ export function MobileChangesView({ workingDir }: { workingDir?: string }) {
   if (isError) {
     return (
       <div className="flex-1 flex items-center justify-center text-red-500 text-sm">
-        Failed to load changes.
+        {t('Failed to load changes.')}
       </div>
     )
   }
@@ -182,7 +186,7 @@ export function MobileChangesView({ workingDir }: { workingDir?: string }) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-neutral-400 py-16">
         <GitGraph size={28} className="mb-3" />
-        <span className="text-sm">No pending changes</span>
+        <span className="text-sm">{t('No pending changes')}</span>
       </div>
     )
   }

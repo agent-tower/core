@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Folder, FolderGit2, ChevronRight, Loader2, AlertCircle } from 'lucide-react'
 import { apiClient } from '@/lib/api-client'
+import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 
 // === API 响应类型 ===
@@ -35,6 +36,7 @@ export interface FolderPickerProps {
 }
 
 export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps) {
+  const { t } = useI18n()
   // 浏览器当前目录
   const [currentPath, setCurrentPath] = useState('')
   const [dirs, setDirs] = useState<DirEntry[]>([])
@@ -168,7 +170,7 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
 
       {/* 提示文字 */}
       <p className="text-xs text-neutral-400">
-        Browse and select a Git repository, or type a path and press Enter
+        {t('Browse and select a Git repository, or type a path and press Enter')}
       </p>
 
       {/* 面包屑导航 */}

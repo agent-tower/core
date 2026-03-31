@@ -2,6 +2,7 @@ import * as React from "react"
 import { useState, useRef, useEffect, useCallback } from "react"
 import { ChevronDown, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useI18n } from "@/lib/i18n"
 
 export interface SelectOption {
   value: string
@@ -26,6 +27,7 @@ export function Select({
   disabled = false,
   className,
 }: SelectProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -67,7 +69,7 @@ export function Select({
         )}
       >
         <span className="truncate">
-          {selectedOption ? selectedOption.label : placeholder}
+          {selectedOption ? selectedOption.label : t(placeholder)}
         </span>
         <ChevronDown
           size={14}
@@ -81,7 +83,7 @@ export function Select({
       {open && (
         <div className="absolute z-50 mt-1 w-full min-w-[160px] bg-white border border-neutral-200 rounded-lg shadow-lg shadow-neutral-200/50 py-1 max-h-[200px] overflow-y-auto">
           {options.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-neutral-400">No options</div>
+            <div className="px-3 py-2 text-sm text-neutral-400">{t('No options')}</div>
           ) : (
             options.map(option => (
               <button

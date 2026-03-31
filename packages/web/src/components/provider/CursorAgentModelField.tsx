@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useCursorAgentModels } from '@/hooks/use-cursor-agent-models'
+import { useI18n } from '@/lib/i18n'
 
 interface CursorAgentModelFieldProps {
   value: string
@@ -9,6 +10,7 @@ interface CursorAgentModelFieldProps {
 }
 
 export function CursorAgentModelField({ value, onChange }: CursorAgentModelFieldProps) {
+  const { t } = useI18n()
   const { data, isLoading, isError } = useCursorAgentModels()
   const models = data?.models ?? []
   const [listOpen, setListOpen] = useState(false)
@@ -31,7 +33,7 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
           const v = e.target.value
           onChange(v === '' ? undefined : v)
         }}
-        placeholder="留空为 auto；或直接输入模型 ID（与 cursor-agent --model 一致）"
+        placeholder={t('留空为 auto；或直接输入模型 ID（与 cursor-agent --model 一致）')}
         className="w-full px-3 py-1.5 text-sm border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900 font-mono"
       />
 
@@ -43,10 +45,10 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
       >
         <ChevronDown size={14} className={cn('transition-transform', listOpen && 'rotate-180')} />
         {isLoading
-          ? '正在加载 cursor-agent 模型列表…'
+          ? t('正在加载 cursor-agent 模型列表…')
           : listOpen
-            ? '收起列表'
-            : `从本机 cursor-agent 选择（${models.length} 个）`}
+            ? t('收起列表')
+            : t('从本机 cursor-agent 选择（{count} 个）', { count: models.length })}
       </button>
 
       {listOpen && !isLoading && (
@@ -55,7 +57,7 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
             type="text"
             value={filter}
             onChange={e => setFilter(e.target.value)}
-            placeholder="筛选模型…"
+            placeholder={t('筛选模型…')}
             className="w-full px-3 py-2 text-sm border-b border-neutral-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-neutral-300"
           />
           <div className="max-h-[min(50vh,22rem)] overflow-y-auto py-1">
@@ -71,7 +73,7 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
                 !value ? 'bg-neutral-50 font-medium' : 'text-neutral-700'
               )}
             >
-              默认 (auto)
+              {t('默认 (auto)')}
             </button>
             {filtered.map(m => (
               <button
@@ -92,7 +94,7 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
               </button>
             ))}
             {filtered.length === 0 && (
-              <div className="px-3 py-4 text-xs text-neutral-400 text-center">无匹配项</div>
+              <div className="px-3 py-4 text-xs text-neutral-400 text-center">{t('无匹配项')}</div>
             )}
           </div>
         </div>
@@ -100,9 +102,11 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
 
       {(isError || data?.error) && (
         <p className="text-xs text-amber-700">
-          无法从本机加载模型列表（{data?.error ?? '请求失败'}）。仍可手动输入；或在安装 cursor-agent 的机器上运行
+          {t('无法从本机加载模型列表（{error}）。仍可手动输入；或在安装 cursor-agent 的机器上运行', {
+            error: data?.error ?? t('请求失败'),
+          })}
           <code className="mx-0.5 bg-neutral-100 px-1 rounded text-[11px]">cursor-agent --list-models</code>
-          查看 ID。
+          {t('查看 ID。')}
         </p>
       )}
     </div>

@@ -3,6 +3,7 @@ import { GitBranch, GitMerge, AlertTriangle, CheckCircle, ArrowRight, Loader2, F
 import type { GitOperationStatus } from '@agent-tower/shared'
 import { Modal } from '@/components/ui/modal'
 import { useRebaseWorkspace, useMergeWorkspace, useGitStatus } from '@/hooks/use-workspaces'
+import { useI18n } from '@/lib/i18n'
 
 interface GitOperationsDialogProps {
   open: boolean
@@ -42,6 +43,7 @@ function BranchStatusInfo({ gitStatus, branchName, targetBranch }: {
   branchName: string
   targetBranch: string
 }) {
+  const { t } = useI18n()
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm">
@@ -54,49 +56,49 @@ function BranchStatusInfo({ gitStatus, branchName, targetBranch }: {
         {gitStatus.hasUncommittedChanges && (
           <StatusChip variant="danger">
             <FileWarning size={12} />
-            {gitStatus.uncommittedCount} 个未提交变更
+            {t('{count} 个未提交变更', { count: gitStatus.uncommittedCount })}
           </StatusChip>
         )}
         {gitStatus.conflictedFiles.length > 0 && (
           <StatusChip variant="warning">
             <AlertTriangle size={12} />
-            {gitStatus.conflictedFiles.length} 个冲突文件
+            {t('{count} 个冲突文件', { count: gitStatus.conflictedFiles.length })}
           </StatusChip>
         )}
         {gitStatus.operation === 'rebase' && gitStatus.conflictedFiles.length === 0 && (
           <StatusChip variant="warning">
             <Loader2 size={12} className="animate-spin" />
-            变基进行中
+            {t('变基进行中')}
           </StatusChip>
         )}
         {gitStatus.operation === 'merge' && gitStatus.conflictedFiles.length === 0 && (
           <StatusChip variant="warning">
             <Loader2 size={12} className="animate-spin" />
-            合并进行中
+            {t('合并进行中')}
           </StatusChip>
         )}
         {gitStatus.ahead > 0 && (
           <StatusChip variant="success">
             <CheckCircle size={12} />
-            领先 {gitStatus.ahead} 个提交
+            {t('领先 {count} 个提交', { count: gitStatus.ahead })}
           </StatusChip>
         )}
         {gitStatus.behind > 0 && (
           <StatusChip variant="warning">
-            落后 {gitStatus.behind} 个提交
+            {t('落后 {count} 个提交', { count: gitStatus.behind })}
           </StatusChip>
         )}
         {gitStatus.operation === 'idle' && gitStatus.ahead === 0 && gitStatus.behind === 0 && !gitStatus.hasUncommittedChanges && (
           <StatusChip variant="neutral">
             <CheckCircle size={12} />
-            已是最新
+            {t('已是最新')}
           </StatusChip>
         )}
       </div>
 
       {gitStatus.hasUncommittedChanges && (
         <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
-          工作区有未提交的变更，请先让 Agent 提交或手动处理后再执行 Rebase / Merge 操作。
+          {t('工作区有未提交的变更，请先让 Agent 提交或手动处理后再执行 Rebase / Merge 操作。')}
         </div>
       )}
     </div>
@@ -113,6 +115,7 @@ export function GitOperationsDialog({
   onRefreshCommitMessage,
   onConflict,
 }: GitOperationsDialogProps) {
+  const { t } = useI18n()
   const { data: gitStatus, isLoading } = useGitStatus(workspaceId)
   const rebaseWorkspace = useRebaseWorkspace()
   const mergeWorkspace = useMergeWorkspace()
@@ -156,7 +159,7 @@ export function GitOperationsDialog({
           onOpenChange(false)
           onConflict()
         } else {
-          setError(apiErr.message ?? '变基失败')
+          setError(apiErr.message ?? t('变基失败'))
         }
       },
     })
@@ -178,13 +181,13 @@ export function GitOperationsDialog({
           onOpenChange(false)
           onConflict()
         } else {
-          setError(apiErr.message ?? '合并失败')
+          setError(apiErr.message ?? t('合并失败'))
         }
       },
     })
   }
 
-  const title = mergeStep === 'confirm' ? '确认合并' : 'Git 操作'
+  const title = mergeStep === 'confirm' ? t('确认合并') : t('Git 操作')
 
   return (
     <Modal
@@ -195,7 +198,7 @@ export function GitOperationsDialog({
       {isLoading || !gitStatus ? (
         <div className="flex items-center justify-center py-8 gap-2 text-neutral-400">
           <Loader2 size={18} className="animate-spin" />
-          <span className="text-sm">加载分支状态...</span>
+          <span className="text-sm">{t('加载分支状态...')}</span>
         </div>
       ) : mergeStep === 'confirm' ? (
         <MergeConfirmView
@@ -245,6 +248,7 @@ function SelectOperationView({
   onRebase: () => void
   onMerge: () => void
 }) {
+  const { t } = useI18n()
   return (
     <div className="space-y-5">
       <BranchStatusInfo gitStatus={gitStatus} branchName={branchName} targetBranch={targetBranch} />
@@ -266,9 +270,9 @@ function SelectOperationView({
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-neutral-900">
-              {rebasePending ? '变基中...' : '变基 (Rebase)'}
+              {rebasePending ? t('变基中...') : t('变基 (Rebase)')}
             </div>
-            <div className="text-xs text-neutral-500">将当前分支变基到最新的 {targetBranch}</div>
+            <div className="text-xs text-neutral-500">{t('将当前分支变基到最新的 {targetBranch}', { targetBranch })}</div>
           </div>
         </button>
 
@@ -282,9 +286,9 @@ function SelectOperationView({
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-neutral-900">
-              {mergePending ? '合并中...' : '合并 (Merge)'}
+              {mergePending ? t('合并中...') : t('合并 (Merge)')}
             </div>
-            <div className="text-xs text-neutral-500">Squash merge 到 {targetBranch}</div>
+            <div className="text-xs text-neutral-500">{t('Squash merge 到 {targetBranch}', { targetBranch })}</div>
           </div>
         </button>
       </div>
@@ -305,6 +309,7 @@ function MergeConfirmView({
   branchName: string
   targetBranch: string
 }) {
+  const { t } = useI18n()
   return (
     <div className="space-y-4">
       {/* Branch info */}
@@ -317,18 +322,18 @@ function MergeConfirmView({
       {/* Commit message editor */}
       <div>
         <label className="block text-xs font-medium text-neutral-600 mb-1.5">
-          提交消息
+          {t('提交消息')}
         </label>
         <textarea
           value={editableMessage}
           onChange={(e) => setEditableMessage(e.target.value)}
-          placeholder="输入提交消息..."
+          placeholder={t('输入提交消息...')}
           rows={4}
           className="w-full px-3 py-2 rounded-md border border-neutral-200 text-sm font-mono text-neutral-800 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300 resize-none"
         />
         {!editableMessage.trim() && (
           <p className="mt-1 text-xs text-neutral-400">
-            留空将使用默认消息
+            {t('留空将使用默认消息')}
           </p>
         )}
       </div>
@@ -346,7 +351,7 @@ function MergeConfirmView({
           disabled={isPending}
           className="px-4 py-2 rounded-md text-sm text-neutral-600 hover:bg-neutral-100 transition-colors disabled:opacity-50"
         >
-          返回
+          {t('返回')}
         </button>
         <button
           onClick={onConfirm}
@@ -356,12 +361,12 @@ function MergeConfirmView({
           {isPending ? (
             <>
               <Loader2 size={14} className="animate-spin" />
-              合并中...
+              {t('合并中...')}
             </>
           ) : (
             <>
               <GitMerge size={14} />
-              确认合并
+              {t('确认合并')}
             </>
           )}
         </button>

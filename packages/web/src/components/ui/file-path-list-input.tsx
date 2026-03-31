@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { X, Folder, File, FolderPlus, Plus } from 'lucide-react'
 import { apiClient } from '@/lib/api-client'
+import { useI18n } from '@/lib/i18n'
 
 interface CompletionItem {
   name: string
@@ -16,6 +17,7 @@ export interface FilePathListInputProps {
 }
 
 export function FilePathListInput({ value, onChange, repoPath, placeholder }: FilePathListInputProps) {
+  const { t } = useI18n()
   const [input, setInput] = useState('')
   const [completions, setCompletions] = useState<CompletionItem[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
@@ -155,7 +157,7 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             onFocus={() => { if (input && completions.length > 0) setShowDropdown(true) }}
-            placeholder={placeholder ?? '输入文件路径...'}
+            placeholder={placeholder ?? t('输入文件路径...')}
             className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-neutral-300"
           />
           <button
@@ -164,7 +166,7 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
             className="flex items-center gap-1 px-3 py-2 text-sm bg-neutral-900 text-white rounded-lg hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <Plus size={14} />
-            <span>添加</span>
+            <span>{t('添加')}</span>
           </button>
         </div>
 
@@ -191,7 +193,7 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
                   <span
                     onClick={(e) => handleAddDir(item, e)}
                     className="p-0.5 text-neutral-300 hover:text-emerald-600 shrink-0"
-                    title="添加此目录"
+                    title={t('添加此目录')}
                   >
                     <FolderPlus size={14} />
                   </span>

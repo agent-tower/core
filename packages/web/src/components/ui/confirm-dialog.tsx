@@ -2,6 +2,7 @@ import * as React from "react"
 import { AlertTriangle } from "lucide-react"
 import { Modal } from "./modal"
 import { cn } from "@/lib/utils"
+import { useI18n } from "@/lib/i18n"
 
 export interface ConfirmDialogProps {
   isOpen: boolean
@@ -26,6 +27,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   variant = "default",
   isLoading = false,
 }) => {
+  const { t } = useI18n()
   const isDanger = variant === "danger"
 
   return (
@@ -41,7 +43,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             disabled={isLoading}
             className="px-4 py-2 text-sm font-medium text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
           >
-            {cancelText}
+            {t(cancelText)}
           </button>
           <button
             onClick={onConfirm}
@@ -53,7 +55,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
                 : "bg-neutral-900 text-white hover:bg-black"
             )}
           >
-            {isLoading ? "处理中..." : confirmText}
+            {isLoading ? t("处理中...") : t(confirmText)}
           </button>
         </>
       }

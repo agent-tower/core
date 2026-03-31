@@ -4,6 +4,7 @@ import type { VariantConfig } from '@/hooks/use-profiles'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 
 function configSummary(config: VariantConfig): string {
   return Object.entries(config)
@@ -18,6 +19,7 @@ const AGENT_LABELS: Record<string, string> = {
 }
 
 export function ProfileSettingsPage() {
+  const { t } = useI18n()
   const { data: profiles, isLoading } = useProfiles()
   const { data: defaults } = useDefaultProfiles()
   const updateVariant = useUpdateVariant()
@@ -54,12 +56,12 @@ export function ProfileSettingsPage() {
         { onSuccess: () => setEditModal(null) }
       )
     } catch {
-      setJsonError('JSON 格式错误')
+      setJsonError(t('JSON 格式错误'))
     }
   }
 
   const handleDelete = (agentType: string, variant: string) => {
-    if (!confirm(`确定删除 ${agentType} / ${variant}？`)) return
+    if (!confirm(t('确定删除 {agentType} / {variant}？', { agentType, variant }))) return
     deleteVariant.mutate({ agentType, variant })
   }
 
@@ -68,7 +70,7 @@ export function ProfileSettingsPage() {
   }
 
   if (isLoading) {
-    return <div className="p-6 text-sm text-neutral-400">加载中...</div>
+    return <div className="p-6 text-sm text-neutral-400">{t('加载中...')}</div>
   }
 
   const executors = profiles?.executors ?? {}
@@ -87,7 +89,7 @@ export function ProfileSettingsPage() {
               className="flex items-center gap-1 text-xs text-neutral-400 hover:text-neutral-900 transition-colors"
             >
               <Plus size={12} />
-              <span>新增</span>
+              <span>{t('新增')}</span>
             </button>
           </div>
 
@@ -118,7 +120,7 @@ export function ProfileSettingsPage() {
 
                   {/* Built-in indicator */}
                   {builtIn && (
-                    <span className="text-[11px] text-neutral-300 font-medium">内置</span>
+                    <span className="text-[11px] text-neutral-300 font-medium">{t('内置')}</span>
                   )}
 
                   {/* Actions — visible on hover */}
@@ -149,30 +151,32 @@ export function ProfileSettingsPage() {
       <Modal
         isOpen={!!editModal}
         onClose={() => setEditModal(null)}
-        title={editModal?.isNew ? `新增 Variant — ${AGENT_LABELS[editModal.agentType] ?? editModal.agentType}` : `编辑 ${editModal?.variant}`}
+        title={editModal?.isNew
+          ? t('新增 Variant — {agentType}', { agentType: AGENT_LABELS[editModal.agentType] ?? editModal.agentType })
+          : t('编辑 {variant}', { variant: editModal?.variant ?? '' })}
         action={
           <>
-            <Button variant="outline" onClick={() => setEditModal(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setEditModal(null)}>{t('取消')}</Button>
             <Button onClick={handleSave} disabled={updateVariant.isPending}>
-              {updateVariant.isPending ? '保存中...' : '保存'}
+              {updateVariant.isPending ? t('保存中...') : t('保存')}
             </Button>
           </>
         }
       >
         <div className="space-y-4">
           <div>
-            <label className="block text-[13px] font-medium text-neutral-700 mb-1">Variant 名称</label>
+            <label className="block text-[13px] font-medium text-neutral-700 mb-1">{t('Variant 名称')}</label>
             <input
               type="text"
               value={editVariantName}
               onChange={e => setEditVariantName(e.target.value)}
               disabled={!editModal?.isNew}
-              placeholder="例如: CUSTOM"
+              placeholder={t('例如: CUSTOM')}
               className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-neutral-300 disabled:bg-neutral-50 disabled:text-neutral-500 font-mono"
             />
           </div>
           <div>
-            <label className="block text-[13px] font-medium text-neutral-700 mb-1">配置 (JSON)</label>
+            <label className="block text-[13px] font-medium text-neutral-700 mb-1">{t('配置 (JSON)')}</label>
             <textarea
               value={editJson}
               onChange={e => { setEditJson(e.target.value); setJsonError('') }}

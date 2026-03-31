@@ -1,7 +1,9 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Cpu, Bell, FolderGit2 } from 'lucide-react'
+import { ArrowLeft, Cpu, Bell, FolderGit2, Languages } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 
 const NAV_ITEMS = [
+  { to: '/settings/general', label: '通用', icon: Languages },
   { to: '/settings/agents', label: 'Agent 配置', icon: Cpu },
   { to: '/settings/projects', label: '项目配置', icon: FolderGit2 },
   { to: '/settings/notifications', label: '通知', icon: Bell },
@@ -24,6 +26,7 @@ const LOGO_ICON = (
 
 export function SettingsLayout() {
   const navigate = useNavigate()
+  const { t } = useI18n()
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -33,14 +36,14 @@ export function SettingsLayout() {
           {LOGO_ICON}
           <span className="text-sm font-bold tracking-tight text-neutral-900">Agent Tower</span>
           <span className="text-neutral-200 text-sm">/</span>
-          <span className="text-sm text-neutral-500">设置</span>
+          <span className="text-sm text-neutral-500">{t('设置')}</span>
         </div>
         <button
           onClick={() => navigate('/')}
           className="flex items-center gap-1.5 text-xs text-neutral-400 hover:text-neutral-900 transition-colors"
         >
           <ArrowLeft size={14} />
-          <span>返回</span>
+          <span>{t('返回')}</span>
         </button>
       </header>
 
@@ -61,7 +64,7 @@ export function SettingsLayout() {
               }
             >
               <item.icon size={14} />
-              <span>{item.label}</span>
+              <span>{t(item.label)}</span>
             </NavLink>
           ))}
         </nav>

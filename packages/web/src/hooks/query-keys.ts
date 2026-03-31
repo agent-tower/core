@@ -73,6 +73,10 @@ export const queryKeys = {
     settings: ['notifications', 'settings'] as const,
   },
 
+  appSettings: {
+    detail: ['app-settings'] as const,
+  },
+
   system: {
     cursorAgentModels: ['system', 'cursor-agent-models'] as const,
   },

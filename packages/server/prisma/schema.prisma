@@ -118,6 +118,12 @@ model Attachment {
   @@index([hash])
 }
 
+// 应用设置 (单例，只有一行)
+model AppSettings {
+  id     String @id @default("singleton")
+  locale String?
+}
+
 // 通知配置 (单例，只有一行)
 // thirdPartyChannel: none, feishu
 model NotificationSettings {
