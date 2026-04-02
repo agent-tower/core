@@ -6,7 +6,6 @@ import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { FileTree } from './FileTree'
 import { useFileContent, useSaveFile } from '@/hooks/use-files'
-import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
 
 const IMAGE_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'avif',
@@ -31,10 +30,6 @@ type OpenTab = {
 function buildImageUrl(workingDir: string, filePath: string) {
   const base = import.meta.env.VITE_API_URL || '/api'
   const params = new URLSearchParams({ workingDir, path: filePath })
-  if (isTunnelAccess()) {
-    const token = getTunnelToken()
-    if (token) params.set('token', token)
-  }
   return `${base}/files/image?${params.toString()}`
 }
 

@@ -2,13 +2,20 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import { initTunnelToken } from './lib/tunnel-token'
+import { bootstrapTunnelSession } from './lib/tunnel-session'
 
-// 从 URL 提取隧道 token（如有），必须在 React 渲染前执行
-initTunnelToken()
+async function start() {
+  try {
+    await bootstrapTunnelSession()
+  } catch (error) {
+    console.error('[Tunnel] Failed to bootstrap tunnel session', error)
+  }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  )
+}
+
+void start()

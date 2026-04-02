@@ -16,6 +16,9 @@ export async function tunnelRoutes(app: FastifyInstance) {
     };
   });
 
+  // 前端启动时用 query token 换取 session cookie（主要覆盖 dev + Vite 首页）
+  app.post('/tunnel/bootstrap', async () => ({ ok: true }));
+
   // 启动隧道
   app.post<{ Body: { port?: number } }>('/tunnel/start', async (request, reply) => {
     try {

@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@agent-tower/shared/log-adapter': path.resolve(__dirname, 'packages/shared/src/log-adapter.ts'),
+      '@agent-tower/shared/socket': path.resolve(__dirname, 'packages/shared/src/socket/index.ts'),
       '@agent-tower/shared': path.resolve(__dirname, 'packages/shared/src/index.ts'),
     },
   },

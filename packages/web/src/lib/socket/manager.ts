@@ -1,6 +1,5 @@
 import { io, Socket } from 'socket.io-client'
 import { NAMESPACE, ServerEvents } from '@agent-tower/shared/socket'
-import { getTunnelToken, isTunnelAccess } from '../tunnel-token'
 
 // Debug 日志开关
 const DEBUG_SOCKET = import.meta.env.DEV;
@@ -24,14 +23,7 @@ class SocketManager {
    */
   getSocket(): Socket {
     if (!this.socket) {
-      const auth: Record<string, string> = {}
-      if (isTunnelAccess()) {
-        const token = getTunnelToken()
-        if (token) auth.token = token
-      }
-
       this.socket = io(`${this.baseUrl}${NAMESPACE}`, {
-        auth,
         autoConnect: false,
         transports: ['websocket'],  // 跳过 polling，直接用 WebSocket
         reconnection: true,

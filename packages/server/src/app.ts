@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import fastifyCookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
@@ -23,6 +24,8 @@ export async function buildApp() {
   await app.register(cors, {
     origin: true,
   });
+
+  await app.register(fastifyCookie);
 
   await app.register(multipart, {
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB

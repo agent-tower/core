@@ -1,17 +1,7 @@
 import { X, FileText, Image, Loader2 } from 'lucide-react'
 import type { PendingAttachment } from '@/hooks/use-attachments'
-import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
-
-/** 给 URL 追加隧道 token（如果处于隧道模式） */
-function withToken(url: string): string {
-  if (!isTunnelAccess()) return url
-  const token = getTunnelToken()
-  if (!token) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}token=${encodeURIComponent(token)}`
-}
 
 interface AttachmentPreviewProps {
   files: PendingAttachment[]
@@ -52,7 +42,7 @@ function AttachmentItem({ item, onRemove }: { item: PendingAttachment; onRemove:
       {/* 图标/缩略图 */}
       {isImage && item.status === 'done' && item.attachment ? (
         <img
-          src={withToken(`${API_BASE_URL}${item.attachment.url}`)}
+          src={`${API_BASE_URL}${item.attachment.url}`}
           alt={item.file.name}
           className="w-8 h-8 rounded object-cover flex-shrink-0"
         />

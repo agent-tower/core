@@ -1,5 +1,9 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { TunnelService } from '../services/tunnel.service.js';
+import {
+  TUNNEL_SESSION_COOKIE_NAME,
+  TUNNEL_SESSION_COOKIE_OPTIONS,
+} from '../utils/tunnel-cookie.js';
 
 /**
  * 判断请求是否来自 Cloudflare 隧道
@@ -10,17 +14,26 @@ function isTunnelRequest(request: FastifyRequest): boolean {
 }
 
 /**
- * 从请求中提取 token
- * 支持 Authorization: Bearer <token> 和 ?token=<token> 两种方式
+ * 从请求 query 中提取 bootstrap token
  */
-function extractToken(request: FastifyRequest): string | null {
-  const authHeader = request.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) {
-    return authHeader.slice(7);
-  }
-
+function extractBootstrapToken(request: FastifyRequest): string | null {
   const query = request.query as Record<string, string>;
   return query?.token ?? null;
+}
+
+function isDocumentRequest(request: FastifyRequest): boolean {
+  const accept = request.headers.accept;
+  return request.method === 'GET'
+    && (
+      request.headers['sec-fetch-dest'] === 'document'
+      || (typeof accept === 'string' && accept.includes('text/html'))
+    );
+}
+
+function buildCleanUrl(request: FastifyRequest): string {
+  const clean = new URL(request.url, 'http://localhost');
+  clean.searchParams.delete('token');
+  return `${clean.pathname}${clean.search}`;
 }
 
 /**
@@ -38,13 +51,37 @@ export async function tunnelAuthHook(
   const url = request.url;
   if (url.startsWith('/assets/') || url === '/vite.svg' || url === '/favicon.ico') return;
 
-  const token = extractToken(request);
-  if (!token || !TunnelService.validateToken(token)) {
+  const sessionToken = request.cookies[TUNNEL_SESSION_COOKIE_NAME];
+  if (sessionToken && TunnelService.validateToken(sessionToken)) {
+    return;
+  }
+
+  const bootstrapToken = extractBootstrapToken(request);
+  if (bootstrapToken && TunnelService.validateToken(bootstrapToken)) {
+    reply.setCookie(
+      TUNNEL_SESSION_COOKIE_NAME,
+      bootstrapToken,
+      TUNNEL_SESSION_COOKIE_OPTIONS,
+    );
+
+    if (isDocumentRequest(request)) {
+      reply.redirect(buildCleanUrl(request), 302);
+    }
+    return;
+  }
+
+  if (!sessionToken) {
     reply.code(401).send({
       error: 'Unauthorized',
       message: 'Valid tunnel token required',
     });
+    return;
   }
+
+  reply.code(401).send({
+    error: 'Unauthorized',
+    message: 'Valid tunnel token required',
+  });
 }
 
 export { isTunnelRequest };

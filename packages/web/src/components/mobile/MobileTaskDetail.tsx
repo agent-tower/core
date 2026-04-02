@@ -29,20 +29,10 @@ import { useSlashCommandMenu } from '@/components/task/useSlashCommandMenu'
 import { useSkillMentionMenu } from '@/components/task/useSkillMentionMenu'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
-import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
 import { useI18n } from '@/lib/i18n'
 import 'streamdown/styles.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
-
-/** 给 URL 追加隧道 token（如果处于隧道模式） */
-function withToken(url: string): string {
-  if (!isTunnelAccess()) return url
-  const token = getTunnelToken()
-  if (!token) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}token=${encodeURIComponent(token)}`
-}
 
 /**
  * 将磁盘绝对路径转换为 HTTP URL，使浏览器能显示附件图片。
@@ -51,7 +41,7 @@ const attachmentUrlTransform: UrlTransform = (url) => {
   if (url.includes('://')) return url
   if (url.startsWith('/api/')) return url
   if (url.startsWith('/')) {
-    return withToken(`${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`)
+    return `${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`
   }
   return url
 }

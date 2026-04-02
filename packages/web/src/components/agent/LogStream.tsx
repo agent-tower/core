@@ -3,7 +3,6 @@ import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
-import { isTunnelAccess, getTunnelToken } from '@/lib/tunnel-token'
 import 'streamdown/styles.css'
 
 interface LogStreamProps {
@@ -75,19 +74,9 @@ function groupConsecutiveTools(logs: LogEntry[]): RenderItem[] {
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
-/** 给 URL 追加隧道 token（如果处于隧道模式） */
-function withToken(url: string): string {
-  if (!isTunnelAccess()) return url
-  const token = getTunnelToken()
-  if (!token) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}token=${encodeURIComponent(token)}`
-}
-
 /**
  * 将磁盘绝对路径转换为 HTTP URL，使浏览器能显示附件图片。
  * 转换逻辑：排除 HTTP URL 和 API 路径，将绝对路径转为 /api/attachments/by-path?path=... 请求。
- * 隧道模式下自动追加 token。
  */
 const attachmentUrlTransform: UrlTransform = (url) => {
   // 1. 如果是 HTTP/HTTPS URL，直接返回
@@ -102,7 +91,7 @@ const attachmentUrlTransform: UrlTransform = (url) => {
 
   // 3. 如果是绝对路径（以 / 开头），转换为 HTTP URL
   if (url.startsWith('/')) {
-    return withToken(`${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`)
+    return `${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`
   }
 
   // 4. 相对路径保持原样
