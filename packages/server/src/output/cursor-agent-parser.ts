@@ -265,6 +265,29 @@ interface CursorJsonResult {
   session_id?: string
 }
 
+interface CursorJsonInteractionQuery {
+  type: 'interaction_query'
+  subtype: 'request' | 'response' | string
+  query_type: string
+  query?: {
+    id: number
+    webSearchRequestQuery?: {
+      args: { searchTerm: string; toolCallId: string }
+    }
+    webFetchRequestQuery?: {
+      args: { url: string; toolCallId: string }
+      skipApproval?: boolean
+    }
+    [key: string]: unknown
+  }
+  response?: {
+    id: number
+    [key: string]: unknown
+  }
+  session_id?: string
+  timestamp_ms?: number
+}
+
 type CursorJsonMessage =
   | CursorJsonSystem
   | CursorJsonUser
@@ -274,6 +297,7 @@ type CursorJsonMessage =
   | CursorJsonRetry
   | CursorJsonToolCall
   | CursorJsonResult
+  | CursorJsonInteractionQuery
   | { type: string; [key: string]: unknown } // Unknown
 
 // ============ 工具调用解析辅助函数 ============
@@ -291,6 +315,8 @@ const TOOL_KEY_MAP: Record<string, string> = {
   deleteToolCall: 'delete',
   updateTodosToolCall: 'todo',
   mcpToolCall: 'mcp',
+  webSearchToolCall: 'web_search',
+  webFetchToolCall: 'web_fetch',
 };
 
 /**
@@ -363,6 +389,8 @@ function toolNameToAction(toolName: string): ActionType {
     ls: 'other',
     todo: 'todo_management',
     mcp: 'tool',
+    web_search: 'search',
+    web_fetch: 'web_fetch',
   };
   return mapping[toolName] || 'tool';
 }
@@ -418,6 +446,10 @@ function getToolCallContent(toolCall: CursorToolCall, worktreePath: string): str
       return 'TODO list updated';
     case 'mcp':
       return String(args.toolName || args.name || 'mcp');
+    case 'web_search':
+      return String(args.searchTerm || 'search query');
+    case 'web_fetch':
+      return String(args.url || 'url');
     default:
       return name;
   }
@@ -624,6 +656,10 @@ export class CursorAgentParser {
       case 'retry':
         this.handleRetry(msg as CursorJsonRetry);
         break;
+      case 'interaction_query':
+        this.clearRetryState();
+        this.handleInteractionQuery(msg as CursorJsonInteractionQuery);
+        break;
       case 'tool_call':
         this.clearRetryState();
         this.handleToolCall(msg as CursorJsonToolCall);
@@ -656,12 +692,9 @@ export class CursorAgentParser {
         break
       }
       default:
-        // 未知类型 - 作为系统消息输出
-        {
-          const entry = createSystemMessage(rawLine);
-          const index = this.indexProvider.next();
-          const patch = addNormalizedEntry(index, entry);
-          this.msgStore.pushPatch(patch);
+        // 未知类型 - 静默丢弃，避免将原始 JSON 暴露到对话界面
+        if (DEBUG_PARSER) {
+          console.log(`[CursorAgentParser] Unknown message type: ${(msg as { type?: string }).type ?? '(no type)'}`);
         }
         break;
     }
@@ -769,6 +802,49 @@ export class CursorAgentParser {
       this.msgStore.pushPatch(patch);
       this.lastThinkingIndex = index;
     }
+  }
+
+  /**
+   * 处理 interaction_query 消息
+   * cursor-agent 通过此事件发起 web_search / web_fetch 等需要宿主审批的工具调用。
+   * - request 子类型：作为 tool_use "started" 入库，注册 toolCallId → index 映射
+   * - response 子类型：noop（审批结果已在后续 tool_call/completed 中体现）
+   */
+  private handleInteractionQuery(msg: CursorJsonInteractionQuery): void {
+    if (msg.subtype !== 'request' || !msg.query) return;
+
+    const { query } = msg;
+
+    let toolName: string;
+    let content: string;
+    let toolCallId: string | undefined;
+
+    if (query.webSearchRequestQuery) {
+      toolName = 'web_search';
+      content = query.webSearchRequestQuery.args.searchTerm || 'search query';
+      toolCallId = query.webSearchRequestQuery.args.toolCallId;
+    } else if (query.webFetchRequestQuery) {
+      toolName = 'web_fetch';
+      content = query.webFetchRequestQuery.args.url || 'url';
+      toolCallId = query.webFetchRequestQuery.args.toolCallId;
+    } else {
+      // 未知的 interaction_query 子类型 — 静默丢弃
+      if (DEBUG_PARSER) {
+        console.log(`[CursorAgentParser] Unknown interaction_query query_type: ${msg.query_type}`);
+      }
+      return;
+    }
+
+    const action = toolNameToAction(toolName);
+    const entry = createToolUse(toolName, content, action, toolCallId);
+    const index = this.indexProvider.next();
+
+    if (toolCallId) {
+      this.callIndexMap.set(toolCallId, index);
+    }
+
+    const patch = addNormalizedEntry(index, entry);
+    this.msgStore.pushPatch(patch);
   }
 
   /**
