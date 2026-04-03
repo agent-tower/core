@@ -149,8 +149,7 @@ const publishPkg = {
 writeFileSync(resolve(publishDir, 'package.json'), JSON.stringify(publishPkg, null, 2) + '\n');
 
 // 7. 在 cli.ts 中设置 AGENT_TOWER_WEB_DIR 指向 dist/web
-// cli.ts 已经设置 NODE_ENV=production，app.ts 会读取 AGENT_TOWER_WEB_DIR
-// 需要在 cli.ts 的 env 设置中加入 web dir
+// app.ts 只在显式设置 AGENT_TOWER_WEB_DIR 时托管前端静态文件
 // 实际上 cli.ts 中 __dirname = dist/，web 在 dist/web/，所以 app.ts 中用 'web' 相对路径即可
 // 我们在 cli.ts 中设置 AGENT_TOWER_WEB_DIR=web（相对于 __dirname）
 

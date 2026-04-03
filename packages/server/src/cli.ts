@@ -113,7 +113,6 @@ async function main() {
   process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
   process.env.AGENT_TOWER_DATA_DIR = dataDir;
   process.env.AGENT_TOWER_WEB_DIR = 'web'; // 相对于 __dirname (dist/)，即 dist/web/
-  process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 
   // 初始化数据库
   const schemaPath = path.resolve(__dirname, '../prisma/schema.prisma');

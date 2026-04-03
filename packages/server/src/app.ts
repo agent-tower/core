@@ -37,12 +37,11 @@ export async function buildApp() {
   // 注册路由
   await registerRoutes(app);
 
-  // 生产模式：托管前端静态文件
-  if (process.env.NODE_ENV === 'production') {
-    // npm 发布包: dist/web/  |  monorepo 开发: ../../web/dist
+  // 显式指定前端构建目录时，托管静态文件
+  if (process.env.AGENT_TOWER_WEB_DIR) {
     const webDistPath = path.resolve(
       __dirname,
-      process.env.AGENT_TOWER_WEB_DIR || '../../web/dist',
+      process.env.AGENT_TOWER_WEB_DIR,
     );
     await app.register(fastifyStatic, {
       root: webDistPath,
