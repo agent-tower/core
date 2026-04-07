@@ -150,15 +150,39 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
       return candidates.sort((a, b) => getSessionTime(b) - getSessionTime(a))[0] ?? null
     }
 
-    return (
+    const activeResult = (
       pickLatest([SessionStatus.RUNNING]) ??
       pickLatest([SessionStatus.PENDING]) ??
       pickLatest([SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED])
     )
+
+    if (activeResult) return activeResult
+
+    const historySessions: Session[] = workspaces
+      .filter((ws) => (ws.status === 'ABANDONED' || ws.status === 'MERGED') && Array.isArray(ws.sessions))
+      .flatMap((ws) => ws.sessions ?? [])
+
+    const historyCandidates = historySessions.filter((session) =>
+      [SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED].includes(session.status)
+    )
+    if (historyCandidates.length === 0) return null
+    return historyCandidates.sort((a, b) => getSessionTime(b) - getSessionTime(a))[0] ?? null
   }, [workspaces])
 
   const sessionId = activeSession?.id ?? ''
   const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
+  const isProjectReadOnly = Boolean(task.projectArchivedAt)
+  const isProjectRepoDeleted = Boolean(task.projectRepoDeletedAt)
+  const projectReadOnlyMessage = isProjectRepoDeleted
+    ? t('项目已删除，本地仓库文件也已清理。恢复项目并重新绑定仓库后才能继续操作。')
+    : t('项目已删除。恢复项目后才能继续创建会话或修改任务。')
+  const isReadOnlySession = useMemo(() => {
+    if (!activeSession || !workspaces) return false
+    const hasActiveWorkspace = workspaces.some((workspace) =>
+      workspace.status === 'ACTIVE' && workspace.sessions?.some((session) => session.id === activeSession.id)
+    )
+    return !hasActiveWorkspace
+  }, [activeSession, workspaces])
 
   // ============ Provider Info ============
 
@@ -420,6 +444,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
             <h1 className="text-[13px] font-bold text-neutral-900 truncate leading-tight">{task.title}</h1>
             <div className="flex items-center gap-1 text-[11px] text-neutral-500 leading-tight">
               <span className={`font-medium ${task.projectColor}`}>{task.projectName}</span>
+              {task.projectArchivedAt && (
+                <span className="rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500">
+                  {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
+                </span>
+              )}
               <span className="text-neutral-300">/</span>
               <span className="font-mono truncate">{task.branch}</span>
             </div>
@@ -427,12 +456,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           <StatusDot status={task.status} />
           <button
             onClick={handleOpenInIde}
-            disabled={!activeWorkspaceId}
+            disabled={!activeWorkspaceId || isProjectReadOnly}
             className="p-1.5 text-neutral-400 active:text-neutral-900 disabled:opacity-30"
           >
             <Code2 size={16} />
           </button>
-          {onDeleteTask && (
+          {onDeleteTask && !isProjectReadOnly && (
             <div className="relative" ref={moreMenuRef}>
               <button
                 onClick={() => setIsMoreMenuOpen(v => !v)}
@@ -518,12 +547,14 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                 </div>
                 <h3 className="text-sm font-medium text-neutral-900 mb-1">{t('尚未启动 Agent')}</h3>
                 <p className="text-xs text-neutral-500 mb-5 max-w-[240px]">
-                  {t('选择一个 Agent 来执行此任务')}
+                  {isProjectReadOnly ? projectReadOnlyMessage : t('选择一个 Agent 来执行此任务')}
                 </p>
-                <Button onClick={() => setIsStartDialogOpen(true)}>
-                  <Play size={16} className="mr-1.5" />
-                  {t('启动 Agent')}
-                </Button>
+                {!isProjectReadOnly && (
+                  <Button onClick={() => setIsStartDialogOpen(true)}>
+                    <Play size={16} className="mr-1.5" />
+                    {t('启动 Agent')}
+                  </Button>
+                )}
               </div>
             )}
             </div>
@@ -550,7 +581,23 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           )}
 
           {/* Input Area */}
-          {sessionId && (
+          {isProjectReadOnly ? (
+            <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
+              <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
+                {projectReadOnlyMessage}
+              </div>
+            </div>
+          ) : isReadOnlySession ? (
+            <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
+                <span className="text-xs text-neutral-500">{t('代码已合并，以上为历史沟通记录')}</span>
+                <Button size="sm" onClick={() => setIsStartDialogOpen(true)}>
+                  <Play size={14} className="mr-1.5" />
+                  {t('启动新 Agent')}
+                </Button>
+              </div>
+            </div>
+          ) : sessionId && (
             <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
               <div
                 ref={inputContainerRef}
@@ -670,18 +717,28 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
       {activeTab === 'workspace' && (
         <div className="flex-1 overflow-hidden">
-          <WorkspacePanel sessionId={sessionId || undefined} workingDir={workingDir} projectId={task.projectId} className="h-full" hideChanges />
+          <WorkspacePanel
+            sessionId={sessionId || undefined}
+            workingDir={workingDir}
+            projectId={task.projectId}
+            className="h-full"
+            hideChanges
+            readOnly={isProjectReadOnly}
+            repoDeleted={isProjectRepoDeleted}
+          />
         </div>
       )}
 
       {/* Start Agent Dialog */}
-      <StartAgentDialog
-        isOpen={isStartDialogOpen}
-        onClose={() => setIsStartDialogOpen(false)}
-        taskId={task.id}
-        taskTitle={task.title}
-        taskDescription={task.description}
-      />
+      {!isProjectReadOnly && (
+        <StartAgentDialog
+          isOpen={isStartDialogOpen}
+          onClose={() => setIsStartDialogOpen(false)}
+          taskId={task.id}
+          taskTitle={task.title}
+          taskDescription={task.description}
+        />
+      )}
 
       {/* Delete Confirm Dialog */}
       <ConfirmDialog

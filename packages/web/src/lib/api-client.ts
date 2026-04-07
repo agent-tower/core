@@ -35,6 +35,10 @@ class ApiClient {
       throw new ApiError(response.status, error.message || error.error || 'Request failed')
     }
 
+    if (response.status === 204) {
+      return undefined as T
+    }
+
     return response.json()
   }
 

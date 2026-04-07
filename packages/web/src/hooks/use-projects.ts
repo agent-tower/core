@@ -25,6 +25,7 @@ interface ProjectDetail extends Project {
 interface ListProjectsParams {
   page?: number
   limit?: number
+  includeArchived?: boolean
 }
 
 interface CreateProjectInput {
@@ -44,6 +45,21 @@ interface UpdateProjectInput {
   quickCommands?: string | null
 }
 
+interface ArchiveProjectInput {
+  id: string
+  deleteRepo?: boolean
+}
+
+interface RestoreProjectInput {
+  id: string
+  repoPath?: string
+}
+
+export interface RestoreProjectResponse {
+  project: Project
+  warnings: string[]
+}
+
 // ============ Query Hooks ============
 
 /**
@@ -54,6 +70,7 @@ export function useProjects(options?: ListProjectsParams) {
   const params: Record<string, string> = {}
   if (options?.page != null) params.page = String(options.page)
   if (options?.limit != null) params.limit = String(options.limit)
+  if (options?.includeArchived) params.includeArchived = 'true'
 
   return useQuery({
     queryKey: queryKeys.projects.list(options as Record<string, unknown> | undefined),
@@ -122,6 +139,40 @@ export function useDeleteProject() {
     mutationFn: (id: string) => apiClient.delete<void>(`/projects/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
+    },
+  })
+}
+
+export function useArchiveProject() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ id, deleteRepo }: ArchiveProjectInput) =>
+      apiClient.post<Project>(`/projects/${id}/archive`, { deleteRepo: deleteRepo ?? false }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(variables.id),
+      })
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+    },
+  })
+}
+
+export function useRestoreProject() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ id, repoPath }: RestoreProjectInput) =>
+      apiClient.post<RestoreProjectResponse>(`/projects/${id}/restore`, repoPath ? { repoPath } : {}),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(variables.id),
+      })
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
     },
   })
 }

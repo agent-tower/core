@@ -25,6 +25,18 @@ const updateProjectSchema = z.object({
 const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
+  includeArchived: z
+    .union([z.literal('true'), z.literal('false'), z.boolean()])
+    .optional()
+    .transform((value) => value === true || value === 'true'),
+});
+
+const archiveProjectSchema = z.object({
+  deleteRepo: z.boolean().optional().default(false),
+});
+
+const restoreProjectSchema = z.object({
+  repoPath: z.string().min(1).optional(),
 });
 
 /**
@@ -94,7 +106,27 @@ export async function projectRoutes(app: FastifyInstance) {
     }
   });
 
-  // 删除项目
+  // 归档项目（软删除）
+  app.post<{ Params: { id: string } }>('/:id/archive', async (request, reply) => {
+    try {
+      const body = archiveProjectSchema.parse(request.body ?? {});
+      return await projectService.archive(request.params.id, body);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  // 恢复项目
+  app.post<{ Params: { id: string } }>('/:id/restore', async (request, reply) => {
+    try {
+      const body = restoreProjectSchema.parse(request.body ?? {});
+      return await projectService.restore(request.params.id, body);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  // 删除项目（兼容旧语义，实际执行归档）
   app.delete<{ Params: { id: string } }>('/:id', async (request, reply) => {
     try {
       await projectService.delete(request.params.id);

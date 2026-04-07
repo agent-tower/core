@@ -6,6 +6,26 @@ import { sessionMsgStoreManager } from '../output/index.js';
 import { prisma } from '../utils/index.js';
 import { getProviderById } from '../executors/index.js';
 
+function buildProjectReadOnlyError(project: {
+  name: string;
+  archivedAt: Date | null;
+  repoDeletedAt: Date | null;
+}) {
+  if (!project.archivedAt) return null;
+
+  if (project.repoDeletedAt) {
+    return {
+      error: `Project "${project.name}" is archived and its local repository files were deleted. Restore it with a valid repoPath before continuing.`,
+      code: 'PROJECT_ARCHIVED',
+    };
+  }
+
+  return {
+    error: `Project "${project.name}" is archived. Restore it before continuing.`,
+    code: 'PROJECT_ARCHIVED',
+  };
+}
+
 /**
  * Parse tokenUsage JSON string on a session object (or nested sessions).
  * Mutates in-place for convenience; returns the same reference.
@@ -41,6 +61,20 @@ export async function sessionRoutes(app: FastifyInstance) {
     '/workspaces/:workspaceId/sessions',
     async (request, reply) => {
       const body = createSessionSchema.parse(request.body);
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: request.params.workspaceId },
+        include: { task: { include: { project: true } } },
+      });
+      if (!workspace) {
+        reply.code(404);
+        return { error: 'Workspace not found', code: 'NOT_FOUND' };
+      }
+
+      const projectError = buildProjectReadOnlyError(workspace.task.project);
+      if (projectError) {
+        reply.code(400);
+        return projectError;
+      }
 
       // 如果提供了 providerId，从 provider 推导 agentType
       let agentType: AgentType;
@@ -87,6 +121,21 @@ export async function sessionRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     '/sessions/:id/start',
     async (request, reply) => {
+      const existing = await prisma.session.findUnique({
+        where: { id: request.params.id },
+        include: { workspace: { include: { task: { include: { project: true } } } } },
+      });
+      if (!existing) {
+        reply.code(404);
+        return { error: 'Session not found' };
+      }
+
+      const projectError = buildProjectReadOnlyError(existing.workspace.task.project);
+      if (projectError) {
+        reply.code(400);
+        return projectError;
+      }
+
       const result = await sessionService.start(request.params.id);
       if (!result) {
         reply.code(404);
@@ -115,6 +164,21 @@ export async function sessionRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = sendMessageSchema.parse(request.body);
       try {
+        const existing = await prisma.session.findUnique({
+          where: { id: request.params.id },
+          include: { workspace: { include: { task: { include: { project: true } } } } },
+        });
+        if (!existing) {
+          reply.code(404);
+          return { error: 'Session not found' };
+        }
+
+        const projectError = buildProjectReadOnlyError(existing.workspace.task.project);
+        if (projectError) {
+          reply.code(400);
+          return projectError;
+        }
+
         const result = await sessionService.sendMessage(
           request.params.id,
           body.message,

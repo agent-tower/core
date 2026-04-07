@@ -127,6 +127,8 @@ export interface Project {
   description?: string
   /** 仓库路径 (对应 Prisma repoPath) */
   repoPath: string
+  /** origin remote URL（如果可用） */
+  repoRemoteUrl?: string | null
   /** 主分支名称，默认 "main" */
   mainBranch: string
   /** 逗号分隔的 glob/路径列表，worktree 创建后自动复制 */
@@ -135,6 +137,8 @@ export interface Project {
   setupScript?: string | null
   /** JSON 字符串: QuickCommand[]，终端快捷命令 */
   quickCommands?: string | null
+  archivedAt?: string | null
+  repoDeletedAt?: string | null
   createdAt?: string
   updatedAt?: string
 }

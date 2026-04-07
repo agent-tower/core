@@ -97,6 +97,7 @@ export function TaskList({
     const toStatus = over.data.current?.status as UITaskStatus | undefined
 
     if (!task || !fromStatus || !toStatus) return
+    if (task.projectArchivedAt) return
     if (fromStatus === toStatus) return
 
     onTaskStatusChange?.(task.id, toStatus)
@@ -110,6 +111,9 @@ export function TaskList({
   const currentProject = filterProjectId
     ? projects.find(p => p.id === filterProjectId) ?? null
     : null
+  const activeProjects = projects.filter(p => !p.archivedAt)
+  const isCurrentProjectArchived = Boolean(currentProject?.archivedAt)
+  const canCreateTask = !isCurrentProjectArchived
 
   // 单次遍历分组
   const grouped = groupTasksByStatus(filteredTasks)
@@ -174,7 +178,7 @@ export function TaskList({
 
                 <div className="h-px bg-neutral-100 my-1 mx-2" />
 
-                {projects.map(p => {
+                {activeProjects.map(p => {
                   const isActive = filterProjectId === p.id
                   const bgClass = p.color.replace('text-', 'bg-')
 
@@ -212,8 +216,9 @@ export function TaskList({
 
         <button
           onClick={onCreateTask}
-          className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors flex-shrink-0"
-          title={t('New Task')}
+          disabled={!canCreateTask}
+          className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors flex-shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
+          title={canCreateTask ? t('New Task') : t('Deleted projects are read-only')}
         >
           <Plus size={18} />
         </button>

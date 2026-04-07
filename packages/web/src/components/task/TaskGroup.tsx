@@ -54,19 +54,22 @@ function DraggableTaskCard({
   onDeleteTask?: (taskId: string) => void
 }) {
   const { t } = useI18n()
+  const isTaskReadOnly = Boolean(task.projectArchivedAt)
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
     data: { task, fromStatus: status },
+    disabled: isTaskReadOnly,
   })
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    if (isTaskReadOnly) return
     if (!onTaskStatusChange && !onDeleteTask) return
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY })
-  }, [onTaskStatusChange, onDeleteTask])
+  }, [isTaskReadOnly, onTaskStatusChange, onDeleteTask])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -89,8 +92,8 @@ function DraggableTaskCard({
             ? 'bg-neutral-100 border-neutral-800'
             : 'border-transparent hover:bg-neutral-50 hover:border-neutral-200'
           }`}
-        {...listeners}
-        {...attributes}
+        {...(isTaskReadOnly ? {} : listeners)}
+        {...(isTaskReadOnly ? {} : attributes)}
       >
         <div className={`mt-0.5 mr-3 flex-shrink-0 ${status === UITaskStatus.Running ? 'text-blue-600' : 'text-neutral-500'}`}>
           {status === UITaskStatus.Review && <IconReview className={isSelected ? "text-amber-600" : "text-neutral-500"} />}
@@ -109,6 +112,11 @@ function DraggableTaskCard({
             <span className={`ml-1 ${isSelected ? 'text-neutral-900' : 'text-neutral-700'}`}>
               {task.title}
             </span>
+            {task.projectArchivedAt && (
+              <span className="ml-1.5 inline-flex items-center rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500">
+                {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
+              </span>
+            )}
             {isAgentActive && (
               <span className="relative inline-flex h-2 w-2 ml-1.5 align-middle">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -264,8 +272,8 @@ export const TaskGroup = memo(function TaskGroup({
                   isAgentActive={isAgentActive}
                   project={project}
                   onSelectTask={onSelectTask}
-                  onTaskStatusChange={onTaskStatusChange}
-                  onDeleteTask={onDeleteTask}
+                  onTaskStatusChange={task.projectArchivedAt ? undefined : onTaskStatusChange}
+                  onDeleteTask={task.projectArchivedAt ? undefined : onDeleteTask}
                 />
               )
             })

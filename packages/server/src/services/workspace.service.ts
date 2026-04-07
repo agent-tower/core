@@ -9,6 +9,7 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { EventBus } from '../core/event-bus.js';
 import type { GitOperationStatus } from '@agent-tower/shared';
+import { ensureProjectIsMutable } from './project-guards.js';
 
 const execAsync = promisify(exec);
 
@@ -71,6 +72,7 @@ export class WorkspaceService {
     if (!task) {
       throw new NotFoundError('Task', taskId);
     }
+    ensureProjectIsMutable(task.project, 'create workspaces');
 
     const worktreeManager = new WorktreeManager(task.project.repoPath);
 
@@ -168,6 +170,7 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
+    ensureProjectIsMutable(workspace.task.project, 'delete workspaces');
 
     // 停止所有活跃的 Session（RUNNING 和 PENDING 状态）
     const activeSessions = workspace.sessions.filter(
@@ -208,6 +211,7 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
+    ensureProjectIsMutable(workspace.task.project, 'rebase workspaces');
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     return worktreeManager.getDiff(
@@ -232,6 +236,7 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
+    ensureProjectIsMutable(workspace.task.project, 'abort workspace git operations');
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     await worktreeManager.rebase(
@@ -294,6 +299,7 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
+    ensureProjectIsMutable(workspace.task.project, 'merge workspaces');
 
     // 优先使用传入的 commitMessage，其次使用 AI 生成的缓存
     const message = commitMessage || workspace.commitMessage || undefined;
@@ -336,12 +342,13 @@ export class WorkspaceService {
   async archive(id: string) {
     const workspace = await prisma.workspace.findUnique({
       where: { id },
-      include: { sessions: true },
+      include: { sessions: true, task: { include: { project: true } } },
     });
 
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
+    ensureProjectIsMutable(workspace.task.project, 'archive workspaces');
 
     if (workspace.status !== WorkspaceStatus.ACTIVE) {
       throw new ServiceError(

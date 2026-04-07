@@ -32,6 +32,8 @@ export interface UIProject {
   name: string
   /** Tailwind text color class, e.g., 'text-blue-600' */
   color: string
+  archivedAt?: string | null
+  repoDeletedAt?: string | null
 }
 
 /**
@@ -49,6 +51,8 @@ export interface UITask {
   /** 当前工作分支（来自活跃 Workspace） */
   branch: string
   description: string
+  projectArchivedAt?: string | null
+  projectRepoDeletedAt?: string | null
 }
 
 /**
@@ -68,4 +72,6 @@ export interface UITaskDetailData {
   /** Git 操作目标基础分支（优先 workspace.baseBranch） */
   mainBranch: string
   description: string
+  projectArchivedAt?: string | null
+  projectRepoDeletedAt?: string | null
 }

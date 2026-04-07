@@ -1,8 +1,15 @@
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { prisma } from '../utils/index.js';
 import { NotFoundError, ValidationError } from '../errors.js';
-import { TaskStatus } from '../types/index.js';
+import { execGit } from '../git/git-cli.js';
+import { ensureProjectIsMutable } from './project-guards.js';
+import {
+  TaskStatus,
+  SessionStatus,
+  WorkspaceStatus,
+} from '../types/index.js';
 
 interface CreateProjectInput {
   name: string;
@@ -26,6 +33,7 @@ interface UpdateProjectInput {
 interface PaginationParams {
   page?: number;
   limit?: number;
+  includeArchived?: boolean;
 }
 
 interface PaginatedResult<T> {
@@ -45,6 +53,102 @@ interface TaskStats {
   done: number;
 }
 
+interface ArchiveProjectInput {
+  deleteRepo?: boolean;
+}
+
+interface RestoreProjectInput {
+  repoPath?: string;
+}
+
+interface RestoreProjectResult<T> {
+  project: T;
+  warnings: string[];
+}
+
+async function getRepoRemoteUrl(repoPath: string): Promise<string | null> {
+  try {
+    const remote = await execGit(repoPath, ['remote', 'get-url', 'origin']);
+    const value = remote.trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+function assertRepoPathExists(resolvedPath: string): void {
+  if (!fs.existsSync(resolvedPath)) {
+    throw new ValidationError(
+      `repoPath does not exist: ${resolvedPath}`
+    );
+  }
+
+  const stat = fs.statSync(resolvedPath);
+  if (!stat.isDirectory()) {
+    throw new ValidationError(
+      `repoPath is not a directory: ${resolvedPath}`
+    );
+  }
+
+  const gitPath = path.join(resolvedPath, '.git');
+  if (!fs.existsSync(gitPath)) {
+    throw new ValidationError(
+      `repoPath is not a valid Git repository (no .git found): ${resolvedPath}`
+    );
+  }
+}
+
+async function resolveAndValidateRepoPath(repoPath: string): Promise<{
+  resolvedPath: string;
+  repoRemoteUrl: string | null;
+}> {
+  const resolvedPath = path.resolve(repoPath);
+  assertRepoPathExists(resolvedPath);
+
+  return {
+    resolvedPath,
+    repoRemoteUrl: await getRepoRemoteUrl(resolvedPath),
+  };
+}
+
+async function isValidGitRepo(repoPath: string): Promise<boolean> {
+  try {
+    assertRepoPathExists(path.resolve(repoPath));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildRepoIdentityWarnings(
+  previousProject: { repoPath: string; repoRemoteUrl: string | null },
+  nextRepo: { resolvedPath: string; repoRemoteUrl: string | null }
+): string[] {
+  const warnings: string[] = [];
+
+  const previousBaseName = path.basename(previousProject.repoPath);
+  const nextBaseName = path.basename(nextRepo.resolvedPath);
+  if (previousBaseName && nextBaseName && previousBaseName !== nextBaseName) {
+    warnings.push(
+      `Repository folder name changed from "${previousBaseName}" to "${nextBaseName}".`
+    );
+  }
+
+  if (previousProject.repoRemoteUrl && nextRepo.repoRemoteUrl) {
+    if (previousProject.repoRemoteUrl !== nextRepo.repoRemoteUrl) {
+      warnings.push(
+        'The restored repository uses a different origin remote URL than the archived project.'
+      );
+    }
+  } else if (previousProject.repoRemoteUrl && !nextRepo.repoRemoteUrl) {
+    warnings.push(
+      'The restored repository does not expose an origin remote URL, so Agent Tower could not verify it against the archived project.'
+    );
+  }
+
+  return warnings;
+}
+
 export class ProjectService {
   /**
    * 获取项目列表（支持分页）
@@ -53,14 +157,16 @@ export class ProjectService {
     const page = Math.max(1, params.page || 1);
     const limit = Math.min(100, Math.max(1, params.limit || 20));
     const skip = (page - 1) * limit;
+    const where = params.includeArchived ? undefined : { archivedAt: null };
 
     const [data, total] = await Promise.all([
       prisma.project.findMany({
+        where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
-      prisma.project.count(),
+      prisma.project.count({ where }),
     ]);
 
     return {
@@ -119,29 +225,7 @@ export class ProjectService {
    * - 校验 repoPath 是否存在且为有效的 Git 仓库
    */
   async create(input: CreateProjectInput) {
-    // 校验 repoPath 是否存在
-    const resolvedPath = path.resolve(input.repoPath);
-    if (!fs.existsSync(resolvedPath)) {
-      throw new ValidationError(
-        `repoPath does not exist: ${resolvedPath}`
-      );
-    }
-
-    // 校验是否是目录
-    const stat = fs.statSync(resolvedPath);
-    if (!stat.isDirectory()) {
-      throw new ValidationError(
-        `repoPath is not a directory: ${resolvedPath}`
-      );
-    }
-
-    // 校验是否是有效的 Git 仓库（检查 .git 目录或 .git 文件）
-    const gitPath = path.join(resolvedPath, '.git');
-    if (!fs.existsSync(gitPath)) {
-      throw new ValidationError(
-        `repoPath is not a valid Git repository (no .git found): ${resolvedPath}`
-      );
-    }
+    const { resolvedPath, repoRemoteUrl } = await resolveAndValidateRepoPath(input.repoPath);
 
     // 检查同名项目
     const existing = await prisma.project.findFirst({
@@ -158,6 +242,7 @@ export class ProjectService {
         name: input.name,
         description: input.description,
         repoPath: resolvedPath,
+        repoRemoteUrl,
         mainBranch: input.mainBranch || 'main',
         copyFiles: input.copyFiles,
         setupScript: input.setupScript,
@@ -175,6 +260,7 @@ export class ProjectService {
     if (!project) {
       throw new NotFoundError('Project', id);
     }
+    ensureProjectIsMutable(project, 'update this project');
 
     // 若更新名称，检查同名
     if (input.name && input.name !== project.name) {
@@ -195,15 +281,138 @@ export class ProjectService {
   }
 
   /**
-   * 删除项目（级联删除关联的 Tasks / Workspaces / Sessions）
+   * 归档项目（软删除）
    */
-  async delete(id: string) {
+  async archive(id: string, input: ArchiveProjectInput = {}) {
+    const project = await prisma.project.findUnique({
+      where: { id },
+      include: {
+        tasks: {
+          include: {
+            workspaces: {
+              include: { sessions: true },
+            },
+          },
+        },
+      },
+    });
+    if (!project) {
+      throw new NotFoundError('Project', id);
+    }
+
+    if (project.archivedAt) {
+      throw new ValidationError(`Project "${project.name}" is already archived`);
+    }
+
+    const allWorkspaces = project.tasks.flatMap((task) => task.workspaces);
+    const activeSessions = allWorkspaces.flatMap((workspace) =>
+      workspace.sessions.filter(
+        (session) =>
+          session.status === SessionStatus.PENDING ||
+          session.status === SessionStatus.RUNNING
+      )
+    );
+
+    if (activeSessions.length > 0) {
+      throw new ValidationError(
+        `Project "${project.name}" still has running sessions. Stop them before deleting the project.`
+      );
+    }
+
+    const activeWorkspaceIds = allWorkspaces
+      .filter((workspace) => workspace.status === WorkspaceStatus.ACTIVE)
+      .map((workspace) => workspace.id);
+
+    if (activeWorkspaceIds.length > 0) {
+      await prisma.workspace.updateMany({
+        where: { id: { in: activeWorkspaceIds } },
+        data: { status: WorkspaceStatus.ABANDONED },
+      });
+    }
+
+    if (input.deleteRepo) {
+      const uniqueWorktreePaths = Array.from(
+        new Set(
+          allWorkspaces
+            .map((workspace) => workspace.worktreePath)
+            .filter((value): value is string => Boolean(value))
+        )
+      );
+
+      await Promise.all(
+        uniqueWorktreePaths.map((worktreePath) =>
+          fsPromises.rm(worktreePath, { recursive: true, force: true })
+        )
+      );
+      await fsPromises.rm(project.repoPath, { recursive: true, force: true });
+
+      if (allWorkspaces.length > 0) {
+        await prisma.workspace.updateMany({
+          where: { id: { in: allWorkspaces.map((workspace) => workspace.id) } },
+          data: { worktreePath: '' },
+        });
+      }
+    }
+
+    return prisma.project.update({
+      where: { id },
+      data: {
+        archivedAt: new Date(),
+        repoDeletedAt: input.deleteRepo ? new Date() : null,
+      },
+    });
+  }
+
+  async restore(id: string, input: RestoreProjectInput = {}): Promise<RestoreProjectResult<any>> {
     const project = await prisma.project.findUnique({ where: { id } });
     if (!project) {
       throw new NotFoundError('Project', id);
     }
 
-    await prisma.project.delete({ where: { id } });
+    if (!project.archivedAt) {
+      throw new ValidationError(`Project "${project.name}" is not archived`);
+    }
+
+    const wantsNewRepoPath = Boolean(input.repoPath?.trim());
+    const currentRepoIsValid = await isValidGitRepo(project.repoPath);
+    const requiresRepoPath = Boolean(project.repoDeletedAt) || !currentRepoIsValid;
+
+    if (requiresRepoPath && !wantsNewRepoPath) {
+      throw new ValidationError(
+        `Project "${project.name}" needs a valid repoPath before it can be restored.`
+      );
+    }
+
+    const nextRepo = wantsNewRepoPath
+      ? await resolveAndValidateRepoPath(input.repoPath!.trim())
+      : {
+          resolvedPath: project.repoPath,
+          repoRemoteUrl: project.repoRemoteUrl,
+        };
+
+    const warnings = buildRepoIdentityWarnings(project, nextRepo);
+
+    const restored = await prisma.project.update({
+      where: { id },
+      data: {
+        repoPath: nextRepo.resolvedPath,
+        repoRemoteUrl: nextRepo.repoRemoteUrl,
+        archivedAt: null,
+        repoDeletedAt: null,
+      },
+    });
+
+    return {
+      project: restored,
+      warnings,
+    };
+  }
+
+  /**
+   * 兼容旧的 DELETE 语义：改为归档项目，不再做硬删除。
+   */
+  async delete(id: string) {
+    await this.archive(id, { deleteRepo: false });
     return true;
   }
 }

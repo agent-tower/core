@@ -13,13 +13,19 @@ model Project {
   name        String
   description String?
   repoPath    String
+  repoRemoteUrl String?
   mainBranch  String   @default("main")
   copyFiles     String?  // 逗号分隔的 glob/路径列表，worktree 创建后自动复制
   setupScript   String?  // 多行命令文本，worktree 创建后自动执行
   quickCommands String?  // JSON: [{ name, command }]，终端快捷命令
+  archivedAt  DateTime?
+  repoDeletedAt DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   tasks       Task[]
+
+  @@index([archivedAt])
+  @@index([repoDeletedAt])
 }
 
 // 任务

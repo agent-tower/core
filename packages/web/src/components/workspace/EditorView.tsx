@@ -200,9 +200,10 @@ const FileTabButton: React.FC<{
   )
 }
 
-export const EditorView: React.FC<{ workingDir?: string; className?: string }> = ({
+export const EditorView: React.FC<{ workingDir?: string; className?: string; readOnly?: boolean }> = ({
   workingDir,
   className,
+  readOnly = false,
 }) => {
   const { t } = useI18n()
   const [tabs, setTabs] = useState<OpenTab[]>([])
@@ -324,6 +325,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
   }, [activePath])
 
   const doSave = useCallback(async () => {
+    if (readOnly) return
     if (!workingDir || !activeTab) return
     await saveMutation.mutateAsync({
       workingDir,
@@ -337,7 +339,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
           : t
       )
     )
-  }, [workingDir, activeTab, saveMutation])
+  }, [activeTab, readOnly, saveMutation, workingDir])
 
   // Monaco keybinding (Cmd/Ctrl+S)
   const saveRef = useRef<() => void>(() => {})
@@ -350,6 +352,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
   // Global keybinding (when focus is outside Monaco)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (readOnly) return
       if (!(e.metaKey || e.ctrlKey)) return
       if (e.key.toLowerCase() !== 's') return
       e.preventDefault()
@@ -357,7 +360,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [readOnly])
 
   const monacoOnMount = useCallback((editor: any, monaco: any) => {
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
@@ -430,6 +433,9 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
           )}
 
           <div className="ml-auto flex items-center gap-2 pb-2 pr-1">
+            {readOnly && (
+              <span className="text-[11px] text-neutral-400">{t('Read-only')}</span>
+            )}
             {saveMutation.isPending && (
               <span className="flex items-center gap-2 text-xs text-neutral-500">
                 <Loader2 size={14} className="animate-spin" />
@@ -462,7 +468,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
                 language={activeTab.language}
                 theme="vs-light"
                 height="100%"
-                onChange={(v) => updateActiveContent(v ?? '')}
+                onChange={readOnly ? undefined : (v) => updateActiveContent(v ?? '')}
                 onMount={monacoOnMount}
                 options={{
                   fontSize: 13,
@@ -470,6 +476,7 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string }> =
                   scrollBeyondLastLine: false,
                   wordWrap: 'off',
                   automaticLayout: true,
+                  readOnly,
                 }}
               />
 

@@ -22,6 +22,8 @@ export interface WorkspacePanelProps {
   projectId?: string
   /** 隐藏 Changes tab（移动端已有独立 Changes 视图时使用） */
   hideChanges?: boolean
+  readOnly?: boolean
+  repoDeleted?: boolean
 }
 
 // ============================================================
@@ -99,9 +101,16 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     workingDir,
     projectId,
     hideChanges,
+    readOnly,
+    repoDeleted,
   }) {
     const { t } = useI18n()
-    const tabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
+    const tabs = useMemo(() => {
+      const baseTabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
+      return readOnly
+        ? baseTabs.filter((tab) => tab.key !== 'terminal')
+        : baseTabs
+    }, [hideChanges, readOnly])
     const [activeTab, setActiveTab] = useState<WorkspaceTab>(hideChanges ? "history" : "changes")
 
     // Fetch project to get quickCommands
@@ -123,8 +132,22 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
       }
     }, [workingDir])
 
+    useEffect(() => {
+      if (!readOnly) return
+      if (activeTab === 'terminal') {
+        setActiveTab(hideChanges ? 'history' : 'changes')
+      }
+    }, [activeTab, hideChanges, readOnly])
+
     return (
       <div className={cn("flex flex-col h-full bg-white", className)}>
+        {readOnly && (
+          <div className="mx-2 mt-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
+            {repoDeleted
+              ? t('项目已删除且本地仓库文件已清理。这里只保留历史视图。')
+              : t('项目已删除。Workspace 以只读模式展示历史内容。')}
+          </div>
+        )}
         {/* Tab 栏 — folder style */}
         <div className="flex items-center px-2 pt-2 border-b border-neutral-200 bg-neutral-100/80 shrink-0 gap-1 select-none">
           {tabs.map((tab) => (
@@ -142,7 +165,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
         <div className="flex-1 overflow-hidden relative">
           {/* Editor Tab */}
           {activeTab === "editor" && (
-            <EditorView workingDir={workingDir} />
+            <EditorView workingDir={workingDir} readOnly={readOnly} />
           )}
 
           {/* Terminal Tab — one TerminalTabs per workingDir, kept mounted */}

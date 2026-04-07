@@ -8,6 +8,7 @@ import {
 import type { EventBus } from '../core/event-bus.js';
 import type { SessionManager } from './session-manager.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
+import { ensureProjectIsMutable } from './project-guards.js';
 
 interface CreateTaskInput {
   title: string;
@@ -69,7 +70,7 @@ export class TaskService {
     const [data, total] = await Promise.all([
       prisma.task.findMany({
         where,
-        include: { workspaces: true },
+        include: { workspaces: true, project: true },
         orderBy: [{ status: 'asc' }, { position: 'asc' }],
         skip,
         take: limit,
@@ -115,6 +116,7 @@ export class TaskService {
     if (!project) {
       throw new NotFoundError('Project', projectId);
     }
+    ensureProjectIsMutable(project, 'create tasks');
 
     // 自动计算 position
     const maxPosition = await prisma.task.aggregate({
@@ -137,10 +139,14 @@ export class TaskService {
    * 更新任务基本信息
    */
   async update(id: string, input: UpdateTaskInput) {
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: { project: true },
+    });
     if (!task) {
       throw new NotFoundError('Task', id);
     }
+    ensureProjectIsMutable(task.project, 'update tasks');
 
     return prisma.task.update({
       where: { id },
@@ -153,10 +159,14 @@ export class TaskService {
    * 更新后通过 EventBus 发射 task:updated 事件，通知前端实时更新
    */
   async updateStatus(id: string, status: TaskStatus) {
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: { project: true },
+    });
     if (!task) {
       throw new NotFoundError('Task', id);
     }
+    ensureProjectIsMutable(task.project, 'change task status');
 
     const currentStatus = task.status as TaskStatus;
 
@@ -196,10 +206,14 @@ export class TaskService {
    * 如果同时传了 status，会进行状态流转并通知前端
    */
   async updatePosition(id: string, position: number, status?: TaskStatus) {
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: { project: true },
+    });
     if (!task) {
       throw new NotFoundError('Task', id);
     }
+    ensureProjectIsMutable(task.project, 'reorder tasks');
 
     // 如果同时传了 status，进行状态流转校验
     if (status && status !== task.status) {
@@ -244,6 +258,7 @@ export class TaskService {
     if (!task) {
       throw new NotFoundError('Task', id);
     }
+    ensureProjectIsMutable(task.project, 'delete tasks');
 
     // 1. 停止所有活跃 Session
     for (const workspace of task.workspaces) {

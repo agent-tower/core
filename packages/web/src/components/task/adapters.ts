@@ -114,6 +114,8 @@ export function adaptProject(project: SharedProject): UIProject {
     id: project.id,
     name: project.name,
     color: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],
+    archivedAt: project.archivedAt ?? null,
+    repoDeletedAt: project.repoDeletedAt ?? null,
   }
 }
 
@@ -151,6 +153,9 @@ function extractActiveWorkspaceInfo(workspaces?: SharedWorkspace[]): {
  */
 export function adaptTaskForList(task: SharedTask): UITask {
   const { agent, branch } = extractActiveWorkspaceInfo(task.workspaces)
+  const project = (task as SharedTask & {
+    project?: Pick<SharedProject, 'archivedAt' | 'repoDeletedAt'>
+  }).project
 
   return {
     id: task.id,
@@ -160,6 +165,8 @@ export function adaptTaskForList(task: SharedTask): UITask {
     agent,
     branch,
     description: task.description ?? '',
+    projectArchivedAt: project?.archivedAt ?? null,
+    projectRepoDeletedAt: project?.repoDeletedAt ?? null,
   }
 }
 
@@ -189,5 +196,7 @@ export function adaptTaskForDetail(
     branch,
     mainBranch: activeWorkspace?.baseBranch ?? project.mainBranch ?? 'main',
     description: task.description ?? '',
+    projectArchivedAt: project.archivedAt ?? null,
+    projectRepoDeletedAt: project.repoDeletedAt ?? null,
   }
 }

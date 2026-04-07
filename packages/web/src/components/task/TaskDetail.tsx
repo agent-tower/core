@@ -259,16 +259,21 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
     if (fromActive) return fromActive
 
-    // Fallback: show the latest session from MERGED workspaces (read-only history)
-    const mergedSessions: Session[] = workspaces
-      .filter((ws) => ws.status === 'MERGED' && Array.isArray(ws.sessions))
+    // Fallback: show the latest session from historical workspaces (read-only history)
+    const historySessions: Session[] = workspaces
+      .filter((ws) => (ws.status === 'MERGED' || ws.status === 'ABANDONED') && Array.isArray(ws.sessions))
       .flatMap((ws) => ws.sessions ?? [])
 
-    return pickLatest(mergedSessions, [SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED])
+    return pickLatest(historySessions, [SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED])
   }, [workspaces])
 
   const sessionId = activeSession?.id ?? ''
   const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
+  const isProjectReadOnly = Boolean(task?.projectArchivedAt)
+  const isProjectRepoDeleted = Boolean(task?.projectRepoDeletedAt)
+  const projectReadOnlyMessage = isProjectRepoDeleted
+    ? t('项目已删除，本地仓库文件也已清理。恢复项目并重新绑定仓库后才能继续操作。')
+    : t('项目已删除。恢复项目后才能继续创建会话或修改任务。')
 
   // ============ Provider Info ============
 
@@ -576,8 +581,6 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     if (chatPanelRef.current) {
       chatPanelRef.current.style.width = `${newWidth}px`
     }
-    // Store latest value in ref for mouseup to commit
-    startWidthRef.current = startWidthRef.current // keep original start for delta calc
   }, [])
 
   const handleMouseUp = useCallback(() => {
@@ -662,6 +665,11 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             <span className={`text-xs font-semibold uppercase tracking-wider ${task.projectColor}`}>
               {task.projectName}
             </span>
+            {task.projectArchivedAt && (
+              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">
+                {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
+              </span>
+            )}
             <span className="text-neutral-300 text-xs">/</span>
             <span className="text-xs text-neutral-500 font-mono">{task.branch}</span>
           </div>
@@ -671,11 +679,11 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
         <div className="flex items-center gap-4">
           <StatusBadge
             status={task.status}
-            onChangeStatus={onTaskStatusChange ? (newStatus) => onTaskStatusChange(task.id, newStatus) : undefined}
+            onChangeStatus={!isProjectReadOnly && onTaskStatusChange ? (newStatus) => onTaskStatusChange(task.id, newStatus) : undefined}
           />
 
           {/* Git Operations */}
-          {activeWorkspaceId && (
+          {activeWorkspaceId && !isProjectReadOnly && (
             <button
               onClick={() => setIsGitDialogOpen(true)}
               className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
@@ -688,7 +696,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           {/* Open in IDE */}
           <button
             onClick={handleOpenInIde}
-            disabled={!activeWorkspaceId}
+            disabled={!activeWorkspaceId || isProjectReadOnly}
             className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             title={t('Open in IDE')}
           >
@@ -705,7 +713,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           </button>
 
           {/* More Actions */}
-          {onDeleteTask && (
+          {onDeleteTask && !isProjectReadOnly && (
             <div className="relative" ref={moreMenuRef}>
               <button
                 onClick={() => setIsMoreMenuOpen(v => !v)}
@@ -824,15 +832,19 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                     <Play size={24} className="text-neutral-400 ml-0.5" />
                   </div>
                   <h3 className="text-base font-medium text-neutral-900 mb-1.5">
-                    {t('尚未启动 Agent')}
+                    {isProjectReadOnly ? t('项目为只读历史') : t('尚未启动 Agent')}
                   </h3>
                   <p className="text-sm text-neutral-500 mb-6 max-w-xs">
-                    {t('选择一个 Agent 来执行此任务，Agent 将自动创建工作空间并开始工作。')}
+                    {isProjectReadOnly
+                      ? projectReadOnlyMessage
+                      : t('选择一个 Agent 来执行此任务，Agent 将自动创建工作空间并开始工作。')}
                   </p>
-                  <Button onClick={() => setIsStartDialogOpen(true)}>
-                    <Play size={16} className="mr-1.5" />
-                    {t('启动 Agent')}
-                  </Button>
+                  {!isProjectReadOnly && (
+                    <Button onClick={() => setIsStartDialogOpen(true)}>
+                      <Play size={16} className="mr-1.5" />
+                      {t('启动 Agent')}
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -859,7 +871,13 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           )}
 
           {/* Input Area */}
-          {isReadOnlySession ? (
+          {isProjectReadOnly ? (
+            <div className="p-6 pt-3 bg-white flex-shrink-0 w-full z-10 pb-6 border-t border-neutral-100">
+              <div className="bg-neutral-50 rounded-xl border border-neutral-200 px-4 py-3 text-sm text-neutral-500">
+                {projectReadOnlyMessage}
+              </div>
+            </div>
+          ) : isReadOnlySession ? (
             <div className="p-6 pt-3 bg-white flex-shrink-0 w-full z-10 pb-6 border-t border-neutral-100">
               <div className="flex items-center justify-between bg-neutral-50 rounded-xl border border-neutral-200 px-4 py-3">
                 <span className="text-sm text-neutral-500">{t('代码已合并，以上为历史沟通记录')}</span>
@@ -995,22 +1013,30 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
         {/* Right: WorkspacePanel — takes remaining space */}
         {isWorkspaceOpen && (
           <div className="flex-1 flex flex-col min-w-0 bg-white">
-            <WorkspacePanel sessionId={sessionId || undefined} workingDir={workingDir} projectId={task.projectId} />
+            <WorkspacePanel
+              sessionId={sessionId || undefined}
+              workingDir={workingDir}
+              projectId={task.projectId}
+              readOnly={isProjectReadOnly}
+              repoDeleted={isProjectRepoDeleted}
+            />
           </div>
         )}
       </div>
 
       {/* Start Agent Dialog */}
-      <StartAgentDialog
-        isOpen={isStartDialogOpen}
-        onClose={() => setIsStartDialogOpen(false)}
-        taskId={task.id}
-        taskTitle={task.title}
-        taskDescription={task.description}
-      />
+      {!isProjectReadOnly && (
+        <StartAgentDialog
+          isOpen={isStartDialogOpen}
+          onClose={() => setIsStartDialogOpen(false)}
+          taskId={task.id}
+          taskTitle={task.title}
+          taskDescription={task.description}
+        />
+      )}
 
       {/* Git Operations Dialog */}
-      {activeWorkspaceId && (
+      {activeWorkspaceId && !isProjectReadOnly && (
         <GitOperationsDialog
           open={isGitDialogOpen}
           onOpenChange={setIsGitDialogOpen}

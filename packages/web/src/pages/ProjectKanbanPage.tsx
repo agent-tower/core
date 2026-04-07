@@ -123,8 +123,11 @@ export function ProjectKanbanPage() {
 
   // === API 数据 ===
   const { data: projectsData, isLoading: isProjectsLoading } = useProjects()
-  const projects = projectsData?.data ?? []
+  const projects = useMemo(() => projectsData?.data ?? [], [projectsData?.data])
   const uiProjects = useMemo(() => projects.map(adaptProject), [projects])
+  const effectiveFilterProjectId = filterProjectId && projects.some(project => project.id === filterProjectId)
+    ? filterProjectId
+    : null
 
   // === 实时同步：订阅 project rooms，监听 task:updated / task:deleted 事件 ===
   const projectIdsForSync = useMemo(() => projects.map(p => p.id), [projects])
@@ -132,12 +135,12 @@ export function ProjectKanbanPage() {
 
   // 当选中了某个项目时，直接用 useTasks 获取该项目的任务
   const { data: filteredTasksData, isLoading: isFilteredTasksLoading } = useTasks(
-    filterProjectId ?? '',
+    effectiveFilterProjectId ?? '',
   )
 
   // 当未选中项目时（All Projects），为每个项目获取任务
   const allProjectTaskQueries = useQueries({
-    queries: filterProjectId
+    queries: effectiveFilterProjectId
       ? [] // 已选中项目时不需要这些查询
       : projects.map(p => ({
           queryKey: queryKeys.tasks.list(p.id),
@@ -149,11 +152,11 @@ export function ProjectKanbanPage() {
         })),
   })
 
-  const isAllTasksLoading = !filterProjectId && allProjectTaskQueries.some(q => q.isLoading)
+  const isAllTasksLoading = !effectiveFilterProjectId && allProjectTaskQueries.some(q => q.isLoading)
 
   // 合并任务数据（同时保留原始 Task 用于 session 匹配）
   const rawTasks = useMemo<Task[]>(() => {
-    if (filterProjectId) {
+    if (effectiveFilterProjectId) {
       return filteredTasksData?.data ?? []
     }
     const allTasks: Task[] = []
@@ -163,7 +166,10 @@ export function ProjectKanbanPage() {
       }
     }
     return allTasks
-  }, [filterProjectId, filteredTasksData, allProjectTaskQueries])
+  }, [effectiveFilterProjectId, filteredTasksData, allProjectTaskQueries])
+  const effectiveSelectedTaskId = selectedTaskId && rawTasks.some(task => task.id === selectedTaskId)
+    ? selectedTaskId
+    : null
 
   // 按活跃度排序 projects：根据最近创建的任务时间
   const sortedProjects = useMemo(() => {
@@ -184,6 +190,10 @@ export function ProjectKanbanPage() {
       return bTime - aTime
     })
   }, [projects, rawTasks])
+  const activeProjects = useMemo(
+    () => sortedProjects.filter(project => !project.archivedAt),
+    [sortedProjects],
+  )
 
   // 按使用频率排序 providers：根据 localStorage 中记录的使用次数
   const sortedProviders = useMemo(() => {
@@ -217,8 +227,8 @@ export function ProjectKanbanPage() {
 
   // === 选中的任务详情 ===
   const taskDetailData = useMemo<UITaskDetailData | null>(() => {
-    if (!selectedTaskId) return null
-    const task = rawTasks.find(t => t.id === selectedTaskId)
+    if (!effectiveSelectedTaskId) return null
+    const task = rawTasks.find(t => t.id === effectiveSelectedTaskId)
     if (!task) return null
 
     const project = projects.find(p => p.id === task.projectId)
@@ -237,11 +247,13 @@ export function ProjectKanbanPage() {
         branch,
         mainBranch: 'main',
         description: task.description ?? '',
+        projectArchivedAt: null,
+        projectRepoDeletedAt: null,
       }
     }
 
     return adaptTaskForDetail(task, project)
-  }, [selectedTaskId, rawTasks, projects])
+  }, [effectiveSelectedTaskId, rawTasks, projects])
 
   // === Mutations ===
   const createProject = useCreateProject()
@@ -253,14 +265,14 @@ export function ProjectKanbanPage() {
     deleteTask.mutate(taskId, {
       onSuccess: () => {
         // 删除后清除选中状态
-        if (selectedTaskId === taskId) {
+        if (effectiveSelectedTaskId === taskId) {
           setSelectedTaskId(null)
         }
         // 刷新所有任务列表
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       },
     })
-  }, [deleteTask, selectedTaskId, queryClient])
+  }, [deleteTask, effectiveSelectedTaskId, queryClient])
 
   const handleTaskStatusChange = useCallback((taskId: string, newStatus: UITaskStatus) => {
     updateTaskStatus.mutate(
@@ -316,14 +328,19 @@ export function ProjectKanbanPage() {
   }, [])
 
   const handleCreateTask = useCallback(() => {
+    if (activeProjects.length === 0) {
+      toast.error(t('没有可用项目，请先创建或恢复项目'))
+      return
+    }
+
     // 从 localStorage 读取上次选择
     const lastProjectId = localStorage.getItem('lastSelectedProjectId')
     const lastProviderId = localStorage.getItem('lastSelectedProviderId')
 
     // 优先使用上次选择，其次是当前筛选的项目，最后是第一个项目（已排序）
-    const projectId = (lastProjectId && sortedProjects.find(p => p.id === lastProjectId))
+    const projectId = (lastProjectId && activeProjects.find(p => p.id === lastProjectId))
       ? lastProjectId
-      : (filterProjectId ?? sortedProjects[0]?.id ?? '')
+      : ((effectiveFilterProjectId && activeProjects.find(project => project.id === effectiveFilterProjectId)?.id) ?? activeProjects[0]?.id ?? '')
     setNewTaskProjectId(projectId)
 
     // 优先使用上次选择的 provider，其次是第一个可用的 provider（已排序）
@@ -335,7 +352,7 @@ export function ProjectKanbanPage() {
 
     setCreateStep('idle')
     setIsCreateTaskOpen(true)
-  }, [filterProjectId, sortedProjects, sortedProviders])
+  }, [activeProjects, effectiveFilterProjectId, sortedProviders, t])
 
   const handleCloseProjectModal = useCallback(() => {
     setIsCreateProjectOpen(false)
@@ -484,13 +501,13 @@ export function ProjectKanbanPage() {
   // === Mobile: 任务列表 → 点击任务 → 全屏详情页 ===
   if (isMobile) {
     // Mobile task detail — 选中任务时全屏展示
-    if (selectedTaskId && taskDetailData) {
+    if (effectiveSelectedTaskId && taskDetailData) {
       return (
         <>
           <MobileTaskDetail
             task={taskDetailData}
             onBack={() => setSelectedTaskId(null)}
-            onDeleteTask={handleDeleteTask}
+            onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
             isDeleting={deleteTask.isPending}
           />
           {/* Modals 在移动端也需要 */}
@@ -546,7 +563,7 @@ export function ProjectKanbanPage() {
               projects={uiProjects}
               selectedTaskId={null}
               onSelectTask={setSelectedTaskId}
-              filterProjectId={filterProjectId}
+              filterProjectId={effectiveFilterProjectId}
               setFilterProjectId={setFilterProjectId}
               width="100%"
               onCreateProject={handleCreateProject}
@@ -590,7 +607,7 @@ export function ProjectKanbanPage() {
                 <div className="flex-1 min-w-0">
                   <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project')}</label>
                   <Select value={newTaskProjectId} onChange={setNewTaskProjectId}
-                    options={sortedProjects.map(p => ({ value: p.id, label: p.name }))}
+                    options={activeProjects.map(p => ({ value: p.id, label: p.name }))}
                     placeholder={t('Select project...')} disabled={createStep !== 'idle'} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -693,9 +710,9 @@ export function ProjectKanbanPage() {
           <TaskList
             tasks={uiTasks}
             projects={uiProjects}
-            selectedTaskId={selectedTaskId}
+            selectedTaskId={effectiveSelectedTaskId}
             onSelectTask={setSelectedTaskId}
-            filterProjectId={filterProjectId}
+            filterProjectId={effectiveFilterProjectId}
             setFilterProjectId={setFilterProjectId}
             width={sidebarWidth}
             onCreateProject={handleCreateProject}
@@ -716,9 +733,9 @@ export function ProjectKanbanPage() {
         {/* 右侧: TaskDetail */}
         <TaskDetail
           task={taskDetailData}
-          onDeleteTask={handleDeleteTask}
+          onDeleteTask={taskDetailData?.projectArchivedAt ? undefined : handleDeleteTask}
           isDeleting={deleteTask.isPending}
-          onTaskStatusChange={handleTaskStatusChange}
+          onTaskStatusChange={taskDetailData?.projectArchivedAt ? undefined : handleTaskStatusChange}
         />
       </div>
 
@@ -819,7 +836,7 @@ export function ProjectKanbanPage() {
                 <Select
                   value={newTaskProjectId}
                   onChange={setNewTaskProjectId}
-                  options={sortedProjects.map(p => ({ value: p.id, label: p.name }))}
+                  options={activeProjects.map(p => ({ value: p.id, label: p.name }))}
                   placeholder={t('Select project...')}
                   disabled={createStep !== 'idle'}
                 />
