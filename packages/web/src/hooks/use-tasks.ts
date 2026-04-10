@@ -149,3 +149,23 @@ export function useDeleteTask() {
     },
   })
 }
+
+/**
+ * 重试任务（归档当前 Workspace，重置状态为 TODO）
+ * POST /api/tasks/:id/retry
+ */
+export function useRetryTask() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiClient.post<Task>(`/tasks/${id}/retry`, {}),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.tasks.detail(data.id),
+      })
+    },
+  })
+}

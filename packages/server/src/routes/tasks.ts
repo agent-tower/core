@@ -164,4 +164,16 @@ export async function taskRoutes(app: FastifyInstance) {
       }
     }
   );
+
+  // 重试任务（归档当前 Workspace，重置状态为 TODO）
+  app.post<{ Params: { id: string } }>(
+    '/tasks/:id/retry',
+    async (request, reply) => {
+      try {
+        return await taskService.retry(request.params.id);
+      } catch (error) {
+        return handleError(error, reply);
+      }
+    }
+  );
 }

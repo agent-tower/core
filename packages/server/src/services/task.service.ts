@@ -1,5 +1,5 @@
 import { prisma } from '../utils/index.js';
-import { TaskStatus, SessionStatus, SessionPurpose } from '../types/index.js';
+import { TaskStatus, SessionStatus, SessionPurpose, WorkspaceStatus } from '../types/index.js';
 import {
   NotFoundError,
   ValidationError,
@@ -348,6 +348,59 @@ export class TaskService {
     }
 
     return stats;
+  }
+
+  /**
+   * 重试任务
+   *
+   * 1. 停止当前 ACTIVE Workspace 的所有 Session
+   * 2. 将 ACTIVE Workspace 标记为 ABANDONED（保留 worktree 供参考）
+   * 3. 重置 Task 状态为 TODO
+   * 4. 通知前端 — 用户可重新派发 Agent（会创建新 Worktree）
+   */
+  async retry(id: string) {
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: {
+        project: true,
+        workspaces: {
+          where: { status: WorkspaceStatus.ACTIVE },
+          include: { sessions: true },
+        },
+      },
+    });
+    if (!task) {
+      throw new NotFoundError('Task', id);
+    }
+    ensureProjectIsMutable(task.project, 'retry tasks');
+
+    // 停止活跃 Session 并归档 Workspace
+    for (const workspace of task.workspaces) {
+      const activeSessions = workspace.sessions.filter(
+        (s) => s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING
+      );
+      for (const session of activeSessions) {
+        try {
+          await this.sessionManager.stop(session.id);
+        } catch (err) {
+          console.warn(`[TaskService] retry: failed to stop session ${session.id}:`, err);
+        }
+      }
+      await prisma.workspace.update({
+        where: { id: workspace.id },
+        data: { status: WorkspaceStatus.ABANDONED },
+      });
+    }
+
+    // 重置 Task 到 TODO
+    const updated = await prisma.task.update({
+      where: { id },
+      data: { status: TaskStatus.TODO },
+    });
+
+    this.emitTaskUpdated(id, task.projectId, TaskStatus.TODO);
+
+    return updated;
   }
 
   // ── 内部方法 ────────────────────────────────────────────────────────────────

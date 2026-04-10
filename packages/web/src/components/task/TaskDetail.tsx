@@ -14,15 +14,17 @@ import { LogStream } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
-import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork } from 'lucide-react'
+import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
-import { useWorkspaces, useOpenInEditor, useGitStatus } from '@/hooks/use-workspaces'
+import { useWorkspaces, useOpenInEditor, useGitStatus, useCreateWorkspace } from '@/hooks/use-workspaces'
 import { queryKeys } from '@/hooks/query-keys'
+import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
 import { socketManager } from '@/lib/socket/manager'
-import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
+import { useSendMessage, useStopSession, useStartSession } from '@/hooks/use-sessions'
+import { useRetryTask } from '@/hooks/use-tasks'
 import { useProviders } from '@/hooks/use-providers'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
@@ -195,9 +197,13 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
+  const [isRetryConfirmOpen, setIsRetryConfirmOpen] = useState(false)
+  const [isRetrying, setIsRetrying] = useState(false)
   const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
   const [isGitDialogOpen, setIsGitDialogOpen] = useState(false)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  // retry 后强制清空 session 显示，等待用户重新 Start Agent
+  const [isJustRetried, setIsJustRetried] = useState(false)
   const inputContainerRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -222,12 +228,29 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const { data: workspaces, isLoading: isLoadingWorkspaces } = useWorkspaces(task?.id ?? '')
   const setupProgress = useWorkspaceSetupProgress(task?.id)
 
+  // task 切换时清空 isJustRetried
+  useEffect(() => {
+    setIsJustRetried(false)
+  }, [task?.id])
+
+  // 新 ACTIVE workspace session 出现后自动解除 retry 锁定
+  useEffect(() => {
+    if (!isJustRetried || !workspaces) return
+    const hasNewActiveSession = workspaces.some(
+      (ws) => ws.status === 'ACTIVE' && ws.sessions && ws.sessions.length > 0
+    )
+    if (hasNewActiveSession) setIsJustRetried(false)
+  }, [workspaces, isJustRetried])
+
   // Find the latest relevant session from workspaces.
   // We prioritize RUNNING > PENDING > terminal states, and within each bucket
   // pick the newest by available timestamps to avoid selecting stale sessions.
   // When no ACTIVE workspace has sessions, fall back to MERGED workspace sessions
   // so that communication history remains visible after merging code.
   const activeSession = useMemo(() => {
+    // retry 后强制清空，等待用户重新 Start Agent
+    if (isJustRetried) return null
+
     if (!workspaces) return null
 
     const getSessionTime = (session: Session): number => {
@@ -265,7 +288,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       .flatMap((ws) => ws.sessions ?? [])
 
     return pickLatest(historySessions, [SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED])
-  }, [workspaces])
+  }, [workspaces, isJustRetried])
 
   const sessionId = activeSession?.id ?? ''
   const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
@@ -294,14 +317,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
   // Derive workingDir from the active workspace's worktreePath
   const workingDir = useMemo(() => {
-    if (!workspaces) return undefined
+    if (!workspaces || isJustRetried) return undefined
     for (const ws of workspaces) {
       if (ws.status === 'ACTIVE' && ws.worktreePath) {
         return ws.worktreePath
       }
     }
     return workspaces[0]?.worktreePath
-  }, [workspaces])
+  }, [workspaces, isJustRetried])
 
   const slashCommandMenu = useSlashCommandMenu({
     agentType: activeSession?.agentType,
@@ -377,6 +400,43 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
   const sendMessageMutation = useSendMessage()
   const openInEditorMutation = useOpenInEditor()
+  const retryTaskMutation = useRetryTask()
+  const createWorkspaceMutation = useCreateWorkspace(task?.id ?? '')
+  const startSessionMutation = useStartSession()
+
+  const handleRetryTask = useCallback(async () => {
+    if (!task?.id) return
+
+    const retryProviderId = activeSession?.providerId
+      ?? providers?.find(p => p.availability.type !== 'NOT_FOUND')?.provider.id
+    if (!retryProviderId) return
+
+    const prompt = [task.title, task.description].filter(Boolean).join('\n\n')
+
+    setIsRetryConfirmOpen(false)
+    setIsRetrying(true)
+    try {
+      await retryTaskMutation.mutateAsync(task.id)
+      setIsJustRetried(true)
+
+      const workspace = await createWorkspaceMutation.mutateAsync({})
+
+      const session = await apiClient.post<{ id: string }>(
+        `/workspaces/${workspace.id}/sessions`,
+        { providerId: retryProviderId, prompt },
+      )
+
+      await startSessionMutation.mutateAsync(session.id)
+
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
+    } catch (err) {
+      console.error('[retry] failed:', err)
+      setIsJustRetried(false)
+    } finally {
+      setIsRetrying(false)
+    }
+  }, [task?.id, task?.title, task?.description, activeSession?.providerId, providers,
+      retryTaskMutation, createWorkspaceMutation, startSessionMutation, queryClient])
 
   const handleOpenInIde = useCallback(() => {
     if (!activeWorkspaceId) return
@@ -726,6 +786,16 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                 <div className="absolute right-0 top-full mt-2 w-44 bg-white rounded-lg border border-neutral-200 shadow-lg z-50 py-1">
                   <button
                     onClick={() => {
+                      setIsRetryConfirmOpen(true)
+                      setIsMoreMenuOpen(false)
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-neutral-700 hover:bg-neutral-50 transition-colors"
+                  >
+                    <RotateCcw size={15} />
+                    <span>{t('重新开始')}</span>
+                  </button>
+                  <button
+                    onClick={() => {
                       setIsDeleteConfirmOpen(true)
                       setIsMoreMenuOpen(false)
                     }}
@@ -1062,6 +1132,20 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           sessions={activeWorkspaceSessions}
         />
       )}
+
+      {/* Retry Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={isRetryConfirmOpen}
+        onClose={() => setIsRetryConfirmOpen(false)}
+        onConfirm={handleRetryTask}
+        title={t('重新开始任务')}
+        description={
+          <p>{t('将归档当前工作区并自动在新 Worktree 中重新启动 Agent，旧工作区内容保留供参考。')}</p>
+        }
+        confirmText={t('确认重试')}
+        variant="default"
+        isLoading={isRetrying}
+      />
 
       {/* Delete Confirm Dialog */}
       <ConfirmDialog
