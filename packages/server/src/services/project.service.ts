@@ -98,6 +98,19 @@ function assertRepoPathExists(resolvedPath: string): void {
   }
 }
 
+/**
+ * 若仓库无任何提交，自动执行一次空提交作为初始基准。
+ * git worktree 依赖 HEAD 指向有效 commit，空仓库无法创建 worktree。
+ */
+async function ensureRepoHasCommit(repoPath: string): Promise<void> {
+  try {
+    await execGit(repoPath, ['rev-parse', '--verify', 'HEAD']);
+  } catch {
+    // HEAD 不存在 → 空仓库，创建初始提交
+    await execGit(repoPath, ['commit', '--allow-empty', '-m', 'chore: initial commit']);
+  }
+}
+
 async function resolveAndValidateRepoPath(repoPath: string): Promise<{
   resolvedPath: string;
   repoRemoteUrl: string | null;
@@ -226,6 +239,9 @@ export class ProjectService {
    */
   async create(input: CreateProjectInput) {
     const { resolvedPath, repoRemoteUrl } = await resolveAndValidateRepoPath(input.repoPath);
+
+    // 空仓库（无任何 commit）自动创建初始提交，否则 worktree 无法工作
+    await ensureRepoHasCommit(resolvedPath);
 
     // 检查同名项目
     const existing = await prisma.project.findFirst({

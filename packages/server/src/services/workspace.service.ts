@@ -119,10 +119,19 @@ export class WorkspaceService {
     try {
       // 生成分支名：用户指定 or 自动生成 at/{shortId}
       const branch = branchName || `at/${workspace.id.slice(0, 8)}`;
-      const currentBranch = (
-        await execGit(task.project.repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
-      ).trim();
-      const baseBranch = currentBranch && currentBranch !== 'HEAD' ? currentBranch : null;
+
+      // 空仓库（无任何 commit）无法创建 worktree，提前报错
+      let baseBranch: string | null = null;
+      try {
+        const currentBranch = (
+          await execGit(task.project.repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
+        ).trim();
+        baseBranch = currentBranch && currentBranch !== 'HEAD' ? currentBranch : null;
+      } catch {
+        throw new Error(
+          '仓库尚无任何提交记录，无法创建 Workspace。请重新编辑项目以触发自动初始化，或手动执行 git commit。'
+        );
+      }
 
       // WorktreeManager.create 内部已做分支名合法性校验和重复检查
       const worktreePath = await worktreeManager.create(branch);
