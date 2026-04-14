@@ -44,6 +44,8 @@ export interface ClaudeCodeConfig {
   approvals?: boolean;
   /** 模型选择 */
   model?: string;
+  /** 推理努力程度 (low | medium | high | max) */
+  effort?: string;
   /** 跳过权限检查 */
   dangerouslySkipPermissions?: boolean;
   /** 禁用 API Key */
@@ -191,6 +193,11 @@ export class ClaudeCodeExecutor extends BaseExecutor {
       builder.extendParams(['--model', this.config.model]);
     }
 
+    // 推理努力程度
+    if (this.config.effort) {
+      builder.extendParams(['--effort', this.config.effort]);
+    }
+
     // 通过 --settings 覆盖 ~/.claude/settings.json 中的 ANTHROPIC_* env
     builder.extendParams(this.buildSettingsOverride());
 
@@ -241,6 +248,11 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     // 模型选择
     if (this.config.model) {
       builder.extendParams(['--model', this.config.model]);
+    }
+
+    // 推理努力程度
+    if (this.config.effort) {
+      builder.extendParams(['--effort', this.config.effort]);
     }
 
     // 通过 --settings 覆盖 ~/.claude/settings.json 中的 ANTHROPIC_* env

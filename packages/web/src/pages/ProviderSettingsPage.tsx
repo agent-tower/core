@@ -52,6 +52,18 @@ const AGENT_CONFIG_FIELDS: Record<string, ConfigFieldMeta[]> = {
   [AgentType.CLAUDE_CODE]: [
     { key: 'dangerouslySkipPermissions', label: '跳过权限确认', type: 'switch' },
     { key: 'model', label: '模型', type: 'input', placeholder: 'claude-sonnet-4-20250514' },
+    {
+      key: 'effort',
+      label: '推理强度',
+      type: 'select',
+      options: [
+        { value: '', label: '默认' },
+        { value: 'low', label: 'Low' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high', label: 'High' },
+        { value: 'max', label: 'Max' },
+      ],
+    },
     APPEND_PROMPT_FIELD,
   ],
   [AgentType.GEMINI_CLI]: [
