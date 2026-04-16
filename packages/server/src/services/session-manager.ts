@@ -58,11 +58,11 @@ export class SessionManager {
       });
     });
 
-    this.eventBus.on('session:started', ({ sessionId }) => {
-      this.checkTaskAutoRevert(sessionId).catch((error) => {
-        console.error(`[SessionManager] checkTaskAutoRevert failed for session ${sessionId}:`, error);
-      });
-    });
+    // NOTE: checkTaskAutoRevert is called directly (awaited) inside start()
+    // and sendMessage() to guarantee the task status is updated before the
+    // HTTP response is sent. A fire-and-forget EventBus listener here caused
+    // a race: the frontend refetch would see stale TODO status because the
+    // DB update hadn't completed yet.
   }
 
   async findById(id: string) {
@@ -147,6 +147,7 @@ export class SessionManager {
 
     this.attachPipeline(id, agentType, workingDir, spawnResult);
     this.eventBus.emit('session:started', { sessionId: id });
+    await this.checkTaskAutoRevert(id);
     return session;
   }
 
@@ -293,6 +294,7 @@ export class SessionManager {
 
     this.attachPipeline(id, agentType, workingDir, spawnResult);
     this.eventBus.emit('session:started', { sessionId: id });
+    await this.checkTaskAutoRevert(id);
     return session;
   }
 

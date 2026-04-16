@@ -61,11 +61,8 @@ export function useTaskRealtimeSync(projectIds: string[]) {
 
     // --- Event handlers ---
     const handleTaskUpdated = async (payload: TaskUpdatedPayload) => {
-      // Cancel any in-flight fetches first to work around TanStack Query v5
-      // not cancelling initial fetches (only refetches) on invalidation.
-      // Without this, a race condition occurs: the initial fetch triggered by
-      // task creation returns stale TODO status, and the subsequent WebSocket
-      // invalidation is ignored because data is still undefined.
+      // Cancel in-flight fetches before invalidating so the fresh refetch
+      // doesn't race with a stale response already in progress.
       await queryClient.cancelQueries({
         queryKey: queryKeys.tasks.list(payload.projectId),
       })
