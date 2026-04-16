@@ -23,15 +23,31 @@ import { queryKeys } from '@/hooks/query-keys'
 export function useTaskRealtimeSync(projectIds: string[]) {
   const queryClient = useQueryClient()
   const subscribedRef = useRef<Set<string>>(new Set())
+  const projectIdsRef = useRef<string[]>(projectIds)
+  projectIdsRef.current = projectIds
 
   useEffect(() => {
     if (projectIds.length === 0) return
 
     const socket = socketManager.connect()
     const currentSubscribed = subscribedRef.current
-    const targetIds = new Set(projectIds)
 
-    // Subscribe to new project rooms
+    const subscribeAll = () => {
+      for (const id of projectIdsRef.current) {
+        socket.emit(
+          ClientEvents.SUBSCRIBE,
+          { topic: 'project', id },
+          (res: AckResponse) => {
+            if (res.success) {
+              currentSubscribed.add(id)
+            }
+          },
+        )
+      }
+    }
+
+    // Diff-subscribe: add new, remove stale
+    const targetIds = new Set(projectIds)
     for (const id of targetIds) {
       if (!currentSubscribed.has(id)) {
         socket.emit(
@@ -45,8 +61,6 @@ export function useTaskRealtimeSync(projectIds: string[]) {
         )
       }
     }
-
-    // Unsubscribe from project rooms that are no longer needed
     for (const id of currentSubscribed) {
       if (!targetIds.has(id)) {
         socket.emit(
@@ -59,10 +73,16 @@ export function useTaskRealtimeSync(projectIds: string[]) {
       }
     }
 
+    // On reconnect: server-side rooms are reset, so re-subscribe all
+    // and invalidate task queries to compensate for missed events.
+    const handleReconnect = () => {
+      currentSubscribed.clear()
+      subscribeAll()
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+    }
+
     // --- Event handlers ---
     const handleTaskUpdated = async (payload: TaskUpdatedPayload) => {
-      // Cancel in-flight fetches before invalidating so the fresh refetch
-      // doesn't race with a stale response already in progress.
       await queryClient.cancelQueries({
         queryKey: queryKeys.tasks.list(payload.projectId),
       })
@@ -75,24 +95,23 @@ export function useTaskRealtimeSync(projectIds: string[]) {
     }
 
     const handleTaskDeleted = (payload: TaskDeletedPayload) => {
-      // Invalidate the project's task list
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.list(payload.projectId),
       })
-      // Remove the deleted task's detail from cache
       queryClient.removeQueries({
         queryKey: queryKeys.tasks.detail(payload.taskId),
       })
     }
 
+    socket.on('connect', handleReconnect)
     socket.on(ServerEvents.TASK_UPDATED, handleTaskUpdated)
     socket.on(ServerEvents.TASK_DELETED, handleTaskDeleted)
 
     return () => {
+      socket.off('connect', handleReconnect)
       socket.off(ServerEvents.TASK_UPDATED, handleTaskUpdated)
       socket.off(ServerEvents.TASK_DELETED, handleTaskDeleted)
 
-      // Unsubscribe all on cleanup
       for (const id of currentSubscribed) {
         socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'project', id })
       }

@@ -39,6 +39,10 @@ export function useStartSession() {
       apiClient.post<Session>(`/sessions/${id}/start`),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.sessions.detail(id) })
+      // Starting a session transitions the task from TODO → IN_PROGRESS (server-side).
+      // Invalidate all task queries so the kanban board reflects this immediately,
+      // without relying solely on the WebSocket event which can race with in-flight fetches.
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
     },
   })
 }
@@ -67,6 +71,9 @@ export function useSendMessage() {
       // sendMessage 现在可能 spawn 新 PTY（从 COMPLETED → RUNNING），
       // 需要 invalidate workspaces 让前端 session 状态刷新
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+      // Sending a message may restart a session (COMPLETED → RUNNING),
+      // which also reverts the task status (e.g. IN_REVIEW → IN_PROGRESS).
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
     },
   })
 }
