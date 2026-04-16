@@ -60,12 +60,18 @@ export function useTaskRealtimeSync(projectIds: string[]) {
     }
 
     // --- Event handlers ---
-    const handleTaskUpdated = (payload: TaskUpdatedPayload) => {
-      // Invalidate the specific project's task list
+    const handleTaskUpdated = async (payload: TaskUpdatedPayload) => {
+      // Cancel any in-flight fetches first to work around TanStack Query v5
+      // not cancelling initial fetches (only refetches) on invalidation.
+      // Without this, a race condition occurs: the initial fetch triggered by
+      // task creation returns stale TODO status, and the subsequent WebSocket
+      // invalidation is ignored because data is still undefined.
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.tasks.list(payload.projectId),
+      })
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.list(payload.projectId),
       })
-      // Also invalidate the task detail if it's being viewed
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.detail(payload.taskId),
       })
