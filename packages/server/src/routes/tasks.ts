@@ -33,7 +33,7 @@ const updatePositionSchema = z.object({
 const taskListQuerySchema = z.object({
   status: z.nativeEnum(TaskStatus).optional(),
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: z.coerce.number().int().min(1).max(1000).default(200),
 });
 
 /**

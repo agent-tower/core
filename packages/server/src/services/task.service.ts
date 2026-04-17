@@ -59,7 +59,7 @@ export class TaskService {
     }
 
     const page = Math.max(1, params.page || 1);
-    const limit = Math.min(100, Math.max(1, params.limit || 50));
+    const limit = Math.min(1000, Math.max(1, params.limit || 200));
     const skip = (page - 1) * limit;
 
     const where: any = { projectId };
@@ -67,16 +67,33 @@ export class TaskService {
       where.status = params.status;
     }
 
+    // Active tasks first (IN_PROGRESS → IN_REVIEW → TODO), then completed (DONE → CANCELLED).
+    // Raw SQL CASE needed because Prisma orderBy doesn't support custom sort functions.
+    const statusOrder: Record<string, number> = {
+      [TaskStatus.IN_PROGRESS]: 0,
+      [TaskStatus.IN_REVIEW]: 1,
+      [TaskStatus.TODO]: 2,
+      [TaskStatus.DONE]: 3,
+      [TaskStatus.CANCELLED]: 4,
+    };
+
     const [data, total] = await Promise.all([
       prisma.task.findMany({
         where,
         include: { workspaces: true, project: true },
-        orderBy: [{ status: 'asc' }, { position: 'asc' }],
+        orderBy: [{ updatedAt: 'desc' }],
         skip,
         take: limit,
       }),
       prisma.task.count({ where }),
     ]);
+
+    data.sort((a, b) => {
+      const sa = statusOrder[a.status] ?? 99;
+      const sb = statusOrder[b.status] ?? 99;
+      if (sa !== sb) return sa - sb;
+      return (a.position ?? 0) - (b.position ?? 0);
+    });
 
     return {
       data,

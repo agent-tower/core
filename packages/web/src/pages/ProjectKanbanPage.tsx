@@ -142,7 +142,7 @@ export function ProjectKanbanPage() {
           queryFn: () =>
             apiClient.get<PaginatedResponse<Task>>(
               `/projects/${p.id}/tasks`,
-              { params: { limit: '100' } },
+              { params: { limit: '500' } },
             ),
         })),
   })
