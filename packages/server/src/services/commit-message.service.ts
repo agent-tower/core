@@ -10,11 +10,24 @@ import { prisma } from '../utils/index.js';
 import { AgentType, SessionStatus, SessionPurpose, WorkspaceStatus } from '../types/index.js';
 import { execGit } from '../git/git-cli.js';
 import { getEventBus, getSessionManager } from '../core/container.js';
+import { getProviderById } from '../executors/providers.js';
 import type { NormalizedConversation } from '../output/index.js';
 import { sessionMsgStoreManager } from '../output/index.js';
 
 /** diff 最大字符数，超出则截断并附加 stat 摘要 */
 const MAX_DIFF_CHARS = 8000;
+
+export const DEFAULT_COMMIT_MESSAGE_PROMPT = [
+  'You are a Git commit message generator. Generate a concise commit message based on the following information.',
+  '',
+  'Requirements:',
+  '- Use conventional commits format (feat/fix/refactor/docs/chore/style/test/perf/ci/build)',
+  '- First line must not exceed 72 characters',
+  '- If necessary, add a blank line followed by a detailed description',
+  '- Output ONLY the commit message itself, no explanations, no markdown formatting, no code blocks',
+].join('\n');
+
+const DEFAULT_SYSTEM_PROMPT = DEFAULT_COMMIT_MESSAGE_PROMPT;
 
 export class CommitMessageService {
   private eventBus = getEventBus();
@@ -23,6 +36,19 @@ export class CommitMessageService {
    * 为指定 workspace 触发 commit message 生成。
    * 创建一个 purpose=COMMIT_MSG 的隐藏 session 并启动。
    */
+  /**
+   * 读取全局 commit message 配置（provider + prompt）
+   */
+  private async getGlobalSettings() {
+    const settings = await prisma.appSettings.findUnique({
+      where: { id: 'singleton' },
+    });
+    return {
+      providerId: settings?.commitMessageProviderId ?? null,
+      prompt: settings?.commitMessagePrompt ?? null,
+    };
+  }
+
   async triggerGeneration(workspaceId: string): Promise<void> {
     const workspace = await prisma.workspace.findUnique({
       where: { id: workspaceId },
@@ -39,13 +65,32 @@ export class CommitMessageService {
     if (!workspace || workspace.status !== WorkspaceStatus.ACTIVE) return;
     if (!workspace.worktreePath) return;
 
-    // 继承最近一个正常 session 的执行上下文，确保与当前任务使用同一 provider
     const lastSession = workspace.sessions[0];
     if (!lastSession) return;
 
-    const agentType = lastSession.agentType as AgentType;
-    const variant = lastSession.variant ?? 'DEFAULT';
-    const providerId = lastSession.providerId ?? undefined;
+    // 优先使用全局配置的 provider，fallback 到当前 task 的 provider
+    const globalSettings = await this.getGlobalSettings();
+
+    let agentType: AgentType;
+    let variant: string;
+    let providerId: string | undefined;
+
+    if (globalSettings.providerId) {
+      const provider = getProviderById(globalSettings.providerId);
+      if (provider) {
+        agentType = provider.agentType as AgentType;
+        variant = 'DEFAULT';
+        providerId = provider.id;
+      } else {
+        agentType = lastSession.agentType as AgentType;
+        variant = lastSession.variant ?? 'DEFAULT';
+        providerId = lastSession.providerId ?? undefined;
+      }
+    } else {
+      agentType = lastSession.agentType as AgentType;
+      variant = lastSession.variant ?? 'DEFAULT';
+      providerId = lastSession.providerId ?? undefined;
+    }
 
     // 检查是否已有正在运行的 COMMIT_MSG session
     const existing = await prisma.session.findFirst({
@@ -68,8 +113,8 @@ export class CommitMessageService {
       commitMessage: null,
     });
 
-    // 构造 prompt
-    const prompt = await this.buildPrompt(workspace);
+    // 构造 prompt：优先使用全局自定义 prompt 模板
+    const prompt = await this.buildPrompt(workspace, globalSettings.prompt);
     if (!prompt) return;
 
     // 创建隐藏 session 并启动
@@ -184,7 +229,7 @@ export class CommitMessageService {
       description: string | null;
       project: { repoPath: string; mainBranch: string };
     };
-  }): Promise<string | null> {
+  }, customPromptTemplate?: string | null): Promise<string | null> {
     const { worktreePath, branchName, baseBranch, task } = workspace;
     const { repoPath, mainBranch } = task.project;
     const targetBranch = baseBranch || mainBranch;
@@ -217,15 +262,11 @@ export class CommitMessageService {
         ]).catch(() => '');
       }
 
-      // 构造 prompt
+      // 使用自定义 prompt 模板或内置默认模板
+      const systemPrompt = customPromptTemplate?.trim() || DEFAULT_SYSTEM_PROMPT;
+
       const parts: string[] = [
-        'You are a Git commit message generator. Generate a concise commit message based on the following information.',
-        '',
-        'Requirements:',
-        '- Use conventional commits format (feat/fix/refactor/docs/chore/style/test/perf/ci/build)',
-        '- First line must not exceed 72 characters',
-        '- If necessary, add a blank line followed by a detailed description',
-        '- Output ONLY the commit message itself, no explanations, no markdown formatting, no code blocks',
+        systemPrompt,
         '',
         `Task: ${task.title}`,
       ];

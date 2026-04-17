@@ -428,5 +428,17 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '提交消息': 'Commit Message',
     '输入提交消息...': 'Enter commit message...',
     '留空将使用默认消息': 'Leave blank to use the default message.',
+    'Git Commit Message': 'Git Commit Message',
+    '配置自动生成 commit message 时使用的 Agent 渠道和提示词。':
+      'Configure the agent provider and prompt used for auto-generating commit messages.',
+    'Agent 渠道': 'Agent Provider',
+    '跟随任务': 'Follow Task',
+    '"跟随任务"表示使用当前任务所用的 Agent 渠道。选择具体渠道可使用更经济的模型。':
+      '"Follow Task" uses the same provider as the current task. Select a specific provider to use a more cost-effective model.',
+    '提示词模板': 'Prompt Template',
+    '自定义生成 commit message 的提示词。留空则使用内置默认模板。':
+      'Custom prompt for generating commit messages. Leave empty to use the built-in default template.',
+    '保存失败': 'Save failed',
+    '已保存': 'Saved',
   },
 }

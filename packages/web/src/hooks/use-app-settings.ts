@@ -12,14 +12,27 @@ export function useAppSettings() {
   })
 }
 
+interface UpdateAppSettingsInput {
+  locale?: AppLocale | null
+  commitMessageProviderId?: string | null
+  commitMessagePrompt?: string | null
+}
+
 export function useUpdateAppSettings() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (data: { locale?: AppLocale | null }) =>
+    mutationFn: (data: UpdateAppSettingsInput) =>
       apiClient.put<AppSettings>('/app-settings', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.appSettings.detail })
     },
+  })
+}
+
+export function useCommitMessageDefaults() {
+  return useQuery({
+    queryKey: [...queryKeys.appSettings.detail, 'commit-message-defaults'] as const,
+    queryFn: () => apiClient.get<{ prompt: string }>('/app-settings/commit-message-defaults'),
   })
 }

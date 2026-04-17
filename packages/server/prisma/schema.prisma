@@ -128,6 +128,8 @@ model Attachment {
 model AppSettings {
   id     String @id @default("singleton")
   locale String?
+  commitMessageProviderId String?
+  commitMessagePrompt     String?
 }
 
 // 通知配置 (单例，只有一行)

@@ -271,6 +271,8 @@ export type AppLocale = 'zh-CN' | 'en'
 export interface AppSettings {
   id: string
   locale: AppLocale | null
+  commitMessageProviderId: string | null
+  commitMessagePrompt: string | null
 }
 
 /** 第三方通知渠道 */
