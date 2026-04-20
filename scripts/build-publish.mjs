@@ -113,6 +113,34 @@ const deps = { ...serverPkg.dependencies };
 deps['@agent-tower/shared'] = sharedPkg.version;
 // prisma 从 devDependencies 提升到 dependencies（bundledDependencies 需要在 deps 中声明）
 deps['prisma'] = serverPkg.devDependencies.prisma;
+// node-pty 已 bundled，从 dependencies 中移除（避免 npm 再次解析安装触发 node-gyp）
+delete deps['@shitiandmw/node-pty'];
+
+// 8. 将 @shitiandmw/node-pty 预打包（含多平台 prebuilds，避免用户需要 Python/node-gyp/MSVC）
+const nodePtyVersion = serverPkg.dependencies['@shitiandmw/node-pty'];
+const nodePtyPnpmDir = resolve(root, `node_modules/.pnpm/@shitiandmw+node-pty@${nodePtyVersion}/node_modules/@shitiandmw/node-pty`);
+const nodePtyDest = resolve(publishDir, 'node_modules/@shitiandmw/node-pty');
+mkdirSync(nodePtyDest, { recursive: true });
+cpSync(nodePtyPnpmDir, nodePtyDest, {
+  recursive: true,
+  filter: (src) => {
+    const rel = src.slice(nodePtyPnpmDir.length);
+    if (rel.includes('node_modules')) return false;
+    if (/[\\/]build[\\/]/.test(rel)) return false;
+    if (/[\\/]test[\\/]/.test(rel)) return false;
+    if (/[\\/]examples[\\/]/.test(rel)) return false;
+    if (/[\\/]deps[\\/]/.test(rel)) return false;
+    if (/[\\/]src[\\/]/.test(rel)) return false;
+    if (rel.endsWith('.gyp') || rel.endsWith('.cc') || rel.endsWith('.h')) return false;
+    return true;
+  },
+});
+const nodePtyPkgPath = resolve(nodePtyDest, 'package.json');
+const nodePtyPkg = JSON.parse(readFileSync(nodePtyPkgPath, 'utf-8'));
+delete nodePtyPkg.scripts.install;
+delete nodePtyPkg.scripts.postinstall;
+writeFileSync(nodePtyPkgPath, JSON.stringify(nodePtyPkg, null, 2) + '\n');
+console.log(`Bundled @shitiandmw/node-pty@${nodePtyVersion} with prebuilds`);
 
 const publishPkg = {
   name: 'agent-tower',
@@ -131,6 +159,7 @@ const publishPkg = {
     'scripts/',
     'node_modules/@agent-tower/',
     'node_modules/@prisma/',
+    'node_modules/@shitiandmw/',
     'node_modules/prisma/',
   ],
   scripts: {
@@ -140,7 +169,7 @@ const publishPkg = {
   optionalDependencies: {
     fsevents: '~2.3.3',
   },
-  bundledDependencies: ['@agent-tower/shared', '@prisma/client', 'prisma'],
+  bundledDependencies: ['@agent-tower/shared', '@prisma/client', '@shitiandmw/node-pty', 'prisma'],
   engines: {
     node: '>=18.0.0',
   },

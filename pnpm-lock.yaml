@@ -42,8 +42,8 @@ importers:
         specifier: ^5.9.1
         version: 5.22.0(prisma@5.22.0)
       '@shitiandmw/node-pty':
-        specifier: 1.1.0-shitiandmw.1
-        version: 1.1.0-shitiandmw.1
+        specifier: 1.1.0-shitiandmw.2
+        version: 1.1.0-shitiandmw.2
       cloudflared:
         specifier: ^0.7.1
         version: 0.7.1
@@ -1480,8 +1480,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@shitiandmw/node-pty@1.1.0-shitiandmw.1':
-    resolution: {integrity: sha512-ij46GhVrVxVeojqNkBNgnS5YPYX9AFYt0nofuw6SYwp5cRip2GgRynT73d4rt+3ME0R4oTuHnrHEWWKe12Hg4g==}
+  '@shitiandmw/node-pty@1.1.0-shitiandmw.2':
+    resolution: {integrity: sha512-jN6oqcd4RdJn23FTw2yNgD/CGNTpav4mTtPQJMoS148ZsYNQtueOr7qa8AbO3n8sAYmypQ4tmYEid1Pwo0XYjA==}
 
   '@socket.io/component-emitter@3.1.2':
     resolution: {integrity: sha512-9BCxFwvbGg/RsZK9tjXd8s4UcwR0MWeFQ1XEKIQVVvAGJyINdrqKMcTRyLoK8Rse1GjzLV9cwjWV1olXRWEXVA==}
@@ -4876,7 +4876,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.57.1':
     optional: true
 
-  '@shitiandmw/node-pty@1.1.0-shitiandmw.1':
+  '@shitiandmw/node-pty@1.1.0-shitiandmw.2':
     dependencies:
       node-addon-api: 7.1.1
 

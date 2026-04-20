@@ -26,7 +26,7 @@
     "@fastify/static": "^7.0.4",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@prisma/client": "^5.9.1",
-    "@shitiandmw/node-pty": "1.1.0-shitiandmw.1",
+    "@shitiandmw/node-pty": "1.1.0-shitiandmw.2",
     "cloudflared": "^0.7.1",
     "fast-json-patch": "^3.1.1",
     "fastify": "^4.26.0",
