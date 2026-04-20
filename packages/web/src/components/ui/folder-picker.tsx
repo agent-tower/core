@@ -15,6 +15,7 @@ interface DirEntry {
 interface BrowseResponse {
   current: string
   parent: string
+  sep: string
   dirs: DirEntry[]
 }
 
@@ -41,6 +42,7 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
   const [currentPath, setCurrentPath] = useState('')
   const [dirs, setDirs] = useState<DirEntry[]>([])
   const [parentPath, setParentPath] = useState('')
+  const [pathSep, setPathSep] = useState('/')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -69,6 +71,7 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
       const res = await apiClient.get<BrowseResponse>('/filesystem/browse', { params })
       setCurrentPath(res.current)
       setParentPath(res.parent)
+      setPathSep(res.sep || '/')
       setDirs(res.dirs)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to browse directory')
@@ -121,13 +124,25 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
   }, [selectDirectory, browsePath])
 
   // === 面包屑导航 ===
-  const breadcrumbSegments = currentPath ? currentPath.split('/').filter(Boolean) : []
+  const isWindows = pathSep === '\\'
+  const breadcrumbSegments = currentPath
+    ? currentPath.split(/[\\/]/).filter(Boolean)
+    : []
 
   const handleBreadcrumbClick = useCallback((index: number) => {
-    const targetPath = '/' + breadcrumbSegments.slice(0, index + 1).join('/')
+    const segments = breadcrumbSegments.slice(0, index + 1)
+    let targetPath: string
+    if (isWindows) {
+      targetPath = segments.join('\\')
+      if (segments.length === 1 && /^[A-Za-z]:$/.test(segments[0])) {
+        targetPath += '\\'
+      }
+    } else {
+      targetPath = '/' + segments.join('/')
+    }
     browsePath(targetPath)
     setValidationError(null)
-  }, [breadcrumbSegments, browsePath])
+  }, [breadcrumbSegments, browsePath, isWindows])
 
   // === 手动输入路径后按回车 ===
   const handleInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -175,15 +190,19 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
 
       {/* 面包屑导航 */}
       <div className="flex items-center gap-0.5 text-xs text-neutral-500 overflow-x-auto pb-1 scrollbar-none">
-        <button
-          onClick={() => browsePath('/')}
-          className="hover:text-neutral-900 transition-colors flex-shrink-0 px-1 py-0.5 rounded hover:bg-neutral-100"
-        >
-          /
-        </button>
+        {!isWindows && (
+          <button
+            onClick={() => browsePath('/')}
+            className="hover:text-neutral-900 transition-colors flex-shrink-0 px-1 py-0.5 rounded hover:bg-neutral-100"
+          >
+            /
+          </button>
+        )}
         {breadcrumbSegments.map((segment, i) => (
           <span key={i} className="flex items-center gap-0.5 flex-shrink-0">
-            <ChevronRight size={10} className="text-neutral-300" />
+            {(isWindows ? i > 0 : true) && (
+              <ChevronRight size={10} className="text-neutral-300" />
+            )}
             <button
               onClick={() => handleBreadcrumbClick(i)}
               className={cn(

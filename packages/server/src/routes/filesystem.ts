@@ -164,7 +164,7 @@ export async function filesystemRoutes(app: FastifyInstance) {
         })
         .sort((a, b) => a.name.localeCompare(b.name));
 
-      return { current: dirPath, parent: path.dirname(dirPath), dirs };
+      return { current: dirPath, parent: path.dirname(dirPath), sep: path.sep, dirs };
     } catch (error) {
       return handleError(error, reply);
     }
