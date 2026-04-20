@@ -164,7 +164,21 @@ export async function filesystemRoutes(app: FastifyInstance) {
         })
         .sort((a, b) => a.name.localeCompare(b.name));
 
-      return { current: dirPath, parent: path.dirname(dirPath), sep: path.sep, dirs };
+      // Windows: enumerate available drive letters
+      let drives: string[] = [];
+      if (process.platform === 'win32') {
+        for (let c = 65; c <= 90; c++) {
+          const drive = `${String.fromCharCode(c)}:\\`;
+          try {
+            fs.accessSync(drive);
+            drives.push(drive);
+          } catch {
+            // drive not available
+          }
+        }
+      }
+
+      return { current: dirPath, parent: path.dirname(dirPath), sep: path.sep, dirs, drives };
     } catch (error) {
       return handleError(error, reply);
     }

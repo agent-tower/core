@@ -17,6 +17,7 @@ interface BrowseResponse {
   parent: string
   sep: string
   dirs: DirEntry[]
+  drives?: string[]
 }
 
 interface ValidateResponse {
@@ -43,6 +44,7 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
   const [dirs, setDirs] = useState<DirEntry[]>([])
   const [parentPath, setParentPath] = useState('')
   const [pathSep, setPathSep] = useState('/')
+  const [drives, setDrives] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -73,6 +75,7 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
       setParentPath(res.parent)
       setPathSep(res.sep || '/')
       setDirs(res.dirs)
+      if (res.drives) setDrives(res.drives)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to browse directory')
     } finally {
@@ -187,6 +190,26 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
       <p className="text-xs text-neutral-400">
         {t('Browse and select a Git repository, or type a path and press Enter')}
       </p>
+
+      {/* Windows 盘符快捷切换 */}
+      {drives.length > 0 && (
+        <div className="flex items-center gap-1 flex-wrap">
+          {drives.map((drive) => (
+            <button
+              key={drive}
+              onClick={() => { browsePath(drive); setValidationError(null) }}
+              className={cn(
+                'px-2 py-0.5 rounded text-xs font-mono transition-colors border',
+                currentPath.toUpperCase().startsWith(drive.toUpperCase())
+                  ? 'bg-neutral-900 text-white border-neutral-900'
+                  : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100',
+              )}
+            >
+              {drive.replace('\\', '')}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* 面包屑导航 */}
       <div className="flex items-center gap-0.5 text-xs text-neutral-500 overflow-x-auto pb-1 scrollbar-none">

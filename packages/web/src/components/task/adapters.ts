@@ -75,6 +75,7 @@ export function formatAgentType(agentType: AgentType): string {
 
 // ============ 实体适配 ============
 
+// bg-indigo-600 bg-emerald-600 bg-rose-600 bg-amber-600 bg-cyan-600 bg-violet-600 bg-teal-600 bg-pink-600
 /** 预定义的项目颜色，用于后端未返回 color 时根据名称 hash 分配 */
 const PROJECT_COLORS = [
   'text-indigo-600',
