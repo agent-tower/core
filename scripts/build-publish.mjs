@@ -113,8 +113,8 @@ const deps = { ...serverPkg.dependencies };
 deps['@agent-tower/shared'] = sharedPkg.version;
 // prisma 从 devDependencies 提升到 dependencies（bundledDependencies 需要在 deps 中声明）
 deps['prisma'] = serverPkg.devDependencies.prisma;
-// node-pty 已 bundled，从 dependencies 中移除（避免 npm 再次解析安装触发 node-gyp）
-delete deps['@shitiandmw/node-pty'];
+// node-pty 保留在 dependencies 中（bundledDependencies 要求包必须同时在 dependencies 中声明）
+// bundled 的预编译版本会优先使用，npm 不会再触发远程安装/node-gyp
 
 // 8. 将 @shitiandmw/node-pty 预打包（含多平台 prebuilds，避免用户需要 Python/node-gyp/MSVC）
 const nodePtyVersion = serverPkg.dependencies['@shitiandmw/node-pty'];
