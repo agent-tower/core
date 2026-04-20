@@ -106,8 +106,14 @@ async function ensureRepoHasCommit(repoPath: string): Promise<void> {
   try {
     await execGit(repoPath, ['rev-parse', '--verify', 'HEAD']);
   } catch {
-    // HEAD 不存在 → 空仓库，创建初始提交
-    await execGit(repoPath, ['commit', '--allow-empty', '-m', 'chore: initial commit']);
+    try {
+      await execGit(repoPath, ['commit', '--allow-empty', '-m', 'chore: initial commit']);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new ValidationError(
+        `Failed to create initial commit in empty repository: ${msg}`
+      );
+    }
   }
 }
 

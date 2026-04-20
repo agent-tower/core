@@ -42,6 +42,7 @@ function handleError(error: unknown, reply: any) {
     return { error: 'Validation failed', code: 'VALIDATION_ERROR', details: fieldErrors };
   }
 
+  console.error('[filesystem] Unhandled error:', error);
   reply.code(500);
   return { error: 'Internal server error', code: 'INTERNAL_ERROR' };
 }

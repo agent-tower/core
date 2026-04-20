@@ -10,6 +10,7 @@ function handleError(error: unknown, reply: any) {
     return { error: 'Validation failed', code: 'VALIDATION_ERROR', details: error.errors };
   }
 
+  console.error('[git] Unhandled error:', error);
   reply.code(500);
   return { error: 'Internal server error', code: 'INTERNAL_ERROR' };
 }

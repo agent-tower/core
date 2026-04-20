@@ -54,6 +54,7 @@ function handleError(error: unknown, reply: any) {
     }
   }
 
+  console.error('[files] Unhandled error:', error);
   reply.code(500);
   return { error: 'Internal server error', code: 'INTERNAL_ERROR' };
 }

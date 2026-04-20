@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z, ZodError } from 'zod';
 import { ProjectService } from '../services/project.service.js';
 import { ServiceError } from '../errors.js';
+import { GitError } from '../git/git-cli.js';
 
 const createProjectSchema = z.object({
   name: z.string().min(1, 'name is required'),
@@ -57,7 +58,12 @@ function handleError(error: unknown, reply: any) {
     return { error: error.message, code: error.code };
   }
 
-  // 未知错误
+  if (error instanceof GitError) {
+    reply.code(400);
+    return { error: error.message, code: error.code };
+  }
+
+  console.error('[projects] Unhandled error:', error);
   reply.code(500);
   return { error: 'Internal server error', code: 'INTERNAL_ERROR' };
 }

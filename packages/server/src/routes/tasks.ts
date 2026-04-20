@@ -54,7 +54,7 @@ function handleError(error: unknown, reply: any) {
     return { error: error.message, code: error.code };
   }
 
-  // 未知错误
+  console.error('[tasks] Unhandled error:', error);
   reply.code(500);
   return { error: 'Internal server error', code: 'INTERNAL_ERROR' };
 }
