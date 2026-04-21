@@ -17,10 +17,16 @@ function handleError(error: unknown, reply: any) {
 
 /** execFile promisified with timeout */
 function execGit(cwd: string, args: string[]): Promise<string> {
+  const isWindows = process.platform === 'win32';
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout: 10_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+    execFile('git', args, {
+      cwd,
+      timeout: 10_000,
+      maxBuffer: 10 * 1024 * 1024,
+      encoding: 'utf-8',
+      ...(isWindows ? { shell: true } : {}),
+    }, (err, stdout) => {
       if (err) {
-        // git diff returns exit code 1 when there are differences — that's fine
         if (stdout !== undefined && stdout !== '') {
           resolve(stdout);
           return;

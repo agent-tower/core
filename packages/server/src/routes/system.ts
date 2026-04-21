@@ -58,6 +58,8 @@ export async function systemRoutes(app: FastifyInstance) {
       const { stdout } = await execFileAsync('cursor-agent', ['--list-models'], {
         timeout: 25_000,
         maxBuffer: 8 * 1024 * 1024,
+        encoding: 'utf-8',
+        ...(process.platform === 'win32' ? { shell: true } : {}),
       });
       const models = parseCursorAgentListModelsOutput(stdout);
       return { models };
