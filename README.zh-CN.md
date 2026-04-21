@@ -76,7 +76,7 @@ agent-tower
 ### 从源码开发
 
 ```bash
-git clone https://github.com/nicepkg/agent-tower.git
+git clone https://github.com/agent-tower/core.git
 cd agent-tower
 pnpm setup          # 安装依赖 + 构建共享包
 pnpm dev            # 启动所有服务的开发模式

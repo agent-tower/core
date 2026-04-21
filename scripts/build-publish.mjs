@@ -146,6 +146,14 @@ const publishPkg = {
   name: 'agent-tower',
   version: serverPkg.version,
   description: 'AI Agent Task Management Dashboard',
+  repository: {
+    type: 'git',
+    url: 'git+https://github.com/agent-tower/core.git',
+  },
+  homepage: 'https://github.com/agent-tower/core#readme',
+  bugs: {
+    url: 'https://github.com/agent-tower/core/issues',
+  },
   type: 'module',
   license: 'MIT',
   bin: {
@@ -176,6 +184,9 @@ const publishPkg = {
 };
 
 writeFileSync(resolve(publishDir, 'package.json'), JSON.stringify(publishPkg, null, 2) + '\n');
+
+// 9. 复制 README.md
+cpSync(resolve(root, 'README.md'), resolve(publishDir, 'README.md'));
 
 // 7. 在 cli.ts 中设置 AGENT_TOWER_WEB_DIR 指向 dist/web
 // app.ts 只在显式设置 AGENT_TOWER_WEB_DIR 时托管前端静态文件

@@ -76,7 +76,7 @@ Let Claude Code operate the task board directly:
 ### Development from Source
 
 ```bash
-git clone https://github.com/nicepkg/agent-tower.git
+git clone https://github.com/agent-tower/core.git
 cd agent-tower
 pnpm setup          # Install deps + build shared package
 pnpm dev            # Start all services in dev mode
