@@ -52,6 +52,12 @@ describe('process-launch', () => {
     expect(normalizeCommandLookupOutput('C:\\Tools\\codex.cmd\r\nC:\\Other\\codex.cmd\r\n')).toBe('C:\\Tools\\codex.cmd')
   })
 
+  it('should prefer .cmd/.exe over extensionless paths on Windows', () => {
+    expect(normalizeCommandLookupOutput(
+      'C:\\nvm4w\\nodejs\\claude\r\nC:\\nvm4w\\nodejs\\claude.cmd\r\n'
+    )).toBe(process.platform === 'win32' ? 'C:\\nvm4w\\nodejs\\claude.cmd' : 'C:\\nvm4w\\nodejs\\claude')
+  })
+
   it('should resolve terminal shells per platform', () => {
     expect(getDefaultTerminalShell('win32', { COMSPEC: 'C:\\Windows\\System32\\cmd.exe' })).toEqual({
       command: 'C:\\Windows\\System32\\cmd.exe',

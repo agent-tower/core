@@ -82,9 +82,11 @@ export class CodexParser {
    * 处理数据流
    */
   processData(data: string): void {
-    this.buffer += data;
+    // Strip ANSI escape sequences before buffering. Windows ConPTY injects
+    // cursor-control / screen-clear / OSC title sequences into the data
+    // stream that would corrupt JSON parsing.
+    this.buffer += stripAnsiSequences(data);
 
-    // 按行分割
     const lines = this.buffer.split('\n');
     this.buffer = lines.pop() || '';
 

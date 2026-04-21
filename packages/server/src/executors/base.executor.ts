@@ -239,9 +239,15 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? fullEnv.ANTHROPIC_API_KEY.slice(0, 12) + '...' : '(not set)'}`);
     ptyLog(0, `ENV ANTHROPIC_AUTH_TOKEN=${fullEnv.ANTHROPIC_AUTH_TOKEN ? fullEnv.ANTHROPIC_AUTH_TOKEN.slice(0, 12) + '...' : '(not set)'}`);
 
+    // On Windows, ConPTY auto-wraps at the column limit by inserting real
+    // \r\n into the data stream, which breaks JSON parsing. Use very wide
+    // columns to prevent this. Unix PTYs don't inject line breaks, so the
+    // default 120 is fine there and avoids changing behaviour for CLI tools
+    // that respect terminal width.
+    const ptyCols = process.platform === 'win32' ? 16384 : 120;
     const shell = pty.spawn(invocation.command, invocation.args, {
       name: 'xterm-256color',
-      cols: 120,
+      cols: ptyCols,
       rows: 30,
       cwd: config.workingDir,
       env: fullEnv,

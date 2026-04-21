@@ -13,6 +13,7 @@
  * - result: 执行结果元数据
  */
 
+import * as path from 'node:path'
 import type { MsgStore } from './msg-store.js'
 import type { ActionType, ToolStatus } from './types.js'
 import {
@@ -359,18 +360,18 @@ function getToolCallName(toolCall: CursorToolCall): string {
 }
 
 /**
- * 将路径转为相对路径
+ * 将路径转为相对路径（跨平台：处理大小写和不同分隔符）
  */
 function makePathRelative(filePath: string, worktreePath: string): string {
   if (!worktreePath || !filePath) return filePath;
-  if (filePath.startsWith(worktreePath)) {
-    let relative = filePath.slice(worktreePath.length);
-    if (relative.startsWith('/')) {
-      relative = relative.slice(1);
-    }
-    return relative || filePath;
-  }
-  return filePath;
+  const normFile = path.normalize(filePath);
+  const normBase = path.normalize(worktreePath);
+  const isWin = process.platform === 'win32';
+  const fileForCmp = isWin ? normFile.toLowerCase() : normFile;
+  const baseForCmp = isWin ? normBase.toLowerCase() : normBase;
+  if (!fileForCmp.startsWith(baseForCmp)) return filePath;
+  const relative = normFile.slice(normBase.length).replace(/^[\\/]/, '');
+  return relative || filePath;
 }
 
 /**
@@ -522,7 +523,11 @@ export class CursorAgentParser {
    * 处理原始输出数据（可能包含多行或不完整行）
    */
   processData(data: string): void {
-    this.buffer += data;
+    // Strip ANSI escape sequences before buffering. Windows ConPTY injects
+    // cursor-control / screen-clear / OSC title sequences into the data
+    // stream that would corrupt JSON parsing.
+    const cleaned = stripAnsiSequences(data);
+    this.buffer += cleaned;
     const lines = this.buffer.split('\n');
     this.buffer = lines.pop() || '';
 

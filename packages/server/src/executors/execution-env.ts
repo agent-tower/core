@@ -4,6 +4,7 @@
  */
 
 import type { ChildProcess } from 'child_process';
+import * as path from 'node:path';
 import type { CmdOverrides } from './command-builder.js';
 
 /**
@@ -141,7 +142,7 @@ export class ExecutionEnv {
    */
   getRepoPaths(): string[] {
     return this.repoContext.repoNames.map(
-      name => `${this.repoContext.workspaceRoot}/${name}`
+      name => path.join(this.repoContext.workspaceRoot, name)
     );
   }
 }

@@ -4,8 +4,6 @@ import { ConflictOp } from '@agent-tower/shared';
 
 const execFileAsync = promisify(execFile);
 
-const IS_WINDOWS = process.platform === 'win32';
-
 // ─── Custom Error Types ───────────────────────────────────────────────────────
 
 export class GitError extends Error {
@@ -117,7 +115,6 @@ export async function execGit(
       maxBuffer: 10 * 1024 * 1024, // 10 MB
       timeout: options?.timeout ?? 30_000,
       encoding: 'utf-8',
-      ...(IS_WINDOWS ? { shell: true } : {}),
     });
     return stdout;
   } catch (err: unknown) {
@@ -137,7 +134,6 @@ export async function ensureGitAvailable(): Promise<void> {
   try {
     await execFileAsync('git', ['--version'], {
       encoding: 'utf-8',
-      ...(IS_WINDOWS ? { shell: true } : {}),
     });
   } catch {
     throw new GitError(

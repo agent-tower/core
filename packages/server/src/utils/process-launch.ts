@@ -11,7 +11,7 @@ const { spawn } = require('node:child_process');
 const { createReadStream, unlink } = require('node:fs');
 
 const [mode, programPath, ...rest] = process.argv.slice(1);
-const shouldUseShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(programPath);
+const isCmdBat = process.platform === 'win32' && /\.(cmd|bat)$/i.test(programPath);
 
 let child;
 let cleanupTarget = null;
@@ -41,13 +41,27 @@ function exitWithError(error) {
   process.exit(1);
 }
 
+function escapeArgForCmd(arg) {
+  if (/[\s"&|<>^()!]/.test(arg) || arg === '') {
+    return '"' + arg.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  }
+  return arg;
+}
+
+function spawnCmd(args, stdioOpt) {
+  const cmdLine = [programPath, ...args].map(escapeArgForCmd).join(' ');
+  return spawn(process.env.ComSpec || 'cmd.exe', ['/s', '/c', '"' + cmdLine + '"'], {
+    stdio: stdioOpt,
+    windowsVerbatimArguments: true,
+  });
+}
+
 if (mode === 'pipe-file') {
   const [stdinFile, ...args] = rest;
   cleanupTarget = stdinFile;
-  child = spawn(programPath, args, {
-    shell: shouldUseShell,
-    stdio: ['pipe', 'inherit', 'inherit'],
-  });
+  child = isCmdBat
+    ? spawnCmd(args, ['pipe', 'inherit', 'inherit'])
+    : spawn(programPath, args, { stdio: ['pipe', 'inherit', 'inherit'] });
 
   child.on('error', exitWithError);
   child.on('exit', exitWithChildResult);
@@ -66,10 +80,9 @@ if (mode === 'pipe-file') {
     }
   });
 } else {
-  child = spawn(programPath, rest, {
-    shell: shouldUseShell,
-    stdio: 'inherit',
-  });
+  child = isCmdBat
+    ? spawnCmd(rest, 'inherit')
+    : spawn(programPath, rest, { stdio: 'inherit' });
 
   child.on('error', exitWithError);
   child.on('exit', exitWithChildResult);
@@ -131,8 +144,21 @@ export function getPtyLogFilePath(tmpDir: string = os.tmpdir()): string {
 }
 
 export function normalizeCommandLookupOutput(stdout: string): string | null {
-  return stdout
+  const lines = stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find(Boolean) || null;
+    .filter(Boolean);
+
+  if (lines.length === 0) return null;
+
+  // On Windows, `where` may return multiple hits (e.g. `claude`, `claude.cmd`,
+  // `claude.ps1`). The extensionless POSIX shim is not directly executable by
+  // Node's child_process.spawn, so prefer .cmd/.bat/.exe which the PTY wrapper
+  // can handle correctly (with `shell: true` for .cmd/.bat, or natively for .exe).
+  if (process.platform === 'win32' && lines.length > 1) {
+    const preferred = lines.find((l) => /\.(cmd|bat|exe)$/i.test(l));
+    if (preferred) return preferred;
+  }
+
+  return lines[0];
 }

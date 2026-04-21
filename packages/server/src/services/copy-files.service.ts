@@ -72,7 +72,8 @@ function copyByGlob(repoPath: string, worktreePath: string, pattern: string): vo
       const dest = path.join(worktreePath, match);
 
       // 安全检查：确保目标在 worktree 内
-      if (!path.resolve(dest).startsWith(path.resolve(worktreePath))) {
+      const rel = path.relative(path.resolve(worktreePath), path.resolve(dest));
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
         console.warn(`[CopyFiles] Skipping file outside worktree: ${match}`);
         continue;
       }

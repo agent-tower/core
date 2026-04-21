@@ -68,8 +68,8 @@ export async function filesystemRoutes(app: FastifyInstance) {
         return { results: [] };
       }
 
-      // 拆分 prefix 为目录部分和名称前缀
-      const lastSlash = prefix.lastIndexOf('/');
+      // 拆分 prefix 为目录部分和名称前缀（同时识别 / 和 \）
+      const lastSlash = Math.max(prefix.lastIndexOf('/'), prefix.lastIndexOf('\\'));
       const dirPart = lastSlash >= 0 ? prefix.slice(0, lastSlash) : '';
       const namePart = lastSlash >= 0 ? prefix.slice(lastSlash + 1) : prefix;
       const searchDir = path.join(base, dirPart);

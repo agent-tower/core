@@ -189,8 +189,12 @@ export class ClaudeCodeParser {
     if (DEBUG_PARSER) {
       console.log(`[Parser:processData] t=${now} dataLen=${data.length} bufferLen=${this.buffer.length}`);
     }
-    
-    this.buffer += data
+
+    // Strip ANSI escape sequences before buffering. Windows ConPTY injects
+    // cursor-control / screen-clear / OSC title sequences into the data
+    // stream that would corrupt JSON parsing.
+    const cleaned = stripAnsiSequences(data)
+    this.buffer += cleaned
     const lines = this.buffer.split('\n')
     this.buffer = lines.pop() || ''
 

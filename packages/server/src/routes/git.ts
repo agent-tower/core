@@ -17,14 +17,12 @@ function handleError(error: unknown, reply: any) {
 
 /** execFile promisified with timeout */
 function execGit(cwd: string, args: string[]): Promise<string> {
-  const isWindows = process.platform === 'win32';
   return new Promise((resolve, reject) => {
     execFile('git', args, {
       cwd,
       timeout: 10_000,
       maxBuffer: 10 * 1024 * 1024,
       encoding: 'utf-8',
-      ...(isWindows ? { shell: true } : {}),
     }, (err, stdout) => {
       if (err) {
         if (stdout !== undefined && stdout !== '') {
@@ -94,7 +92,7 @@ const diffQuerySchema = z.object({
   path: z
     .string()
     .min(1, 'path is required')
-    .refine((v) => !v.split('/').includes('..'), {
+    .refine((v) => !v.split(/[\\/]/).includes('..'), {
       message: 'Path traversal (..) is not allowed',
     }),
   type: z.enum(['uncommitted', 'committed']),
@@ -117,7 +115,7 @@ const commitDiffQuerySchema = z.object({
   path: z
     .string()
     .min(1, 'path is required')
-    .refine((v) => !v.split('/').includes('..'), {
+    .refine((v) => !v.split(/[\\/]/).includes('..'), {
       message: 'Path traversal (..) is not allowed',
     }),
 });
@@ -211,7 +209,8 @@ export async function gitRoutes(app: FastifyInstance) {
           diff = await execGit(workingDir, ['diff', '--', filePath]);
           // If no staged/unstaged diff, the file might be untracked — show full content as addition
           if (!diff.trim()) {
-            diff = await execGit(workingDir, ['diff', '--no-index', '/dev/null', filePath]).catch(
+            const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
+            diff = await execGit(workingDir, ['diff', '--no-index', nullDevice, filePath]).catch(
               () => '',
             );
           }
