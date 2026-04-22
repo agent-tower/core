@@ -44,7 +44,7 @@ export interface ClaudeCodeConfig {
   approvals?: boolean;
   /** 模型选择 */
   model?: string;
-  /** 推理努力程度 (low | medium | high | max) */
+  /** 推理努力程度 (low | medium | high | xhigh | max) */
   effort?: string;
   /** 跳过权限检查 */
   dangerouslySkipPermissions?: boolean;
