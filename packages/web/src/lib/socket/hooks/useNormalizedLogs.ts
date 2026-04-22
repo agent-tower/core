@@ -81,6 +81,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
   const snapshotLoadedRef = useRef(false)
   const pendingPatchesRef = useRef<SessionPatchPayload[]>([])
+  const loadSnapshotRef = useRef<(() => Promise<void>) | null>(null)
 
   const callbacksRef = useRef({ onAgentSessionId, onExit, onError })
   callbacksRef.current = { onAgentSessionId, onExit, onError }
@@ -99,6 +100,15 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     // Capture whether this session is active at effect creation time.
     // Updated by handleExit so cleanup knows the correct state.
     let isActive = !isTerminalStatus(sessionStatus)
+
+    // If background sync is already keeping the store fresh, take over
+    // BEFORE registering our own handlers — otherwise both handlers would
+    // receive the same PATCH and double-apply it (store drift → eventual
+    // applyPatch validation failure → silent freeze).
+    if (backgroundSync.isSyncing(sessionId)) {
+      backgroundSync.stopSync(sessionId, true)
+      snapshotLoadedRef.current = true
+    }
 
     const handleConnect = () => setIsConnected(true)
     const handleDisconnect = () => {
@@ -128,7 +138,16 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       }
 
       const store = useSessionLogStore.getState()
-      store.applyPatch(sessionId, payload.patch as Operation[])
+      const ok = store.applyPatch(sessionId, payload.patch as Operation[])
+      if (!ok) {
+        // Patch apply failed — store drifted from server. Reset snapshot
+        // state and refetch authoritative state. Buffer subsequent patches
+        // until reload completes.
+        snapshotLoadedRef.current = false
+        pendingPatchesRef.current = []
+        loadSnapshotRef.current?.()
+        return
+      }
       setIsLoading(true)
     }
 
@@ -213,16 +232,16 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
     const store = useSessionLogStore.getState()
 
-    // Case 1: Background sync was keeping store fresh — take over seamlessly
+    // Case 1: Background sync was keeping store fresh — take over seamlessly.
+    // Effect already called stopSync + set snapshotLoadedRef at mount, so
+    // this branch only fires if attach() runs before the effect (rare) or
+    // loadSnapshot is invoked manually. No pending buffer to replay — if
+    // patches arrived before takeover they went to bg handler only.
     if (backgroundSync.isSyncing(sessionId)) {
       backgroundSync.stopSync(sessionId, true) // keep room, remove bg handler
 
       snapshotLoadedRef.current = true
-      const buffered = pendingPatchesRef.current
       pendingPatchesRef.current = []
-      for (const p of buffered) {
-        store.applyPatch(sessionId, p.patch as Operation[])
-      }
 
       if (DEBUG_LOGS) {
         console.log(`[useNormalizedLogs:loadSnapshot] took over from backgroundSync, entries=${store.conversations[sessionId]?.entries.length ?? 0}`)
@@ -296,6 +315,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       setIsLoadingSnapshot(false)
     }
   }, [sessionId])
+
+  loadSnapshotRef.current = loadSnapshot
 
   const attach = useCallback((): Promise<boolean> => {
     return new Promise((resolve) => {
