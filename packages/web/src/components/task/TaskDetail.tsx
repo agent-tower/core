@@ -9,6 +9,7 @@ import {
   type SessionCompletedPayload,
   type TaskUpdatedPayload,
   type WorkspaceCommitMessageUpdatedPayload,
+  type WorkspaceHibernatedPayload,
 } from '@agent-tower/shared/socket'
 import { LogStream } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
@@ -17,7 +18,7 @@ import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@
 import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
-import { useWorkspaces, useOpenInEditor, useGitStatus, useCreateWorkspace } from '@/hooks/use-workspaces'
+import { useWorkspaces, useOpenInEditor, useGitStatus, useCreateWorkspace, useReactivateWorkspace } from '@/hooks/use-workspaces'
 import { queryKeys } from '@/hooks/query-keys'
 import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
@@ -284,7 +285,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
     // Fallback: show the latest session from historical workspaces (read-only history)
     const historySessions: Session[] = workspaces
-      .filter((ws) => (ws.status === 'MERGED' || ws.status === 'ABANDONED') && Array.isArray(ws.sessions))
+      .filter((ws) => (ws.status === 'MERGED' || ws.status === 'ABANDONED' || ws.status === 'HIBERNATED') && Array.isArray(ws.sessions))
       .flatMap((ws) => ws.sessions ?? [])
 
     return pickLatest(historySessions, [SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED])
@@ -403,6 +404,28 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const retryTaskMutation = useRetryTask()
   const createWorkspaceMutation = useCreateWorkspace(task?.id ?? '')
   const startSessionMutation = useStartSession()
+  const reactivateWorkspaceMutation = useReactivateWorkspace()
+
+  // Detect if the task has a hibernated workspace (and no active one)
+  const hibernatedWorkspace = useMemo(() => {
+    if (!workspaces) return null
+    const hasActive = workspaces.some(ws => ws.status === 'ACTIVE')
+    if (hasActive) return null
+    return workspaces.find(ws => ws.status === 'HIBERNATED') ?? null
+  }, [workspaces])
+
+  // Auto-reactivate hibernated workspace when entering TaskDetail
+  const reactivatingRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!hibernatedWorkspace) return
+    if (reactivatingRef.current === hibernatedWorkspace.id) return
+    if (reactivateWorkspaceMutation.isPending) return
+
+    reactivatingRef.current = hibernatedWorkspace.id
+    reactivateWorkspaceMutation.mutate(hibernatedWorkspace.id, {
+      onSettled: () => { reactivatingRef.current = null },
+    })
+  }, [hibernatedWorkspace, reactivateWorkspaceMutation])
 
   const handleRetryTask = useCallback(async () => {
     if (!task?.id) return
@@ -482,12 +505,18 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       if (payload.taskId !== task.id) return
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
     }
+    const handleWorkspaceHibernated = (payload: WorkspaceHibernatedPayload) => {
+      if (payload.taskId !== task.id) return
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
+    }
     socket.on(ServerEvents.TASK_UPDATED, handleTaskUpdated)
     socket.on(ServerEvents.WORKSPACE_COMMIT_MESSAGE_UPDATED, handleWorkspaceCommitMessageUpdated)
+    socket.on(ServerEvents.WORKSPACE_HIBERNATED, handleWorkspaceHibernated)
 
     return () => {
       socket.off(ServerEvents.TASK_UPDATED, handleTaskUpdated)
       socket.off(ServerEvents.WORKSPACE_COMMIT_MESSAGE_UPDATED, handleWorkspaceCommitMessageUpdated)
+      socket.off(ServerEvents.WORKSPACE_HIBERNATED, handleWorkspaceHibernated)
       socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'task', id: task.id })
     }
   }, [task?.id, queryClient])

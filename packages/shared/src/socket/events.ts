@@ -34,6 +34,7 @@ export const ServerEvents = {
   // Workspace setup progress
   WORKSPACE_SETUP_PROGRESS: 'workspace:setup_progress',
   WORKSPACE_COMMIT_MESSAGE_UPDATED: 'workspace:commit_message_updated',
+  WORKSPACE_HIBERNATED: 'workspace:hibernated',
 } as const;
 
 export interface SubscribePayload {
@@ -183,6 +184,12 @@ export interface WorkspaceCommitMessageUpdatedPayload {
   workspaceId: string;
   taskId: string;
   commitMessage: string | null;
+}
+
+export interface WorkspaceHibernatedPayload {
+  workspaceId: string;
+  taskId: string;
+  projectId: string;
 }
 
 export type ClientEventType = typeof ClientEvents[keyof typeof ClientEvents];

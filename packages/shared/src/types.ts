@@ -19,6 +19,7 @@ export enum WorkspaceStatus {
   ACTIVE = 'ACTIVE',
   MERGED = 'MERGED',
   ABANDONED = 'ABANDONED',
+  HIBERNATED = 'HIBERNATED',
 }
 
 /** AI 代理类型 */
@@ -173,6 +174,8 @@ export interface Workspace {
   status: WorkspaceStatus
   /** AI 生成的 commit message（合并时使用） */
   commitMessage?: string | null
+  /** 自动休眠时间 */
+  hibernatedAt?: string | null
   /** 关联的会话列表（API include 时返回） */
   sessions?: Session[]
   createdAt?: string

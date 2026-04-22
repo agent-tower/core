@@ -159,7 +159,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
     if (activeResult) return activeResult
 
     const historySessions: Session[] = workspaces
-      .filter((ws) => (ws.status === 'ABANDONED' || ws.status === 'MERGED') && Array.isArray(ws.sessions))
+      .filter((ws) => (ws.status === 'ABANDONED' || ws.status === 'MERGED' || ws.status === 'HIBERNATED') && Array.isArray(ws.sessions))
       .flatMap((ws) => ws.sessions ?? [])
 
     const historyCandidates = historySessions.filter((session) =>

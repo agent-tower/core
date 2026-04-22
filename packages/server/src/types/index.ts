@@ -12,6 +12,7 @@ export enum WorkspaceStatus {
   ACTIVE = 'ACTIVE',
   MERGED = 'MERGED',
   ABANDONED = 'ABANDONED',
+  HIBERNATED = 'HIBERNATED',
 }
 
 // AI 代理类型

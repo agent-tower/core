@@ -90,6 +90,20 @@ export function useDeleteWorkspace() {
   })
 }
 
+/** 唤醒休眠的 workspace */
+export function useReactivateWorkspace() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiClient.post<Workspace>(`/workspaces/${id}/reactivate`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+    },
+  })
+}
+
 /** 在 IDE 中打开 workspace */
 export function useOpenInEditor() {
   return useMutation({

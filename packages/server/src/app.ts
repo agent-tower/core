@@ -8,8 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { registerRoutes } from './routes/index.js';
 import { initializeSocket, closeSocket } from './socket/index.js';
 import { WorkspaceService } from './services/workspace.service.js';
+import { HibernationScheduler } from './services/hibernation-scheduler.js';
 import { TunnelService } from './services/tunnel.service.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
+
+let hibernationScheduler: HibernationScheduler | null = null;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,10 +69,15 @@ export async function buildApp() {
     WorkspaceService.pruneAllWorktrees().catch((err) => {
       app.log.warn(`Worktree prune on startup failed: ${err instanceof Error ? err.message : err}`);
     });
+
+    // 启动空闲 workspace 自动休眠调度器
+    hibernationScheduler = new HibernationScheduler();
+    hibernationScheduler.start();
   });
 
-  // 服务器关闭时清理 Socket.IO 和 Tunnel
+  // 服务器关闭时清理 Socket.IO、Tunnel 和 HibernationScheduler
   app.addHook('onClose', async () => {
+    hibernationScheduler?.stop();
     TunnelService.stop();
     await closeSocket();
   });

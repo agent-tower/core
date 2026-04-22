@@ -26,6 +26,11 @@ type EventMap = {
     taskId: string;
     commitMessage: string | null;
   };
+  'workspace:hibernated': {
+    workspaceId: string;
+    taskId: string;
+    projectId: string;
+  };
 };
 
 type EventName = keyof EventMap;

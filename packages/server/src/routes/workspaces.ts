@@ -243,10 +243,32 @@ export async function workspaceRoutes(app: FastifyInstance) {
     }
   );
 
+  // ── 唤醒休眠工作空间 ────────────────────────────────────────────────────────
+
+  app.post<{ Params: { id: string } }>(
+    '/workspaces/:id/reactivate',
+    async (request) => {
+      const workspace = await workspaceService.reactivate(request.params.id);
+      return parseWorkspaceSessions(workspace);
+    }
+  );
+
   // ── 系统清理 ────────────────────────────────────────────────────────────────
 
   app.post('/system/cleanup', async () => {
     const cleaned = await workspaceService.cleanup();
     return { success: true, cleaned };
+  });
+
+  // ── 手动触发空闲休眠 ──────────────────────────────────────────────────────
+
+  const hibernateIdleSchema = z.object({
+    idleThresholdHours: z.number().min(1).optional(),
+  });
+
+  app.post('/system/hibernate-idle', async (request) => {
+    const body = hibernateIdleSchema.parse(request.body || {});
+    const hibernated = await workspaceService.hibernateIdle(body.idleThresholdHours);
+    return { success: true, hibernated };
   });
 }

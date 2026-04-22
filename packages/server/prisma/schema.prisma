@@ -48,7 +48,7 @@ model Task {
 }
 
 // 工作空间 (对应一个 git worktree)
-// WorkspaceStatus: ACTIVE, MERGED, ABANDONED
+// WorkspaceStatus: ACTIVE, MERGED, ABANDONED, HIBERNATED
 model Workspace {
   id            String    @id @default(uuid())
   taskId        String
@@ -58,6 +58,7 @@ model Workspace {
   worktreePath  String
   status        String    @default("ACTIVE")
   commitMessage String?   // AI 生成的 commit message（合并时使用）
+  hibernatedAt  DateTime? // 自动休眠时间
   sessions      Session[]
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt

@@ -7,9 +7,12 @@ import { getSessionManager, getEventBus } from '../core/container.js';
 import { copyProjectFiles } from './copy-files.service.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import fs from 'node:fs/promises';
 import type { EventBus } from '../core/event-bus.js';
 import type { GitOperationStatus } from '@agent-tower/shared';
 import { ensureProjectIsMutable } from './project-guards.js';
+
+const DEFAULT_IDLE_THRESHOLD_HOURS = 24;
 
 const execAsync = promisify(exec);
 
@@ -76,28 +79,28 @@ export class WorkspaceService {
 
     const worktreeManager = new WorktreeManager(task.project.repoPath);
 
-    // 查找可复用的 MERGED workspace（branch 已通过 update-ref 保留）
+    // 查找可复用的 MERGED 或 HIBERNATED workspace
     if (!branchName) {
-      const mergedWorkspace = await prisma.workspace.findFirst({
-        where: { taskId, status: WorkspaceStatus.MERGED },
+      const reusableWorkspace = await prisma.workspace.findFirst({
+        where: {
+          taskId,
+          status: { in: [WorkspaceStatus.MERGED, WorkspaceStatus.HIBERNATED] },
+        },
         orderBy: { updatedAt: 'desc' },
       });
 
-      if (mergedWorkspace) {
-        const worktreePath = await worktreeManager.ensureWorktreeExists(mergedWorkspace.branchName);
+      if (reusableWorkspace) {
+        const worktreePath = await worktreeManager.ensureWorktreeExists(reusableWorkspace.branchName);
 
-        // 复用 worktree 时重新执行文件复制（worktree 可能被重建）
         this.runCopyFiles(task.project.repoPath, worktreePath, task.project.copyFiles);
+        this.fireSetupScript(reusableWorkspace.id, taskId, worktreePath, task.project.setupScript);
 
-        // 复用 worktree 时也执行 setup 脚本（fire-and-forget）
-        this.fireSetupScript(mergedWorkspace.id, taskId, worktreePath, task.project.setupScript);
-
-        // 更新 workspace 状态为 ACTIVE
         const updated = await prisma.workspace.update({
-          where: { id: mergedWorkspace.id },
+          where: { id: reusableWorkspace.id },
           data: {
             status: WorkspaceStatus.ACTIVE,
             worktreePath,
+            hibernatedAt: null,
           },
           include: { sessions: true, task: { include: { project: true } } },
         });
@@ -384,6 +387,189 @@ export class WorkspaceService {
       data: { status: WorkspaceStatus.ABANDONED },
       include: { sessions: true, task: { include: { project: true } } },
     });
+  }
+
+  // ── Hibernate / Reactivate ───────────────────────────────────────────────────
+
+  /**
+   * 休眠单个 workspace：auto-commit dirty changes → 删除 worktree 目录 → 标记 HIBERNATED
+   * Branch 保留，可随时通过 reactivate() 恢复。
+   */
+  async hibernate(id: string): Promise<void> {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id },
+      include: {
+        sessions: true,
+        task: { include: { project: true } },
+      },
+    });
+
+    if (!workspace) {
+      throw new NotFoundError('Workspace', id);
+    }
+
+    if (workspace.status !== WorkspaceStatus.ACTIVE) {
+      throw new ServiceError(
+        `Cannot hibernate workspace in ${workspace.status} status`,
+        'INVALID_WORKSPACE_STATE',
+        400,
+      );
+    }
+
+    const hasActiveSessions = workspace.sessions.some(
+      (s) => s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING,
+    );
+    if (hasActiveSessions) {
+      throw new ServiceError(
+        'Cannot hibernate workspace with active sessions',
+        'WORKSPACE_HAS_ACTIVE_SESSIONS',
+        409,
+      );
+    }
+
+    // Auto-commit any dirty changes before removing worktree
+    if (workspace.worktreePath) {
+      const worktreeExists = await fs.access(workspace.worktreePath).then(() => true).catch(() => false);
+      if (worktreeExists) {
+        await this.autoCommitIfDirty(workspace.worktreePath, id);
+
+        try {
+          const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
+          await worktreeManager.remove(workspace.worktreePath);
+        } catch (err) {
+          console.warn(
+            `[WorkspaceService] hibernate: failed to remove worktree for ${id}: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+    }
+
+    await prisma.workspace.update({
+      where: { id },
+      data: {
+        status: WorkspaceStatus.HIBERNATED,
+        worktreePath: '',
+        hibernatedAt: new Date(),
+      },
+    });
+
+    this.eventBus.emit('workspace:hibernated', {
+      workspaceId: id,
+      taskId: workspace.taskId,
+      projectId: workspace.task.projectId,
+    });
+
+    console.log(`[WorkspaceService] Workspace ${id} hibernated (branch: ${workspace.branchName})`);
+  }
+
+  /**
+   * 唤醒休眠的 workspace：从 branch 重建 worktree → 复制文件 → 执行 setup → 恢复 ACTIVE
+   */
+  async reactivate(id: string) {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id },
+      include: { task: { include: { project: true } } },
+    });
+
+    if (!workspace) {
+      throw new NotFoundError('Workspace', id);
+    }
+
+    if (workspace.status !== WorkspaceStatus.HIBERNATED) {
+      throw new ServiceError(
+        `Cannot reactivate workspace in ${workspace.status} status`,
+        'INVALID_WORKSPACE_STATE',
+        400,
+      );
+    }
+
+    const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
+    const worktreePath = await worktreeManager.ensureWorktreeExists(workspace.branchName);
+
+    this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
+    this.fireSetupScript(id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
+
+    const updated = await prisma.workspace.update({
+      where: { id },
+      data: {
+        status: WorkspaceStatus.ACTIVE,
+        worktreePath,
+        hibernatedAt: null,
+      },
+      include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
+    });
+
+    console.log(`[WorkspaceService] Workspace ${id} reactivated at ${worktreePath}`);
+    return updated;
+  }
+
+  /**
+   * 批量休眠空闲 workspace：
+   * - ACTIVE 状态
+   * - 没有运行中的 session
+   * - task 状态不是 IN_PROGRESS / IN_REVIEW
+   * - 超过 idleThresholdHours 未活动
+   *
+   * @returns 休眠的 workspace 数量
+   */
+  async hibernateIdle(idleThresholdHours = DEFAULT_IDLE_THRESHOLD_HOURS): Promise<number> {
+    const cutoff = new Date(Date.now() - idleThresholdHours * 60 * 60 * 1000);
+
+    const candidates = await prisma.workspace.findMany({
+      where: {
+        status: WorkspaceStatus.ACTIVE,
+        worktreePath: { not: '' },
+        task: {
+          status: { notIn: [TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW] },
+        },
+        sessions: {
+          none: {
+            status: { in: [SessionStatus.PENDING, SessionStatus.RUNNING] },
+          },
+        },
+        updatedAt: { lt: cutoff },
+      },
+      select: { id: true, branchName: true },
+    });
+
+    let hibernated = 0;
+    for (const ws of candidates) {
+      try {
+        await this.hibernate(ws.id);
+        hibernated++;
+      } catch (err) {
+        console.warn(
+          `[WorkspaceService] hibernateIdle: failed for workspace ${ws.id}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
+    if (hibernated > 0) {
+      console.log(`[WorkspaceService] hibernateIdle: ${hibernated}/${candidates.length} workspaces hibernated`);
+    }
+
+    return hibernated;
+  }
+
+  /**
+   * Auto-commit all changes in a worktree directory to prevent data loss.
+   */
+  private async autoCommitIfDirty(worktreePath: string, workspaceId: string): Promise<void> {
+    try {
+      const status = await execGit(worktreePath, ['status', '--porcelain']);
+      if (!status.trim()) return;
+
+      await execGit(worktreePath, ['add', '-A']);
+      await execGit(worktreePath, [
+        'commit', '-m',
+        `auto-commit: save changes before hibernation (workspace ${workspaceId.slice(0, 8)})`,
+      ]);
+      console.log(`[WorkspaceService] Auto-committed dirty changes before hibernation for ${workspaceId}`);
+    } catch (err) {
+      console.warn(
+        `[WorkspaceService] Auto-commit before hibernation failed for ${workspaceId}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   // ── Cleanup ──────────────────────────────────────────────────────────────────
