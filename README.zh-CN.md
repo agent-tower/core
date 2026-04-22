@@ -151,6 +151,12 @@ pnpm dev            # 启动所有服务的开发模式
 | 协议 | MCP (Model Context Protocol) |
 | 包管理 | pnpm monorepo |
 
+## 联系方式
+
+如果你有任何问题或建议，欢迎加我微信交流：
+
+<img src="./docs/wechat-qr.jpg" width="200" alt="微信二维码" />
+
 ## 许可证
 
 本项目基于 Apache License 2.0 开源，详情见 [LICENSE](./LICENSE)。

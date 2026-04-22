@@ -151,6 +151,12 @@ pnpm dev            # Start all services in dev mode
 | Protocol | MCP (Model Context Protocol) |
 | Package | pnpm monorepo |
 
+## Contact
+
+If you have any questions or suggestions, feel free to add me on WeChat:
+
+<img src="./docs/wechat-qr.jpg" width="200" alt="WeChat QR Code" />
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.
