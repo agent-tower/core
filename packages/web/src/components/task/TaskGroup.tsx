@@ -32,6 +32,8 @@ interface TaskGroupProps {
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   /** 删除任务回调（右键菜单） */
   onDeleteTask?: (taskId: string) => void
+  /** 移动端禁用拖拽，改用长按菜单 */
+  disableDrag?: boolean
 }
 
 function DraggableTaskCard({
@@ -43,6 +45,7 @@ function DraggableTaskCard({
   onSelectTask,
   onTaskStatusChange,
   onDeleteTask,
+  disableDrag,
 }: {
   task: UITask
   status: UITaskStatus
@@ -52,17 +55,20 @@ function DraggableTaskCard({
   onSelectTask: (id: string) => void
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   onDeleteTask?: (taskId: string) => void
+  disableDrag?: boolean
 }) {
   const { t } = useI18n()
   const isTaskReadOnly = Boolean(task.projectArchivedAt)
+  const dragDisabled = isTaskReadOnly || !!disableDrag
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
     data: { task, fromStatus: status },
-    disabled: isTaskReadOnly,
+    disabled: dragDisabled,
   })
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     if (isTaskReadOnly) return
@@ -71,13 +77,35 @@ function DraggableTaskCard({
     setContextMenu({ x: e.clientX, y: e.clientY })
   }, [isTaskReadOnly, onTaskStatusChange, onDeleteTask])
 
+  const clearLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+  }, [])
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (!disableDrag || isTaskReadOnly || (!onTaskStatusChange && !onDeleteTask)) return
+    const touch = e.touches[0]
+    if (!touch) return
+    const { clientX, clientY } = touch
+    longPressTimer.current = setTimeout(() => {
+      longPressTimer.current = null
+      setContextMenu({ x: clientX, y: clientY })
+    }, 500)
+  }, [disableDrag, isTaskReadOnly, onTaskStatusChange, onDeleteTask])
+
   useEffect(() => {
     if (!contextMenu) return
-    const handler = (e: MouseEvent) => {
+    const handler = (e: MouseEvent | TouchEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setContextMenu(null)
     }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('touchstart', handler)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('touchstart', handler)
+    }
   }, [contextMenu])
 
   return (
@@ -86,14 +114,17 @@ function DraggableTaskCard({
         ref={setNodeRef}
         onClick={() => onSelectTask(task.id)}
         onContextMenu={handleContextMenu}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={clearLongPress}
+        onTouchMove={clearLongPress}
         className={`flex items-start pl-8 pr-4 py-2 text-sm w-full text-left transition-all border-l-2 group
           ${isDragging ? 'opacity-30' : ''}
           ${isSelected
             ? 'bg-neutral-100 border-neutral-800'
             : 'border-transparent hover:bg-neutral-50 hover:border-neutral-200'
           }`}
-        {...(isTaskReadOnly ? {} : listeners)}
-        {...(isTaskReadOnly ? {} : attributes)}
+        {...(dragDisabled ? {} : listeners)}
+        {...(dragDisabled ? {} : attributes)}
       >
         <div className={`mt-0.5 mr-3 flex-shrink-0 ${status === UITaskStatus.Running ? 'text-blue-600' : 'text-neutral-500'}`}>
           {status === UITaskStatus.Review && <IconReview className={isSelected ? "text-amber-600" : "text-neutral-500"} />}
@@ -191,6 +222,7 @@ export const TaskGroup = memo(function TaskGroup({
   dragFromStatus,
   onTaskStatusChange,
   onDeleteTask,
+  disableDrag,
 }: TaskGroupProps) {
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(defaultOpen)
@@ -274,6 +306,7 @@ export const TaskGroup = memo(function TaskGroup({
                   onSelectTask={onSelectTask}
                   onTaskStatusChange={task.projectArchivedAt ? undefined : onTaskStatusChange}
                   onDeleteTask={task.projectArchivedAt ? undefined : onDeleteTask}
+                  disableDrag={disableDrag}
                 />
               )
             })

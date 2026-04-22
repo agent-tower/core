@@ -257,6 +257,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   const { isConnected, isLoadingSnapshot, logs, entries, attach } = useNormalizedLogs({
     sessionId,
+    sessionStatus: activeSession?.status,
     onExit: useCallback(() => {
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }, [queryClient]),
@@ -283,10 +284,17 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   // useNormalizedLogs' internal cleanup already sends UNSUBSCRIBE for the
   // old sessionId when sessionId changes.
 
-  // Scroll to bottom when switching tasks
+  // Snap to bottom instantly when switching tasks (no smooth animation)
+  const prevTaskIdRef = useRef<string | null>(null)
   useEffect(() => {
-    scrollToBottom()
-  }, [task.id, scrollToBottom])
+    if (prevTaskIdRef.current !== task.id && scrollRef.current) {
+      const el = scrollRef.current
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight
+      })
+    }
+    prevTaskIdRef.current = task.id
+  }, [task.id, scrollRef])
 
   // ============ Actions ============
 

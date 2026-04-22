@@ -3,6 +3,7 @@ import { ChevronDown, Plus, Layers, Check } from 'lucide-react'
 import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core'
 import { useI18n } from '@/lib/i18n'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { TaskGroup } from './TaskGroup'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
@@ -69,11 +70,11 @@ export function TaskList({
   onDeleteTask,
 }: TaskListProps) {
   const { t } = useI18n()
+  const isMobile = useIsMobile()
   const [isFilterOpen, setIsFilterOpen] = useState(false)
   const [activeDragTask, setActiveDragTask] = useState<UITask | null>(null)
   const [activeDragFromStatus, setActiveDragFromStatus] = useState<UITaskStatus | null>(null)
 
-  // 需要一定拖拽距离才触发，避免点击误触
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   )
@@ -242,6 +243,7 @@ export function TaskList({
               dragFromStatus={activeDragFromStatus}
               onTaskStatusChange={onTaskStatusChange}
               onDeleteTask={onDeleteTask}
+              disableDrag={isMobile}
             />
           ))}
         </div>

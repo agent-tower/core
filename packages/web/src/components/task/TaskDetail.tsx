@@ -459,6 +459,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     attach,
   } = useNormalizedLogs({
     sessionId,
+    sessionStatus: activeSession?.status,
     onExit: useCallback(() => {
       // Agent PTY 退出后，刷新 workspaces query 让 isSessionActive 更新（停止按钮变回发送按钮）
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
@@ -535,14 +536,17 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   // which is correct). An external detach() here would use the NEW sessionId
   // and incorrectly unsubscribe from the session we just attached to.
 
-  // Scroll to bottom when switching tasks
+  // Snap to bottom instantly when switching tasks (no smooth animation)
   const prevTaskIdRef = useRef(task?.id)
   useEffect(() => {
-    if (prevTaskIdRef.current !== task?.id) {
-      scrollToBottom()
+    if (prevTaskIdRef.current !== task?.id && scrollRef.current) {
+      const el = scrollRef.current
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight
+      })
     }
     prevTaskIdRef.current = task?.id
-  }, [task?.id, scrollToBottom])
+  }, [task?.id, scrollRef])
 
   // ============ Session Actions ============
 

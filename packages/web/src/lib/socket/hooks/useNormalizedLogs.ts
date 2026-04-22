@@ -10,6 +10,7 @@ import {
   type SessionErrorPayload,
   type AckResponse,
 } from '@agent-tower/shared/socket'
+import { SessionStatus } from '@agent-tower/shared'
 import {
   type NormalizedEntry,
   type LogEntry,
@@ -17,17 +18,24 @@ import {
   createCursorEntry,
 } from '@agent-tower/shared/log-adapter'
 import { apiClient } from '../../api-client.js'
+import {
+  useSessionLogStore,
+  EMPTY_CONVERSATION,
+  type NormalizedConversation,
+} from '@/stores/session-log-store.js'
+import { backgroundSync } from './background-session-sync.js'
 
-// Debug 日志开关
 const DEBUG_LOGS = import.meta.env.VITE_DEBUG_LOGS === 'true'
 
-interface NormalizedConversation {
-  sessionId?: string
-  entries: NormalizedEntry[]
+function isTerminalStatus(status?: SessionStatus | string): boolean {
+  return status === SessionStatus.COMPLETED
+    || status === SessionStatus.FAILED
+    || status === SessionStatus.CANCELLED
 }
 
 interface UseNormalizedLogsOptions {
   sessionId: string
+  sessionStatus?: SessionStatus | string
   onAgentSessionId?: (agentSessionId: string) => void
   onExit?: (exitCode: number) => void
   onError?: (message: string) => void
@@ -47,96 +55,87 @@ interface UseNormalizedLogsReturn {
 }
 
 /**
- * 标准化日志 Hook
- * 订阅 PATCH 事件并维护标准化日志状态，自动转换为 LogEntry
+ * Normalized log stream hook.
+ *
+ * Manages WebSocket subscription for a session and stores conversation
+ * data in the global Zustand sessionLogStore so it persists across
+ * task switches. For RUNNING sessions that are switched away from,
+ * a BackgroundSessionSync keeps the store up-to-date via PATCH events.
  */
 export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormalizedLogsReturn {
-  const { sessionId, onAgentSessionId, onExit, onError } = options
+  const { sessionId, sessionStatus, onAgentSessionId, onExit, onError } = options
 
   const [isConnected, setIsConnected] = useState(() => socketManager.isConnected())
   const [isAttached, setIsAttached] = useState(false)
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false)
-  const [conversation, setConversation] = useState<NormalizedConversation>({ entries: [] })
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
-  // Guard: true after snapshot is loaded; prevents PATCH from clobbering snapshot
+  // Read conversation from Zustand store (replaces useState)
+  const conversation = useSessionLogStore(
+    useCallback(
+      (s) => s.conversations[sessionId] ?? EMPTY_CONVERSATION,
+      [sessionId],
+    ),
+  )
+
   const snapshotLoadedRef = useRef(false)
-  // Buffer: PATCH events received before snapshot completes are queued here
   const pendingPatchesRef = useRef<SessionPatchPayload[]>([])
 
-  // 使用 ref 保存回调
   const callbacksRef = useRef({ onAgentSessionId, onExit, onError })
   callbacksRef.current = { onAgentSessionId, onExit, onError }
 
-  // 连接和事件监听
+  // Keep latest sessionStatus accessible in effect closures
+  const sessionStatusRef = useRef(sessionStatus)
+  sessionStatusRef.current = sessionStatus
+
+  // Socket event listeners & cleanup
   useEffect(() => {
     if (!sessionId) return
 
     const socket = socketManager.getSocket()
-    // Sync initial connected state (socket may already be connected from App level)
     setIsConnected(socket.connected)
+
+    // Capture whether this session is active at effect creation time.
+    // Updated by handleExit so cleanup knows the correct state.
+    let isActive = !isTerminalStatus(sessionStatus)
 
     const handleConnect = () => setIsConnected(true)
     const handleDisconnect = () => {
       setIsConnected(false)
       setIsAttached(false)
-      // 断开后可能丢失 PATCH 事件，下次 re-attach 时需要重新加载 snapshot
       snapshotLoadedRef.current = false
       pendingPatchesRef.current = []
     }
 
-    // 处理 JSON Patch 更新
-    let patchCount = 0;
-    const applyOnePatch = (prev: NormalizedConversation, patch: Operation[]): NormalizedConversation => {
-      const startApply = Date.now();
-      const prevCount = prev.entries.length;
-      try {
-        const patched = applyPatch(
-          prev,
-          patch,
-          true, // validate
-          false // mutate (false = immutable; keeps state updater pure)
-        )
-        const newCount = patched.newDocument.entries.length;
-        if (DEBUG_LOGS) {
-          console.log(`[useNormalizedLogs:applyPatch] t=${Date.now()} applyTime=${Date.now() - startApply}ms entries=${prevCount}->${newCount} delta=${newCount - prevCount}`);
-        }
-        return patched.newDocument
-      } catch (error) {
-        console.error('Failed to apply patch:', error, patch)
-        return prev
-      }
-    }
-
+    let patchCount = 0
     const handlePatch = (payload: SessionPatchPayload) => {
       if (payload.sessionId !== sessionId) return
 
-      patchCount++;
-      const now = Date.now();
+      patchCount++
       if (DEBUG_LOGS) {
-        // Log each op's path+op to distinguish user_message add from content replace
-        const opsSummary = (payload.patch as Array<{op: string; path: string}>)
+        const opsSummary = (payload.patch as Array<{ op: string; path: string }>)
           .map(o => `${o.op}:${o.path}`)
-          .join(', ');
-        console.log(`[useNormalizedLogs:handlePatch] t=${now} #${patchCount} sessionId=${sessionId} ops=${payload.patch.length} snapshotLoaded=${snapshotLoadedRef.current} [${opsSummary}]`);
+          .join(', ')
+        console.log(
+          `[useNormalizedLogs:handlePatch] t=${Date.now()} #${patchCount} sessionId=${sessionId} ops=${payload.patch.length} snapshotLoaded=${snapshotLoadedRef.current} [${opsSummary}]`,
+        )
       }
 
-      // If snapshot hasn't loaded yet, buffer the patch
       if (!snapshotLoadedRef.current) {
         pendingPatchesRef.current.push(payload)
         return
       }
 
-      setConversation(prev => applyOnePatch(prev, payload.patch as Operation[]))
+      const store = useSessionLogStore.getState()
+      store.applyPatch(sessionId, payload.patch as Operation[])
       setIsLoading(true)
     }
 
-    // 处理 Agent 内部 session ID
     const handleSessionId = (payload: SessionIdPayload) => {
       if (payload.sessionId !== sessionId) return
       if (DEBUG_LOGS) {
-        console.log(`[useNormalizedLogs:handleSessionId] t=${Date.now()} agentSessionId=${payload.agentSessionId}`);
+        console.log(`[useNormalizedLogs:handleSessionId] t=${Date.now()} agentSessionId=${payload.agentSessionId}`)
       }
       setAgentSessionId(payload.agentSessionId)
       callbacksRef.current.onAgentSessionId?.(payload.agentSessionId)
@@ -144,6 +143,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
 
     const handleExit = (payload: SessionExitPayload) => {
       if (payload.sessionId !== sessionId) return
+      isActive = false
       setIsAttached(false)
       setIsLoading(false)
       callbacksRef.current.onExit?.(payload.exitCode)
@@ -164,7 +164,6 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       setIsAttached(false)
     }
 
-    // 注册事件监听
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
     socket.on(ServerEvents.SESSION_PATCH, handlePatch)
@@ -186,78 +185,111 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       socket.off(ServerEvents.SESSION_SUBSCRIBED, handleAttached)
       socket.off(ServerEvents.SESSION_UNSUBSCRIBED, handleDetached)
 
-      // Reset snapshot guard on session change
       snapshotLoadedRef.current = false
       pendingPatchesRef.current = []
-
-      // 清空旧 session 的日志数据，避免切换任务时显示混乱
-      setConversation({ entries: [] })
       setAgentSessionId(null)
       setIsLoading(false)
 
-      // Always unsubscribe from the room when the effect is torn down.
-      // This avoids leaking room membership when sessionId changes.
-      socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: sessionId })
+      if (isActive) {
+        // RUNNING session: hand off to background sync (keeps room subscription)
+        backgroundSync.startSync(sessionId)
+      } else {
+        // Terminal session: truncate to save memory, unsubscribe from room
+        useSessionLogStore.getState().truncateSession(sessionId)
+        socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: sessionId })
+      }
     }
+  // sessionStatus intentionally excluded — captured via isActive flag inside the effect
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  // Load snapshot from REST API
+  // Load snapshot: check store/background-sync cache first, then fall back to HTTP
   const loadSnapshot = useCallback(async () => {
     if (!sessionId) return
 
     if (DEBUG_LOGS) {
-      console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} start`);
+      console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} start`)
     }
-    setIsLoadingSnapshot(true)
+
+    const store = useSessionLogStore.getState()
+
+    // Case 1: Background sync was keeping store fresh — take over seamlessly
+    if (backgroundSync.isSyncing(sessionId)) {
+      backgroundSync.stopSync(sessionId, true) // keep room, remove bg handler
+
+      snapshotLoadedRef.current = true
+      const buffered = pendingPatchesRef.current
+      pendingPatchesRef.current = []
+      for (const p of buffered) {
+        store.applyPatch(sessionId, p.patch as Operation[])
+      }
+
+      if (DEBUG_LOGS) {
+        console.log(`[useNormalizedLogs:loadSnapshot] took over from backgroundSync, entries=${store.conversations[sessionId]?.entries.length ?? 0}`)
+      }
+
+      if (store.conversations[sessionId]?.entries.length) {
+        setIsLoading(true)
+      }
+      return
+    }
+
+    // Case 2: Store has data for a terminal session — cache is authoritative
+    const cached = store.conversations[sessionId]
+    if (cached && cached.entries.length > 0 && isTerminalStatus(sessionStatusRef.current)) {
+      if (DEBUG_LOGS) {
+        console.log(`[useNormalizedLogs:loadSnapshot] using cached terminal session, entries=${cached.entries.length}`)
+      }
+      store.touchAccess(sessionId)
+      snapshotLoadedRef.current = true
+      pendingPatchesRef.current = []
+      setIsLoading(true)
+      return
+    }
+
+    // Case 3: Fetch from server
+    // Only show loading spinner if store has no data at all
+    const hasStaleData = cached && cached.entries.length > 0
+    if (!hasStaleData) {
+      setIsLoadingSnapshot(true)
+    }
 
     try {
-      // Always fetch latest snapshot; stale HTTP cache can desync patch indexes
-      // after task switching and cause subsequent patches to fail applying.
       const snapshot = await apiClient.get<NormalizedConversation>(
         `/sessions/${sessionId}/logs`,
-        { cache: 'no-store' }
+        { cache: 'no-store' },
       )
 
       if (DEBUG_LOGS) {
-        console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} entries=${snapshot.entries.length}`);
+        console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} fetched entries=${snapshot.entries.length}`)
       }
 
-      // Atomically capture pending buffer and flip the flag so that any
-      // patches arriving from this point on go through handlePatch directly
-      // instead of being buffered (and then lost).
-      const bufferedPatches = pendingPatchesRef.current
+      const buffered = pendingPatchesRef.current
       pendingPatchesRef.current = []
       snapshotLoadedRef.current = true
 
-      // Apply snapshot as base state, then replay any buffered patches
-      setConversation(() => {
-        let state: NormalizedConversation = snapshot
-        for (const buffered of bufferedPatches) {
-          const startApply = Date.now();
-          try {
-            const patched = applyPatch(
-              state,
-              buffered.patch as Operation[],
-              true,
-              false // immutable replay to avoid mutating captured snapshot/state
-            )
-            if (DEBUG_LOGS) {
-              console.log(`[useNormalizedLogs:loadSnapshot] replay buffered patch, applyTime=${Date.now() - startApply}ms entries=${patched.newDocument.entries.length}`);
-            }
-            state = patched.newDocument
-          } catch (error) {
-            console.error('Failed to replay buffered patch:', error)
-          }
+      let state: NormalizedConversation = snapshot
+      for (const p of buffered) {
+        try {
+          const patched = applyPatch(
+            state,
+            p.patch as Operation[],
+            true,
+            false,
+          )
+          state = patched.newDocument
+        } catch (error) {
+          console.error('Failed to replay buffered patch:', error)
         }
-        return state
-      })
+      }
 
-      if (snapshot.entries.length > 0) {
+      store.setConversation(sessionId, state)
+
+      if (state.entries.length > 0) {
         setIsLoading(true)
       }
     } catch (error) {
       console.error('[useNormalizedLogs:loadSnapshot] Failed to load snapshot:', error)
-      // On failure, still mark loaded so patches aren't buffered forever
       snapshotLoadedRef.current = true
       pendingPatchesRef.current = []
     } finally {
@@ -265,13 +297,12 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     }
   }, [sessionId])
 
-  // Attach 到终端会话
   const attach = useCallback((): Promise<boolean> => {
     return new Promise((resolve) => {
       const socket = socketManager.getSocket()
 
       if (DEBUG_LOGS) {
-        console.log(`[useNormalizedLogs:attach] t=${Date.now()} sessionId=${sessionId} connected=${socket.connected} snapshotLoaded=${snapshotLoadedRef.current}`);
+        console.log(`[useNormalizedLogs:attach] t=${Date.now()} sessionId=${sessionId} connected=${socket.connected} snapshotLoaded=${snapshotLoadedRef.current}`)
       }
 
       if (!socket.connected) {
@@ -279,64 +310,53 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
         return
       }
 
-      // 如果 snapshot 已经加载且仍有效，说明是 re-attach（如 reconnect），
-      // 不需要重新加载 snapshot，PATCH 事件通过 EventEmitter 持续转发
       if (snapshotLoadedRef.current) {
         if (DEBUG_LOGS) {
-          console.log(`[useNormalizedLogs:attach] skipping loadSnapshot — already have live state`);
+          console.log(`[useNormalizedLogs:attach] skipping loadSnapshot — already have live state`)
         }
-        // 仍然 emit ATTACH 以确保加入 room
         socket.emit(
           ClientEvents.SUBSCRIBE,
           { topic: 'session', id: sessionId },
           (response: AckResponse) => {
             resolve(response.success)
-          }
+          },
         )
         return
       }
 
-      const emitTime = Date.now();
+      const emitTime = Date.now()
       socket.emit(
         ClientEvents.SUBSCRIBE,
         { topic: 'session', id: sessionId },
         (response: AckResponse) => {
           if (DEBUG_LOGS) {
-            console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success}`);
+            console.log(`[useNormalizedLogs:attach] t=${Date.now()} ack received, roundtrip=${Date.now() - emitTime}ms success=${response.success}`)
           }
-
-          // 无论 attach 成功或失败，都加载 snapshot
-          // 成功：运行中 session，snapshot + 实时 PATCH
-          // 失败：已结束 session，从 DB 加载持久化 snapshot
           loadSnapshot()
           resolve(response.success)
-        }
+        },
       )
     })
   }, [sessionId, loadSnapshot])
 
-  // Detach 从终端会话
   const detach = useCallback(() => {
     const socket = socketManager.getSocket()
     socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: sessionId })
   }, [sessionId])
 
-  // 发送输入
   const sendInput = useCallback((data: string) => {
     const socket = socketManager.getSocket()
     socket.emit(ClientEvents.INPUT, { sessionId, data })
   }, [sessionId])
 
-  // 清空日志
   const clearLogs = useCallback(() => {
-    setConversation({ entries: [] })
+    useSessionLogStore.getState().removeSession(sessionId)
     setAgentSessionId(null)
     setIsLoading(false)
     snapshotLoadedRef.current = false
     pendingPatchesRef.current = []
-  }, [])
+  }, [sessionId])
 
-  // 转换为 LogEntry 格式（useMemo 避免每次 render 重算）
   const logs = useMemo(() => {
     const result = normalizedEntriesToLogEntries(conversation.entries)
     if (isLoading && isAttached) {
