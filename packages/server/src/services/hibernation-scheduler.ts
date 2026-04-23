@@ -47,6 +47,7 @@ export class HibernationScheduler {
 
     try {
       const service = new WorkspaceService();
+      await service.cleanup();
       await service.hibernateIdle(this.idleThresholdHours);
     } finally {
       this.running = false;

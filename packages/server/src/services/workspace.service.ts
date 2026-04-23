@@ -303,10 +303,16 @@ export class WorkspaceService {
    * @returns squash commit 的 SHA
    */
   async merge(id: string, commitMessage?: string): Promise<string> {
+    const totalStart = performance.now();
+    const step = (label: string, start: number) =>
+      console.log(`[WorkspaceService.merge] ${label}: ${(performance.now() - start).toFixed(0)}ms`);
+
+    let t = performance.now();
     const workspace = await prisma.workspace.findUnique({
       where: { id },
       include: { task: { include: { project: true } } },
     });
+    step('db findUnique', t);
 
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
@@ -316,26 +322,32 @@ export class WorkspaceService {
     // 优先使用传入的 commitMessage，其次使用 AI 生成的缓存
     const message = commitMessage || workspace.commitMessage || undefined;
 
+    t = performance.now();
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     const { sha } = await worktreeManager.merge(
       workspace.worktreePath,
       this.getBaseBranch(workspace),
       message ? { commitMessage: message } : undefined
     );
+    step('worktreeManager.merge', t);
 
-    // 更新 workspace：标记 MERGED，清空 worktreePath（物理目录已删除）
+    // 更新 workspace：标记 MERGED，保留 worktreePath 供 cleanup() 后续清理物理目录
+    t = performance.now();
     await prisma.workspace.update({
       where: { id },
-      data: { status: WorkspaceStatus.MERGED, worktreePath: '' },
+      data: { status: WorkspaceStatus.MERGED },
     });
+    step('db update workspace', t);
 
     // Task 推进到 DONE
     const advanceableStatuses = [TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW];
     if (advanceableStatuses.includes(workspace.task.status as TaskStatus)) {
+      t = performance.now();
       await prisma.task.update({
         where: { id: workspace.task.id },
         data: { status: TaskStatus.DONE },
       });
+      step('db update task', t);
       this.eventBus.emit('task:updated', {
         taskId: workspace.task.id,
         projectId: workspace.task.projectId,
@@ -343,6 +355,7 @@ export class WorkspaceService {
       });
     }
 
+    console.log(`[WorkspaceService.merge] TOTAL: ${(performance.now() - totalStart).toFixed(0)}ms`);
     return sha;
   }
 
@@ -607,14 +620,15 @@ export class WorkspaceService {
             // branch 可能已不存在，忽略
           }
         }
+
+        await prisma.workspace.delete({ where: { id: workspace.id } });
+        cleaned++;
       } catch (err) {
+        // worktree 删除失败时保留 DB 记录，下次 scan 重试
         console.warn(
           `[WorkspaceService] cleanup: failed for workspace ${workspace.id}: ${err instanceof Error ? err.message : err}`
         );
       }
-
-      await prisma.workspace.delete({ where: { id: workspace.id } });
-      cleaned++;
     }
 
     return cleaned;

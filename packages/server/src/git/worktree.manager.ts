@@ -293,26 +293,39 @@ export class WorktreeManager {
     targetBranch: string,
     options?: { commitMessage?: string }
   ): Promise<{ sha: string; taskBranch: string }> {
+    const mergeStart = performance.now();
+    const step = (label: string, start: number) =>
+      console.log(`[WorktreeManager.merge] ${label}: ${(performance.now() - start).toFixed(0)}ms`);
+
     // Determine the current branch of the worktree
+    let t = performance.now();
     const currentBranchRaw = await execGit(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']);
     const taskBranch = currentBranchRaw.trim();
+    step('rev-parse branch', t);
 
     // 1. Check worktree is clean
+    t = performance.now();
     const clean = await this.isWorktreeClean(worktreePath);
+    step('isWorktreeClean', t);
     if (!clean) {
       throw new WorktreeDirtyError(worktreePath);
     }
 
     // 2. Check branch divergence
+    t = performance.now();
     const status = await this.getBranchStatus(taskBranch, targetBranch);
+    step('getBranchStatus', t);
     if (status.behind > 0) {
       throw new BranchesDivergedError(taskBranch, targetBranch, status.ahead, status.behind);
     }
 
     // 3. Checkout target branch in main repo
+    t = performance.now();
     await execGit(this.repoPath, ['checkout', targetBranch]);
+    step('checkout target', t);
 
     // 4. Squash merge (no commit yet)
+    t = performance.now();
     try {
       await execGit(this.repoPath, [
         'merge',
@@ -334,23 +347,31 @@ export class WorktreeManager {
       }
       throw err;
     }
+    step('squash merge', t);
 
     // 5. Commit the squash
+    t = performance.now();
     const message =
       options?.commitMessage ?? `squash merge branch '${taskBranch}'`;
     await execGit(this.repoPath, ['commit', '-m', message]);
+    step('commit', t);
 
     // 6. Get the merge commit SHA
+    t = performance.now();
     const sha = (await execGit(this.repoPath, ['rev-parse', 'HEAD'])).trim();
+    step('rev-parse SHA', t);
 
     // 7. Update task branch ref to point to the merge commit.
     //    This allows future work to continue from the merged state without conflicts.
     //    参考: vibe-kanban crates/git/src/lib.rs:873-879
+    t = performance.now();
     await execGit(this.repoPath, ['update-ref', `refs/heads/${taskBranch}`, sha]);
+    step('update-ref', t);
 
-    // 8. Remove worktree (but keep the branch for future reuse)
-    await this.remove(worktreePath);
+    // Worktree 目录不在此处删除，由 WorkspaceService.cleanup() 统一清理。
+    // 避免 merge 同步等待大量文件删除（node_modules 等）。
 
+    console.log(`[WorktreeManager.merge] TOTAL: ${(performance.now() - mergeStart).toFixed(0)}ms`);
     return { sha, taskBranch };
   }
 
