@@ -235,11 +235,11 @@ export class SessionManager {
         `[SessionManager:snapshot] sendMessage userPatch sessionId=${id} index=${userIndex} currentIndex=${msgStore.entryIndex.current()}`
       );
     }
-    msgStore.pushPatch(userPatch);
+    const userPatchSeq = msgStore.pushPatch(userPatch);
     // Emit directly to EventBus — the old pipeline was already destroyed so
     // MsgStore's patchListeners are empty at this point. Without this line
     // the user-message patch would never reach WebSocket subscribers.
-    this.eventBus.emit('session:patch', { sessionId: id, patch: userPatch });
+    this.eventBus.emit('session:patch', { sessionId: id, patch: userPatch, seq: userPatchSeq });
 
     const agentSessionId = this.resolveAgentSessionId(id, session.logSnapshot);
     const agentType = session.agentType as AgentType;

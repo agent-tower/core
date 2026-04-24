@@ -47,13 +47,17 @@ export class MsgStore {
   private finished = false;
   private baseSnapshot: NormalizedConversation | null = null;
   readonly entryIndex: EntryIndexProvider;
-  private patchListeners = new Set<(patch: JsonPatch) => void>();
   private sessionIdListeners = new Set<(id: string) => void>();
   private finishedListeners = new Set<() => void>();
 
   // Incremental snapshot cache: avoid replaying all patches on every getSnapshot() call
   private cachedSnapshot: NormalizedConversation | null = null;
   private cachedUpToIndex = -1; // index of last message applied to cachedSnapshot
+
+  // Monotonic patch sequence — emitted with each patch so clients can dedupe
+  // patches that arrived between SUBSCRIBE join and snapshot fetch.
+  private patchSeq = 0;
+  private patchListeners = new Set<(patch: JsonPatch, seq: number) => void>();
 
   constructor() {
     this.entryIndex = new EntryIndexProvider();
@@ -66,6 +70,9 @@ export class MsgStore {
   restoreFromSnapshot(snapshot: NormalizedConversation): void {
     this.baseSnapshot = snapshot;
     this.entryIndex.startFrom(snapshot.entries.length);
+    // Continue seq from the persisted snapshot so clients can't confuse
+    // restored-session patches with a fresh session's seq=1.
+    this.patchSeq = snapshot.seq ?? 0;
     // Invalidate cache — will be rebuilt from new base on next getSnapshot()
     this.cachedSnapshot = null;
     this.cachedUpToIndex = -1;
@@ -97,7 +104,7 @@ export class MsgStore {
     }
     if (msg.type === 'patch') {
       for (const listener of this.patchListeners) {
-        listener(msg.patch);
+        listener(msg.patch, msg.seq);
       }
     }
     if (msg.type === 'session_id') {
@@ -123,9 +130,12 @@ export class MsgStore {
 
   /**
    * 推送 patch
+   * @returns 分配给此 patch 的 seq（调用方需要直接 emit 时使用）
    */
-  pushPatch(patch: JsonPatch): void {
-    this.push({ type: 'patch', patch });
+  pushPatch(patch: JsonPatch): number {
+    const seq = ++this.patchSeq;
+    this.push({ type: 'patch', patch, seq });
+    return seq;
   }
 
   /**
@@ -205,7 +215,7 @@ export class MsgStore {
       this.cachedUpToIndex = this.messages.length - 1;
 
       // Return a shallow copy so callers can't mutate our cache
-      return { ...conversation, entries: [...conversation.entries] };
+      return { ...conversation, entries: [...conversation.entries], seq: this.patchSeq };
     }
 
     // No cache — full rebuild from baseSnapshot
@@ -236,10 +246,10 @@ export class MsgStore {
     this.cachedSnapshot = conversation;
     this.cachedUpToIndex = this.messages.length - 1;
 
-    return { ...conversation, entries: [...conversation.entries] };
+    return { ...conversation, entries: [...conversation.entries], seq: this.patchSeq };
   }
 
-  onPatch(handler: (patch: JsonPatch) => void): () => void {
+  onPatch(handler: (patch: JsonPatch, seq: number) => void): () => void {
     this.patchListeners.add(handler);
     return () => this.patchListeners.delete(handler);
   }

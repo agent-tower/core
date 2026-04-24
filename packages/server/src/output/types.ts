@@ -17,7 +17,7 @@ export type JsonPatch = JsonPatchOperation[]
 export type LogMsg =
   | { type: 'stdout'; data: string }
   | { type: 'stderr'; data: string }
-  | { type: 'patch'; patch: JsonPatch }
+  | { type: 'patch'; patch: JsonPatch; seq: number }
   | { type: 'session_id'; id: string }
   | { type: 'message_id'; id: string }
   | { type: 'finished' }
@@ -98,6 +98,9 @@ export interface NormalizedEntry {
 export interface NormalizedConversation {
   sessionId?: string
   entries: NormalizedEntry[]
+  /** Monotonic sequence number of the last patch applied to this snapshot.
+   * Clients use this to dedupe patches received between SUBSCRIBE and snapshot fetch. */
+  seq?: number
 }
 
 // 辅助函数：创建用户消息

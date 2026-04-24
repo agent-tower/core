@@ -23,8 +23,8 @@ export class AgentPipeline {
     private readonly msgStore: MsgStore,
     private readonly eventBus: EventBus
   ) {
-    this.offPatch = this.msgStore.onPatch((patch) => {
-      this.eventBus.emit('session:patch', { sessionId: this.sessionId, patch });
+    this.offPatch = this.msgStore.onPatch((patch, seq) => {
+      this.eventBus.emit('session:patch', { sessionId: this.sessionId, patch, seq });
     });
     this.offSessionId = this.msgStore.onSessionId((agentSessionId) => {
       this.eventBus.emit('session:sessionId', { sessionId: this.sessionId, agentSessionId });

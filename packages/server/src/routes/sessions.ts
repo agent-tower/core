@@ -219,14 +219,17 @@ export async function sessionRoutes(app: FastifyInstance) {
       // 从数据库读取持久化的日志快照
       if (session.logSnapshot) {
         try {
-          return JSON.parse(session.logSnapshot);
+          const parsed = JSON.parse(session.logSnapshot);
+          // Terminal sessions: no more patches arrive; client sees this as fully synced.
+          if (typeof parsed.seq !== 'number') parsed.seq = 0;
+          return parsed;
         } catch {
-          return { entries: [] };
+          return { entries: [], seq: 0 };
         }
       }
 
       // MsgStore 不存在且无持久化数据，返回空快照
-      return { entries: [] };
+      return { entries: [], seq: 0 };
     }
   );
 }

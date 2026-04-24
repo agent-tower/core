@@ -93,8 +93,8 @@ export class SocketGateway {
     const onStdout = ({ sessionId, data }: { sessionId: string; data: string }) => {
       this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_STDOUT, { sessionId, data });
     };
-    const onPatch = ({ sessionId, patch }: { sessionId: string; patch: unknown[] }) => {
-      this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_PATCH, { sessionId, patch });
+    const onPatch = ({ sessionId, patch, seq }: { sessionId: string; patch: unknown[]; seq: number }) => {
+      this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_PATCH, { sessionId, patch, seq });
     };
     const onSessionId = ({ sessionId, agentSessionId }: { sessionId: string; agentSessionId: string }) => {
       this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_ID, { sessionId, agentSessionId });

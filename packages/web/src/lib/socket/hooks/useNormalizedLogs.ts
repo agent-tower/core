@@ -138,7 +138,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       }
 
       const store = useSessionLogStore.getState()
-      const ok = store.applyPatch(sessionId, payload.patch as Operation[])
+      const ok = store.applyPatch(sessionId, payload.patch as Operation[], payload.seq)
       if (!ok) {
         // Patch apply failed — store drifted from server. Reset snapshot
         // state and refetch authoritative state. Buffer subsequent patches
@@ -288,7 +288,12 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       snapshotLoadedRef.current = true
 
       let state: NormalizedConversation = snapshot
+      const snapshotSeq = typeof snapshot.seq === 'number' ? snapshot.seq : 0
+      let highestSeq = snapshotSeq
       for (const p of buffered) {
+        // Dedupe: any patch already reflected in the snapshot must not be reapplied.
+        // Without this, `add` ops (which are "insert" on arrays) duplicate entries.
+        if (typeof p.seq === 'number' && p.seq <= snapshotSeq) continue
         try {
           const patched = applyPatch(
             state,
@@ -297,10 +302,12 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
             false,
           )
           state = patched.newDocument
+          if (typeof p.seq === 'number' && p.seq > highestSeq) highestSeq = p.seq
         } catch (error) {
           console.error('Failed to replay buffered patch:', error)
         }
       }
+      state = { ...state, seq: highestSeq }
 
       store.setConversation(sessionId, state)
 

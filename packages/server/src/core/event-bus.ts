@@ -1,6 +1,6 @@
 type EventMap = {
   'session:stdout': { sessionId: string; data: string };
-  'session:patch': { sessionId: string; patch: unknown[] };
+  'session:patch': { sessionId: string; patch: unknown[]; seq: number };
   'session:exit': { sessionId: string; exitCode?: number };
   'session:completed': { sessionId: string; status: string };
   'session:started': { sessionId: string };

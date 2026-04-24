@@ -5,6 +5,8 @@ import type { NormalizedEntry } from '@agent-tower/shared/log-adapter'
 export interface NormalizedConversation {
   sessionId?: string
   entries: NormalizedEntry[]
+  /** Last applied patch seq. Used to dedupe out-of-window patches. */
+  seq?: number
 }
 
 const EMPTY_CONVERSATION: NormalizedConversation = { entries: [] }
@@ -19,9 +21,10 @@ interface SessionLogState {
   setConversation: (sessionId: string, data: NormalizedConversation) => void
   /**
    * Apply a JSON Patch to a session's conversation.
+   * If `seq` is provided, patches with seq <= stored seq are silently skipped (already applied).
    * Returns false if the session is not in the store or the patch fails.
    */
-  applyPatch: (sessionId: string, patch: Operation[]) => boolean
+  applyPatch: (sessionId: string, patch: Operation[], seq?: number) => boolean
   touchAccess: (sessionId: string) => void
   /**
    * Truncate a session's entries to the last TRUNCATE_ENTRIES.
@@ -60,13 +63,23 @@ export const useSessionLogStore = create<SessionLogState>((set, get) => ({
     })
   },
 
-  applyPatch: (sessionId, patch) => {
+  applyPatch: (sessionId, patch, seq) => {
     const current = get().conversations[sessionId]
     if (!current) return false
+    // Dedupe: patches with seq <= currentSeq are already applied (snapshot
+    // fetched after the patch was broadcast, so it's baked into the snapshot).
+    // Returning true signals "handled" — caller must not treat this as an error.
+    if (typeof seq === 'number' && typeof current.seq === 'number' && seq <= current.seq) {
+      return true
+    }
     try {
       const result = applyPatch(current, patch, true, false)
+      const next: NormalizedConversation = {
+        ...result.newDocument,
+        seq: typeof seq === 'number' ? seq : current.seq,
+      }
       set((state) => ({
-        conversations: { ...state.conversations, [sessionId]: result.newDocument },
+        conversations: { ...state.conversations, [sessionId]: next },
       }))
       return true
     } catch (error) {

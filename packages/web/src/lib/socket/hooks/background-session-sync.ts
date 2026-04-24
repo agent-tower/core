@@ -30,7 +30,7 @@ class BackgroundSessionSync {
     const patchHandler = (payload: SessionPatchPayload) => {
       if (payload.sessionId !== sessionId) return
       const store = useSessionLogStore.getState()
-      const ok = store.applyPatch(sessionId, payload.patch as Operation[])
+      const ok = store.applyPatch(sessionId, payload.patch as Operation[], payload.seq)
       if (!ok) {
         this.stopSync(sessionId)
       }

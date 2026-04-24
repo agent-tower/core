@@ -66,6 +66,7 @@ export interface SessionStdoutPayload {
 export interface SessionPatchPayload {
   sessionId: string;
   patch: JsonPatchOperation[];
+  seq: number;
 }
 
 export interface SessionExitPayload {
