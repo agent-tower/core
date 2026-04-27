@@ -10,7 +10,6 @@ import type { LogMsg, JsonPatch, NormalizedConversation } from './types.js';
 
 const { applyPatch } = jsonpatch;
 const MAX_MEMORY_BYTES = 100 * 1024 * 1024;
-const DEBUG_MSGSTORE = process.env.DEBUG_MSGSTORE === 'true';
 
 /**
  * 估算字符串字节大小
@@ -80,14 +79,23 @@ export class MsgStore {
 
   /**
    * 推送消息
+   *
+   * 内存控制策略：
+   * 1. dedup: streaming 文本/工具状态会用同 path 反复 replace 推送完整新值。
+   *    新 replace 进来时，删除先前同 path 的 replace —— 旧值已被覆盖，留着只会 O(n²) 爆内存。
+   * 2. FIFO 兜底：dedup 之后仍超过 MAX_MEMORY_BYTES 时，把最旧的消息折叠进 baseSnapshot
+   *    再丢弃。这样后续 patch 仍能在正确的 base 上重放，不会因丢失 add 指令而全军覆没。
    */
   push(msg: LogMsg): void {
+    if (msg.type === 'patch') {
+      this.dropStaleReplaces(msg.patch);
+    }
+
     const bytes = estimateMsgBytes(msg);
     while (this.totalBytes + bytes > MAX_MEMORY_BYTES && this.messages.length > 0) {
-      const removed = this.messages.shift();
-      if (removed) {
-        this.totalBytes -= estimateMsgBytes(removed);
-      }
+      const removed = this.messages.shift()!;
+      this.foldEvictedIntoBase(removed);
+      this.totalBytes -= estimateMsgBytes(removed);
       // FIFO eviction invalidates the incremental cache — the base messages are gone
       this.cachedSnapshot = null;
       this.cachedUpToIndex = -1;
@@ -136,6 +144,96 @@ export class MsgStore {
     const seq = ++this.patchSeq;
     this.push({ type: 'patch', patch, seq });
     return seq;
+  }
+
+  /**
+   * 同 path 的 replace 是覆盖语义：旧值会被新值压过去，留在 messages 数组里
+   * 只会浪费内存（streaming 文本/工具状态会反复触发同 path replace）。
+   *
+   * 注意：仅修改 messages 数组（服务端重建快照所用），不影响已 emit 给前端的事件。
+   * 前端用 seq 单调去重，旧 patch 已抵达即已 apply，删除内存副本不影响一致性。
+   */
+  private dropStaleReplaces(newPatch: JsonPatch): void {
+    const replacePaths = new Set<string>();
+    for (const op of newPatch) {
+      if (op.op === 'replace') replacePaths.add(op.path);
+    }
+    if (replacePaths.size === 0) return;
+
+    // Fast path: 紧邻同 path replace 是热路径（streaming 文本/工具状态、单 PTY chunk 内连续 delta）。
+    // 仅当 last 消息是 patch、所有 op 都是 replace 且全部 path 都被新 patch 覆盖时，
+    // 直接整条替换，省掉全数组扫描。
+    const last = this.messages[this.messages.length - 1];
+    if (
+      last?.type === 'patch' &&
+      last.patch.length > 0 &&
+      last.patch.every(
+        (op) => op.op === 'replace' && replacePaths.has(op.path)
+      )
+    ) {
+      this.totalBytes -= estimateMsgBytes(last);
+      this.messages.pop();
+      this.cachedSnapshot = null;
+      this.cachedUpToIndex = -1;
+      return;
+    }
+
+    // Slow path: 跨 stdout/跨 PTY chunk 的非紧邻同 path replace 仍需倒序扫全数组。
+    let mutated = false;
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.type !== 'patch') continue;
+      const filtered = m.patch.filter(
+        (op) => !(op.op === 'replace' && replacePaths.has(op.path))
+      );
+      if (filtered.length === m.patch.length) continue;
+
+      const oldBytes = estimateMsgBytes(m);
+      if (filtered.length === 0) {
+        this.messages.splice(i, 1);
+        this.totalBytes -= oldBytes;
+      } else {
+        m.patch = filtered;
+        const newBytes = estimateMsgBytes(m);
+        this.totalBytes -= oldBytes - newBytes;
+      }
+      mutated = true;
+    }
+
+    if (mutated) {
+      this.cachedSnapshot = null;
+      this.cachedUpToIndex = -1;
+    }
+  }
+
+  /**
+   * 把被 FIFO 驱逐的消息折叠进 baseSnapshot。
+   * 这样 messages 数组不再持有该消息的字节，但其对 entries 的状态贡献被永久保留在 base 上。
+   * 后续 getSnapshot() 重建时仍然得到完整状态，避免出现 entries=[] 但 seq 飞涨的灾难性结果。
+   */
+  private foldEvictedIntoBase(removed: LogMsg): void {
+    if (removed.type === 'patch') {
+      const base: NormalizedConversation = this.baseSnapshot
+        ? (JSON.parse(JSON.stringify(this.baseSnapshot)) as NormalizedConversation)
+        : { entries: [] };
+      try {
+        const result = applyPatch(base, removed.patch as Operation[], true, true);
+        this.baseSnapshot = result.newDocument as NormalizedConversation;
+      } catch (error) {
+        const first = (removed.patch as Array<{ op?: string; path?: string }>)[0];
+        console.warn(
+          `[MsgStore:foldEvictedIntoBase] failed to fold evicted patch op=${first?.op ?? '?'} path=${first?.path ?? '?'} err=${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      return;
+    }
+    if (removed.type === 'session_id') {
+      this.baseSnapshot = {
+        ...(this.baseSnapshot ?? { entries: [] }),
+        sessionId: removed.id,
+      };
+    }
+    // stdout / stderr / message_id / finished 不影响 entries 状态，安全丢弃
   }
 
   /**
@@ -198,12 +296,10 @@ export class MsgStore {
             conversation = result.newDocument;
             changed = true;
           } catch (error) {
-            if (DEBUG_MSGSTORE) {
-              const first = (msg.patch as Array<{ op?: string; path?: string }>)[0];
-              console.warn(
-                `[MsgStore:getSnapshot] incremental patch apply failed entries=${conversation.entries.length} op=${first?.op ?? '?'} path=${first?.path ?? '?'} err=${error instanceof Error ? error.message : String(error)}`
-              );
-            }
+            const first = (msg.patch as Array<{ op?: string; path?: string }>)[0];
+            console.warn(
+              `[MsgStore:getSnapshot] incremental patch apply failed entries=${conversation.entries.length} op=${first?.op ?? '?'} path=${first?.path ?? '?'} err=${error instanceof Error ? error.message : String(error)}`
+            );
           }
         } else if (msg.type === 'session_id') {
           conversation = { ...conversation, sessionId: msg.id };
@@ -230,12 +326,10 @@ export class MsgStore {
           const result = applyPatch(conversation, msg.patch as Operation[], true, true);
           conversation = result.newDocument;
         } catch (error) {
-          if (DEBUG_MSGSTORE) {
-            const first = (msg.patch as Array<{ op?: string; path?: string }>)[0];
-            console.warn(
-              `[MsgStore:getSnapshot] full patch apply failed entries=${conversation.entries.length} op=${first?.op ?? '?'} path=${first?.path ?? '?'} err=${error instanceof Error ? error.message : String(error)}`
-            );
-          }
+          const first = (msg.patch as Array<{ op?: string; path?: string }>)[0];
+          console.warn(
+            `[MsgStore:getSnapshot] full patch apply failed entries=${conversation.entries.length} op=${first?.op ?? '?'} path=${first?.path ?? '?'} err=${error instanceof Error ? error.message : String(error)}`
+          );
         }
       } else if (msg.type === 'session_id') {
         conversation = { ...conversation, sessionId: msg.id };
