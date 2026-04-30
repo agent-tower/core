@@ -598,12 +598,11 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
     // 统一入口：无论 session 是 RUNNING 还是 COMPLETED/CANCELLED，
     // 都调同一个 sendMessage。后端自动处理 PTY 状态。
-    // 发送后需要 re-attach 以确保 WebSocket 订阅正确接收新 PTY 的输出。
     sendMessageMutation.mutate(
       { id: sessionId, message, providerId: selectedProviderId ?? undefined },
       {
         onSuccess: () => {
-          // 后端已 spawn 新 PTY，重新 attach 以确保 socket room 和 MsgStore 监听正确
+          // 确保 snapshot 已加载（全量广播下 patch 已实时到达，attach 通常为 no-op）
           attach()
         },
         onSettled: () => {

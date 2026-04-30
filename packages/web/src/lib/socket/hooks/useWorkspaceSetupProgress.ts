@@ -1,10 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { socketManager } from '../manager.js'
 import {
-  ClientEvents,
   ServerEvents,
   type WorkspaceSetupProgressPayload,
-  type AckResponse,
 } from '@agent-tower/shared/socket'
 
 export interface SetupProgress {
@@ -47,13 +45,6 @@ export function useWorkspaceSetupProgress(taskId: string | undefined): SetupProg
     }
 
     const socket = socketManager.connect()
-
-    // 加入 task room（TaskDetail 可能已订阅，重复 join 是幂等的）
-    socket.emit(
-      ClientEvents.SUBSCRIBE,
-      { topic: 'task', id: taskId },
-      (_res: AckResponse) => {},
-    )
 
     const applyTerminal = (p: SetupProgress) => {
       setProgress(p)

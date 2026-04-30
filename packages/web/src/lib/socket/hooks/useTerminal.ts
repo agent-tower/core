@@ -6,7 +6,6 @@ import {
   type SessionStdoutPayload,
   type SessionExitPayload,
   type SessionErrorPayload,
-  type AckResponse,
 } from '@agent-tower/shared/socket'
 
 // ============================================================
@@ -82,26 +81,12 @@ export function useTerminal(options: UseTerminalOptions): UseTerminalReturn {
       }
     }
 
-    const handleAttached = (payload: { sessionId: string }) => {
-      if (payload.sessionId === sessionId) {
-        setIsAttached(true)
-      }
-    }
-
-    const handleDetached = (payload: { sessionId: string }) => {
-      if (payload.sessionId === sessionId) {
-        setIsAttached(false)
-      }
-    }
-
     // 注册事件监听
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
     socket.on(ServerEvents.SESSION_STDOUT, handleOutput)
     socket.on(ServerEvents.SESSION_EXIT, handleExit)
     socket.on(ServerEvents.SESSION_ERROR, handleError)
-    socket.on(ServerEvents.SESSION_SUBSCRIBED, handleAttached)
-    socket.on(ServerEvents.SESSION_UNSUBSCRIBED, handleDetached)
 
     // 初始状态
     setIsConnected(socket.connected)
@@ -113,10 +98,7 @@ export function useTerminal(options: UseTerminalOptions): UseTerminalReturn {
       socket.off(ServerEvents.SESSION_STDOUT, handleOutput)
       socket.off(ServerEvents.SESSION_EXIT, handleExit)
       socket.off(ServerEvents.SESSION_ERROR, handleError)
-      socket.off(ServerEvents.SESSION_SUBSCRIBED, handleAttached)
-      socket.off(ServerEvents.SESSION_UNSUBSCRIBED, handleDetached)
-
-      socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: sessionId })
+      setIsAttached(false)
     }
   }, [sessionId])
 
@@ -124,27 +106,19 @@ export function useTerminal(options: UseTerminalOptions): UseTerminalReturn {
   const attach = useCallback((): Promise<boolean> => {
     return new Promise((resolve) => {
       const socket = socketManager.getSocket()
-
       if (!socket.connected) {
         resolve(false)
         return
       }
-
-      socket.emit(
-        ClientEvents.SUBSCRIBE,
-        { topic: 'session', id: sessionId },
-        (response: AckResponse) => {
-          resolve(response.success)
-        }
-      )
+      setIsAttached(true)
+      resolve(true)
     })
-  }, [sessionId])
+  }, [])
 
   // Detach 从终端会话
   const detach = useCallback(() => {
-    const socket = socketManager.getSocket()
-    socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: sessionId })
-  }, [sessionId])
+    setIsAttached(false)
+  }, [])
 
   // 发送输入
   const sendInput = useCallback((data: string) => {

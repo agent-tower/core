@@ -12,7 +12,6 @@ import {
   type SessionResizePayload,
   type TerminalInputPayload,
   type TerminalResizePayload,
-  type AgentStatusPayload,
 } from './events.js';
 
 export class SocketGateway {
@@ -89,48 +88,40 @@ export class SocketGateway {
   }
 
   private registerEventBusForwarders(): void {
-    // --- Session events (unchanged) ---
+    // --- Session events: broadcast to entire namespace (no room filtering) ---
     const onStdout = ({ sessionId, data }: { sessionId: string; data: string }) => {
-      this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_STDOUT, { sessionId, data });
+      this.nsp.emit(ServerEvents.SESSION_STDOUT, { sessionId, data });
     };
     const onPatch = ({ sessionId, patch, seq }: { sessionId: string; patch: unknown[]; seq: number }) => {
-      this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_PATCH, { sessionId, patch, seq });
+      this.nsp.emit(ServerEvents.SESSION_PATCH, { sessionId, patch, seq });
     };
     const onSessionId = ({ sessionId, agentSessionId }: { sessionId: string; agentSessionId: string }) => {
-      this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_ID, { sessionId, agentSessionId });
+      this.nsp.emit(ServerEvents.SESSION_ID, { sessionId, agentSessionId });
     };
     const onExit = ({ sessionId, exitCode }: { sessionId: string; exitCode?: number }) => {
-      this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_EXIT, {
+      this.nsp.emit(ServerEvents.SESSION_EXIT, {
         sessionId,
         exitCode: typeof exitCode === 'number' ? exitCode : 0,
       });
     };
     const onSessionCompleted = ({ sessionId, status }: { sessionId: string; status: string }) => {
-      this.nsp.to(`session:${sessionId}`).emit(ServerEvents.SESSION_COMPLETED, {
-        sessionId,
-        status,
-      });
+      this.nsp.emit(ServerEvents.SESSION_COMPLETED, { sessionId, status });
     };
     const onTask = ({ taskId, projectId, status }: { taskId: string; projectId: string; status: string }) => {
-      const payload = { taskId, projectId, status };
-      this.nsp.to(`task:${taskId}`).emit(ServerEvents.TASK_UPDATED, payload);
-      // 同时广播到 project room，让看板实时更新
-      this.nsp.to(`project:${projectId}`).emit(ServerEvents.TASK_UPDATED, payload);
+      this.nsp.emit(ServerEvents.TASK_UPDATED, { taskId, projectId, status });
     };
     const onTaskDeleted = ({ taskId, projectId }: { taskId: string; projectId: string }) => {
-      const payload = { taskId, projectId };
-      this.nsp.to(`task:${taskId}`).emit(ServerEvents.TASK_DELETED, payload);
-      this.nsp.to(`project:${projectId}`).emit(ServerEvents.TASK_DELETED, payload);
+      this.nsp.emit(ServerEvents.TASK_DELETED, { taskId, projectId });
     };
     const onWorkspaceCommitMessageUpdated = (payload: {
       workspaceId: string;
       taskId: string;
       commitMessage: string | null;
     }) => {
-      this.nsp.to(`task:${payload.taskId}`).emit(ServerEvents.WORKSPACE_COMMIT_MESSAGE_UPDATED, payload);
+      this.nsp.emit(ServerEvents.WORKSPACE_COMMIT_MESSAGE_UPDATED, payload);
     };
 
-    // --- Terminal events (new) ---
+    // --- Terminal events: keep room-based dispatch (lifecycle tied to socket) ---
     const onTerminalStdout = ({ terminalId, data }: { terminalId: string; data: string }) => {
       this.nsp.to(`terminal:${terminalId}`).emit(ServerEvents.TERMINAL_STDOUT, { terminalId, data });
     };
@@ -141,7 +132,7 @@ export class SocketGateway {
       });
     };
 
-    // --- Workspace setup progress (broadcast to task room) ---
+    // --- Workspace events: broadcast to entire namespace ---
     const onWorkspaceSetupProgress = (payload: {
       workspaceId: string;
       taskId: string;
@@ -151,7 +142,7 @@ export class SocketGateway {
       totalCommands: number;
       error?: string;
     }) => {
-      this.nsp.to(`task:${payload.taskId}`).emit(ServerEvents.WORKSPACE_SETUP_PROGRESS, payload);
+      this.nsp.emit(ServerEvents.WORKSPACE_SETUP_PROGRESS, payload);
     };
 
     const onWorkspaceHibernated = (payload: {
@@ -159,8 +150,7 @@ export class SocketGateway {
       taskId: string;
       projectId: string;
     }) => {
-      this.nsp.to(`task:${payload.taskId}`).emit(ServerEvents.WORKSPACE_HIBERNATED, payload);
-      this.nsp.to(`project:${payload.projectId}`).emit(ServerEvents.WORKSPACE_HIBERNATED, payload);
+      this.nsp.emit(ServerEvents.WORKSPACE_HIBERNATED, payload);
     };
 
     this.eventBus.on('session:stdout', onStdout);
@@ -192,50 +182,19 @@ export class SocketGateway {
     );
   }
 
-  broadcastAgentStatus(payload: AgentStatusPayload): void {
-    this.nsp.to(`agent:${payload.agentId}`).emit(ServerEvents.AGENT_STATUS_CHANGED, payload);
-    this.nsp.to('agent:all').emit(ServerEvents.AGENT_STATUS_CHANGED, payload);
-  }
-
   private handleSubscribe(socket: Socket, payload: SubscribePayload, ack?: (res: AckResponse) => void): void {
-    const room = this.buildRoom(payload);
-    socket.join(room);
-
-    if (payload.topic === 'session' && payload.id) {
-      socket.emit(ServerEvents.SESSION_SUBSCRIBED, { sessionId: payload.id });
-    }
     if (payload.topic === 'terminal' && payload.id) {
+      socket.join(`terminal:${payload.id}`);
       socket.emit(ServerEvents.TERMINAL_SUBSCRIBED, { terminalId: payload.id });
     }
     ack?.({ success: true });
   }
 
   private handleUnsubscribe(socket: Socket, payload: UnsubscribePayload, ack?: (res: AckResponse) => void): void {
-    const room = this.buildRoom(payload);
-    socket.leave(room);
-
-    if (payload.topic === 'session' && payload.id) {
-      socket.emit(ServerEvents.SESSION_UNSUBSCRIBED, { sessionId: payload.id });
-    }
     if (payload.topic === 'terminal' && payload.id) {
+      socket.leave(`terminal:${payload.id}`);
       socket.emit(ServerEvents.TERMINAL_UNSUBSCRIBED, { terminalId: payload.id });
     }
     ack?.({ success: true });
-  }
-
-  private buildRoom(payload: SubscribePayload | UnsubscribePayload): string {
-    if (payload.topic === 'session') {
-      return payload.id ? `session:${payload.id}` : 'session:all';
-    }
-    if (payload.topic === 'task') {
-      return payload.id ? `task:${payload.id}` : 'task:all';
-    }
-    if (payload.topic === 'terminal') {
-      return payload.id ? `terminal:${payload.id}` : 'terminal:all';
-    }
-    if (payload.topic === 'project') {
-      return payload.id ? `project:${payload.id}` : 'project:all';
-    }
-    return payload.id ? `agent:${payload.id}` : 'agent:all';
   }
 }

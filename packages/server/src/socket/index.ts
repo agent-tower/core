@@ -2,7 +2,7 @@ import { Server } from 'socket.io'
 import type { FastifyInstance } from 'fastify'
 import { authMiddleware } from './middleware/index.js'
 import { SocketGateway } from './socket-gateway.js'
-import { NAMESPACE, type AgentStatusPayload } from './events.js'
+import { NAMESPACE } from './events.js'
 import { getEventBus, getSessionManager, getTerminalManager, getNotificationService } from '../core/container.js'
 
 let io: Server | null = null
@@ -80,9 +80,4 @@ export async function closeSocket(): Promise<void> {
 
 // 导出类型和工具
 export * from './events.js'
-export * from './rooms.js'
 export { type AuthenticatedSocket } from './middleware/index.js'
-
-export function broadcastAgentStatus(payload: AgentStatusPayload): void {
-  socketGateway?.broadcastAgentStatus(payload)
-}
