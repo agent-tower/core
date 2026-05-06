@@ -20,15 +20,26 @@ import { apiClient } from '../../api-client.js'
 import {
   useSessionLogStore,
   EMPTY_CONVERSATION,
+  normalizeServerConversation,
+  shouldReplaceConversationWithSnapshot,
   type NormalizedConversation,
 } from '@/stores/session-log-store.js'
 
 const DEBUG_LOGS = import.meta.env.VITE_DEBUG_LOGS === 'true'
+const TERMINAL_REVALIDATE_DELAY_MS = 1500
 
 function isTerminalStatus(status?: SessionStatus | string): boolean {
   return status === SessionStatus.COMPLETED
     || status === SessionStatus.FAILED
     || status === SessionStatus.CANCELLED
+}
+
+function conversationSeq(conversation?: NormalizedConversation): number {
+  return typeof conversation?.seq === 'number' ? conversation.seq : 0
+}
+
+function shouldShowOutputCursor(status?: SessionStatus | string): boolean {
+  return !isTerminalStatus(status)
 }
 
 interface UseNormalizedLogsOptions {
@@ -77,8 +88,11 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   )
 
   const snapshotLoadedRef = useRef(false)
-  const pendingPatchesRef = useRef<SessionPatchPayload[]>([])
+  const pendingPatchesRef = useRef<Record<string, SessionPatchPayload[]>>({})
   const loadSnapshotRef = useRef<(() => Promise<void>) | null>(null)
+  const loadingSnapshotSessionsRef = useRef<Set<string>>(new Set())
+  const currentSessionIdRef = useRef(sessionId)
+  currentSessionIdRef.current = sessionId
 
   const callbacksRef = useRef({ onAgentSessionId, onExit, onError })
   callbacksRef.current = { onAgentSessionId, onExit, onError }
@@ -103,7 +117,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       setIsConnected(false)
       setIsAttached(false)
       snapshotLoadedRef.current = false
-      pendingPatchesRef.current = []
+      pendingPatchesRef.current[sessionId] = []
     }
 
     let patchCount = 0
@@ -121,7 +135,10 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       }
 
       if (!snapshotLoadedRef.current) {
-        pendingPatchesRef.current.push(payload)
+        pendingPatchesRef.current[sessionId] = [
+          ...(pendingPatchesRef.current[sessionId] ?? []),
+          payload,
+        ]
         return
       }
 
@@ -132,7 +149,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
         // state and refetch authoritative state. Buffer subsequent patches
         // until reload completes.
         snapshotLoadedRef.current = false
-        pendingPatchesRef.current = []
+        pendingPatchesRef.current[sessionId] = []
         loadSnapshotRef.current?.()
         return
       }
@@ -179,7 +196,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       socket.off(ServerEvents.SESSION_ERROR, handleError)
 
       snapshotLoadedRef.current = false
-      pendingPatchesRef.current = []
+      pendingPatchesRef.current[sessionId] = []
       setAgentSessionId(null)
       setIsLoading(false)
       setIsAttached(false)
@@ -193,53 +210,66 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  // Load snapshot: check store cache first, then fall back to HTTP
+  // Load snapshot: show cached data immediately, then reconcile with the server.
   const loadSnapshot = useCallback(async () => {
     if (!sessionId) return
+    const requestSessionId = sessionId
+    const isCurrentSession = () => currentSessionIdRef.current === requestSessionId
+    if (loadingSnapshotSessionsRef.current.has(requestSessionId)) return
 
     if (DEBUG_LOGS) {
-      console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} start`)
+      console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${requestSessionId} start`)
     }
 
     const store = useSessionLogStore.getState()
+    const cached = store.conversations[requestSessionId]
 
-    // Case 1: Store has data for a terminal session — cache is authoritative
-    const cached = store.conversations[sessionId]
-    if (cached && cached.entries.length > 0 && isTerminalStatus(sessionStatusRef.current)) {
+    if (cached && cached.entries.length > 0) {
       if (DEBUG_LOGS) {
-        console.log(`[useNormalizedLogs:loadSnapshot] using cached terminal session, entries=${cached.entries.length}`)
+        console.log(`[useNormalizedLogs:loadSnapshot] using cached session, entries=${cached.entries.length} seq=${conversationSeq(cached)} truncated=${cached.isTruncated === true}`)
       }
-      store.touchAccess(sessionId)
-      snapshotLoadedRef.current = true
-      pendingPatchesRef.current = []
-      setIsAttached(true)
-      setIsLoading(true)
-      return
+      store.touchAccess(requestSessionId)
+      if (isCurrentSession()) {
+        setIsAttached(true)
+        setIsLoading(shouldShowOutputCursor(sessionStatusRef.current))
+      }
     }
 
-    // Case 3: Fetch from server
+    // While reconciling, buffer patches instead of applying them to a cache
+    // that may be stale or truncated.
+    if (isCurrentSession()) {
+      snapshotLoadedRef.current = false
+    }
+
     // Only show loading spinner if store has no data at all
     const hasStaleData = cached && cached.entries.length > 0
-    if (!hasStaleData) {
+    if (!hasStaleData && isCurrentSession()) {
       setIsLoadingSnapshot(true)
     }
+    loadingSnapshotSessionsRef.current.add(requestSessionId)
 
     try {
-      const snapshot = await apiClient.get<NormalizedConversation>(
-        `/sessions/${sessionId}/logs`,
-        { cache: 'no-store' },
+      const serverSnapshot = normalizeServerConversation(
+        await apiClient.get<NormalizedConversation>(
+          `/sessions/${requestSessionId}/logs`,
+          { cache: 'no-store' },
+        ),
       )
 
       if (DEBUG_LOGS) {
-        console.log(`[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${sessionId} fetched entries=${snapshot.entries.length}`)
+        console.log(
+          `[useNormalizedLogs:loadSnapshot] t=${Date.now()} sessionId=${requestSessionId} fetched entries=${serverSnapshot.entries.length} seq=${conversationSeq(serverSnapshot)}`,
+        )
       }
 
-      const buffered = pendingPatchesRef.current
-      pendingPatchesRef.current = []
-      snapshotLoadedRef.current = true
+      const buffered = pendingPatchesRef.current[requestSessionId] ?? []
+      pendingPatchesRef.current[requestSessionId] = []
+      if (isCurrentSession()) {
+        snapshotLoadedRef.current = true
+      }
 
-      let state: NormalizedConversation = snapshot
-      const snapshotSeq = typeof snapshot.seq === 'number' ? snapshot.seq : 0
+      let state: NormalizedConversation = serverSnapshot
+      const snapshotSeq = conversationSeq(serverSnapshot)
       let highestSeq = snapshotSeq
       for (const p of buffered) {
         // Dedupe: any patch already reflected in the snapshot must not be reapplied.
@@ -258,20 +288,41 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
           console.error('Failed to replay buffered patch:', error)
         }
       }
-      state = { ...state, seq: highestSeq }
 
-      store.setConversation(sessionId, state)
+      state = {
+        ...state,
+        seq: highestSeq,
+        isTruncated: false,
+      }
 
-      setIsAttached(true)
-      if (state.entries.length > 0) {
-        setIsLoading(true)
+      const latestCached = store.getConversation(requestSessionId)
+      if (
+        buffered.length > 0 ||
+        shouldReplaceConversationWithSnapshot(latestCached, state)
+      ) {
+        store.setConversation(requestSessionId, state)
+      } else {
+        store.touchAccess(requestSessionId)
+      }
+
+      if (isCurrentSession()) {
+        setIsAttached(true)
+        const latest = useSessionLogStore.getState().getConversation(requestSessionId)
+        if (latest && latest.entries.length > 0) {
+          setIsLoading(shouldShowOutputCursor(sessionStatusRef.current))
+        }
       }
     } catch (error) {
       console.error('[useNormalizedLogs:loadSnapshot] Failed to load snapshot:', error)
-      snapshotLoadedRef.current = true
-      pendingPatchesRef.current = []
+      if (isCurrentSession()) {
+        snapshotLoadedRef.current = true
+      }
+      pendingPatchesRef.current[requestSessionId] = []
     } finally {
-      setIsLoadingSnapshot(false)
+      loadingSnapshotSessionsRef.current.delete(requestSessionId)
+      if (isCurrentSession()) {
+        setIsLoadingSnapshot(false)
+      }
     }
   }, [sessionId])
 
@@ -291,16 +342,28 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       }
 
       if (snapshotLoadedRef.current) {
-        if (DEBUG_LOGS) {
-          console.log(`[useNormalizedLogs:attach] skipping loadSnapshot — already have live state`)
+        const cached = useSessionLogStore.getState().getConversation(sessionId)
+        const shouldRevalidate = isTerminalStatus(sessionStatusRef.current) || cached?.isTruncated === true
+        if (!shouldRevalidate) {
+          if (DEBUG_LOGS) {
+            console.log(`[useNormalizedLogs:attach] skipping loadSnapshot — already have live state`)
+          }
+          resolve(true)
+          return
         }
-        resolve(true)
-        return
       }
 
       loadSnapshot().then(() => resolve(true))
     })
   }, [sessionId, loadSnapshot])
+
+  useEffect(() => {
+    if (!sessionId || !isTerminalStatus(sessionStatus)) return
+    const timer = window.setTimeout(() => {
+      loadSnapshotRef.current?.()
+    }, TERMINAL_REVALIDATE_DELAY_MS)
+    return () => window.clearTimeout(timer)
+  }, [sessionId, sessionStatus])
 
   const sendInput = useCallback((data: string) => {
     const socket = socketManager.getSocket()
@@ -313,7 +376,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     setIsLoading(false)
     setIsAttached(false)
     snapshotLoadedRef.current = false
-    pendingPatchesRef.current = []
+    pendingPatchesRef.current[sessionId] = []
   }, [sessionId])
 
   const logs = useMemo(() => {

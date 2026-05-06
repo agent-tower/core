@@ -7,9 +7,11 @@ export interface NormalizedConversation {
   entries: NormalizedEntry[]
   /** Last applied patch seq. Used to dedupe out-of-window patches. */
   seq?: number
+  /** True when this cache only contains a suffix of the server snapshot. */
+  isTruncated?: boolean
 }
 
-const EMPTY_CONVERSATION: NormalizedConversation = { entries: [] }
+const EMPTY_CONVERSATION: NormalizedConversation = { entries: [], isTruncated: false }
 
 const MAX_CACHED_SESSIONS = 50
 const TRUNCATE_ENTRIES = 500
@@ -36,6 +38,57 @@ interface SessionLogState {
   clear: () => void
 }
 
+function conversationSeq(conversation?: NormalizedConversation): number {
+  return typeof conversation?.seq === 'number' ? conversation.seq : 0
+}
+
+function lastEntryId(conversation?: NormalizedConversation): string | undefined {
+  return conversation?.entries.at(-1)?.id
+}
+
+function lastEntryFingerprint(conversation?: NormalizedConversation): string | undefined {
+  const entry = conversation?.entries.at(-1)
+  if (!entry) return undefined
+  return JSON.stringify(entry)
+}
+
+export function normalizeServerConversation(data: NormalizedConversation): NormalizedConversation {
+  return {
+    ...data,
+    entries: Array.isArray(data.entries) ? data.entries : [],
+    isTruncated: false,
+  }
+}
+
+export function shouldReplaceConversationWithSnapshot(
+  cached: NormalizedConversation | undefined,
+  snapshot: NormalizedConversation,
+): boolean {
+  if (!cached) return true
+  if (cached.isTruncated) return true
+
+  const cachedSeq = conversationSeq(cached)
+  const snapshotSeq = conversationSeq(snapshot)
+
+  if (snapshotSeq > cachedSeq) return true
+  if (snapshotSeq < cachedSeq) return false
+
+  if (snapshot.entries.length > cached.entries.length) return true
+  if (snapshot.entries.length < cached.entries.length) return false
+
+  const cachedLastId = lastEntryId(cached)
+  const snapshotLastId = lastEntryId(snapshot)
+  if (snapshotLastId && cachedLastId && snapshotLastId !== cachedLastId) return true
+
+  const cachedLastFingerprint = lastEntryFingerprint(cached)
+  const snapshotLastFingerprint = lastEntryFingerprint(snapshot)
+  return Boolean(
+    snapshotLastFingerprint &&
+    cachedLastFingerprint &&
+    snapshotLastFingerprint !== cachedLastFingerprint,
+  )
+}
+
 function evictLRU(
   conversations: Record<string, NormalizedConversation>,
   accessOrder: string[],
@@ -58,7 +111,13 @@ export const useSessionLogStore = create<SessionLogState>((set, get) => ({
     set((state) => {
       const newOrder = state.accessOrder.filter(id => id !== sessionId)
       newOrder.push(sessionId)
-      const newConversations = { ...state.conversations, [sessionId]: data }
+      const newConversations = {
+        ...state.conversations,
+        [sessionId]: {
+          ...data,
+          isTruncated: data.isTruncated ?? false,
+        },
+      }
       return evictLRU(newConversations, newOrder)
     })
   },
@@ -77,6 +136,7 @@ export const useSessionLogStore = create<SessionLogState>((set, get) => ({
       const next: NormalizedConversation = {
         ...result.newDocument,
         seq: typeof seq === 'number' ? seq : current.seq,
+        isTruncated: current.isTruncated ?? false,
       }
       set((state) => ({
         conversations: { ...state.conversations, [sessionId]: next },
@@ -109,6 +169,7 @@ export const useSessionLogStore = create<SessionLogState>((set, get) => ({
           [sessionId]: {
             ...conv,
             entries: conv.entries.slice(-TRUNCATE_ENTRIES),
+            isTruncated: true,
           },
         },
       }
