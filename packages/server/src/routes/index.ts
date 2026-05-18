@@ -15,6 +15,7 @@ import { tunnelRoutes } from './tunnel.js';
 import { attachmentRoutes } from './attachments.js';
 import { appSettingsRoutes } from './app-settings.js';
 import { notificationRoutes } from './notifications.js';
+import { teamRunRoutes } from './team-runs.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // 系统路由
@@ -64,4 +65,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // 通知配置路由
   await app.register(notificationRoutes, { prefix: '/api' });
+
+  // TeamRun 路由
+  await app.register(teamRunRoutes, { prefix: '/api' });
 }
