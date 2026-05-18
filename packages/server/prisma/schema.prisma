@@ -40,10 +40,137 @@ model Task {
   projectId   String
   project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workspaces  Workspace[]
+  teamRun     TeamRun?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   @@index([projectId])
+  @@index([status])
+}
+
+model MemberPreset {
+  id              String   @id @default(uuid())
+  name            String
+  aliases         String // JSON string: string[]
+  providerId      String
+  rolePrompt      String
+  capabilities    String // JSON TeamMemberCapabilities
+  workspacePolicy String
+  triggerPolicy   String
+  avatar          String? // JSON or string ref
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model TeamTemplate {
+  id        String               @id @default(uuid())
+  name      String
+  members   TeamTemplateMember[]
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+}
+
+model TeamTemplateMember {
+  id             String       @id @default(uuid())
+  teamTemplateId String
+  teamTemplate   TeamTemplate @relation(fields: [teamTemplateId], references: [id], onDelete: Cascade)
+  memberPresetId String
+  position       Int          @default(0)
+
+  @@index([teamTemplateId])
+  @@index([memberPresetId])
+}
+
+model TeamRun {
+  id           String            @id @default(uuid())
+  taskId       String            @unique
+  task         Task              @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  mode         String
+  reviewReason String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  members      TeamMember[]
+  messages     RoomMessage[]
+  workRequests WorkRequest[]
+  invocations  AgentInvocation[]
+}
+
+model TeamMember {
+  id              String   @id @default(uuid())
+  teamRunId       String
+  teamRun         TeamRun  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  presetId        String?
+  name            String
+  aliases         String // JSON string: string[]
+  providerId      String
+  rolePrompt      String
+  capabilities    String // JSON TeamMemberCapabilities
+  workspacePolicy String
+  triggerPolicy   String
+  avatar          String?
+  status          String   @default("IDLE")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([teamRunId])
+}
+
+model RoomMessage {
+  id                 String   @id @default(uuid())
+  teamRunId          String
+  teamRun            TeamRun  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  senderType         String
+  senderId           String?
+  senderInvocationId String?
+  kind               String
+  content            String
+  mentions           String // JSON StructuredMention[]
+  workRequestIds     String? // JSON string[]
+  artifactRefs       String? // JSON string[]
+  attachmentIds      String? // JSON string[]
+  createdAt          DateTime @default(now())
+
+  @@index([teamRunId])
+  @@index([senderInvocationId])
+}
+
+model WorkRequest {
+  id                String   @id @default(uuid())
+  teamRunId         String
+  teamRun           TeamRun  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  requesterMemberId String?
+  requesterType     String
+  targetMemberId    String
+  triggerMessageId  String
+  instruction       String
+  ifBusy            String   @default("queue")
+  cancelQueued      Boolean  @default(false)
+  status            String   @default("QUEUED")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([teamRunId])
+  @@index([targetMemberId])
+  @@index([status])
+}
+
+model AgentInvocation {
+  id                      String    @id @default(uuid())
+  teamRunId               String
+  teamRun                 TeamRun   @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  workRequestId           String
+  memberId                String
+  workspaceId             String?
+  sessionId               String?
+  status                  String    @default("QUEUED")
+  roomReplyReminderCount  Int       @default(0)
+  nextRoomReplyReminderAt DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([teamRunId])
+  @@index([memberId])
+  @@index([sessionId])
   @@index([status])
 }
 

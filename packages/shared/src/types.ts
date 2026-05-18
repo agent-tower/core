@@ -47,6 +47,92 @@ export enum SessionPurpose {
   COMMIT_MSG = 'COMMIT_MSG',
 }
 
+/** 团队运行模式 */
+export type TeamRunMode = 'CONFIRM' | 'AUTO'
+
+/** TeamRun 进入评审的原因 */
+export type TeamRunReviewReason =
+  | 'READY'
+  | 'TEAM_QUIESCENT'
+  | 'PENDING_APPROVAL'
+  | 'FAILED'
+  | 'ENDED_WITHOUT_ROOM_REPLY'
+
+/** 团队成员工作区策略 */
+export type WorkspacePolicy = 'none' | 'shared' | 'dedicated'
+
+/** 团队成员触发策略 */
+export type TeamMemberTriggerPolicy = 'MENTION_ONLY' | 'USER_MESSAGES'
+
+/** 目标成员忙碌时的处理策略 */
+export type IfBusyPolicy = 'queue' | 'cancel_current_and_start'
+
+/** 团队成员状态 */
+export type TeamMemberStatus =
+  | 'IDLE'
+  | 'RUNNING'
+  | 'WAITING'
+  | 'READY_FOR_REVIEW'
+  | 'FAILED'
+  | 'CANCELLED'
+  | (string & {})
+
+/** 房间消息发送者类型 */
+export type RoomMessageSenderType = 'user' | 'agent' | 'system'
+
+/** 房间消息类型 */
+export type RoomMessageKind =
+  | 'chat'
+  | 'work_request'
+  | 'work_started'
+  | 'artifact'
+  | 'review'
+  | 'decision'
+  | 'system'
+
+/** 工作请求发起者类型 */
+export type WorkRequestRequesterType = 'user' | 'agent' | 'system'
+
+/** 工作请求状态 */
+export type WorkRequestStatus =
+  | 'PENDING_APPROVAL'
+  | 'QUEUED'
+  | 'STARTED'
+  | 'REJECTED'
+  | 'CANCELLED'
+
+/** Agent 调用状态 */
+export type AgentInvocationStatus =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'SESSION_ENDED'
+  | 'WAITING_ROOM_REPLY'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED'
+
+/** 团队成员能力开关 */
+export interface TeamMemberCapabilities {
+  readRoom: boolean
+  postRoomMessage: boolean
+  mentionMembers: boolean
+  stopMemberWork: boolean
+  markReadyForReview: boolean
+  readFiles: boolean
+  writeFiles: boolean
+  runCommands: boolean
+  readDiff: boolean
+  mergeWorkspace: boolean
+}
+
+/** 房间消息中的结构化提及 */
+export interface StructuredMention {
+  memberId: string
+  label?: string
+  ifBusy?: IfBusyPolicy
+  cancelQueued?: boolean
+}
+
 
 // ============ Provider ============
 
@@ -157,6 +243,8 @@ export interface Task {
   position?: number
   /** 关联的工作空间列表（API include 时返回） */
   workspaces?: Workspace[]
+  /** 关联的 TeamRun（存在时表示团队模式） */
+  teamRun?: TeamRun | null
   createdAt?: string
   updatedAt?: string
 }
@@ -195,6 +283,119 @@ export interface Session {
   tokenUsage?: { totalTokens: number; modelContextWindow?: number } | null
   startedAt?: string
   endedAt?: string
+}
+
+/** 团队成员预设 */
+export interface MemberPreset {
+  id: string
+  name: string
+  aliases: string[]
+  providerId: string
+  rolePrompt: string
+  capabilities: TeamMemberCapabilities
+  workspacePolicy: WorkspacePolicy
+  triggerPolicy: TeamMemberTriggerPolicy
+  avatar?: string | null
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** 团队模板 */
+export interface TeamTemplate {
+  id: string
+  name: string
+  members?: TeamTemplateMember[]
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** 团队模板成员 */
+export interface TeamTemplateMember {
+  id: string
+  teamTemplateId: string
+  memberPresetId: string
+  position: number
+  memberPreset?: MemberPreset
+}
+
+/** Task 关联的一次团队协作运行 */
+export interface TeamRun {
+  id: string
+  taskId: string
+  mode: TeamRunMode
+  reviewReason?: TeamRunReviewReason | null
+  task?: Task
+  members?: TeamMember[]
+  messages?: RoomMessage[]
+  workRequests?: WorkRequest[]
+  invocations?: AgentInvocation[]
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** TeamRun 内的团队成员实例 */
+export interface TeamMember {
+  id: string
+  teamRunId: string
+  presetId?: string | null
+  name: string
+  aliases: string[]
+  providerId: string
+  rolePrompt: string
+  capabilities: TeamMemberCapabilities
+  workspacePolicy: WorkspacePolicy
+  triggerPolicy: TeamMemberTriggerPolicy
+  avatar?: string | null
+  status: TeamMemberStatus
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** TeamRun 房间消息 */
+export interface RoomMessage {
+  id: string
+  teamRunId: string
+  senderType: RoomMessageSenderType
+  senderId?: string | null
+  senderInvocationId?: string | null
+  kind: RoomMessageKind
+  content: string
+  mentions: StructuredMention[]
+  workRequestIds?: string[] | null
+  artifactRefs?: string[] | null
+  attachmentIds?: string[] | null
+  createdAt?: string
+}
+
+/** 指向团队成员的一次工作请求 */
+export interface WorkRequest {
+  id: string
+  teamRunId: string
+  requesterMemberId?: string | null
+  requesterType: WorkRequestRequesterType
+  targetMemberId: string
+  triggerMessageId: string
+  instruction: string
+  ifBusy: IfBusyPolicy
+  cancelQueued: boolean
+  status: WorkRequestStatus
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** 工作请求触发的一次 Agent 调用 */
+export interface AgentInvocation {
+  id: string
+  teamRunId: string
+  workRequestId: string
+  memberId: string
+  workspaceId?: string | null
+  sessionId?: string | null
+  status: AgentInvocationStatus
+  roomReplyReminderCount: number
+  nextRoomReplyReminderAt?: string | null
+  createdAt?: string
+  updatedAt?: string
 }
 
 // ============ Agent Todo 类型 ============
