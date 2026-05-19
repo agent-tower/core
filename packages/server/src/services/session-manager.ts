@@ -15,6 +15,7 @@ import { AgentPipeline, type OutputParser } from '../pipeline/agent-pipeline.js'
 import { execGit } from '../git/git-cli.js';
 import type { EventBus } from '../core/event-bus.js';
 import { getCommitMessageService } from '../core/container.js';
+import { TeamReconcilerService } from './team-reconciler.service.js';
 
 const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
 
@@ -24,9 +25,15 @@ export class SessionManager {
   private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private snapshotFlushChains = new Map<string, Promise<void>>();
   private pendingSnapshotStatus = new Map<string, SessionStatus>();
+  private readonly teamReconciler: TeamReconcilerService;
   private static readonly SNAPSHOT_DEBOUNCE_MS = 1200;
 
-  constructor(private readonly eventBus: EventBus) {
+  constructor(private readonly eventBus: EventBus, teamReconciler?: TeamReconcilerService) {
+    this.teamReconciler = teamReconciler ?? new TeamReconcilerService({
+      eventBus,
+      sessionMessenger: this,
+    });
+
     // Debounced snapshot persistence: keep DB up-to-date without per-patch writes.
     this.eventBus.on('session:patch', ({ sessionId, patch }) => {
       if (DEBUG_SNAPSHOT) {
@@ -265,6 +272,8 @@ export class SessionManager {
       }
     }
 
+    await this.injectTeamRunInvocationEnv(id, env);
+
     const spawnConfig = {
       workingDir,
       prompt: message,
@@ -335,6 +344,7 @@ export class SessionManager {
       });
     }
 
+    await this.teamReconciler.handleSessionStopped(id);
     this.eventBus.emit('session:stopped', { sessionId: id });
     return session;
   }
@@ -758,8 +768,12 @@ export class SessionManager {
       // 通知前端 session 状态（DB 状态已更新）
       this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
 
+      const handledByTeamRun = await this.teamReconciler.handleSessionExit(sessionId);
+
       if (!isFailed) {
-        await this.checkTaskAutoAdvance(sessionId);
+        if (!handledByTeamRun) {
+          await this.checkTaskAutoAdvance(sessionId);
+        }
 
         // 每次 CHAT session 完成都触发 commit message 重新生成
         const sess = await prisma.session.findUnique({

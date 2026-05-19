@@ -114,6 +114,30 @@ export class AgentTowerClient {
     return this.request<any>('POST', `/api/sessions/${sessionId}/message`, { message });
   }
 
+  // ── Team Room ──
+
+  async createRoomMessage(teamRunId: string, input: {
+    content: string;
+    mentions?: Array<{
+      memberId: string;
+      label?: string;
+      ifBusy?: 'queue' | 'cancel_current_and_start';
+      cancelQueued?: boolean;
+    }>;
+    attachmentIds?: string[];
+    artifactRefs?: string[];
+    kind?: 'chat' | 'work_request' | 'artifact' | 'review' | 'decision' | 'system';
+    senderType?: 'user' | 'agent' | 'system';
+    senderId?: string | null;
+    senderInvocationId?: string | null;
+  }) {
+    return this.request<any>('POST', `/api/team-runs/${teamRunId}/messages`, input);
+  }
+
+  async listRoomMessages(teamRunId: string) {
+    return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/messages`);
+  }
+
   // ── System ──
 
   async getWorkspaceContext(cwdPath: string) {

@@ -11,6 +11,9 @@ export interface McpContext {
   taskTitle: string;
   workspaceId: string;
   workspaceBranch: string;
+  teamRunId?: string;
+  memberId?: string;
+  invocationId?: string;
 }
 
 export async function fetchContext(client: AgentTowerClient): Promise<McpContext | null> {
@@ -24,6 +27,9 @@ export async function fetchContext(client: AgentTowerClient): Promise<McpContext
       taskTitle: result.taskTitle,
       workspaceId: result.workspaceId,
       workspaceBranch: result.workspaceBranch,
+      ...(process.env.AGENT_TOWER_TEAM_RUN_ID ? { teamRunId: process.env.AGENT_TOWER_TEAM_RUN_ID } : {}),
+      ...(process.env.AGENT_TOWER_MEMBER_ID ? { memberId: process.env.AGENT_TOWER_MEMBER_ID } : {}),
+      ...(process.env.AGENT_TOWER_INVOCATION_ID ? { invocationId: process.env.AGENT_TOWER_INVOCATION_ID } : {}),
     };
   } catch {
     return null;
