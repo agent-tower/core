@@ -15,15 +15,19 @@ import type {
   WorkRequest as PrismaWorkRequest,
   Workspace as PrismaWorkspace,
 } from '@prisma/client';
+import { AgentType } from '../types/index.js';
+import { getProviderById, type Provider } from '../executors/index.js';
+import { getSessionManager } from '../core/container.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 import { prisma } from '../utils/index.js';
 import { TeamLockService, type LockRequest } from './team-lock.service.js';
+import { WorkspaceService } from './workspace.service.js';
 
 export interface SchedulePlan {
   workRequestId: string;
   memberId: string;
   canStart: boolean;
-  blockedReason?: 'member_busy' | 'member_already_planned' | 'resource_locked' | 'member_not_found';
+  blockedReason?: 'member_busy' | 'member_already_planned' | 'resource_locked' | 'member_not_found' | 'unsupported_workspace_policy';
   requiresStopCurrent: boolean;
   lockKeys: string[];
   workspaceId: string | null;
@@ -38,6 +42,27 @@ type SchedulerTeamRun = {
     workspaces: PrismaWorkspace[];
   };
 };
+
+type WorkspaceStarter = {
+  create(taskId: string): Promise<{ id: string }>;
+};
+
+type SessionStarter = {
+  create(
+    workspaceId: string,
+    agentType: AgentType,
+    prompt: string,
+    variant?: string,
+    providerId?: string
+  ): Promise<{ id: string }>;
+  start(id: string): Promise<unknown>;
+};
+
+interface TeamSchedulerDependencies {
+  workspaceService?: WorkspaceStarter;
+  sessionManager?: SessionStarter;
+  getProviderById?: (providerId: string) => Provider | null;
+}
 
 const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
   'QUEUED',
@@ -87,8 +112,19 @@ function invalidTransition(action: string, status: string): ServiceError {
 
 export class TeamSchedulerService {
   private static readonly memberSchedulingLocks = new Set<string>();
+  private static readonly sharedWorkspaceClaims = new Map<string, Promise<{ id: string }>>();
+  private readonly workspaceService: WorkspaceStarter;
+  private readonly sessionManager: SessionStarter;
+  private readonly providerLookup: (providerId: string) => Provider | null;
 
-  constructor(private readonly lockService = defaultLockService) {}
+  constructor(
+    private readonly lockService = defaultLockService,
+    dependencies: TeamSchedulerDependencies = {}
+  ) {
+    this.workspaceService = dependencies.workspaceService ?? new WorkspaceService();
+    this.sessionManager = dependencies.sessionManager ?? getSessionManager();
+    this.providerLookup = dependencies.getProviderById ?? getProviderById;
+  }
 
   async planNext(teamRunId: string): Promise<SchedulePlan[]> {
     const context = await this.getSchedulingContext(teamRunId);
@@ -118,6 +154,20 @@ export class TeamSchedulerService {
       const lockKeys = this.getRequiredLocks(context.teamRun, member);
       const requiresStopCurrent = workRequest.ifBusy === 'cancel_current_and_start'
         && activeMemberIds.has(member.id);
+
+      if (member.workspacePolicy === 'dedicated') {
+        plans.push({
+          workRequestId: workRequest.id,
+          memberId: member.id,
+          canStart: false,
+          blockedReason: 'unsupported_workspace_policy',
+          requiresStopCurrent: false,
+          lockKeys,
+          workspaceId,
+          projectId,
+        });
+        continue;
+      }
 
       if (activeMemberIds.has(member.id)) {
         plans.push({
@@ -187,7 +237,7 @@ export class TeamSchedulerService {
 
     for (const workRequest of context.workRequests) {
       const member = context.memberById.get(workRequest.targetMemberId);
-      if (!member) {
+      if (!member || member.workspacePolicy === 'dedicated') {
         continue;
       }
 
@@ -227,6 +277,97 @@ export class TeamSchedulerService {
           this.lockService.releaseByOwner(invocationId);
           invocationId = null;
           continue;
+        }
+
+        startedInvocations.push(this.serializeAgentInvocation(createdInvocation));
+        invocationId = null;
+      } catch (error) {
+        if (invocationId) {
+          this.lockService.releaseByOwner(invocationId);
+        }
+        throw error;
+      } finally {
+        this.releaseMemberSchedulingLock(memberLockKey);
+      }
+    }
+
+    return startedInvocations;
+  }
+
+  async startNextSessions(teamRunId: string): Promise<AgentInvocation[]> {
+    const context = await this.getSchedulingContext(teamRunId);
+    const startedInvocations: AgentInvocation[] = [];
+
+    for (const workRequest of context.workRequests) {
+      const member = context.memberById.get(workRequest.targetMemberId);
+      if (!member || member.workspacePolicy === 'dedicated') {
+        continue;
+      }
+
+      const memberLockKey = this.memberSchedulingLockKey(teamRunId, member.id);
+      if (!this.acquireMemberSchedulingLock(memberLockKey)) {
+        continue;
+      }
+
+      let invocationId: string | null = null;
+      try {
+        if (await this.hasActiveInvocation(teamRunId, member.id)) {
+          continue;
+        }
+
+        const freshWorkRequest = await prisma.workRequest.findUnique({
+          where: { id: workRequest.id },
+        });
+        if (!freshWorkRequest || freshWorkRequest.status !== 'QUEUED') {
+          continue;
+        }
+
+        const lockKeys = this.getRequiredLocks(context.teamRun, member);
+        invocationId = randomUUID();
+        if (!this.lockService.acquire(invocationId, lockKeys)) {
+          invocationId = null;
+          continue;
+        }
+
+        const provider = this.providerLookup(member.providerId);
+        if (!provider) {
+          this.lockService.releaseByOwner(invocationId);
+          invocationId = null;
+          throw new ServiceError(`Provider not found: ${member.providerId}`, 'PROVIDER_NOT_FOUND', 400);
+        }
+
+        const workspace = await this.getOrCreateSharedWorkspace(context.teamRun.taskId);
+        const session = await this.sessionManager.create(
+          workspace.id,
+          provider.agentType as AgentType,
+          this.buildSessionPrompt(member, freshWorkRequest),
+          'DEFAULT',
+          member.providerId
+        );
+
+        const createdInvocation = await this.createRunningInvocationForClaimedWorkRequest(
+          context.teamRun,
+          member,
+          freshWorkRequest,
+          invocationId,
+          workspace.id,
+          session.id
+        );
+
+        if (!createdInvocation) {
+          await this.markSessionFailed(session.id);
+          this.lockService.releaseByOwner(invocationId);
+          invocationId = null;
+          continue;
+        }
+
+        try {
+          await this.sessionManager.start(session.id);
+        } catch (error) {
+          await this.markInvocationStartFailed(createdInvocation.id, session.id);
+          this.lockService.releaseByOwner(createdInvocation.id);
+          invocationId = null;
+          throw error;
         }
 
         startedInvocations.push(this.serializeAgentInvocation(createdInvocation));
@@ -316,6 +457,54 @@ export class TeamSchedulerService {
           workspaceId: this.resolveInvocationWorkspaceId(teamRun, member),
           sessionId: null,
           status: 'QUEUED',
+        },
+      });
+    });
+  }
+
+  private async createRunningInvocationForClaimedWorkRequest(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+    workRequest: PrismaWorkRequest,
+    invocationId: string,
+    workspaceId: string,
+    sessionId: string
+  ): Promise<PrismaAgentInvocation | null> {
+    return prisma.$transaction(async (tx) => {
+      const claimed = await tx.workRequest.updateMany({
+        where: {
+          id: workRequest.id,
+          teamRunId: teamRun.id,
+          status: 'QUEUED',
+        },
+        data: { status: 'STARTED' },
+      });
+
+      if (claimed.count !== 1) {
+        return null;
+      }
+
+      if (workRequest.cancelQueued) {
+        await tx.workRequest.updateMany({
+          where: {
+            teamRunId: teamRun.id,
+            targetMemberId: member.id,
+            status: 'QUEUED',
+            id: { not: workRequest.id },
+          },
+          data: { status: 'CANCELLED' },
+        });
+      }
+
+      return tx.agentInvocation.create({
+        data: {
+          id: invocationId,
+          teamRunId: teamRun.id,
+          workRequestId: workRequest.id,
+          memberId: member.id,
+          workspaceId,
+          sessionId,
+          status: 'RUNNING',
         },
       });
     });
@@ -426,6 +615,62 @@ export class TeamSchedulerService {
     return count > 0;
   }
 
+  private async getOrCreateSharedWorkspace(taskId: string): Promise<{ id: string }> {
+    const existingClaim = TeamSchedulerService.sharedWorkspaceClaims.get(taskId);
+    if (existingClaim) {
+      return existingClaim;
+    }
+
+    const claim = this.findOrCreateSharedWorkspace(taskId);
+    TeamSchedulerService.sharedWorkspaceClaims.set(taskId, claim);
+
+    try {
+      return await claim;
+    } finally {
+      if (TeamSchedulerService.sharedWorkspaceClaims.get(taskId) === claim) {
+        TeamSchedulerService.sharedWorkspaceClaims.delete(taskId);
+      }
+    }
+  }
+
+  private async findOrCreateSharedWorkspace(taskId: string): Promise<{ id: string }> {
+    const activeWorkspace = await prisma.workspace.findFirst({
+      where: { taskId, status: 'ACTIVE' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true },
+    });
+
+    if (activeWorkspace) {
+      return activeWorkspace;
+    }
+
+    return this.workspaceService.create(taskId);
+  }
+
+  private buildSessionPrompt(member: PrismaTeamMember, workRequest: PrismaWorkRequest): string {
+    return `${member.rolePrompt}\n\nTask:\n${workRequest.instruction}`;
+  }
+
+  private async markInvocationStartFailed(invocationId: string, sessionId: string): Promise<void> {
+    await prisma.$transaction([
+      prisma.agentInvocation.update({
+        where: { id: invocationId },
+        data: { status: 'FAILED' },
+      }),
+      prisma.session.update({
+        where: { id: sessionId },
+        data: { status: 'FAILED' },
+      }),
+    ]);
+  }
+
+  private async markSessionFailed(sessionId: string): Promise<void> {
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: { status: 'FAILED' },
+    });
+  }
+
   private getRequiredLocks(teamRun: SchedulerTeamRun, member: PrismaTeamMember): string[] {
     const request: LockRequest = {
       teamRunId: teamRun.id,
@@ -440,7 +685,7 @@ export class TeamSchedulerService {
   }
 
   private resolveInvocationWorkspaceId(teamRun: SchedulerTeamRun, member: PrismaTeamMember): string | null {
-    if (member.workspacePolicy !== 'shared') {
+    if (member.workspacePolicy !== 'shared' && member.workspacePolicy !== 'none') {
       return null;
     }
 
@@ -452,7 +697,7 @@ export class TeamSchedulerService {
       return null;
     }
 
-    return teamRun.task.workspaces[0]?.id ?? `task:${teamRun.taskId}`;
+    return `task:${teamRun.taskId}`;
   }
 
   private memberSchedulingLockKey(teamRunId: string, memberId: string): string {

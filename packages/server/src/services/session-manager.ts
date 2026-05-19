@@ -127,6 +127,8 @@ export class SessionManager {
       }
     }
 
+    await this.injectTeamRunInvocationEnv(id, env);
+
     const spawnResult = await executor.spawn({
       workingDir,
       prompt: session.prompt,
@@ -410,6 +412,28 @@ export class SessionManager {
       return createCodexParser(msgStore);
     }
     return null;
+  }
+
+  private async injectTeamRunInvocationEnv(sessionId: string, env: ExecutionEnv): Promise<void> {
+    const invocation = await prisma.agentInvocation.findFirst({
+      where: { sessionId },
+      select: {
+        id: true,
+        teamRunId: true,
+        memberId: true,
+      },
+    });
+
+    if (!invocation) {
+      return;
+    }
+
+    env.merge({
+      AGENT_TOWER_SESSION_ID: sessionId,
+      AGENT_TOWER_INVOCATION_ID: invocation.id,
+      AGENT_TOWER_TEAM_RUN_ID: invocation.teamRunId,
+      AGENT_TOWER_MEMBER_ID: invocation.memberId,
+    });
   }
 
   /**
