@@ -17,7 +17,10 @@ import { TokenUsageIndicator } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
 import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { RoomTimeline } from '@/components/team/RoomTimeline'
+import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
+import { teamRunQueryKeys, useTaskTeamRun, useRoomMessages, usePostRoomMessage } from '@/hooks/use-team-run'
 import { useWorkspaces, useOpenInEditor, useGitStatus, useCreateWorkspace, useReactivateWorkspace } from '@/hooks/use-workspaces'
 import { queryKeys } from '@/hooks/query-keys'
 import { apiClient } from '@/lib/api-client'
@@ -203,6 +206,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
   const [isGitDialogOpen, setIsGitDialogOpen] = useState(false)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const [focusedInvocationSessionId, setFocusedInvocationSessionId] = useState<string | null>(null)
   // retry 后强制清空 session 显示，等待用户重新 Start Agent
   const [isJustRetried, setIsJustRetried] = useState(false)
   const inputContainerRef = useRef<HTMLDivElement>(null)
@@ -228,10 +232,16 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
   const { data: workspaces, isLoading: isLoadingWorkspaces } = useWorkspaces(task?.id ?? '')
   const setupProgress = useWorkspaceSetupProgress(task?.id)
+  const { data: taskTeamRun } = useTaskTeamRun(task?.id ?? '')
+  const { data: roomMessages } = useRoomMessages(taskTeamRun?.id ?? '')
+  const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
+  const teamRun = taskTeamRun ?? null
+  const isTeamRunMode = Boolean(teamRun)
 
   // task 切换时清空 isJustRetried
   useEffect(() => {
     setIsJustRetried(false)
+    setFocusedInvocationSessionId(null)
   }, [task?.id])
 
   // 新 ACTIVE workspace session 出现后自动解除 retry 锁定
@@ -292,7 +302,19 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   }, [workspaces, isJustRetried])
 
   const sessionId = activeSession?.id ?? ''
-  const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
+  const logSessionId = isTeamRunMode ? focusedInvocationSessionId ?? '' : sessionId
+
+  const focusedSession = useMemo(() => {
+    if (!focusedInvocationSessionId || !workspaces) return null
+    for (const workspace of workspaces) {
+      const match = workspace.sessions?.find((session) => session.id === focusedInvocationSessionId)
+      if (match) return match
+    }
+    return null
+  }, [focusedInvocationSessionId, workspaces])
+
+  const displayedSession = focusedSession ?? activeSession ?? null
+  const isSessionActive = displayedSession?.status === SessionStatus.RUNNING || displayedSession?.status === SessionStatus.PENDING
   const isProjectReadOnly = Boolean(task?.projectArchivedAt)
   const isProjectRepoDeleted = Boolean(task?.projectRepoDeletedAt)
   const projectReadOnlyMessage = isProjectRepoDeleted
@@ -472,6 +494,26 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     setIsDeleteConfirmOpen(false)
   }, [task?.id, onDeleteTask])
 
+  const handleViewInvocationSession = useCallback((invocationSessionId: string) => {
+    setFocusedInvocationSessionId(invocationSessionId)
+    requestAnimationFrame(() => {
+      scrollToBottom()
+    })
+  }, [scrollToBottom])
+
+  const handleBackToTeamRoom = useCallback(() => {
+    setFocusedInvocationSessionId(null)
+  }, [])
+
+  const handlePostRoomMessage = useCallback(
+    (input: Parameters<typeof postRoomMessage.mutateAsync>[0]) => postRoomMessage.mutateAsync(input),
+    [postRoomMessage],
+  )
+
+  const invalidateTeamRunQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.all })
+  }, [queryClient])
+
   // ============ WebSocket Log Stream ============
 
   const {
@@ -481,8 +523,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     entries,
     attach,
   } = useNormalizedLogs({
-    sessionId,
-    sessionStatus: activeSession?.status,
+    sessionId: logSessionId,
+    sessionStatus: displayedSession?.status,
     onExit: useCallback(() => {
       // Agent PTY 退出后，刷新 workspaces query 让 isSessionActive 更新（停止按钮变回发送按钮）
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
@@ -500,14 +542,17 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     const handleTaskUpdated = (payload: TaskUpdatedPayload) => {
       if (payload.taskId !== task.id) return
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      invalidateTeamRunQueries()
     }
     const handleWorkspaceCommitMessageUpdated = (payload: WorkspaceCommitMessageUpdatedPayload) => {
       if (payload.taskId !== task.id) return
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
+      invalidateTeamRunQueries()
     }
     const handleWorkspaceHibernated = (payload: WorkspaceHibernatedPayload) => {
       if (payload.taskId !== task.id) return
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
+      invalidateTeamRunQueries()
     }
     socket.on(ServerEvents.TASK_UPDATED, handleTaskUpdated)
     socket.on(ServerEvents.WORKSPACE_COMMIT_MESSAGE_UPDATED, handleWorkspaceCommitMessageUpdated)
@@ -519,23 +564,24 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       socket.off(ServerEvents.WORKSPACE_HIBERNATED, handleWorkspaceHibernated)
       socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'task', id: task.id })
     }
-  }, [task?.id, queryClient])
+  }, [task?.id, queryClient, invalidateTeamRunQueries])
 
   // ---- Session 事件监听（依赖 sessionId）----
   useEffect(() => {
-    if (!sessionId) return
+    if (!logSessionId) return
     const socket = socketManager.connect()
 
     const handleSessionCompleted = (payload: SessionCompletedPayload) => {
-      if (payload.sessionId !== sessionId) return
+      if (payload.sessionId !== logSessionId) return
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+      invalidateTeamRunQueries()
     }
     socket.on(ServerEvents.SESSION_COMPLETED, handleSessionCompleted)
 
     return () => {
       socket.off(ServerEvents.SESSION_COMPLETED, handleSessionCompleted)
     }
-  }, [sessionId, queryClient])
+  }, [logSessionId, queryClient, invalidateTeamRunQueries])
 
   // Extract agent todos from the log stream
   const { todos } = useTodos(entries)
@@ -554,10 +600,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
   // Auto-attach: 当 sessionId 或连接状态变化时自动 attach
   useEffect(() => {
-    if (sessionId && isConnected) {
+    if (logSessionId && isConnected) {
       attach()
     }
-  }, [sessionId, isConnected, attach])
+  }, [logSessionId, isConnected, attach])
 
   // Note: no explicit detach effect needed here.
   // useNormalizedLogs' internal cleanup already sends UNSUBSCRIBE for the
@@ -583,7 +629,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
   const sendingRef = useRef(false)
   const handleSend = useCallback(async () => {
-    if ((!input.trim() && !hasAttachments) || !sessionId || sendingRef.current || isUploading) return
+    if ((!input.trim() && !hasAttachments) || !logSessionId || sendingRef.current || isUploading) return
     sendingRef.current = true
 
     // 拼接附件 markdown 链接到消息末尾
@@ -596,10 +642,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       textareaRef.current.style.height = '60px'
     }
 
-    // 统一入口：无论 session 是 RUNNING 还是 COMPLETED/CANCELLED，
-    // 都调同一个 sendMessage。后端自动处理 PTY 状态。
+      // 统一入口：无论 session 是 RUNNING 还是 COMPLETED/CANCELLED，
+      // 都调同一个 sendMessage。后端自动处理 PTY 状态。
     sendMessageMutation.mutate(
-      { id: sessionId, message, providerId: selectedProviderId ?? undefined },
+      { id: logSessionId, message, providerId: selectedProviderId ?? undefined },
       {
         onSuccess: () => {
           // 确保 snapshot 已加载（全量广播下 patch 已实时到达，attach 通常为 no-op）
@@ -610,13 +656,13 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
         },
       }
     )
-  }, [input, sessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId])
+  }, [input, logSessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId])
 
   const handleStop = useCallback(async () => {
-    if (!sessionId) return
-    await stopSession.mutateAsync(sessionId)
+    if (!logSessionId) return
+    await stopSession.mutateAsync(logSessionId)
     queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-  }, [sessionId, stopSession, queryClient])
+  }, [logSessionId, stopSession, queryClient])
 
   // ============ File Upload Handlers ============
 
@@ -862,6 +908,65 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           }`}
           style={{ width: isWorkspaceOpen ? chatWidth : '100%' }}
         >
+          {isTeamRunMode && teamRun ? (
+            focusedInvocationSessionId ? (
+              <>
+                <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 shrink-0">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-neutral-900">{t('Invocation details')}</div>
+                    <div className="truncate text-[11px] text-neutral-500">
+                      {focusedInvocationSessionId}
+                    </div>
+                  </div>
+                  <Button type="button" size="sm" variant="outline" onClick={handleBackToTeamRoom}>
+                    {t('Back to room')}
+                  </Button>
+                </div>
+                <div className="relative flex-1 min-h-0">
+                  <div ref={scrollRef} className="h-full overflow-y-auto px-6 pt-6 pb-4">
+                    <div ref={contentRef} className="w-full">
+                      {isLoadingSnapshot ? (
+                        <div className="flex items-center justify-center py-12 gap-3 text-neutral-400">
+                          <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                          <span className="text-sm">{t('Loading logs...')}</span>
+                        </div>
+                      ) : logs.length === 0 ? (
+                        <div className="text-neutral-400 text-center py-8">
+                          {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
+                        </div>
+                      ) : (
+                        <LogStream logs={logs} />
+                      )}
+                    </div>
+                  </div>
+
+                  {!isAtBottom && (
+                    <button
+                      onClick={() => scrollToBottom()}
+                      className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-white/90 backdrop-blur-sm border border-neutral-200 rounded-full shadow-md text-xs text-neutral-600 hover:bg-white hover:text-neutral-900 transition-all"
+                      aria-label={t('Scroll to bottom')}
+                    >
+                      <ArrowDown size={14} />
+                      <span>{t('回到底部')}</span>
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <RoomTimeline
+                teamRun={teamRun}
+                messages={roomMessages ?? teamRun.messages ?? []}
+                readOnly={isProjectReadOnly}
+                readOnlyMessage={projectReadOnlyMessage}
+                onSendMessage={handlePostRoomMessage}
+                onViewInvocationSession={handleViewInvocationSession}
+              />
+            )
+          ) : (
+            <>
           {/* Scrollable Logs */}
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto px-6 pt-6 pb-4">
@@ -1102,6 +1207,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             />
           </div>
           )}
+            </>
+          )}
         </div>
 
         {/* Resizer — only visible when WorkspacePanel is open */}
@@ -1121,6 +1228,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
               projectId={task.projectId}
               readOnly={isProjectReadOnly}
               repoDeleted={isProjectRepoDeleted}
+              teamRun={teamRun}
+              teamStatus={teamRun ? <TeamStatusPanel teamRun={teamRun} /> : undefined}
             />
           </div>
         )}

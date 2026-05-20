@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from "react"
-import { Code2, Terminal, Globe, GitGraph, History } from "lucide-react"
+import { Code2, Terminal, Globe, GitGraph, History, Users } from "lucide-react"
+import type { TeamRun } from "@agent-tower/shared"
 
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
@@ -11,6 +12,7 @@ import { useProject } from "@/hooks/use-projects"
 import type { QuickCommand } from "@agent-tower/shared"
 
 type WorkspaceTab = "editor" | "terminal" | "preview" | "changes" | "history"
+type WorkspaceTabWithTeam = WorkspaceTab | "team-status"
 
 export interface WorkspacePanelProps {
   /** 自定义类名 */
@@ -24,6 +26,8 @@ export interface WorkspacePanelProps {
   hideChanges?: boolean
   readOnly?: boolean
   repoDeleted?: boolean
+  teamRun?: TeamRun | null
+  teamStatus?: React.ReactNode
 }
 
 // ============================================================
@@ -31,7 +35,7 @@ export interface WorkspacePanelProps {
 // ============================================================
 
 interface TabConfig {
-  key: WorkspaceTab
+  key: WorkspaceTabWithTeam
   label: string
   icon: React.ReactNode
 }
@@ -103,15 +107,21 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     hideChanges,
     readOnly,
     repoDeleted,
+    teamRun,
+    teamStatus,
   }) {
     const { t } = useI18n()
     const tabs = useMemo(() => {
       const baseTabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
-      return readOnly
+      const availableTabs = readOnly
         ? baseTabs.filter((tab) => tab.key !== 'terminal')
         : baseTabs
-    }, [hideChanges, readOnly])
-    const [activeTab, setActiveTab] = useState<WorkspaceTab>(hideChanges ? "history" : "changes")
+
+      return teamRun
+        ? [{ key: "team-status" as const, label: "Team Status", icon: <Users size={14} /> }, ...availableTabs]
+        : availableTabs
+    }, [hideChanges, readOnly, teamRun])
+    const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(hideChanges ? "history" : "changes")
 
     // Fetch project to get quickCommands
     const { data: project } = useProject(projectId ?? '')
@@ -139,6 +149,11 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
       }
     }, [activeTab, hideChanges, readOnly])
 
+    useEffect(() => {
+      if (teamRun || activeTab !== 'team-status') return
+      setActiveTab(hideChanges ? 'history' : 'changes')
+    }, [activeTab, hideChanges, teamRun])
+
     return (
       <div className={cn("flex flex-col h-full bg-white", className)}>
         {readOnly && (
@@ -163,6 +178,16 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
         {/* 内容区域 */}
         <div className="flex-1 overflow-hidden relative">
+          {/* Team Status Tab */}
+          {activeTab === "team-status" && teamRun && (
+            teamStatus ?? (
+              <ComingSoonPlaceholder
+                icon={<Users size={32} />}
+                title="Team Status"
+              />
+            )
+          )}
+
           {/* Editor Tab */}
           {activeTab === "editor" && (
             <EditorView workingDir={workingDir} readOnly={readOnly} />
