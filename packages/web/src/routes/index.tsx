@@ -11,6 +11,7 @@ const AgentDemoPage = lazy(() => import('@/pages/AgentDemoPage').then(m => ({ de
 const GeneralSettingsPage = lazy(() => import('@/pages/GeneralSettingsPage').then(m => ({ default: m.GeneralSettingsPage })))
 const ProfileSettingsPage = lazy(() => import('@/pages/ProfileSettingsPage').then(m => ({ default: m.ProfileSettingsPage })))
 const ProviderSettingsPage = lazy(() => import('@/pages/ProviderSettingsPage').then(m => ({ default: m.ProviderSettingsPage })))
+const TeamSettingsPage = lazy(() => import('@/pages/TeamSettingsPage').then(m => ({ default: m.TeamSettingsPage })))
 const NotificationSettingsPage = lazy(() => import('@/pages/NotificationSettingsPage').then(m => ({ default: m.NotificationSettingsPage })))
 const ProjectSettingsPage = lazy(() => import('@/pages/ProjectSettingsPage').then(m => ({ default: m.ProjectSettingsPage })))
 
@@ -66,6 +67,14 @@ const router = createBrowserRouter([
             element: (
               <Suspense fallback={<RouteLoadingFallback />}>
                 <ProviderSettingsPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: 'team',
+            element: (
+              <Suspense fallback={<RouteLoadingFallback />}>
+                <TeamSettingsPage />
               </Suspense>
             ),
           },

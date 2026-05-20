@@ -1,10 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { RoomMessage, StructuredMention, TeamRun, RoomMessageSenderType, RoomMessageKind } from '@agent-tower/shared'
+import type {
+  MemberPreset,
+  RoomMessage,
+  StructuredMention,
+  TeamRun,
+  RoomMessageSenderType,
+  RoomMessageKind,
+  TeamTemplate,
+  TeamMemberCapabilities,
+  WorkspacePolicy,
+  TeamMemberTriggerPolicy,
+} from '@agent-tower/shared'
 import { apiClient, ApiError } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
 
 export const teamRunQueryKeys = {
   all: ['team-runs'] as const,
+  memberPresets: ['member-presets'] as const,
+  memberPresetDetail: (id: string) => ['member-presets', 'detail', id] as const,
+  teamTemplates: ['team-templates'] as const,
+  teamTemplateDetail: (id: string) => ['team-templates', 'detail', id] as const,
   task: (taskId: string) => ['team-runs', 'task', taskId] as const,
   detail: (teamRunId: string) => ['team-runs', 'detail', teamRunId] as const,
   messages: (teamRunId: string) => ['team-runs', 'messages', teamRunId] as const,
@@ -23,6 +38,139 @@ export type PostRoomMessageInput = {
   senderId?: string | null
   senderInvocationId?: string | null
   kind?: RoomMessageKind
+}
+
+export type CreateMemberPresetInput = {
+  name: string
+  aliases: string[]
+  providerId: string
+  rolePrompt: string
+  capabilities: TeamMemberCapabilities
+  workspacePolicy: WorkspacePolicy
+  triggerPolicy: TeamMemberTriggerPolicy
+  avatar?: string | null
+}
+
+export type UpdateMemberPresetInput = Partial<CreateMemberPresetInput>
+
+export type CreateTeamTemplateInput = {
+  name: string
+  memberPresetIds?: string[]
+  members?: Array<{
+    memberPresetId: string
+    position?: number
+  }>
+}
+
+export type UpdateTeamTemplateInput = Partial<CreateTeamTemplateInput>
+
+/** 获取所有 MemberPreset。 */
+export function useMemberPresets() {
+  return useQuery({
+    queryKey: teamRunQueryKeys.memberPresets,
+    queryFn: () => apiClient.get<MemberPreset[]>('/member-presets'),
+  })
+}
+
+/** 获取单个 MemberPreset 详情。 */
+export function useMemberPreset(id: string) {
+  return useQuery({
+    queryKey: teamRunQueryKeys.memberPresetDetail(id),
+    queryFn: () => apiClient.get<MemberPreset>(`/member-presets/${id}`),
+    enabled: !!id,
+  })
+}
+
+/** 创建 MemberPreset。 */
+export function useCreateMemberPreset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateMemberPresetInput) =>
+      apiClient.post<MemberPreset>('/member-presets', input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.memberPresets })
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.teamTemplates })
+    },
+  })
+}
+
+/** 更新 MemberPreset。 */
+export function useUpdateMemberPreset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: UpdateMemberPresetInput }) =>
+      apiClient.patch<MemberPreset>(`/member-presets/${id}`, data),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.memberPresets })
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.memberPresetDetail(variables.id) })
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.teamTemplates })
+    },
+  })
+}
+
+/** 删除 MemberPreset。 */
+export function useDeleteMemberPreset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => apiClient.delete(`/member-presets/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.memberPresets })
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.teamTemplates })
+    },
+  })
+}
+
+/** 获取所有 TeamTemplate。 */
+export function useTeamTemplates() {
+  return useQuery({
+    queryKey: teamRunQueryKeys.teamTemplates,
+    queryFn: () => apiClient.get<TeamTemplate[]>('/team-templates'),
+  })
+}
+
+/** 获取单个 TeamTemplate 详情。 */
+export function useTeamTemplate(id: string) {
+  return useQuery({
+    queryKey: teamRunQueryKeys.teamTemplateDetail(id),
+    queryFn: () => apiClient.get<TeamTemplate>(`/team-templates/${id}`),
+    enabled: !!id,
+  })
+}
+
+/** 创建 TeamTemplate。 */
+export function useCreateTeamTemplate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateTeamTemplateInput) =>
+      apiClient.post<TeamTemplate>('/team-templates', input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.teamTemplates })
+    },
+  })
+}
+
+/** 更新 TeamTemplate。 */
+export function useUpdateTeamTemplate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: UpdateTeamTemplateInput }) =>
+      apiClient.patch<TeamTemplate>(`/team-templates/${id}`, data),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.teamTemplates })
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.teamTemplateDetail(variables.id) })
+    },
+  })
+}
+
+/** 删除 TeamTemplate。 */
+export function useDeleteTeamTemplate() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => apiClient.delete(`/team-templates/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.teamTemplates })
+    },
+  })
 }
 
 /** 获取 task 对应的 TeamRun；不存在时返回 null，不把 404 当成错误噪声。 */

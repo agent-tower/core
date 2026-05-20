@@ -1,10 +1,11 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Cpu, Bell, FolderGit2, Languages } from 'lucide-react'
+import { ArrowLeft, Cpu, Bell, FolderGit2, Languages, Users } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 
 const NAV_ITEMS = [
   { to: '/settings/general', label: '通用', icon: Languages },
   { to: '/settings/agents', label: 'Agent 配置', icon: Cpu },
+  { to: '/settings/team', label: '团队协作', icon: Users },
   { to: '/settings/projects', label: '项目配置', icon: FolderGit2 },
   { to: '/settings/notifications', label: '通知', icon: Bell },
 ]
