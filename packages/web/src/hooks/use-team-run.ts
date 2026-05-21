@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
+  AgentInvocation,
   MemberPreset,
   RoomMessage,
   StructuredMention,
@@ -11,6 +12,7 @@ import type {
   TeamMemberCapabilities,
   WorkspacePolicy,
   TeamMemberTriggerPolicy,
+  WorkRequest,
 } from '@agent-tower/shared'
 import { apiClient, ApiError } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
@@ -69,6 +71,54 @@ export type CreateTaskTeamRunInput = {
   mode: TeamRunMode
   teamTemplateId?: string
   memberPresetIds?: string[]
+}
+
+export type StopMemberWorkInput = {
+  memberId: string
+  cancelQueued?: boolean
+}
+
+type ApproveWorkRequestResponse = {
+  workRequest: WorkRequest
+  startedInvocations: AgentInvocation[]
+}
+
+type StopMemberWorkResponse = {
+  stoppedSessionIds: string[]
+  cancelledInvocationIds: string[]
+  cancelledWorkRequestIds: string[]
+  startedInvocations: AgentInvocation[]
+}
+
+function getCachedTeamRunTaskId(queryClient: ReturnType<typeof useQueryClient>, teamRunId: string) {
+  const detail = queryClient.getQueryData<TeamRun | null>(teamRunQueryKeys.detail(teamRunId))
+  if (detail?.taskId) return detail.taskId
+
+  const cachedTeamRuns = queryClient.getQueriesData<TeamRun | null>({ queryKey: teamRunQueryKeys.all })
+  for (const [, teamRun] of cachedTeamRuns) {
+    if (teamRun?.id === teamRunId && teamRun.taskId) {
+      return teamRun.taskId
+    }
+  }
+
+  return undefined
+}
+
+function invalidateTeamRunActionQueries(queryClient: ReturnType<typeof useQueryClient>, teamRunId: string) {
+  const taskId = getCachedTeamRunTaskId(queryClient, teamRunId)
+
+  void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.all })
+  void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.detail(teamRunId) })
+  void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.workRequests(teamRunId) })
+  void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.invocations(teamRunId) })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+
+  if (taskId) {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.detail(taskId) })
+    void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.task(taskId) })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
+  }
 }
 
 /** 获取所有 MemberPreset。 */
@@ -279,6 +329,60 @@ export function usePostRoomMessage(teamRunId: string) {
       queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.all })
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+    },
+  })
+}
+
+/** Approve a pending TeamRun WorkRequest. */
+export function useApproveWorkRequest(teamRunId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (workRequestId: string) =>
+      apiClient.post<ApproveWorkRequestResponse>(`/team-runs/work-requests/${workRequestId}/approve`),
+    onSuccess: () => {
+      invalidateTeamRunActionQueries(queryClient, teamRunId)
+    },
+  })
+}
+
+/** Reject a pending TeamRun WorkRequest. */
+export function useRejectWorkRequest(teamRunId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (workRequestId: string) =>
+      apiClient.post<WorkRequest>(`/team-runs/work-requests/${workRequestId}/reject`),
+    onSuccess: () => {
+      invalidateTeamRunActionQueries(queryClient, teamRunId)
+    },
+  })
+}
+
+/** Cancel a pending or queued TeamRun WorkRequest. */
+export function useCancelWorkRequest(teamRunId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (workRequestId: string) =>
+      apiClient.post<WorkRequest>(`/team-runs/work-requests/${workRequestId}/cancel`),
+    onSuccess: () => {
+      invalidateTeamRunActionQueries(queryClient, teamRunId)
+    },
+  })
+}
+
+/** Stop a running TeamRun member session. */
+export function useStopMemberWork(teamRunId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ memberId, cancelQueued }: StopMemberWorkInput) =>
+      apiClient.post<StopMemberWorkResponse>(`/team-runs/${teamRunId}/members/${memberId}/stop`, {
+        cancelQueued,
+      }),
+    onSuccess: () => {
+      invalidateTeamRunActionQueries(queryClient, teamRunId)
     },
   })
 }

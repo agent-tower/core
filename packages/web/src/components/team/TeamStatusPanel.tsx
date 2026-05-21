@@ -1,8 +1,14 @@
-import { useMemo } from 'react'
-import { Bot, Clock3, Layers3, MessageSquare, RefreshCw, Users } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Ban, Bot, Check, Clock3, Layers3, MessageSquare, RefreshCw, Square, Users, X } from 'lucide-react'
 import type { AgentInvocation, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
+import {
+  useApproveWorkRequest,
+  useCancelWorkRequest,
+  useRejectWorkRequest,
+  useStopMemberWork,
+} from '@/hooks/use-team-run'
 
 interface TeamStatusPanelProps {
   teamRun: TeamRun
@@ -19,6 +25,10 @@ function formatTime(value?: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
   return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback
 }
 
 function statusLabel(status: MemberStatus) {
@@ -61,6 +71,26 @@ function getInitials(name: string) {
   return Array.from(trimmed).slice(0, 2).join('').toUpperCase()
 }
 
+function requesterLabel(requesterType: WorkRequest['requesterType']) {
+  switch (requesterType) {
+    case 'user':
+      return 'User'
+    case 'agent':
+      return 'Agent'
+    case 'system':
+      return 'System'
+  }
+}
+
+function ifBusyLabel(ifBusy: WorkRequest['ifBusy']) {
+  switch (ifBusy) {
+    case 'queue':
+      return 'Queue if busy'
+    case 'cancel_current_and_start':
+      return 'Cancel current if busy'
+  }
+}
+
 function Avatar({ name, avatar }: { name: string; avatar?: string | null }) {
   const initials = useMemo(() => getInitials(name), [name])
   if (avatar) {
@@ -95,6 +125,12 @@ function resolveMemberStatus(
 
 export function TeamStatusPanel({ teamRun }: TeamStatusPanelProps) {
   const { t } = useI18n()
+  const approveWorkRequest = useApproveWorkRequest(teamRun.id)
+  const rejectWorkRequest = useRejectWorkRequest(teamRun.id)
+  const cancelPendingWorkRequest = useCancelWorkRequest(teamRun.id)
+  const cancelQueuedWorkRequest = useCancelWorkRequest(teamRun.id)
+  const stopMemberWork = useStopMemberWork(teamRun.id)
+  const [stopPromptInvocationId, setStopPromptInvocationId] = useState<string | null>(null)
 
   const members = teamRun.members ?? EMPTY_MEMBERS
   const workRequests = teamRun.workRequests ?? EMPTY_WORK_REQUESTS
@@ -125,13 +161,41 @@ export function TeamStatusPanel({ teamRun }: TeamStatusPanelProps) {
     [invocations],
   )
 
-  const queuedRequests = useMemo(
+  const pendingApprovalRequests = useMemo(
     () =>
       [...workRequests]
-        .filter((request) => request.status === 'PENDING_APPROVAL' || request.status === 'QUEUED')
+        .filter((request) => request.status === 'PENDING_APPROVAL')
         .sort((a, b) => Date.parse(b.updatedAt ?? b.createdAt ?? '') - Date.parse(a.updatedAt ?? a.createdAt ?? '')),
     [workRequests],
   )
+
+  const queuedRequests = useMemo(
+    () =>
+      [...workRequests]
+        .filter((request) => request.status === 'QUEUED')
+        .sort((a, b) => Date.parse(b.updatedAt ?? b.createdAt ?? '') - Date.parse(a.updatedAt ?? a.createdAt ?? '')),
+    [workRequests],
+  )
+
+  const pendingApprovalError =
+    approveWorkRequest.isError
+      ? approveWorkRequest.error
+      : rejectWorkRequest.isError
+        ? rejectWorkRequest.error
+        : cancelPendingWorkRequest.isError
+          ? cancelPendingWorkRequest.error
+          : null
+
+  const queuedRequestError = cancelQueuedWorkRequest.isError
+    ? cancelQueuedWorkRequest.error
+    : null
+
+  const isPendingApprovalActionPending =
+    approveWorkRequest.isPending
+    || rejectWorkRequest.isPending
+    || cancelPendingWorkRequest.isPending
+
+  const isQueuedCancelPending = cancelQueuedWorkRequest.isPending
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
@@ -153,6 +217,88 @@ export function TeamStatusPanel({ teamRun }: TeamStatusPanelProps) {
             <div>{teamRun.reviewReason}</div>
           </div>
         )}
+
+        <section className="space-y-2">
+          <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+            <Clock3 size={13} />
+            <span>{t('Pending approval')}</span>
+          </div>
+          <div className="space-y-2">
+            {pendingApprovalRequests.length === 0 ? (
+              <div className="rounded-md border border-dashed border-neutral-200 bg-neutral-50 px-3 py-3 text-sm text-neutral-500">
+                {t('No pending approvals')}
+              </div>
+            ) : (
+              pendingApprovalRequests.map((request) => {
+                const member = members.find((item) => item.id === request.targetMemberId)
+                const isApprovePending = approveWorkRequest.isPending && approveWorkRequest.variables === request.id
+                const isRejectPending = rejectWorkRequest.isPending && rejectWorkRequest.variables === request.id
+                const isCancelPending = cancelPendingWorkRequest.isPending && cancelPendingWorkRequest.variables === request.id
+
+                return (
+                  <div key={request.id} className="rounded-md border border-neutral-200 bg-white px-3 py-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-medium text-neutral-900">
+                          {member?.name ?? request.targetMemberId}
+                        </div>
+                        <div className="mt-0.5 text-[11px] leading-relaxed text-neutral-500 line-clamp-3">
+                          {request.instruction}
+                        </div>
+                      </div>
+                      <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                        {t('Pending approval')}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-neutral-500">
+                      <span>{t('Requester')}: {t(requesterLabel(request.requesterType))}</span>
+                      <span>{formatTime(request.createdAt)}</span>
+                      <span>{t(ifBusyLabel(request.ifBusy))}</span>
+                      <span>{t('Cancel queued')}: {t(request.cancelQueued ? 'Yes' : 'No')}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => approveWorkRequest.mutate(request.id)}
+                        disabled={isPendingApprovalActionPending}
+                        className="inline-flex h-6 min-w-0 items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={t('Approve')}
+                      >
+                        <Check size={11} />
+                        <span className="truncate">{isApprovePending ? t('Approving') : t('Approve')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => rejectWorkRequest.mutate(request.id)}
+                        disabled={isPendingApprovalActionPending}
+                        className="inline-flex h-6 min-w-0 items-center gap-1 rounded-md border border-neutral-200 bg-neutral-50 px-2 text-[11px] font-medium text-neutral-700 transition-colors hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={t('Reject')}
+                      >
+                        <X size={11} />
+                        <span className="truncate">{isRejectPending ? t('Rejecting') : t('Reject')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => cancelPendingWorkRequest.mutate(request.id)}
+                        disabled={isPendingApprovalActionPending}
+                        className="inline-flex h-6 min-w-0 items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={t('Cancel')}
+                      >
+                        <Ban size={11} />
+                        <span className="truncate">{isCancelPending ? t('Cancelling') : t('Cancel')}</span>
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+          {pendingApprovalError && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {getErrorMessage(pendingApprovalError, t('Failed to update work request'))}
+            </div>
+          )}
+        </section>
 
         <section className="space-y-2">
           <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-neutral-500">
@@ -203,6 +349,7 @@ export function TeamStatusPanel({ teamRun }: TeamStatusPanelProps) {
             ) : (
               queuedRequests.map((request) => {
                 const member = members.find((item) => item.id === request.targetMemberId)
+                const isCancelPending = cancelQueuedWorkRequest.isPending && cancelQueuedWorkRequest.variables === request.id
                 return (
                   <div key={request.id} className="rounded-md border border-neutral-200 bg-white px-3 py-2">
                     <div className="flex items-start justify-between gap-3">
@@ -214,9 +361,16 @@ export function TeamStatusPanel({ teamRun }: TeamStatusPanelProps) {
                           {request.instruction}
                         </div>
                       </div>
-                      <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-[10px] font-medium text-neutral-600">
-                        {request.status}
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => cancelQueuedWorkRequest.mutate(request.id)}
+                        disabled={isQueuedCancelPending}
+                        className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={t('Cancel')}
+                      >
+                        <Ban size={11} />
+                        <span>{isCancelPending ? t('Cancelling') : t('Cancel')}</span>
+                      </button>
                     </div>
                     <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-500">
                       <Clock3 size={11} />
@@ -227,6 +381,11 @@ export function TeamStatusPanel({ teamRun }: TeamStatusPanelProps) {
               })
             )}
           </div>
+          {queuedRequestError && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {getErrorMessage(queuedRequestError, t('Failed to cancel work request'))}
+            </div>
+          )}
         </section>
 
         <section className="space-y-2">
@@ -242,6 +401,9 @@ export function TeamStatusPanel({ teamRun }: TeamStatusPanelProps) {
             ) : (
               activeInvocations.map((invocation) => {
                 const member = members.find((item) => item.id === invocation.memberId)
+                const canStop = invocation.status === 'RUNNING' && !!member
+                const isConfirmingStop = stopPromptInvocationId === invocation.id
+                const isStoppingMember = stopMemberWork.isPending && stopMemberWork.variables?.memberId === member?.id
                 return (
                   <div key={invocation.id} className="rounded-md border border-neutral-200 bg-white px-3 py-2">
                     <div className="flex items-start justify-between gap-3">
@@ -253,17 +415,70 @@ export function TeamStatusPanel({ teamRun }: TeamStatusPanelProps) {
                           {invocation.status} · {invocation.sessionId ? invocation.sessionId.slice(0, 8) : invocation.id.slice(0, 8)}
                         </div>
                       </div>
-                      <RefreshCw size={12} className="text-neutral-400 shrink-0" />
+                      {canStop ? (
+                        <button
+                          type="button"
+                          onClick={() => setStopPromptInvocationId(isConfirmingStop ? null : invocation.id)}
+                          disabled={stopMemberWork.isPending}
+                          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-neutral-200 bg-neutral-50 px-2 text-[11px] font-medium text-neutral-700 transition-colors hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          title={t('Stop')}
+                        >
+                          <Square size={10} />
+                          <span>{t('Stop')}</span>
+                        </button>
+                      ) : (
+                        <RefreshCw size={12} className="text-neutral-400 shrink-0" />
+                      )}
                     </div>
                     <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-500">
                       <Clock3 size={11} />
                       <span>{formatTime(invocation.updatedAt ?? invocation.createdAt)}</span>
                     </div>
+                    {canStop && isConfirmingStop && (
+                      <div className="mt-2 rounded-md border border-neutral-200 bg-neutral-50 p-2">
+                        <div className="mb-1.5 text-[11px] text-neutral-600">{t('Stop running work?')}</div>
+                        <div className="grid grid-cols-1 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              stopMemberWork.mutate(
+                                { memberId: member.id, cancelQueued: false },
+                                { onSuccess: () => setStopPromptInvocationId(null) },
+                              )
+                            }}
+                            disabled={stopMemberWork.isPending}
+                            className="inline-flex min-h-6 w-full items-center justify-center gap-1 rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px] font-medium text-neutral-700 transition-colors hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Square size={10} />
+                            <span>{isStoppingMember && stopMemberWork.variables?.cancelQueued === false ? t('Stopping') : t('Stop only')}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              stopMemberWork.mutate(
+                                { memberId: member.id, cancelQueued: true },
+                                { onSuccess: () => setStopPromptInvocationId(null) },
+                              )
+                            }}
+                            disabled={stopMemberWork.isPending}
+                            className="inline-flex min-h-6 w-full items-center justify-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Ban size={10} />
+                            <span>{isStoppingMember && stopMemberWork.variables?.cancelQueued === true ? t('Stopping') : t('Stop + clear queue')}</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )
               })
             )}
           </div>
+          {stopMemberWork.isError && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {getErrorMessage(stopMemberWork.error, t('Failed to stop member work'))}
+            </div>
+          )}
         </section>
 
         <section className="space-y-2">
