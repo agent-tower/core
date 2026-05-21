@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { ZodError, z } from 'zod';
 import { ServiceError } from '../errors.js';
 import { TeamRunService } from '../services/team-run.service.js';
+import { TeamSchedulerService } from '../services/team-scheduler.service.js';
 
 const capabilitiesSchema = z.object({
   readRoom: z.boolean(),
@@ -70,6 +71,10 @@ const roomMessageSchema = z.object({
   kind: z.enum(['chat', 'work_request', 'work_started', 'artifact', 'review', 'decision', 'system']).optional(),
 });
 
+const stopMemberWorkSchema = z.object({
+  cancelQueued: z.boolean().optional(),
+});
+
 function handleError(error: unknown, reply: any) {
   if (error instanceof ZodError) {
     reply.code(400);
@@ -95,6 +100,7 @@ function handleError(error: unknown, reply: any) {
 
 export async function teamRunRoutes(app: FastifyInstance) {
   const service = new TeamRunService();
+  const scheduler = new TeamSchedulerService();
 
   app.get('/member-presets', async (_request, reply) => {
     try {
@@ -245,6 +251,41 @@ export async function teamRunRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/team-runs/:id/work-requests', async (request, reply) => {
     try {
       return await service.listWorkRequests(request.params.id);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/team-runs/work-requests/:id/approve', async (request, reply) => {
+    try {
+      return await scheduler.approveWorkRequestAndStartNext(request.params.id);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/team-runs/work-requests/:id/reject', async (request, reply) => {
+    try {
+      return await scheduler.rejectWorkRequest(request.params.id);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/team-runs/work-requests/:id/cancel', async (request, reply) => {
+    try {
+      return await scheduler.cancelWorkRequest(request.params.id);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.post<{ Params: { id: string; memberId: string } }>('/team-runs/:id/members/:memberId/stop', async (request, reply) => {
+    try {
+      const body = stopMemberWorkSchema.parse(request.body ?? {});
+      return await scheduler.stopMemberWork(request.params.id, request.params.memberId, {
+        cancelQueued: body.cancelQueued,
+      });
     } catch (error) {
       return handleError(error, reply);
     }

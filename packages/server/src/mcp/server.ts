@@ -35,6 +35,16 @@ const ListRoomMessagesInput = z.object({
   limit: z.number().int().min(1).max(200).optional().describe('Return only the last N messages.'),
 });
 
+const WorkRequestControlInput = z.object({
+  work_request_id: z.string().min(1).describe('WorkRequest ID.'),
+});
+
+const StopMemberWorkInput = z.object({
+  team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
+  member_id: z.string().min(1).describe('TeamMember ID whose current work should be stopped.'),
+  cancel_queued: z.boolean().optional().describe('Whether to cancel queued/pending WorkRequests for this member.'),
+});
+
 function resolveTeamRunId(explicitTeamRunId?: string): string {
   const teamRunId = process.env.AGENT_TOWER_TEAM_RUN_ID || explicitTeamRunId;
   if (!teamRunId) {
@@ -84,6 +94,65 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient): voi
         const messages = await client.listRoomMessages(teamRunId);
         const limited = params.limit ? messages.slice(-params.limit) : messages;
         return { content: [{ type: 'text', text: JSON.stringify(limited, null, 2) }] };
+      } catch (e: any) {
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'approve_work_request',
+    'Approve a pending TeamRun WorkRequest, queue it, and try to start the next eligible work.',
+    WorkRequestControlInput.shape,
+    async (params) => {
+      try {
+        const result = await client.approveWorkRequest(params.work_request_id);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (e: any) {
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'reject_work_request',
+    'Reject a pending TeamRun WorkRequest without starting any invocation.',
+    WorkRequestControlInput.shape,
+    async (params) => {
+      try {
+        const result = await client.rejectWorkRequest(params.work_request_id);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (e: any) {
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'cancel_work_request',
+    'Cancel a pending or queued TeamRun WorkRequest.',
+    WorkRequestControlInput.shape,
+    async (params) => {
+      try {
+        const result = await client.cancelWorkRequest(params.work_request_id);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (e: any) {
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'stop_member_work',
+    'Stop a TeamRun member current work and optionally cancel queued/pending work for that member.',
+    StopMemberWorkInput.shape,
+    async (params) => {
+      try {
+        const teamRunId = resolveTeamRunId(params.team_run_id);
+        const result = await client.stopMemberWork(teamRunId, params.member_id, {
+          cancelQueued: params.cancel_queued,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
       }

@@ -198,6 +198,10 @@ function createSessionManagerMock(options: { failStart?: boolean } = {}) {
         data: { status: 'RUNNING' },
       });
     }),
+    stop: vi.fn(async (sessionId: string) => prisma.session.update({
+      where: { id: sessionId },
+      data: { status: 'CANCELLED' },
+    })),
   };
 }
 
@@ -280,6 +284,38 @@ describe('TeamSchedulerService', () => {
     const approved = await service.approveWorkRequest(request.id);
 
     expect(approved.status).toBe('QUEUED');
+  });
+
+  it('approves a pending WorkRequest and immediately starts eligible queued work', async () => {
+    const { teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+    });
+
+    const result = await service.approveWorkRequestAndStartNext(request.id);
+
+    expect(result.workRequest).toMatchObject({
+      id: request.id,
+      status: 'QUEUED',
+    });
+    expect(result.startedInvocations).toHaveLength(1);
+    expect(result.startedInvocations[0]).toMatchObject({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      status: 'RUNNING',
+      sessionId: expect.any(String),
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
   });
 
   it('returns a clear error when approving a non-pending WorkRequest', async () => {
@@ -773,6 +809,192 @@ describe('TeamSchedulerService', () => {
       providerId: members[0]!.providerId,
       status: 'RUNNING',
     });
+  });
+
+  it('stops member work by cancelling no-session active work, queued requests, and releasing locks', async () => {
+    const { task, workspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [writeCapabilities, writeCapabilities],
+    });
+    const activeRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const activeInvocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: activeRequest.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace!.id,
+        sessionId: null,
+        status: 'QUEUED',
+      },
+    });
+    expect(lockService.acquire(activeInvocation.id, [`workspace:task:${task.id}:write`])).toBe(true);
+    const pending = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+    const queued = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+    const otherMemberQueued = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'QUEUED',
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+    });
+
+    const result = await service.stopMemberWork(teamRun.id, members[0]!.id, { cancelQueued: true });
+
+    expect(result.stoppedSessionIds).toEqual([]);
+    expect(result.cancelledInvocationIds).toEqual([activeInvocation.id]);
+    expect(new Set(result.cancelledWorkRequestIds)).toEqual(new Set([
+      activeRequest.id,
+      pending.id,
+      queued.id,
+    ]));
+    expect(result.startedInvocations).toHaveLength(1);
+    expect(result.startedInvocations[0]).toMatchObject({
+      workRequestId: otherMemberQueued.id,
+      memberId: members[1]!.id,
+      status: 'RUNNING',
+    });
+    expect(lockService.listLocks()).toEqual([
+      { key: `workspace:task:${task.id}:write`, ownerId: result.startedInvocations[0]!.id },
+    ]);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: activeInvocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      nextRoomReplyReminderAt: null,
+    });
+    const reloadedRequests = await prisma.workRequest.findMany({
+      where: { id: { in: [activeRequest.id, pending.id, queued.id, otherMemberQueued.id] } },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(reloadedRequests.map((request) => [request.id, request.status])).toEqual([
+      [activeRequest.id, 'CANCELLED'],
+      [pending.id, 'CANCELLED'],
+      [queued.id, 'CANCELLED'],
+      [otherMemberQueued.id, 'STARTED'],
+    ]);
+  });
+
+  it('stops session-backed member work through SessionManager.stop and then starts queued work', async () => {
+    const { task, workspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [writeCapabilities, writeCapabilities],
+    });
+    const activeRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'Do active work',
+        status: 'RUNNING',
+      },
+    });
+    const activeInvocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: activeRequest.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace!.id,
+        sessionId: session.id,
+        status: 'WAITING_ROOM_REPLY',
+        roomReplyReminderCount: 1,
+        nextRoomReplyReminderAt: new Date(Date.UTC(2026, 0, 1, 0, 1, 0)),
+      },
+    });
+    expect(lockService.acquire(activeInvocation.id, [`workspace:task:${task.id}:write`])).toBe(true);
+    const nextRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'QUEUED',
+    });
+    const sessionManager = createSessionManagerMock();
+    sessionManager.stop.mockImplementation(async (sessionId: string) => {
+      await prisma.agentInvocation.update({
+        where: { id: activeInvocation.id },
+        data: {
+          status: 'CANCELLED',
+          nextRoomReplyReminderAt: null,
+        },
+      });
+      lockService.releaseByOwner(activeInvocation.id);
+      return prisma.session.update({
+        where: { id: sessionId },
+        data: { status: 'CANCELLED' },
+      });
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const result = await service.stopMemberWork(teamRun.id, members[0]!.id);
+
+    expect(sessionManager.stop).toHaveBeenCalledWith(session.id);
+    expect(result.stoppedSessionIds).toEqual([session.id]);
+    expect(result.cancelledInvocationIds).toEqual([]);
+    expect(result.cancelledWorkRequestIds).toEqual([]);
+    expect(result.startedInvocations).toHaveLength(1);
+    expect(result.startedInvocations[0]).toMatchObject({
+      workRequestId: nextRequest.id,
+      memberId: members[1]!.id,
+      status: 'RUNNING',
+    });
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+    await expect(prisma.agentInvocation.findUnique({ where: { id: activeInvocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      nextRoomReplyReminderAt: null,
+    });
+    expect(lockService.listLocks()).toEqual([
+      { key: `workspace:task:${task.id}:write`, ownerId: result.startedInvocations[0]!.id },
+    ]);
+  });
+
+  it('does not start queued work when stopping a member with no active invocation and no queue cancellation', async () => {
+    const { teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities, readOnlyCapabilities],
+    });
+    const otherMemberQueued = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'QUEUED',
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+    });
+
+    const result = await service.stopMemberWork(teamRun.id, members[0]!.id);
+
+    expect(result).toEqual({
+      stoppedSessionIds: [],
+      cancelledInvocationIds: [],
+      cancelledWorkRequestIds: [],
+      startedInvocations: [],
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: otherMemberQueued.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+    await expect(prisma.agentInvocation.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+    expect(lockService.listLocks()).toEqual([]);
   });
 
   it('starts none-policy members in the shared workspace without workspace write or command locks', async () => {

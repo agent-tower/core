@@ -138,6 +138,26 @@ export class AgentTowerClient {
     return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/messages`);
   }
 
+  async approveWorkRequest(workRequestId: string) {
+    return this.request<any>('POST', `/api/team-runs/work-requests/${workRequestId}/approve`);
+  }
+
+  async rejectWorkRequest(workRequestId: string) {
+    return this.request<any>('POST', `/api/team-runs/work-requests/${workRequestId}/reject`);
+  }
+
+  async cancelWorkRequest(workRequestId: string) {
+    return this.request<any>('POST', `/api/team-runs/work-requests/${workRequestId}/cancel`);
+  }
+
+  async stopMemberWork(teamRunId: string, memberId: string, input: {
+    cancelQueued?: boolean;
+  } = {}) {
+    return this.request<any>('POST', `/api/team-runs/${teamRunId}/members/${memberId}/stop`, {
+      cancelQueued: input.cancelQueued,
+    });
+  }
+
   // ── System ──
 
   async getWorkspaceContext(cwdPath: string) {

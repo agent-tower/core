@@ -34,6 +34,13 @@ export interface SchedulePlan {
   projectId: string | null;
 }
 
+export interface StopMemberWorkResult {
+  stoppedSessionIds: string[];
+  cancelledInvocationIds: string[];
+  cancelledWorkRequestIds: string[];
+  startedInvocations: AgentInvocation[];
+}
+
 type SchedulerTeamRun = {
   id: string;
   taskId: string;
@@ -56,6 +63,7 @@ type SessionStarter = {
     providerId?: string
   ): Promise<{ id: string }>;
   start(id: string): Promise<unknown>;
+  stop?(id: string): Promise<unknown>;
 };
 
 interface TeamSchedulerDependencies {
@@ -69,6 +77,16 @@ const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
   'RUNNING',
   'SESSION_ENDED',
   'WAITING_ROOM_REPLY',
+];
+const STOPPABLE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
+  'QUEUED',
+  'RUNNING',
+  'SESSION_ENDED',
+  'WAITING_ROOM_REPLY',
+];
+const CANCELLABLE_QUEUED_WORK_REQUEST_STATUSES: WorkRequestStatus[] = [
+  'PENDING_APPROVAL',
+  'QUEUED',
 ];
 
 const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
@@ -394,6 +412,15 @@ export class TeamSchedulerService {
     );
   }
 
+  async approveWorkRequestAndStartNext(workRequestId: string): Promise<{
+    workRequest: WorkRequest;
+    startedInvocations: AgentInvocation[];
+  }> {
+    const workRequest = await this.approveWorkRequest(workRequestId);
+    const startedInvocations = await this.startNextSessions(workRequest.teamRunId);
+    return { workRequest, startedInvocations };
+  }
+
   async rejectWorkRequest(workRequestId: string): Promise<WorkRequest> {
     return this.transitionWorkRequestStatus(
       workRequestId,
@@ -410,6 +437,67 @@ export class TeamSchedulerService {
       ['PENDING_APPROVAL', 'QUEUED'],
       'CANCELLED'
     );
+  }
+
+  async stopMemberWork(teamRunId: string, memberId: string, options: {
+    cancelQueued?: boolean;
+  } = {}): Promise<StopMemberWorkResult> {
+    await this.getTeamMemberOrThrow(teamRunId, memberId);
+
+    const activeInvocations = await prisma.agentInvocation.findMany({
+      where: {
+        teamRunId,
+        memberId,
+        status: { in: STOPPABLE_INVOCATION_STATUSES },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+
+    const stoppedSessionIds: string[] = [];
+    const queuedInvocationIds = activeInvocations
+      .filter((invocation) => invocation.sessionId == null)
+      .map((invocation) => invocation.id);
+
+    const queuedCancellation = queuedInvocationIds.length > 0
+      ? await this.cancelInvocationsWithoutSession(queuedInvocationIds)
+      : { cancelledInvocationIds: [], cancelledWorkRequestIds: [] };
+
+    if (options.cancelQueued) {
+      const cancelledQueuedRequestIds = await this.cancelQueuedWorkRequestsForMember(teamRunId, memberId);
+      queuedCancellation.cancelledWorkRequestIds.push(...cancelledQueuedRequestIds);
+    }
+
+    const sessionIds = activeInvocations
+      .map((invocation) => invocation.sessionId)
+      .filter((sessionId): sessionId is string => sessionId != null);
+
+    if (sessionIds.length > 0) {
+      if (!this.sessionManager.stop) {
+        throw new ServiceError('Session stop is not available', 'SESSION_STOP_UNAVAILABLE', 500);
+      }
+
+      for (const sessionId of sessionIds) {
+        const stopped = await this.sessionManager.stop(sessionId);
+        if (stopped) {
+          stoppedSessionIds.push(sessionId);
+        }
+      }
+    }
+
+    const cancelledWorkRequestIds = Array.from(new Set(queuedCancellation.cancelledWorkRequestIds));
+    const shouldStartNext = stoppedSessionIds.length > 0
+      || queuedCancellation.cancelledInvocationIds.length > 0
+      || cancelledWorkRequestIds.length > 0;
+    const startedInvocations = shouldStartNext
+      ? await this.startNextSessions(teamRunId)
+      : [];
+
+    return {
+      stoppedSessionIds,
+      cancelledInvocationIds: queuedCancellation.cancelledInvocationIds,
+      cancelledWorkRequestIds,
+      startedInvocations,
+    };
   }
 
   releaseInvocationLocks(invocationId: string): void {
@@ -559,6 +647,22 @@ export class TeamSchedulerService {
     return workRequest;
   }
 
+  private async getTeamMemberOrThrow(teamRunId: string, memberId: string): Promise<PrismaTeamMember> {
+    const member = await prisma.teamMember.findFirst({ where: { id: memberId, teamRunId } });
+    if (member) {
+      return member;
+    }
+
+    const teamRun = await prisma.teamRun.findUnique({
+      where: { id: teamRunId },
+      select: { id: true },
+    });
+    if (!teamRun) {
+      throw new NotFoundError('TeamRun', teamRunId);
+    }
+    throw new NotFoundError('TeamMember', memberId);
+  }
+
   private async transitionWorkRequestStatus(
     workRequestId: string,
     action: 'approve' | 'reject' | 'cancel',
@@ -589,6 +693,85 @@ export class TeamSchedulerService {
     }
 
     return this.serializeWorkRequest(updated);
+  }
+
+  private async cancelInvocationsWithoutSession(invocationIds: string[]): Promise<{
+    cancelledInvocationIds: string[];
+    cancelledWorkRequestIds: string[];
+  }> {
+    if (invocationIds.length === 0) {
+      return { cancelledInvocationIds: [], cancelledWorkRequestIds: [] };
+    }
+
+    const cancelled = await prisma.$transaction(async (tx) => {
+      const invocations = await tx.agentInvocation.findMany({
+        where: {
+          id: { in: invocationIds },
+          sessionId: null,
+          status: { in: STOPPABLE_INVOCATION_STATUSES },
+        },
+        select: { id: true, workRequestId: true },
+      });
+      if (invocations.length === 0) {
+        return { invocationIds: [], workRequestIds: [] };
+      }
+
+      const cancellableWorkRequestIds = invocations.map((invocation) => invocation.workRequestId);
+
+      await tx.agentInvocation.updateMany({
+        where: { id: { in: invocations.map((invocation) => invocation.id) } },
+        data: {
+          status: 'CANCELLED',
+          nextRoomReplyReminderAt: null,
+        },
+      });
+
+      await tx.workRequest.updateMany({
+        where: {
+          id: { in: cancellableWorkRequestIds },
+          status: { in: ['PENDING_APPROVAL', 'QUEUED', 'STARTED'] },
+        },
+        data: { status: 'CANCELLED' },
+      });
+
+      return {
+        invocationIds: invocations.map((invocation) => invocation.id),
+        workRequestIds: cancellableWorkRequestIds,
+      };
+    });
+
+    for (const invocationId of cancelled.invocationIds) {
+      this.releaseInvocationLocks(invocationId);
+    }
+
+    return {
+      cancelledInvocationIds: cancelled.invocationIds,
+      cancelledWorkRequestIds: cancelled.workRequestIds,
+    };
+  }
+
+  private async cancelQueuedWorkRequestsForMember(teamRunId: string, memberId: string): Promise<string[]> {
+    const workRequests = await prisma.workRequest.findMany({
+      where: {
+        teamRunId,
+        targetMemberId: memberId,
+        status: { in: CANCELLABLE_QUEUED_WORK_REQUEST_STATUSES },
+      },
+      select: { id: true },
+    });
+    if (workRequests.length === 0) {
+      return [];
+    }
+
+    const workRequestIds = workRequests.map((workRequest) => workRequest.id);
+    await prisma.workRequest.updateMany({
+      where: {
+        id: { in: workRequestIds },
+        status: { in: CANCELLABLE_QUEUED_WORK_REQUEST_STATUSES },
+      },
+      data: { status: 'CANCELLED' },
+    });
+    return workRequestIds;
   }
 
   private async findActiveMemberIds(teamRunId: string): Promise<Set<string>> {
