@@ -22,12 +22,18 @@ import { useProviders } from '@/hooks/use-providers'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { useI18n } from '@/lib/i18n'
+import type { TeamRunMode } from '@agent-tower/shared'
+import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
+import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
+import { cn } from '@/lib/utils'
 
-type CreateStep = 'idle' | 'creating-task' | 'creating-workspace' | 'creating-session' | 'starting-session'
+type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
+type CreateTaskMode = 'SOLO' | 'TEAM'
 
 const CREATE_STEP_LABEL: Record<CreateStep, string> = {
   idle: 'Create & Start',
   'creating-task': 'Creating Task...',
+  'creating-teamrun': 'Creating TeamRun...',
   'creating-workspace': 'Creating Workspace...',
   'creating-session': 'Creating Session...',
   'starting-session': 'Starting Agent...',
@@ -105,6 +111,12 @@ export function ProjectKanbanPage() {
   const [newTaskDescription, setNewTaskDescription] = useState('')
   const [newTaskProjectId, setNewTaskProjectId] = useState<string>('')
   const [newTaskProviderId, setNewTaskProviderId] = useState<string>('')
+  const [newTaskMode, setNewTaskMode] = useState<CreateTaskMode>('SOLO')
+  const [newTaskTeamRunMode, setNewTaskTeamRunMode] = useState<TeamRunMode>('CONFIRM')
+  const [newTaskTeamTemplateId, setNewTaskTeamTemplateId] = useState<string | null>(null)
+  const [newTaskMemberPresetIds, setNewTaskMemberPresetIds] = useState<string[]>([])
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
+  const [newTaskTeamRunError, setNewTaskTeamRunError] = useState<string | null>(null)
   const [createStep, setCreateStep] = useState<CreateStep>('idle')
 
   // Attachments for task creation
@@ -253,6 +265,7 @@ export function ProjectKanbanPage() {
   // === Mutations ===
   const createProject = useCreateProject()
   const createTask = useCreateTask(newTaskProjectId)
+  const createTaskTeamRun = useCreateTaskTeamRun()
   const deleteTask = useDeleteTask()
   const updateTaskStatus = useUpdateTaskStatus()
 
@@ -344,6 +357,12 @@ export function ProjectKanbanPage() {
       ? lastProviderId
       : (available?.provider.id ?? '')
     setNewTaskProviderId(providerId)
+    setNewTaskMode('SOLO')
+    setNewTaskTeamRunMode('CONFIRM')
+    setNewTaskTeamTemplateId(null)
+    setNewTaskMemberPresetIds([])
+    setPendingTaskId(null)
+    setNewTaskTeamRunError(null)
 
     setCreateStep('idle')
     setIsCreateTaskOpen(true)
@@ -362,6 +381,12 @@ export function ProjectKanbanPage() {
     setNewTaskDescription('')
     setNewTaskProjectId('')
     setNewTaskProviderId('')
+    setNewTaskMode('SOLO')
+    setNewTaskTeamRunMode('CONFIRM')
+    setNewTaskTeamTemplateId(null)
+    setNewTaskMemberPresetIds([])
+    setPendingTaskId(null)
+    setNewTaskTeamRunError(null)
     setCreateStep('idle')
     clearAttachments()
   }, [createStep, clearAttachments])
@@ -382,38 +407,66 @@ export function ProjectKanbanPage() {
   const startSession = useStartSession()
 
   const handleSubmitTask = useCallback(async () => {
-    if (!newTaskTitle.trim() || !newTaskProjectId) return
+    const hasBaseTaskFields = Boolean(newTaskTitle.trim()) && Boolean(newTaskProjectId)
+    const isTeamRunRetry = newTaskMode === 'TEAM' && pendingTaskId !== null
+
+    if (newTaskMode === 'TEAM' && !newTaskTeamTemplateId && newTaskMemberPresetIds.length === 0) {
+      setNewTaskTeamRunError(t('请选择至少一个团队模板或成员预设。'))
+      return
+    }
+    if (newTaskMode === 'TEAM') {
+      if (!isTeamRunRetry && !hasBaseTaskFields) return
+    } else if (!hasBaseTaskFields) {
+      return
+    }
+
     try {
+      setNewTaskTeamRunError(null)
       // 拼接附件 markdown 链接到 description 末尾
       const attachmentLinks = buildMarkdownLinks()
       const description = [newTaskDescription.trim(), attachmentLinks].filter(Boolean).join('\n\n')
 
-      // Step 1: 创建任务
-      setCreateStep('creating-task')
-      const task = await createTask.mutateAsync({
-        title: newTaskTitle.trim(),
-        description: description || undefined,
-      })
+      let createdTaskId = pendingTaskId
 
-      // 保存本次选择到 localStorage
-      localStorage.setItem('lastSelectedProjectId', newTaskProjectId)
-      if (newTaskProviderId) {
-        localStorage.setItem('lastSelectedProviderId', newTaskProviderId)
+      if (!createdTaskId) {
+        // Step 1: 创建任务
+        setCreateStep('creating-task')
+        const task = await createTask.mutateAsync({
+          title: newTaskTitle.trim(),
+          description: description || undefined,
+        })
+        createdTaskId = task.id
+        setPendingTaskId(task.id)
 
-        // 更新 provider 使用次数
-        const usageCountStr = localStorage.getItem('providerUsageCount')
-        const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
-        usageCount[newTaskProviderId] = (usageCount[newTaskProviderId] ?? 0) + 1
-        localStorage.setItem('providerUsageCount', JSON.stringify(usageCount))
+        // 保存本次选择到 localStorage
+        localStorage.setItem('lastSelectedProjectId', newTaskProjectId)
+        if (newTaskMode === 'SOLO' && newTaskProviderId) {
+          localStorage.setItem('lastSelectedProviderId', newTaskProviderId)
+
+          // 更新 provider 使用次数
+          const usageCountStr = localStorage.getItem('providerUsageCount')
+          const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
+          usageCount[newTaskProviderId] = (usageCount[newTaskProviderId] ?? 0) + 1
+          localStorage.setItem('providerUsageCount', JSON.stringify(usageCount))
+        }
       }
 
-      // 如果选了 provider，自动启动
-      if (newTaskProviderId) {
+      if (newTaskMode === 'TEAM') {
+        const memberPresetIds = newTaskMemberPresetIds
+        setCreateStep('creating-teamrun')
+        await createTaskTeamRun.mutateAsync({
+          taskId: createdTaskId!,
+          mode: newTaskTeamRunMode,
+          ...(newTaskTeamTemplateId ? { teamTemplateId: newTaskTeamTemplateId } : {}),
+          ...(memberPresetIds.length > 0 ? { memberPresetIds } : {}),
+        })
+        setPendingTaskId(null)
+      } else if (newTaskProviderId) {
         const prompt = [newTaskTitle.trim(), description].filter(Boolean).join('\n\n')
 
         // Step 2: 创建 workspace
         setCreateStep('creating-workspace')
-        const workspace = await apiClient.post<{ id: string }>(`/tasks/${task.id}/workspaces`, {})
+        const workspace = await apiClient.post<{ id: string }>(`/tasks/${createdTaskId!}/workspaces`, {})
 
         // Step 3: 创建 session (使用 providerId)
         setCreateStep('creating-session')
@@ -426,22 +479,31 @@ export function ProjectKanbanPage() {
         setCreateStep('starting-session')
         await startSession.mutateAsync(session.id)
 
-        await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
+        await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(createdTaskId!) })
       }
 
       // 选中新创建的任务
-      setSelectedTaskId(task.id)
+      setSelectedTaskId(createdTaskId!)
       setCreateStep('idle')
       setIsCreateTaskOpen(false)
       setNewTaskTitle('')
       setNewTaskDescription('')
       setNewTaskProjectId('')
       setNewTaskProviderId('')
+      setNewTaskMode('SOLO')
+      setNewTaskTeamRunMode('CONFIRM')
+      setNewTaskTeamTemplateId(null)
+      setNewTaskMemberPresetIds([])
+      setPendingTaskId(null)
+      setNewTaskTeamRunError(null)
       clearAttachments()
-    } catch {
+    } catch (error) {
+      if (newTaskMode === 'TEAM') {
+        setNewTaskTeamRunError(error instanceof Error ? error.message : t('创建 TeamRun 失败'))
+      }
       setCreateStep('idle')
     }
-  }, [newTaskTitle, newTaskDescription, newTaskProjectId, newTaskProviderId, createTask, startSession, queryClient, buildMarkdownLinks, clearAttachments])
+  }, [newTaskTitle, newTaskDescription, newTaskProjectId, newTaskProviderId, newTaskMode, newTaskTeamRunMode, newTaskTeamTemplateId, newTaskMemberPresetIds, pendingTaskId, createTask, createTaskTeamRun, startSession, queryClient, buildMarkdownLinks, clearAttachments, t])
 
   // ============ File Upload Handlers ============
 
@@ -490,6 +552,202 @@ export function ProjectKanbanPage() {
   }, [addFiles])
 
   const isLoading = isProjectsLoading || isFilteredTasksLoading || isAllTasksLoading
+  const hasBaseTaskFields = Boolean(newTaskTitle.trim()) && Boolean(newTaskProjectId)
+  const hasRequiredTeamRunSelection = newTaskMode !== 'TEAM' || Boolean(newTaskTeamTemplateId) || newTaskMemberPresetIds.length > 0
+  const canSubmitCreateTask = createStep === 'idle'
+    && hasRequiredTeamRunSelection
+    && (newTaskMode === 'TEAM' ? (pendingTaskId !== null || hasBaseTaskFields) : hasBaseTaskFields)
+  const createTaskSubmitLabel = newTaskMode === 'TEAM'
+    ? t(createStep === 'idle' ? 'Create TeamRun' : CREATE_STEP_LABEL[createStep])
+    : t(CREATE_STEP_LABEL[createStep])
+
+  const createTaskModalAction = (
+    <>
+      <button
+        onClick={handleCloseTaskModal}
+        disabled={createStep !== 'idle'}
+        className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
+      >
+        {t('Cancel')}
+      </button>
+      <button
+        onClick={handleSubmitTask}
+        disabled={!canSubmitCreateTask}
+        className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
+          canSubmitCreateTask
+            ? 'bg-neutral-900 text-white hover:bg-black'
+            : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
+        }`}
+      >
+        {createTaskSubmitLabel}
+      </button>
+    </>
+  )
+
+  const createTaskModalBody = (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <div className="text-sm font-medium text-neutral-700">{t('Execution')}</div>
+        <div className="inline-flex rounded-md border border-neutral-200 bg-neutral-50 p-1">
+          <button
+            type="button"
+            onClick={() => {
+              if (createStep !== 'idle') return
+              setNewTaskMode('SOLO')
+              setNewTaskTeamRunError(null)
+            }}
+            disabled={createStep !== 'idle'}
+            className={cn(
+              'rounded-md px-3 py-1.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+              newTaskMode === 'SOLO'
+                ? 'bg-white text-neutral-900 shadow-sm'
+                : 'text-neutral-500 hover:text-neutral-900',
+            )}
+          >
+            {t('Solo Agent')}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (createStep !== 'idle') return
+              setNewTaskMode('TEAM')
+              setNewTaskTeamRunError(null)
+            }}
+            disabled={createStep !== 'idle'}
+            className={cn(
+              'rounded-md px-3 py-1.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+              newTaskMode === 'TEAM'
+                ? 'bg-white text-neutral-900 shadow-sm'
+                : 'text-neutral-500 hover:text-neutral-900',
+            )}
+          >
+            {t('TeamRun')}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-3">
+        <div className="flex-1 min-w-0">
+          <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project')}</label>
+          <Select
+            value={newTaskProjectId}
+            onChange={setNewTaskProjectId}
+            options={activeProjects.map(p => ({ value: p.id, label: p.name }))}
+            placeholder={t('Select project...')}
+            disabled={createStep !== 'idle'}
+          />
+        </div>
+        {newTaskMode === 'SOLO' ? (
+          <div className="flex-1 min-w-0">
+            <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Agent')}</label>
+            <Select
+              value={newTaskProviderId}
+              onChange={setNewTaskProviderId}
+              options={sortedProviders.map(({ provider, availability }) => ({
+                value: provider.id,
+                label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''),
+                disabled: availability.type === 'NOT_FOUND',
+              }))}
+              placeholder={isProvidersLoading ? t('Loading...') : t('Select provider...')}
+              disabled={createStep !== 'idle'}
+            />
+          </div>
+        ) : (
+          <div className="flex-1 min-w-0" />
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Task Title')}</label>
+        <input
+          type="text"
+          value={newTaskTitle}
+          onChange={e => setNewTaskTitle(e.target.value)}
+          placeholder={t('e.g., Implement login flow')}
+          className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors"
+          disabled={createStep !== 'idle'}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
+          }}
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Description')}</label>
+        <div
+          className={`relative border rounded-lg transition-colors ${
+            isDragOver ? 'border-neutral-400 bg-neutral-50' : 'border-neutral-200'
+          }`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <textarea
+            rows={3}
+            value={newTaskDescription}
+            onChange={e => setNewTaskDescription(e.target.value)}
+            onPaste={handlePaste}
+            placeholder={t('Optional description...')}
+            className="w-full px-3 py-2 text-sm focus:outline-none bg-transparent resize-none"
+            disabled={createStep !== 'idle'}
+            onKeyDown={e => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
+            }}
+          />
+          {isDragOver && (
+            <div className="absolute inset-0 flex items-center justify-center bg-neutral-50/90 pointer-events-none">
+              <p className="text-sm text-neutral-600">{t('Drop files here')}</p>
+            </div>
+          )}
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={createStep !== 'idle' || isUploading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Paperclip size={14} />
+            {t('Attach files')}
+          </button>
+          <span className="text-xs text-neutral-400">
+            {t('or paste/drag files')}
+          </span>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          onChange={handleFileInputChange}
+          className="hidden"
+        />
+        <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
+      </div>
+
+      {newTaskMode === 'TEAM' && (
+        <div className="space-y-3 border-t border-neutral-100 pt-4">
+          <TeamRunCreateForm
+            mode={newTaskTeamRunMode}
+            setMode={setNewTaskTeamRunMode}
+            selectedTemplateId={newTaskTeamTemplateId}
+            setSelectedTemplateId={setNewTaskTeamTemplateId}
+            selectedMemberPresetIds={newTaskMemberPresetIds}
+            setSelectedMemberPresetIds={setNewTaskMemberPresetIds}
+            disabled={createStep !== 'idle'}
+          />
+          {newTaskTeamRunError && (
+            <p className="text-xs text-red-500">{newTaskTeamRunError}</p>
+          )}
+        </div>
+      )}
+
+      {createTask.isError && (
+        <p className="text-xs text-red-500">
+          {createTask.error instanceof Error ? createTask.error.message : t('Failed to create task')}
+        </p>
+      )}
+    </div>
+  )
 
   const isMobile = useIsMobile()
 
@@ -590,84 +848,9 @@ export function ProjectKanbanPage() {
             </div>
           </Modal>
           <Modal isOpen={isCreateTaskOpen} onClose={handleCloseTaskModal} title={t('Create New Task')}
-            action={<>
-              <button onClick={handleCloseTaskModal} disabled={createStep !== 'idle'} className="px-4 py-2 text-sm text-neutral-600 disabled:opacity-50">{t('Cancel')}</button>
-              <button onClick={handleSubmitTask} disabled={!newTaskTitle.trim() || !newTaskProjectId || createStep !== 'idle'}
-                className={`px-4 py-2 text-sm font-medium rounded-lg ${newTaskTitle.trim() && newTaskProjectId && createStep === 'idle' ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'}`}>
-                {t(CREATE_STEP_LABEL[createStep])}
-              </button>
-            </>}>
-            <div className="space-y-4">
-              <div className="flex gap-3">
-                <div className="flex-1 min-w-0">
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project')}</label>
-                  <Select value={newTaskProjectId} onChange={setNewTaskProjectId}
-                    options={activeProjects.map(p => ({ value: p.id, label: p.name }))}
-                    placeholder={t('Select project...')} disabled={createStep !== 'idle'} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Provider')}</label>
-                  <Select value={newTaskProviderId} onChange={setNewTaskProviderId}
-                    options={sortedProviders.map(({ provider, availability }) => ({ value: provider.id, label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''), disabled: availability.type === 'NOT_FOUND' }))}
-                    placeholder={isProvidersLoading ? t('Loading...') : t('Select provider...')} disabled={createStep !== 'idle'} />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Task Title')}</label>
-                <input type="text" value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)} placeholder={t('e.g., Implement login flow')}
-                  className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400" disabled={createStep !== 'idle'}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask() }} />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Description')}</label>
-                <div
-                  className={`relative border rounded-lg transition-colors ${
-                    isDragOver ? 'border-neutral-400 bg-neutral-50' : 'border-neutral-200'
-                  }`}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                >
-                  <textarea
-                    rows={3}
-                    value={newTaskDescription}
-                    onChange={e => setNewTaskDescription(e.target.value)}
-                    onPaste={handlePaste}
-                    placeholder={t('Optional...')}
-                    className="w-full px-3 py-2 text-sm focus:outline-none bg-transparent resize-none"
-                    disabled={createStep !== 'idle'}
-                    onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask() }}
-                  />
-                  {isDragOver && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-neutral-50/90 pointer-events-none">
-                      <p className="text-sm text-neutral-600">{t('Drop files here')}</p>
-                    </div>
-                  )}
-                </div>
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={createStep !== 'idle' || isUploading}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-600 active:text-neutral-900 active:bg-neutral-100 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Paperclip size={14} />
-                    {t('Attach files')}
-                  </button>
-                  <span className="text-xs text-neutral-400">
-                    {t('or paste files')}
-                  </span>
-                </div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  onChange={handleFileInputChange}
-                  className="hidden"
-                />
-                <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
-              </div>
-            </div>
+            className={newTaskMode === 'TEAM' ? 'max-w-5xl' : undefined}
+            action={createTaskModalAction}>
+            {createTaskModalBody}
           </Modal>
         </Suspense>
       </>
@@ -799,135 +982,10 @@ export function ProjectKanbanPage() {
           isOpen={isCreateTaskOpen}
           onClose={handleCloseTaskModal}
           title={t('Create New Task')}
-          action={
-            <>
-              <button
-                onClick={handleCloseTaskModal}
-                disabled={createStep !== 'idle'}
-                className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
-              >
-                {t('Cancel')}
-              </button>
-              <button
-                onClick={handleSubmitTask}
-                disabled={!newTaskTitle.trim() || !newTaskProjectId || createStep !== 'idle'}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-                  newTaskTitle.trim() && newTaskProjectId && createStep === 'idle'
-                    ? 'bg-neutral-900 text-white hover:bg-black'
-                    : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
-                }`}
-              >
-                {t(CREATE_STEP_LABEL[createStep])}
-              </button>
-            </>
-          }
+          className={newTaskMode === 'TEAM' ? 'max-w-5xl' : undefined}
+          action={createTaskModalAction}
         >
-          <div className="space-y-4">
-            <div className="flex gap-3">
-              <div className="flex-1 min-w-0">
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                  {t('Project')}
-                </label>
-                <Select
-                  value={newTaskProjectId}
-                  onChange={setNewTaskProjectId}
-                  options={activeProjects.map(p => ({ value: p.id, label: p.name }))}
-                  placeholder={t('Select project...')}
-                  disabled={createStep !== 'idle'}
-                />
-              </div>
-              <div className="flex-1 min-w-0">
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                  {t('Agent')}
-                </label>
-                <Select
-                  value={newTaskProviderId}
-                  onChange={setNewTaskProviderId}
-                  options={sortedProviders.map(({ provider, availability }) => ({
-                    value: provider.id,
-                    label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''),
-                    disabled: availability.type === 'NOT_FOUND',
-                  }))}
-                  placeholder={isProvidersLoading ? t('Loading...') : t('Select provider...')}
-                  disabled={createStep !== 'idle'}
-                />
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                {t('Task Title')}
-              </label>
-              <input
-                type="text"
-                value={newTaskTitle}
-                onChange={e => setNewTaskTitle(e.target.value)}
-                placeholder={t('e.g., Implement login flow')}
-                className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors"
-                disabled={createStep !== 'idle'}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
-                }}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                {t('Description')}
-              </label>
-              <div
-                className={`relative border rounded-lg transition-colors ${
-                  isDragOver ? 'border-neutral-400 bg-neutral-50' : 'border-neutral-200'
-                }`}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-              >
-                <textarea
-                  rows={3}
-                  value={newTaskDescription}
-                  onChange={e => setNewTaskDescription(e.target.value)}
-                  onPaste={handlePaste}
-                  placeholder={t('Optional description...')}
-                  className="w-full px-3 py-2 text-sm focus:outline-none bg-transparent resize-none"
-                  disabled={createStep !== 'idle'}
-                  onKeyDown={e => {
-                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
-                  }}
-                />
-                {isDragOver && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-neutral-50/90 pointer-events-none">
-                    <p className="text-sm text-neutral-600">{t('Drop files here')}</p>
-                  </div>
-                )}
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={createStep !== 'idle' || isUploading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Paperclip size={14} />
-                  {t('Attach files')}
-                </button>
-                <span className="text-xs text-neutral-400">
-                  {t('or paste/drag files')}
-                </span>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                onChange={handleFileInputChange}
-                className="hidden"
-              />
-              <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
-            </div>
-            {createTask.isError && (
-              <p className="text-xs text-red-500">
-                {createTask.error instanceof Error ? createTask.error.message : 'Failed to create task'}
-              </p>
-            )}
-          </div>
+          {createTaskModalBody}
         </Modal>
       </Suspense>
     </div>

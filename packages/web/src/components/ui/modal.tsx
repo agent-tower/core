@@ -80,13 +80,13 @@ export const Modal: React.FC<ModalProps> = ({
       {/* Content */}
       <div
         className={cn(
-          "relative w-full max-w-lg bg-white rounded-xl shadow-2xl shadow-neutral-200/50 border border-neutral-100 transform transition-all duration-200",
+          "relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden bg-white rounded-xl shadow-2xl shadow-neutral-200/50 border border-neutral-100 transform transition-all duration-200",
           isOpen ? "scale-100 translate-y-0" : "scale-95 translate-y-2",
           className
         )}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-50">
+        <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-neutral-50">
           <h3 className="font-semibold text-neutral-900">{title}</h3>
           <button
             onClick={onClose}
@@ -97,11 +97,11 @@ export const Modal: React.FC<ModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-6">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">{children}</div>
 
         {/* Footer actions */}
         {action ? (
-          <div className="px-6 py-4 bg-neutral-50 rounded-b-xl border-t border-neutral-100 flex justify-end gap-3">
+          <div className="shrink-0 px-6 py-4 bg-neutral-50 rounded-b-xl border-t border-neutral-100 flex justify-end gap-3">
             {action}
           </div>
         ) : null}

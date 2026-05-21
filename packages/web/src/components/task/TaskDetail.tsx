@@ -15,7 +15,7 @@ import { LogStream } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
-import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, RotateCcw } from 'lucide-react'
+import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, RotateCcw, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
@@ -35,6 +35,7 @@ import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { StartAgentDialog } from './StartAgentDialog'
+import { CreateTeamRunDialog } from '@/components/team/CreateTeamRunDialog'
 import { ProviderSelector } from './ProviderSelector'
 import { SlashCommandPopover } from './SlashCommandPopover'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -200,6 +201,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
+  const [isCreateTeamRunDialogOpen, setIsCreateTeamRunDialogOpen] = useState(false)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [isRetryConfirmOpen, setIsRetryConfirmOpen] = useState(false)
   const [isRetrying, setIsRetrying] = useState(false)
@@ -237,6 +239,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
   const teamRun = taskTeamRun ?? null
   const isTeamRunMode = Boolean(teamRun)
+  const showCreateTeamRunEntry = taskTeamRun === null
 
   // task 切换时清空 isJustRetried
   useEffect(() => {
@@ -850,6 +853,17 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             {isWorkspaceOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
           </button>
 
+          {showCreateTeamRunEntry && !isProjectReadOnly && (
+            <button
+              onClick={() => setIsCreateTeamRunDialogOpen(true)}
+              className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 transition-colors hover:border-neutral-300 hover:bg-neutral-50"
+              title={t('创建 TeamRun')}
+            >
+              <Plus size={14} />
+              <span>{t('创建 TeamRun')}</span>
+            </button>
+          )}
+
           {/* More Actions */}
           {onDeleteTask && !isProjectReadOnly && (
             <div className="relative" ref={moreMenuRef}>
@@ -1047,10 +1061,18 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                       : t('选择一个 Agent 来执行此任务，Agent 将自动创建工作空间并开始工作。')}
                   </p>
                   {!isProjectReadOnly && (
-                    <Button onClick={() => setIsStartDialogOpen(true)}>
-                      <Play size={16} className="mr-1.5" />
-                      {t('启动 Agent')}
-                    </Button>
+                    <div className="flex flex-wrap items-center justify-center gap-3">
+                      <Button onClick={() => setIsStartDialogOpen(true)}>
+                        <Play size={16} className="mr-1.5" />
+                        {t('启动 Agent')}
+                      </Button>
+                      {showCreateTeamRunEntry && (
+                        <Button variant="outline" onClick={() => setIsCreateTeamRunDialogOpen(true)}>
+                          <Plus size={16} className="mr-1.5" />
+                          {t('创建 TeamRun')}
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -1243,6 +1265,15 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           taskId={task.id}
           taskTitle={task.title}
           taskDescription={task.description}
+        />
+      )}
+
+      {/* Create TeamRun Dialog */}
+      {showCreateTeamRunEntry && !isProjectReadOnly && (
+        <CreateTeamRunDialog
+          isOpen={isCreateTeamRunDialogOpen}
+          onClose={() => setIsCreateTeamRunDialogOpen(false)}
+          taskId={task.id}
         />
       )}
 

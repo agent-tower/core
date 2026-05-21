@@ -4,6 +4,7 @@ import type {
   RoomMessage,
   StructuredMention,
   TeamRun,
+  TeamRunMode,
   RoomMessageSenderType,
   RoomMessageKind,
   TeamTemplate,
@@ -63,6 +64,12 @@ export type CreateTeamTemplateInput = {
 }
 
 export type UpdateTeamTemplateInput = Partial<CreateTeamTemplateInput>
+
+export type CreateTaskTeamRunInput = {
+  mode: TeamRunMode
+  teamTemplateId?: string
+  memberPresetIds?: string[]
+}
 
 /** 获取所有 MemberPreset。 */
 export function useMemberPresets() {
@@ -169,6 +176,34 @@ export function useDeleteTeamTemplate() {
     mutationFn: (id: string) => apiClient.delete(`/team-templates/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.teamTemplates })
+    },
+  })
+}
+
+/** 为 task 创建 TeamRun。 */
+export function useCreateTaskTeamRun() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ taskId, ...input }: CreateTaskTeamRunInput & { taskId: string }) =>
+      apiClient.post<TeamRun>(`/tasks/${taskId}/team-runs`, input),
+    onSuccess: (teamRun, variables) => {
+      queryClient.setQueryData(teamRunQueryKeys.task(variables.taskId), teamRun)
+      queryClient.setQueryData(teamRunQueryKeys.detail(teamRun.id), teamRun)
+      queryClient.setQueryData(teamRunQueryKeys.messages(teamRun.id), teamRun.messages ?? [])
+      queryClient.setQueryData(teamRunQueryKeys.workRequests(teamRun.id), teamRun.workRequests ?? [])
+      queryClient.setQueryData(teamRunQueryKeys.invocations(teamRun.id), teamRun.invocations ?? [])
+
+      void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.task(variables.taskId) })
+      void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.detail(variables.taskId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(variables.taskId) })
+    },
+    onError: (_error, variables) => {
+      void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.task(variables.taskId) })
+      void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.all })
     },
   })
 }
