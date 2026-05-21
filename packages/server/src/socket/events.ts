@@ -26,6 +26,8 @@ export {
   type AgentStatusPayload,
   type WorkspaceSetupProgressPayload,
   type WorkspaceCommitMessageUpdatedPayload,
+  type WorkspaceHibernatedPayload,
+  type TeamRunInvalidatedPayload,
   type AckResponse,
   type ClientEventType,
   type ServerEventType,

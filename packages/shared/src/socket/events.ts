@@ -35,6 +35,7 @@ export const ServerEvents = {
   WORKSPACE_SETUP_PROGRESS: 'workspace:setup_progress',
   WORKSPACE_COMMIT_MESSAGE_UPDATED: 'workspace:commit_message_updated',
   WORKSPACE_HIBERNATED: 'workspace:hibernated',
+  TEAM_RUN_INVALIDATED: 'team-run:invalidated',
 } as const;
 
 export interface SubscribePayload {
@@ -191,6 +192,31 @@ export interface WorkspaceHibernatedPayload {
   workspaceId: string;
   taskId: string;
   projectId: string;
+}
+
+export type TeamRunInvalidationScope =
+  | 'team-run'
+  | 'team-members'
+  | 'room-messages'
+  | 'work-requests'
+  | 'agent-invocations'
+  | 'task'
+  | 'workspaces';
+
+export type TeamRunInvalidationReason =
+  | 'team-run-created'
+  | 'room-message-created'
+  | 'work-request-updated'
+  | 'agent-invocation-updated'
+  | 'member-work-stopped'
+  | 'team-review-updated';
+
+export interface TeamRunInvalidatedPayload {
+  teamRunId: string;
+  taskId?: string;
+  projectId?: string;
+  scopes: TeamRunInvalidationScope[];
+  reason: TeamRunInvalidationReason;
 }
 
 export type ClientEventType = typeof ClientEvents[keyof typeof ClientEvents];

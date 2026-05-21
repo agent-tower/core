@@ -32,6 +32,7 @@ import type {
 } from '@prisma/client';
 import { ServiceError, NotFoundError, ValidationError } from '../errors.js';
 import { prisma } from '../utils/index.js';
+import { emitTeamRunInvalidated } from './team-run-events.js';
 
 export interface CreateMemberPresetInput {
   name: string;
@@ -360,7 +361,16 @@ export class TeamRunService {
       throw error;
     }
 
-    return this.getTeamRunById(teamRunId);
+    const teamRun = await this.getTeamRunById(teamRunId);
+    await emitTeamRunInvalidated({
+      teamRunId,
+      taskId,
+      projectId: task.projectId,
+      scopes: ['team-run', 'team-members', 'task'],
+      reason: 'team-run-created',
+    });
+
+    return teamRun;
   }
 
   async getTaskTeamRun(taskId: string): Promise<TeamRun> {
@@ -497,7 +507,15 @@ export class TeamRunService {
     if (!message) {
       throw new NotFoundError('RoomMessage', messageId);
     }
-    return this.serializeRoomMessage(message);
+    const serialized = this.serializeRoomMessage(message);
+    await emitTeamRunInvalidated({
+      teamRunId,
+      taskId: teamRun.taskId,
+      scopes: ['room-messages', 'work-requests', 'team-run'],
+      reason: 'room-message-created',
+    });
+
+    return serialized;
   }
 
   private normalizeTeamTemplateMembers(input: CreateTeamTemplateInput | UpdateTeamTemplateInput): Array<{

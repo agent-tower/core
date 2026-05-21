@@ -1,7 +1,13 @@
-import type { AgentInvocationStatus, TeamRunReviewReason } from '@agent-tower/shared';
+import type {
+  AgentInvocationStatus,
+  TeamRunInvalidationReason,
+  TeamRunInvalidationScope,
+  TeamRunReviewReason,
+} from '@agent-tower/shared';
 import type { EventBus } from '../core/event-bus.js';
 import { TaskStatus } from '../types/index.js';
 import { prisma } from '../utils/index.js';
+import { emitTeamRunInvalidated } from './team-run-events.js';
 
 const DEFAULT_REMINDER_DELAYS_MS = [60_000, 120_000, 240_000];
 const DEFAULT_MAX_ROOM_REPLY_REMINDERS = 3;
@@ -89,6 +95,7 @@ export class TeamReconcilerService {
         nextRoomReplyReminderAt: null,
       },
     });
+    await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
     this.clearReminderTimer(invocation.id);
     await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
     return true;
@@ -114,6 +121,7 @@ export class TeamReconcilerService {
           nextRoomReplyReminderAt: null,
         },
       });
+      await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
       this.clearReminderTimer(invocation.id);
       await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
       return;
@@ -136,6 +144,7 @@ export class TeamReconcilerService {
           nextRoomReplyReminderAt: null,
         },
       });
+      await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
       this.clearReminderTimer(invocation.id);
       await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
       return;
@@ -152,6 +161,7 @@ export class TeamReconcilerService {
         nextRoomReplyReminderAt: nextReminderAt,
       },
     });
+    await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
     this.scheduleReminderTimer(invocation.id, nextReminderAt);
 
     if (invocation.sessionId) {
@@ -242,8 +252,36 @@ export class TeamReconcilerService {
       projectId: updatedTask.projectId,
       status: updatedTask.status,
     });
+    await this.emitTeamRunInvalidated(
+      teamRunId,
+      ['team-run', 'task', 'agent-invocations', 'work-requests'],
+      'team-review-updated',
+      {
+        taskId: updatedTask.id,
+        projectId: updatedTask.projectId,
+      }
+    );
 
     return true;
+  }
+
+  private async emitTeamRunInvalidated(
+    teamRunId: string,
+    scopes: TeamRunInvalidationScope[],
+    reason: TeamRunInvalidationReason,
+    context: { taskId?: string; projectId?: string } = {}
+  ): Promise<void> {
+    if (!this.eventBus) {
+      return;
+    }
+
+    await emitTeamRunInvalidated({
+      teamRunId,
+      taskId: context.taskId,
+      projectId: context.projectId,
+      scopes,
+      reason,
+    }, this.eventBus);
   }
 
   private async afterInvocationTerminal(teamRunId: string, invocationId: string): Promise<void> {

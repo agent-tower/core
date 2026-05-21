@@ -3,6 +3,8 @@ import type {
   AgentInvocation,
   AgentInvocationStatus,
   IfBusyPolicy,
+  TeamRunInvalidationReason,
+  TeamRunInvalidationScope,
   TeamMemberCapabilities,
   WorkRequest,
   WorkRequestRequesterType,
@@ -22,6 +24,7 @@ import { NotFoundError, ServiceError } from '../errors.js';
 import { prisma } from '../utils/index.js';
 import { TeamLockService, type LockRequest } from './team-lock.service.js';
 import { WorkspaceService } from './workspace.service.js';
+import { emitTeamRunInvalidated } from './team-run-events.js';
 
 export interface SchedulePlan {
   workRequestId: string;
@@ -298,6 +301,7 @@ export class TeamSchedulerService {
         }
 
         startedInvocations.push(this.serializeAgentInvocation(createdInvocation));
+        await this.emitTeamRunInvalidated(context.teamRun, ['work-requests', 'agent-invocations'], 'agent-invocation-updated');
         invocationId = null;
       } catch (error) {
         if (invocationId) {
@@ -354,7 +358,7 @@ export class TeamSchedulerService {
           throw new ServiceError(`Provider not found: ${member.providerId}`, 'PROVIDER_NOT_FOUND', 400);
         }
 
-        const workspace = await this.getOrCreateSharedWorkspace(context.teamRun.taskId);
+        const workspace = await this.getOrCreateSharedWorkspace(context.teamRun);
         const session = await this.sessionManager.create(
           workspace.id,
           provider.agentType as AgentType,
@@ -389,6 +393,7 @@ export class TeamSchedulerService {
         }
 
         startedInvocations.push(this.serializeAgentInvocation(createdInvocation));
+        await this.emitTeamRunInvalidated(context.teamRun, ['work-requests', 'agent-invocations', 'workspaces'], 'agent-invocation-updated');
         invocationId = null;
       } catch (error) {
         if (invocationId) {
@@ -404,12 +409,14 @@ export class TeamSchedulerService {
   }
 
   async approveWorkRequest(workRequestId: string): Promise<WorkRequest> {
-    return this.transitionWorkRequestStatus(
+    const workRequest = await this.transitionWorkRequestStatus(
       workRequestId,
       'approve',
       ['PENDING_APPROVAL'],
       'QUEUED'
     );
+    await this.emitTeamRunInvalidatedById(workRequest.teamRunId, ['work-requests', 'team-run'], 'work-request-updated');
+    return workRequest;
   }
 
   async approveWorkRequestAndStartNext(workRequestId: string): Promise<{
@@ -422,21 +429,25 @@ export class TeamSchedulerService {
   }
 
   async rejectWorkRequest(workRequestId: string): Promise<WorkRequest> {
-    return this.transitionWorkRequestStatus(
+    const workRequest = await this.transitionWorkRequestStatus(
       workRequestId,
       'reject',
       ['PENDING_APPROVAL'],
       'REJECTED'
     );
+    await this.emitTeamRunInvalidatedById(workRequest.teamRunId, ['work-requests', 'team-run'], 'work-request-updated');
+    return workRequest;
   }
 
   async cancelWorkRequest(workRequestId: string): Promise<WorkRequest> {
-    return this.transitionWorkRequestStatus(
+    const workRequest = await this.transitionWorkRequestStatus(
       workRequestId,
       'cancel',
       ['PENDING_APPROVAL', 'QUEUED'],
       'CANCELLED'
     );
+    await this.emitTeamRunInvalidatedById(workRequest.teamRunId, ['work-requests', 'team-run'], 'work-request-updated');
+    return workRequest;
   }
 
   async stopMemberWork(teamRunId: string, memberId: string, options: {
@@ -491,6 +502,14 @@ export class TeamSchedulerService {
     const startedInvocations = shouldStartNext
       ? await this.startNextSessions(teamRunId)
       : [];
+
+    if (shouldStartNext) {
+      await this.emitTeamRunInvalidatedById(
+        teamRunId,
+        ['work-requests', 'agent-invocations', 'team-run'],
+        'member-work-stopped'
+      );
+    }
 
     return {
       stoppedSessionIds,
@@ -798,27 +817,27 @@ export class TeamSchedulerService {
     return count > 0;
   }
 
-  private async getOrCreateSharedWorkspace(taskId: string): Promise<{ id: string }> {
-    const existingClaim = TeamSchedulerService.sharedWorkspaceClaims.get(taskId);
+  private async getOrCreateSharedWorkspace(teamRun: SchedulerTeamRun): Promise<{ id: string }> {
+    const existingClaim = TeamSchedulerService.sharedWorkspaceClaims.get(teamRun.taskId);
     if (existingClaim) {
       return existingClaim;
     }
 
-    const claim = this.findOrCreateSharedWorkspace(taskId);
-    TeamSchedulerService.sharedWorkspaceClaims.set(taskId, claim);
+    const claim = this.findOrCreateSharedWorkspace(teamRun);
+    TeamSchedulerService.sharedWorkspaceClaims.set(teamRun.taskId, claim);
 
     try {
       return await claim;
     } finally {
-      if (TeamSchedulerService.sharedWorkspaceClaims.get(taskId) === claim) {
-        TeamSchedulerService.sharedWorkspaceClaims.delete(taskId);
+      if (TeamSchedulerService.sharedWorkspaceClaims.get(teamRun.taskId) === claim) {
+        TeamSchedulerService.sharedWorkspaceClaims.delete(teamRun.taskId);
       }
     }
   }
 
-  private async findOrCreateSharedWorkspace(taskId: string): Promise<{ id: string }> {
+  private async findOrCreateSharedWorkspace(teamRun: SchedulerTeamRun): Promise<{ id: string }> {
     const activeWorkspace = await prisma.workspace.findFirst({
-      where: { taskId, status: 'ACTIVE' },
+      where: { taskId: teamRun.taskId, status: 'ACTIVE' },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { id: true },
     });
@@ -827,7 +846,9 @@ export class TeamSchedulerService {
       return activeWorkspace;
     }
 
-    return this.workspaceService.create(taskId);
+    const workspace = await this.workspaceService.create(teamRun.taskId);
+    await this.emitTeamRunInvalidated(teamRun, ['workspaces'], 'agent-invocation-updated');
+    return workspace;
   }
 
   private buildSessionPrompt(member: PrismaTeamMember, workRequest: PrismaWorkRequest): string {
@@ -845,6 +866,28 @@ export class TeamSchedulerService {
         data: { status: 'FAILED' },
       }),
     ]);
+  }
+
+  private async emitTeamRunInvalidated(
+    teamRun: SchedulerTeamRun,
+    scopes: TeamRunInvalidationScope[],
+    reason: TeamRunInvalidationReason
+  ): Promise<void> {
+    await emitTeamRunInvalidated({
+      teamRunId: teamRun.id,
+      taskId: teamRun.taskId,
+      projectId: teamRun.task.projectId,
+      scopes,
+      reason,
+    });
+  }
+
+  private async emitTeamRunInvalidatedById(
+    teamRunId: string,
+    scopes: TeamRunInvalidationScope[],
+    reason: TeamRunInvalidationReason
+  ): Promise<void> {
+    await emitTeamRunInvalidated({ teamRunId, scopes, reason });
   }
 
   private async markSessionFailed(sessionId: string): Promise<void> {

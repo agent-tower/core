@@ -1,3 +1,5 @@
+import type { TeamRunInvalidatedPayload } from '@agent-tower/shared/socket';
+
 type EventMap = {
   'session:stdout': { sessionId: string; data: string };
   'session:patch': { sessionId: string; patch: unknown[]; seq: number };
@@ -31,6 +33,7 @@ type EventMap = {
     taskId: string;
     projectId: string;
   };
+  'team-run:invalidated': TeamRunInvalidatedPayload;
 };
 
 type EventName = keyof EventMap;
