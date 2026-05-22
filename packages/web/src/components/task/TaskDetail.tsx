@@ -1251,7 +1251,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
               readOnly={isProjectReadOnly}
               repoDeleted={isProjectRepoDeleted}
               teamRun={teamRun}
-              teamStatus={teamRun ? <TeamStatusPanel teamRun={teamRun} /> : undefined}
+              teamStatus={teamRun ? <TeamStatusPanel teamRun={teamRun} onViewInvocationSession={handleViewInvocationSession} /> : undefined}
             />
           </div>
         )}

@@ -77,6 +77,7 @@ async function createTask(title = 'Team scheduler task') {
 async function createTeamRunFixture(options: {
   memberCapabilities?: TeamMemberCapabilities[];
   workspacePolicies?: WorkspacePolicy[];
+  sessionPolicies?: Array<'new_per_request' | 'resume_last'>;
   withWorkspace?: boolean;
 } = {}) {
   const { project, task } = await createTask();
@@ -111,6 +112,7 @@ async function createTeamRunFixture(options: {
         capabilities: stringifyJson(memberCapabilities),
         workspacePolicy: options.workspacePolicies?.[index] ?? 'shared',
         triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: options.sessionPolicies?.[index] ?? 'new_per_request',
         avatar: null,
       },
     }));
@@ -189,6 +191,16 @@ function createSessionManagerMock(options: { failStart?: boolean } = {}) {
       },
     })),
     start: vi.fn(async (sessionId: string) => {
+      if (options.failStart) {
+        throw new Error('session start failed');
+      }
+
+      return prisma.session.update({
+        where: { id: sessionId },
+        data: { status: 'RUNNING' },
+      });
+    }),
+    startFollowUp: vi.fn(async (sessionId: string) => {
       if (options.failStart) {
         throw new Error('session start failed');
       }
@@ -792,6 +804,7 @@ describe('TeamSchedulerService', () => {
       members[0]!.providerId
     );
     expect(sessionManager.start).toHaveBeenCalledWith(invocations[0]!.sessionId);
+    expect(sessionManager.startFollowUp).not.toHaveBeenCalled();
     expect(invocations).toHaveLength(1);
     expect(invocations[0]).toMatchObject({
       teamRunId: teamRun.id,
@@ -809,6 +822,102 @@ describe('TeamSchedulerService', () => {
       providerId: members[0]!.providerId,
       status: 'RUNNING',
     });
+  });
+
+  it('starts resume_last members with executor resume context while keeping a new Tower session and invocation', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture({
+      sessionPolicies: ['resume_last'],
+    });
+    const previousRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+      instruction: 'Previous work',
+    });
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'previous prompt',
+        status: 'COMPLETED',
+        logSnapshot: JSON.stringify({ sessionId: 'agent-native-session-1', entries: [] }),
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: previousRequest.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace!.id,
+        sessionId: previousSession.id,
+        status: 'COMPLETED',
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      },
+    });
+    const nextRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Continue with context',
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({
+      workRequestId: nextRequest.id,
+      memberId: members[0]!.id,
+      sessionId: expect.any(String),
+      status: 'RUNNING',
+    });
+    expect(invocations[0]!.sessionId).not.toBe(previousSession.id);
+    expect(sessionManager.create).toHaveBeenCalledWith(
+      workspace!.id,
+      AgentType.CODEX,
+      'Role 1\n\nTask:\nContinue with context',
+      'DEFAULT',
+      members[0]!.providerId
+    );
+    expect(sessionManager.startFollowUp).toHaveBeenCalledWith(invocations[0]!.sessionId, previousSession.id);
+    expect(sessionManager.start).not.toHaveBeenCalled();
+    await expect(prisma.session.findUnique({ where: { id: invocations[0]!.sessionId! } })).resolves.toMatchObject({
+      workspaceId: workspace!.id,
+      providerId: members[0]!.providerId,
+      prompt: 'Role 1\n\nTask:\nContinue with context',
+      status: 'RUNNING',
+    });
+  });
+
+  it('falls back to a normal session start for resume_last members without previous native context', async () => {
+    const { teamRun, members } = await createTeamRunFixture({
+      sessionPolicies: ['resume_last'],
+    });
+    await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Fresh work',
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(sessionManager.start).toHaveBeenCalledWith(invocations[0]!.sessionId);
+    expect(sessionManager.startFollowUp).not.toHaveBeenCalled();
   });
 
   it('stops member work by cancelling no-session active work, queued requests, and releasing locks', async () => {

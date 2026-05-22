@@ -4,6 +4,7 @@ import { Plus, Trash2, ChevronUp, ChevronDown } from 'lucide-react'
 import type {
   MemberPreset,
   TeamMemberCapabilities,
+  TeamMemberSessionPolicy,
   TeamMemberTriggerPolicy,
   TeamTemplate,
   WorkspacePolicy,
@@ -36,6 +37,7 @@ interface MemberPresetFormState {
   capabilities: TeamMemberCapabilities
   workspacePolicy: WorkspacePolicy
   triggerPolicy: TeamMemberTriggerPolicy
+  sessionPolicy: TeamMemberSessionPolicy
   avatar: string
 }
 
@@ -92,6 +94,16 @@ const TRIGGER_POLICY_LABELS: Record<TeamMemberTriggerPolicy, string> = {
   USER_MESSAGES: '所有用户消息',
 }
 
+const SESSION_POLICY_OPTIONS: Array<{ value: TeamMemberSessionPolicy; label: string }> = [
+  { value: 'new_per_request', label: '每次新会话' },
+  { value: 'resume_last', label: '复用上次会话' },
+]
+
+const SESSION_POLICY_LABELS: Record<TeamMemberSessionPolicy, string> = {
+  new_per_request: '每次新会话',
+  resume_last: '复用上次会话',
+}
+
 function createBlankMemberPresetForm(): MemberPresetFormState {
   return {
     name: '',
@@ -101,6 +113,7 @@ function createBlankMemberPresetForm(): MemberPresetFormState {
     capabilities: { ...DEFAULT_CAPABILITIES },
     workspacePolicy: 'none',
     triggerPolicy: 'MENTION_ONLY',
+    sessionPolicy: 'new_per_request',
     avatar: '',
   }
 }
@@ -114,6 +127,7 @@ function memberPresetToForm(preset: MemberPreset): MemberPresetFormState {
     capabilities: { ...DEFAULT_CAPABILITIES, ...preset.capabilities },
     workspacePolicy: preset.workspacePolicy,
     triggerPolicy: preset.triggerPolicy,
+    sessionPolicy: preset.sessionPolicy,
     avatar: preset.avatar ?? '',
   }
 }
@@ -413,6 +427,7 @@ export function TeamSettingsPage() {
       capabilities: { ...presetForm.capabilities },
       workspacePolicy: presetForm.workspacePolicy,
       triggerPolicy: presetForm.triggerPolicy,
+      sessionPolicy: presetForm.sessionPolicy,
       avatar: normalizeAvatar(presetForm.avatar),
     }
 
@@ -669,6 +684,9 @@ export function TeamSettingsPage() {
                             <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">
                               {t(TRIGGER_POLICY_LABELS[preset.triggerPolicy])}
                             </span>
+                            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">
+                              {t(SESSION_POLICY_LABELS[preset.sessionPolicy])}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -809,7 +827,7 @@ export function TeamSettingsPage() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-3">
               <div>
                 <label className="block text-[13px] font-medium text-neutral-700 mb-1">{t('工作区策略')}</label>
                 <Select
@@ -827,6 +845,17 @@ export function TeamSettingsPage() {
                   value={presetForm.triggerPolicy}
                   onChange={(value) => updatePresetField('triggerPolicy', value as TeamMemberTriggerPolicy)}
                   options={TRIGGER_POLICY_OPTIONS.map(option => ({
+                    value: option.value,
+                    label: t(option.label),
+                  }))}
+                />
+              </div>
+              <div>
+                <label className="block text-[13px] font-medium text-neutral-700 mb-1">{t('会话策略')}</label>
+                <Select
+                  value={presetForm.sessionPolicy}
+                  onChange={(value) => updatePresetField('sessionPolicy', value as TeamMemberSessionPolicy)}
+                  options={SESSION_POLICY_OPTIONS.map(option => ({
                     value: option.value,
                     label: t(option.label),
                   }))}

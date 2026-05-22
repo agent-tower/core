@@ -57,6 +57,7 @@ model MemberPreset {
   capabilities    String // JSON TeamMemberCapabilities
   workspacePolicy String
   triggerPolicy   String
+  sessionPolicy   String   @default("new_per_request")
   avatar          String? // JSON or string ref
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -107,6 +108,7 @@ model TeamMember {
   capabilities    String // JSON TeamMemberCapabilities
   workspacePolicy String
   triggerPolicy   String
+  sessionPolicy   String   @default("new_per_request")
   avatar          String?
   status          String   @default("IDLE")
   createdAt       DateTime @default(now())

@@ -4,6 +4,20 @@ import { ServiceError } from '../errors.js';
 import { TeamRunService } from '../services/team-run.service.js';
 import { TeamSchedulerService } from '../services/team-scheduler.service.js';
 
+type TeamRunRouteScheduler = Pick<
+  TeamSchedulerService,
+  | 'startNextSessions'
+  | 'approveWorkRequestAndStartNext'
+  | 'rejectWorkRequest'
+  | 'cancelWorkRequest'
+  | 'stopMemberWork'
+>;
+
+export interface TeamRunRouteDependencies {
+  service?: TeamRunService;
+  scheduler?: TeamRunRouteScheduler;
+}
+
 const capabilitiesSchema = z.object({
   readRoom: z.boolean(),
   postRoomMessage: z.boolean(),
@@ -32,6 +46,7 @@ const teamMemberSnapshotSchema = z.object({
   capabilities: capabilitiesSchema,
   workspacePolicy: z.enum(['none', 'shared', 'dedicated']),
   triggerPolicy: z.enum(['MENTION_ONLY', 'USER_MESSAGES']),
+  sessionPolicy: z.enum(['new_per_request', 'resume_last']).default('new_per_request'),
   avatar: z.string().nullable().optional(),
 });
 
@@ -98,9 +113,9 @@ function handleError(error: unknown, reply: any) {
   return { error: 'Internal server error', code: 'INTERNAL_ERROR' };
 }
 
-export async function teamRunRoutes(app: FastifyInstance) {
-  const service = new TeamRunService();
-  const scheduler = new TeamSchedulerService();
+export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteDependencies = {}) {
+  const service = options.service ?? new TeamRunService();
+  const scheduler = options.scheduler ?? new TeamSchedulerService();
 
   app.get('/member-presets', async (_request, reply) => {
     try {
@@ -225,6 +240,20 @@ export async function teamRunRoutes(app: FastifyInstance) {
     try {
       const body = roomMessageSchema.parse(request.body);
       const message = await service.createRoomMessage(request.params.id, body);
+      const workRequestIds = message.workRequestIds ?? [];
+      if (workRequestIds.length > 0) {
+        const teamRun = await service.getTeamRunById(request.params.id);
+        if (teamRun.mode === 'AUTO') {
+          try {
+            await scheduler.startNextSessions(request.params.id);
+          } catch (error) {
+            app.log.warn(
+              { err: error, teamRunId: request.params.id },
+              'Failed to auto-start TeamRun work after room message'
+            );
+          }
+        }
+      }
       reply.code(201);
       return message;
     } catch (error) {

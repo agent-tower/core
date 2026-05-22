@@ -12,6 +12,8 @@ import { TaskStatus } from '../../types/index.js';
 import { EventBus } from '../../core/event-bus.js';
 import { TeamLockService } from '../team-lock.service.js';
 import type { TeamReconcilerScheduler, TeamReconcilerSessionMessenger } from '../team-reconciler.service.js';
+import type { TeamRunRouteDependencies } from '../../routes/team-runs.js';
+import type { AgentInvocation, WorkRequest } from '@agent-tower/shared';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-team-reconciler-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -30,6 +32,10 @@ let TEAM_ROOM_REPLY_REMINDER: string;
 let createMcpServer: typeof import('../../mcp/server.js').createMcpServer;
 let teamRunRoutes: typeof import('../../routes/team-runs.js').teamRunRoutes;
 let workRequestSequence = 0;
+
+type RouteSchedulerMock = NonNullable<TeamRunRouteDependencies['scheduler']> & {
+  startedTeamRunIds: string[];
+};
 
 const capabilities = {
   readRoom: true,
@@ -68,10 +74,78 @@ function createMessengerMock(): TeamReconcilerSessionMessenger & {
   };
 }
 
+function asWorkRequest(value: unknown): WorkRequest {
+  return value as WorkRequest;
+}
+
+function asAgentInvocations(value: unknown): AgentInvocation[] {
+  return value as AgentInvocation[];
+}
+
+function createRouteSchedulerMock(): RouteSchedulerMock {
+  const startedTeamRunIds: string[] = [];
+  const scheduler = {
+    startedTeamRunIds,
+  } as RouteSchedulerMock;
+
+  scheduler.startNextSessions = vi.fn(async (teamRunId: string) => {
+    startedTeamRunIds.push(teamRunId);
+    const workRequests = await prisma.workRequest.findMany({
+      where: { teamRunId, status: 'QUEUED' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    const invocations = [];
+
+    for (const workRequest of workRequests) {
+      await prisma.workRequest.update({
+        where: { id: workRequest.id },
+        data: { status: 'STARTED' },
+      });
+      invocations.push(await prisma.agentInvocation.create({
+        data: {
+          teamRunId,
+          workRequestId: workRequest.id,
+          memberId: workRequest.targetMemberId,
+          workspaceId: null,
+          sessionId: null,
+          status: 'RUNNING',
+        },
+      }));
+    }
+
+    return asAgentInvocations(invocations);
+  });
+  scheduler.approveWorkRequestAndStartNext = vi.fn(async (workRequestId: string) => {
+    const workRequest = await prisma.workRequest.update({
+      where: { id: workRequestId },
+      data: { status: 'QUEUED' },
+    });
+    const startedInvocations = await scheduler.startNextSessions(workRequest.teamRunId);
+    return { workRequest: asWorkRequest(workRequest), startedInvocations };
+  });
+  scheduler.rejectWorkRequest = vi.fn(async (workRequestId: string) => prisma.workRequest.update({
+    where: { id: workRequestId },
+    data: { status: 'REJECTED' },
+  }).then(asWorkRequest));
+  scheduler.cancelWorkRequest = vi.fn(async (workRequestId: string) => prisma.workRequest.update({
+    where: { id: workRequestId },
+    data: { status: 'CANCELLED' },
+  }).then(asWorkRequest));
+  scheduler.stopMemberWork = vi.fn(async () => ({
+    stoppedSessionIds: [],
+    cancelledInvocationIds: [],
+    cancelledWorkRequestIds: [],
+    startedInvocations: [],
+  }));
+
+  return scheduler;
+}
+
 async function createFixture(options: {
   taskStatus?: TaskStatus;
   memberCount?: number;
   teamRunMode?: 'AUTO' | 'CONFIRM';
+  triggerPolicies?: Array<'MENTION_ONLY' | 'USER_MESSAGES'>;
 } = {}) {
   const project = await prisma.project.create({
     data: {
@@ -113,7 +187,8 @@ async function createFixture(options: {
         rolePrompt: `Role ${index + 1}`,
         capabilities: stringifyJson(capabilities),
         workspacePolicy: 'shared',
-        triggerPolicy: 'MENTION_ONLY',
+        triggerPolicy: options.triggerPolicies?.[index] ?? 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
         avatar: null,
       },
     }));
@@ -600,6 +675,130 @@ describe('TeamReconcilerService', () => {
       } else {
         process.env.AGENT_TOWER_INVOCATION_ID = previousInvocationId;
       }
+      await app.close();
+    }
+  });
+
+  it('lists TeamRun members through MCP without exposing role prompts', async () => {
+    const previousTeamRunId = process.env.AGENT_TOWER_TEAM_RUN_ID;
+    const previousMemberId = process.env.AGENT_TOWER_MEMBER_ID;
+    const { teamRun, members } = await createFixture({ memberCount: 2 });
+    const app = Fastify({ logger: false });
+
+    try {
+      process.env.AGENT_TOWER_TEAM_RUN_ID = teamRun.id;
+      process.env.AGENT_TOWER_MEMBER_ID = members[0]!.id;
+
+      await app.register(teamRunRoutes, { prefix: '/api' });
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const address = app.server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to start test server');
+      }
+
+      const server = await createMcpServer(`http://127.0.0.1:${address.port}`);
+      const client = new Client({ name: 'team-member-test-client', version: '0.1.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const result = await client.callTool({
+        name: 'list_team_members',
+        arguments: {},
+      });
+      await client.close();
+      await server.close();
+
+      expect(result.isError).not.toBe(true);
+      const resultContent = result.content as Array<{ type: string; text?: string }>;
+      const text = resultContent[0]?.type === 'text' ? resultContent[0].text ?? '' : '';
+      const payload = JSON.parse(text) as {
+        teamRunId: string;
+        currentMemberId: string | null;
+        members: Array<Record<string, unknown>>;
+      };
+
+      expect(payload).toMatchObject({
+        teamRunId: teamRun.id,
+        currentMemberId: members[0]!.id,
+      });
+      expect(payload.members).toHaveLength(2);
+      expect(payload.members[0]).toMatchObject({
+        id: members[0]!.id,
+        name: 'Member 1',
+        aliases: ['member-1'],
+        status: 'IDLE',
+        workspacePolicy: 'shared',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
+        providerId: 'provider-1',
+      });
+      expect(payload.members[0]?.capabilities).toMatchObject({
+        writeFiles: true,
+        runCommands: false,
+        mentionMembers: true,
+      });
+      expect(payload.members[0]).not.toHaveProperty('rolePrompt');
+      expect(payload.members[0]).not.toHaveProperty('avatar');
+      expect(payload.members[0]).not.toHaveProperty('createdAt');
+      expect(payload.members[0]).not.toHaveProperty('updatedAt');
+      expect(payload.members[0]).not.toHaveProperty('presetId');
+    } finally {
+      if (previousTeamRunId === undefined) {
+        delete process.env.AGENT_TOWER_TEAM_RUN_ID;
+      } else {
+        process.env.AGENT_TOWER_TEAM_RUN_ID = previousTeamRunId;
+      }
+      if (previousMemberId === undefined) {
+        delete process.env.AGENT_TOWER_MEMBER_ID;
+      } else {
+        process.env.AGENT_TOWER_MEMBER_ID = previousMemberId;
+      }
+      await app.close();
+    }
+  });
+
+  it('auto-starts USER_MESSAGES work when a user posts an unmentioned room message', async () => {
+    const { teamRun, members } = await createFixture({
+      memberCount: 2,
+      teamRunMode: 'AUTO',
+      triggerPolicies: ['USER_MESSAGES', 'MENTION_ONLY'],
+    });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+        payload: {
+          content: '普通用户消息',
+          senderType: 'user',
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const message = response.json() as { id: string; workRequestIds: string[]; mentions: unknown[] };
+      expect(message.mentions).toEqual([]);
+      expect(message.workRequestIds).toHaveLength(1);
+      expect(routeScheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+      expect(routeScheduler.startedTeamRunIds).toEqual([teamRun.id]);
+
+      await expect(prisma.workRequest.findUnique({ where: { id: message.workRequestIds[0]! } })).resolves.toMatchObject({
+        targetMemberId: members[0]!.id,
+        instruction: '普通用户消息',
+        status: 'STARTED',
+      });
+      await expect(prisma.agentInvocation.count({
+        where: {
+          teamRunId: teamRun.id,
+          memberId: members[0]!.id,
+          status: 'RUNNING',
+        },
+      })).resolves.toBe(1);
+    } finally {
       await app.close();
     }
   });

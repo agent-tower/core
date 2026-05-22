@@ -9,6 +9,7 @@ import type {
   StructuredMention,
   TeamMember,
   TeamMemberCapabilities,
+  TeamMemberSessionPolicy,
   TeamMemberTriggerPolicy,
   TeamRun,
   TeamRunMode,
@@ -42,6 +43,7 @@ export interface CreateMemberPresetInput {
   capabilities: TeamMemberCapabilities;
   workspacePolicy: WorkspacePolicy;
   triggerPolicy: TeamMemberTriggerPolicy;
+  sessionPolicy: TeamMemberSessionPolicy;
   avatar?: string | null;
 }
 
@@ -72,6 +74,7 @@ export interface CreateTeamRunMemberInput {
   capabilities: TeamMemberCapabilities;
   workspacePolicy: WorkspacePolicy;
   triggerPolicy: TeamMemberTriggerPolicy;
+  sessionPolicy: TeamMemberSessionPolicy;
   avatar?: string | null;
 }
 
@@ -102,6 +105,7 @@ interface TeamMemberSnapshot {
   capabilities: TeamMemberCapabilities;
   workspacePolicy: WorkspacePolicy;
   triggerPolicy: TeamMemberTriggerPolicy;
+  sessionPolicy: TeamMemberSessionPolicy;
   avatar: string | null;
 }
 
@@ -128,6 +132,8 @@ const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
   readDiff: false,
   mergeWorkspace: false,
 };
+
+const DEFAULT_SESSION_POLICY: TeamMemberSessionPolicy = 'new_per_request';
 
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
   if (value == null || value === '') {
@@ -186,6 +192,7 @@ export class TeamRunService {
         capabilities: stringifyJson(input.capabilities),
         workspacePolicy: input.workspacePolicy,
         triggerPolicy: input.triggerPolicy,
+        sessionPolicy: input.sessionPolicy,
         avatar: input.avatar ?? null,
       },
     });
@@ -208,6 +215,7 @@ export class TeamRunService {
         ...(input.capabilities !== undefined ? { capabilities: stringifyJson(input.capabilities) } : {}),
         ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
         ...(input.triggerPolicy !== undefined ? { triggerPolicy: input.triggerPolicy } : {}),
+        ...(input.sessionPolicy !== undefined ? { sessionPolicy: input.sessionPolicy } : {}),
         ...(input.avatar !== undefined ? { avatar: input.avatar } : {}),
       },
     });
@@ -349,6 +357,7 @@ export class TeamRunService {
               capabilities: stringifyJson(snapshot.capabilities),
               workspacePolicy: snapshot.workspacePolicy,
               triggerPolicy: snapshot.triggerPolicy,
+              sessionPolicy: snapshot.sessionPolicy,
               avatar: snapshot.avatar,
             },
           });
@@ -477,18 +486,35 @@ export class TeamRunService {
       });
       messageId = message.id;
 
+      const targetRequests = mentions.length > 0
+        ? mentions.map((mention) => ({
+          targetMemberId: mention.memberId,
+          ifBusy: mention.ifBusy ?? 'queue',
+          cancelQueued: mention.cancelQueued ?? false,
+        }))
+        : senderType === 'user' || senderType === 'agent'
+          ? members
+            .filter((member) => member.triggerPolicy === 'USER_MESSAGES')
+            .filter((member) => member.id !== requesterMemberId)
+            .map((member) => ({
+              targetMemberId: member.id,
+              ifBusy: 'queue' as const,
+              cancelQueued: false,
+            }))
+          : [];
+
       const workRequestIds: string[] = [];
-      for (const mention of mentions) {
+      for (const targetRequest of targetRequests) {
         const workRequest = await tx.workRequest.create({
           data: {
             teamRunId,
             requesterMemberId,
             requesterType: senderType as WorkRequestRequesterType,
-            targetMemberId: mention.memberId,
+            targetMemberId: targetRequest.targetMemberId,
             triggerMessageId: message.id,
             instruction: input.content,
-            ifBusy: mention.ifBusy ?? 'queue',
-            cancelQueued: mention.cancelQueued ?? false,
+            ifBusy: targetRequest.ifBusy,
+            cancelQueued: targetRequest.cancelQueued,
             status: workRequestStatus,
           },
         });
@@ -564,6 +590,7 @@ export class TeamRunService {
         capabilities: member.capabilities,
         workspacePolicy: member.workspacePolicy,
         triggerPolicy: member.triggerPolicy,
+        sessionPolicy: member.sessionPolicy,
         avatar: member.avatar ?? null,
       })));
     }
@@ -581,6 +608,7 @@ export class TeamRunService {
       capabilities: parseJsonField<TeamMemberCapabilities>(preset.capabilities, DEFAULT_CAPABILITIES),
       workspacePolicy: preset.workspacePolicy as WorkspacePolicy,
       triggerPolicy: preset.triggerPolicy as TeamMemberTriggerPolicy,
+      sessionPolicy: preset.sessionPolicy as TeamMemberSessionPolicy || DEFAULT_SESSION_POLICY,
       avatar: preset.avatar ?? null,
     };
   }
@@ -628,6 +656,7 @@ export class TeamRunService {
       capabilities: parseJsonField<TeamMemberCapabilities>(preset.capabilities, DEFAULT_CAPABILITIES),
       workspacePolicy: preset.workspacePolicy as WorkspacePolicy,
       triggerPolicy: preset.triggerPolicy as TeamMemberTriggerPolicy,
+      sessionPolicy: preset.sessionPolicy as TeamMemberSessionPolicy || DEFAULT_SESSION_POLICY,
       avatar: preset.avatar ?? null,
       createdAt: toIso(preset.createdAt),
       updatedAt: toIso(preset.updatedAt),
@@ -681,6 +710,7 @@ export class TeamRunService {
       capabilities: parseJsonField<TeamMemberCapabilities>(member.capabilities, DEFAULT_CAPABILITIES),
       workspacePolicy: member.workspacePolicy as WorkspacePolicy,
       triggerPolicy: member.triggerPolicy as TeamMemberTriggerPolicy,
+      sessionPolicy: member.sessionPolicy as TeamMemberSessionPolicy || DEFAULT_SESSION_POLICY,
       avatar: member.avatar ?? null,
       createdAt: toIso(member.createdAt),
       updatedAt: toIso(member.updatedAt),

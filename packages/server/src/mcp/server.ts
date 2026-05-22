@@ -35,6 +35,10 @@ const ListRoomMessagesInput = z.object({
   limit: z.number().int().min(1).max(200).optional().describe('Return only the last N messages.'),
 });
 
+const ListTeamMembersInput = z.object({
+  team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
+});
+
 const WorkRequestControlInput = z.object({
   work_request_id: z.string().min(1).describe('WorkRequest ID.'),
 });
@@ -51,6 +55,26 @@ function resolveTeamRunId(explicitTeamRunId?: string): string {
     throw new Error('team_run_id is required outside a TeamRun agent session.');
   }
   return teamRunId;
+}
+
+function formatTeamMembersForAgent(teamRunId: string, members: any[]) {
+  const currentMemberId = process.env.AGENT_TOWER_MEMBER_ID || null;
+
+  return {
+    teamRunId,
+    currentMemberId,
+    members: members.map((member) => ({
+      id: member.id,
+      name: member.name,
+      aliases: member.aliases ?? [],
+      status: member.status,
+      capabilities: member.capabilities,
+      workspacePolicy: member.workspacePolicy,
+      triggerPolicy: member.triggerPolicy,
+      sessionPolicy: member.sessionPolicy,
+      providerId: member.providerId,
+    })),
+  };
 }
 
 function registerTeamRoomTools(server: McpServer, client: AgentTowerClient): void {
@@ -94,6 +118,22 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient): voi
         const messages = await client.listRoomMessages(teamRunId);
         const limited = params.limit ? messages.slice(-params.limit) : messages;
         return { content: [{ type: 'text', text: JSON.stringify(limited, null, 2) }] };
+      } catch (e: any) {
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'list_team_members',
+    'List TeamRun members for assigning work. Returns member IDs for post_room_message mentions plus status, capabilities, workspace policy, trigger policy, and provider ID. Does not expose role prompts.',
+    ListTeamMembersInput.shape,
+    async (params) => {
+      try {
+        const teamRunId = resolveTeamRunId(params.team_run_id);
+        const members = await client.listTeamMembers(teamRunId);
+        const result = formatTeamMembersForAgent(teamRunId, members);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
       }

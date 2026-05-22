@@ -42,7 +42,15 @@ function presetInput(name: string, aliases: string[] = [name.toLowerCase()]): Cr
     capabilities,
     workspacePolicy: 'dedicated',
     triggerPolicy: 'MENTION_ONLY',
+    sessionPolicy: 'new_per_request',
     avatar: null,
+  };
+}
+
+function userMessagesPresetInput(name: string, aliases: string[] = [name.toLowerCase()]): CreateMemberPresetInput {
+  return {
+    ...presetInput(name, aliases),
+    triggerPolicy: 'USER_MESSAGES',
   };
 }
 
@@ -106,6 +114,26 @@ describe('TeamRunService', () => {
 
     expect(preset.aliases).toEqual(['reviewer', 'review']);
     expect(preset.capabilities).toEqual(capabilities);
+    expect(preset.sessionPolicy).toBe('new_per_request');
+  });
+
+  it('preserves session policy in MemberPreset and TeamMember snapshots', async () => {
+    const preset = await service.createMemberPreset({
+      ...presetInput('Implementer', ['impl']),
+      sessionPolicy: 'resume_last',
+    });
+    const task = await createTask();
+
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+
+    expect(preset.sessionPolicy).toBe('resume_last');
+    expect(teamRun.members?.[0]).toMatchObject({
+      name: 'Implementer',
+      sessionPolicy: 'resume_last',
+    });
   });
 
   it('rejects deleting a MemberPreset that is referenced by a TeamTemplate', async () => {
@@ -178,6 +206,38 @@ describe('TeamRunService', () => {
     await expect(service.listWorkRequests(teamRun.id)).resolves.toEqual([]);
   });
 
+  it('creates WorkRequests for USER_MESSAGES members when a user message has no mentions', async () => {
+    const leaderPreset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
+    const coderPreset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [leaderPreset.id, coderPreset.id],
+    });
+    const leader = teamRun.members?.find((member) => member.name === 'Leader');
+    expect(leader).toBeDefined();
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'General user request',
+    });
+    const requests = await service.listWorkRequests(teamRun.id);
+
+    expect(message.kind).toBe('chat');
+    expect(message.mentions).toEqual([]);
+    expect(message.workRequestIds).toEqual([requests[0]?.id]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requesterType: 'user',
+      requesterMemberId: null,
+      targetMemberId: leader!.id,
+      triggerMessageId: message.id,
+      instruction: 'General user request',
+      ifBusy: 'queue',
+      cancelQueued: false,
+      status: 'QUEUED',
+    });
+  });
+
   it('creates WorkRequests from RoomMessage mentions and writes workRequestIds back', async () => {
     const preset = await service.createMemberPreset(presetInput('Coder'));
     const task = await createTask();
@@ -207,6 +267,82 @@ describe('TeamRunService', () => {
       cancelQueued: true,
       status: 'PENDING_APPROVAL',
     });
+  });
+
+  it('does not create USER_MESSAGES WorkRequests when a user message already has mentions', async () => {
+    const leaderPreset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
+    const coderPreset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'CONFIRM',
+      memberPresetIds: [leaderPreset.id, coderPreset.id],
+    });
+    const coder = teamRun.members?.find((member) => member.name === 'Coder');
+    expect(coder).toBeDefined();
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'Please implement this',
+      mentions: [{ memberId: coder!.id }],
+    });
+    const requests = await service.listWorkRequests(teamRun.id);
+
+    expect(message.workRequestIds).toEqual([requests[0]?.id]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.targetMemberId).toBe(coder!.id);
+  });
+
+  it('creates USER_MESSAGES WorkRequests for unmentioned agent messages from other members', async () => {
+    const leaderPreset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
+    const coderPreset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [leaderPreset.id, coderPreset.id],
+    });
+    const leader = teamRun.members?.find((member) => member.name === 'Leader');
+    const coder = teamRun.members?.find((member) => member.name === 'Coder');
+    expect(leader).toBeDefined();
+    expect(coder).toBeDefined();
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'Agent result',
+      senderType: 'agent',
+      senderId: coder!.id,
+    });
+    const requests = await service.listWorkRequests(teamRun.id);
+
+    expect(message.workRequestIds).toEqual([requests[0]?.id]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requesterType: 'agent',
+      requesterMemberId: coder!.id,
+      targetMemberId: leader!.id,
+      triggerMessageId: message.id,
+      instruction: 'Agent result',
+      ifBusy: 'queue',
+      cancelQueued: false,
+      status: 'QUEUED',
+    });
+  });
+
+  it('does not create USER_MESSAGES WorkRequests for the sending member itself', async () => {
+    const leaderPreset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [leaderPreset.id],
+    });
+    const leader = teamRun.members?.find((member) => member.name === 'Leader');
+    expect(leader).toBeDefined();
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'Leader summary',
+      senderType: 'agent',
+      senderId: leader!.id,
+    });
+
+    expect(message.workRequestIds).toEqual([]);
+    await expect(service.listWorkRequests(teamRun.id)).resolves.toEqual([]);
   });
 
   it('queues WorkRequests in AUTO mode and preserves senderInvocationId', async () => {

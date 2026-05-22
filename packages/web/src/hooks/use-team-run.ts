@@ -11,6 +11,7 @@ import type {
   TeamTemplate,
   TeamMemberCapabilities,
   WorkspacePolicy,
+  TeamMemberSessionPolicy,
   TeamMemberTriggerPolicy,
   WorkRequest,
 } from '@agent-tower/shared'
@@ -51,6 +52,7 @@ export type CreateMemberPresetInput = {
   capabilities: TeamMemberCapabilities
   workspacePolicy: WorkspacePolicy
   triggerPolicy: TeamMemberTriggerPolicy
+  sessionPolicy: TeamMemberSessionPolicy
   avatar?: string | null
 }
 

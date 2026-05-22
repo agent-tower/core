@@ -160,6 +160,97 @@ export class SessionManager {
     return session;
   }
 
+  async startFollowUp(id: string, resumeFromSessionId: string) {
+    console.log('[SessionManager] 🚀 Starting follow-up session:', id);
+    console.log('[SessionManager] Resume from Tower session:', resumeFromSessionId);
+
+    const session = await prisma.session.findUnique({
+      where: { id },
+      include: { workspace: true },
+    });
+    if (!session) {
+      console.log('[SessionManager] ❌ Session not found:', id);
+      return null;
+    }
+
+    const resumeFromSession = await prisma.session.findUnique({
+      where: { id: resumeFromSessionId },
+      select: { logSnapshot: true },
+    });
+    const agentSessionId = resumeFromSession
+      ? this.resolveAgentSessionId(resumeFromSessionId, resumeFromSession.logSnapshot)
+      : null;
+
+    console.log('[SessionManager] Follow-up session details:', {
+      id: session.id,
+      resumeFromSessionId,
+      agentSessionId,
+      agentType: session.agentType,
+      variant: session.variant,
+      promptLength: session.prompt.length,
+      promptPreview: session.prompt.substring(0, 200),
+      workingDir: session.workspace.worktreePath,
+    });
+
+    const agentType = session.agentType as AgentType;
+    const executor = session.providerId
+      ? getExecutorByProvider(session.providerId)
+      : getExecutor(agentType, session.variant ?? 'DEFAULT');
+    if (!executor) {
+      throw new Error(`Executor not found for agent type: ${session.agentType}${session.providerId ? ` (provider: ${session.providerId})` : ''}`);
+    }
+
+    const workingDir = session.workspace.worktreePath;
+    const env = ExecutionEnv.default(workingDir);
+
+    if (session.providerId) {
+      const provider = getProviderById(session.providerId);
+      if (provider && Object.keys(provider.env).length > 0) {
+        env.merge(provider.env);
+      }
+    }
+
+    await this.injectTeamRunInvocationEnv(id, env);
+
+    const spawnConfig = {
+      workingDir,
+      prompt: session.prompt,
+      env,
+    };
+
+    let spawnResult: SpawnedChild;
+    if (agentSessionId && executor.spawnFollowUp) {
+      try {
+        spawnResult = await executor.spawnFollowUp(spawnConfig, agentSessionId);
+      } catch (error) {
+        console.warn(
+          `[SessionManager] Follow-up spawn failed for ${id}, falling back to a new agent session:`,
+          error instanceof Error ? error.message : error
+        );
+        spawnResult = await executor.spawn(spawnConfig);
+      }
+    } else {
+      spawnResult = await executor.spawn(spawnConfig);
+    }
+
+    await prisma.executionProcess.create({
+      data: {
+        sessionId: id,
+        pid: spawnResult.pid,
+      },
+    });
+
+    await prisma.session.update({
+      where: { id },
+      data: { status: SessionStatus.RUNNING },
+    });
+
+    this.attachPipeline(id, agentType, workingDir, spawnResult);
+    this.eventBus.emit('session:started', { sessionId: id });
+    await this.checkTaskAutoRevert(id);
+    return session;
+  }
+
   async sendMessage(id: string, message: string, providerId?: string) {
     console.log('[SessionManager] 📨 Sending message to session:', id);
     console.log('[SessionManager] Message length:', message.length);

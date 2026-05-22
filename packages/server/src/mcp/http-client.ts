@@ -138,6 +138,10 @@ export class AgentTowerClient {
     return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/messages`);
   }
 
+  async listTeamMembers(teamRunId: string) {
+    return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/members`);
+  }
+
   async approveWorkRequest(workRequestId: string) {
     return this.request<any>('POST', `/api/team-runs/work-requests/${workRequestId}/approve`);
   }

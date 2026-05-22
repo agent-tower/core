@@ -66,6 +66,7 @@ type SessionStarter = {
     providerId?: string
   ): Promise<{ id: string }>;
   start(id: string): Promise<unknown>;
+  startFollowUp?(id: string, resumeFromSessionId: string): Promise<unknown>;
   stop?(id: string): Promise<unknown>;
 };
 
@@ -383,8 +384,13 @@ export class TeamSchedulerService {
           continue;
         }
 
+        const resumeFromSessionId = await this.findResumeSourceSessionId(member, session.id);
         try {
-          await this.sessionManager.start(session.id);
+          if (resumeFromSessionId && this.sessionManager.startFollowUp) {
+            await this.sessionManager.startFollowUp(session.id, resumeFromSessionId);
+          } else {
+            await this.sessionManager.start(session.id);
+          }
         } catch (error) {
           await this.markInvocationStartFailed(createdInvocation.id, session.id);
           this.lockService.releaseByOwner(createdInvocation.id);
@@ -853,6 +859,41 @@ export class TeamSchedulerService {
 
   private buildSessionPrompt(member: PrismaTeamMember, workRequest: PrismaWorkRequest): string {
     return `${member.rolePrompt}\n\nTask:\n${workRequest.instruction}`;
+  }
+
+  private async findResumeSourceSessionId(member: PrismaTeamMember, currentSessionId: string): Promise<string | null> {
+    if (member.sessionPolicy !== 'resume_last') {
+      return null;
+    }
+
+    const previousInvocation = await prisma.agentInvocation.findFirst({
+      where: {
+        memberId: member.id,
+        sessionId: {
+          not: null,
+          notIn: [currentSessionId],
+        },
+      },
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
+      select: {
+        sessionId: true,
+      },
+    });
+
+    if (!previousInvocation?.sessionId) {
+      return null;
+    }
+
+    const previousSession = await prisma.session.findUnique({
+      where: { id: previousInvocation.sessionId },
+      select: { logSnapshot: true },
+    });
+
+    if (!previousSession?.logSnapshot) {
+      return null;
+    }
+
+    return previousInvocation.sessionId;
   }
 
   private async markInvocationStartFailed(invocationId: string, sessionId: string): Promise<void> {
