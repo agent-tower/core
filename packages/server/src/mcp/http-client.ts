@@ -164,7 +164,15 @@ export class AgentTowerClient {
 
   // ── System ──
 
-  async getWorkspaceContext(cwdPath: string) {
-    return this.request<any>('GET', '/api/system/workspace-context', undefined, { path: cwdPath });
+  async getWorkspaceContext(cwdPath: string, sessionId?: string) {
+    return this.request<any>(
+      'GET',
+      '/api/system/workspace-context',
+      undefined,
+      {
+        path: cwdPath,
+        ...(sessionId ? { sessionId } : {}),
+      }
+    );
   }
 }

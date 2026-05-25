@@ -354,21 +354,122 @@ describe('TeamRunService', () => {
     });
     const member = teamRun.members?.[0];
     expect(member).toBeDefined();
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'team-shared',
+        worktreePath: testDir,
+        status: 'ACTIVE',
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: member!.id,
+        triggerMessageId: 'trigger-message-1',
+        instruction: 'Original work',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        providerId: member!.providerId,
+        prompt: 'Do the work',
+        status: 'RUNNING',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: member!.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        status: 'RUNNING',
+      },
+    });
 
     const message = await service.createRoomMessage(teamRun.id, {
       content: 'Review this change',
       mentions: [{ memberId: member!.id }],
       senderType: 'agent',
       senderId: member!.id,
-      senderInvocationId: 'invocation-1',
+      senderInvocationId: invocation.id,
     });
     const requests = await service.listWorkRequests(teamRun.id);
+    const createdRequest = requests.find((item) => item.triggerMessageId === message.id);
 
-    expect(message.senderInvocationId).toBe('invocation-1');
-    expect(requests[0]).toMatchObject({
+    expect(message.senderInvocationId).toBe(invocation.id);
+    expect(createdRequest).toMatchObject({
       requesterType: 'agent',
       requesterMemberId: member!.id,
       status: 'QUEUED',
+    });
+  });
+
+  it('rejects agent RoomMessages when senderInvocationId does not belong to the sender', async () => {
+    const senderPreset = await service.createMemberPreset(presetInput('Sender'));
+    const otherPreset = await service.createMemberPreset(presetInput('Other'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [senderPreset.id, otherPreset.id],
+    });
+    const sender = teamRun.members?.find((member) => member.name === 'Sender');
+    const other = teamRun.members?.find((member) => member.name === 'Other');
+    expect(sender).toBeDefined();
+    expect(other).toBeDefined();
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'team-shared',
+        worktreePath: testDir,
+        status: 'ACTIVE',
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: other!.id,
+        triggerMessageId: 'trigger-message-2',
+        instruction: 'Original work',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        providerId: other!.providerId,
+        prompt: 'Do the work',
+        status: 'RUNNING',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: other!.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        status: 'RUNNING',
+      },
+    });
+
+    await expect(service.createRoomMessage(teamRun.id, {
+      content: 'Spoofed result',
+      senderType: 'agent',
+      senderId: sender!.id,
+      senderInvocationId: invocation.id,
+    })).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
     });
   });
 

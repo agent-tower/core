@@ -470,6 +470,26 @@ export class TeamRunService {
         ? input.senderId
         : null;
 
+      if (senderType === 'agent') {
+        if (!input.senderId || !memberIds.has(input.senderId)) {
+          throw new ValidationError('Agent RoomMessage senderId must be a TeamMember in this TeamRun');
+        }
+
+        if (input.senderInvocationId) {
+          const invocation = await tx.agentInvocation.findFirst({
+            where: {
+              id: input.senderInvocationId,
+              teamRunId,
+              memberId: input.senderId,
+            },
+            select: { id: true },
+          });
+          if (!invocation) {
+            throw new ValidationError('Agent RoomMessage senderInvocationId must belong to the sender member in this TeamRun');
+          }
+        }
+      }
+
       const message = await tx.roomMessage.create({
         data: {
           teamRunId,

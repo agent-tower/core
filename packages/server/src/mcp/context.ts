@@ -18,7 +18,10 @@ export interface McpContext {
 
 export async function fetchContext(client: AgentTowerClient): Promise<McpContext | null> {
   try {
-    const result = await client.getWorkspaceContext(process.cwd());
+    const result = await client.getWorkspaceContext(
+      process.cwd(),
+      process.env.AGENT_TOWER_SESSION_ID
+    );
     if (!result) return null;
     return {
       projectId: result.projectId,
@@ -27,9 +30,15 @@ export async function fetchContext(client: AgentTowerClient): Promise<McpContext
       taskTitle: result.taskTitle,
       workspaceId: result.workspaceId,
       workspaceBranch: result.workspaceBranch,
-      ...(process.env.AGENT_TOWER_TEAM_RUN_ID ? { teamRunId: process.env.AGENT_TOWER_TEAM_RUN_ID } : {}),
-      ...(process.env.AGENT_TOWER_MEMBER_ID ? { memberId: process.env.AGENT_TOWER_MEMBER_ID } : {}),
-      ...(process.env.AGENT_TOWER_INVOCATION_ID ? { invocationId: process.env.AGENT_TOWER_INVOCATION_ID } : {}),
+      ...(process.env.AGENT_TOWER_TEAM_RUN_ID || result.teamRunId
+        ? { teamRunId: process.env.AGENT_TOWER_TEAM_RUN_ID ?? result.teamRunId }
+        : {}),
+      ...(process.env.AGENT_TOWER_MEMBER_ID || result.memberId
+        ? { memberId: process.env.AGENT_TOWER_MEMBER_ID ?? result.memberId }
+        : {}),
+      ...(process.env.AGENT_TOWER_INVOCATION_ID || result.invocationId
+        ? { invocationId: process.env.AGENT_TOWER_INVOCATION_ID ?? result.invocationId }
+        : {}),
     };
   } catch {
     return null;

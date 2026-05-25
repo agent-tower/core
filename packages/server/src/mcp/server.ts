@@ -49,16 +49,72 @@ const StopMemberWorkInput = z.object({
   cancel_queued: z.boolean().optional().describe('Whether to cancel queued/pending WorkRequests for this member.'),
 });
 
-function resolveTeamRunId(explicitTeamRunId?: string): string {
-  const teamRunId = process.env.AGENT_TOWER_TEAM_RUN_ID || explicitTeamRunId;
-  if (!teamRunId) {
+const TEAM_RUN_MISMATCH_ERROR = 'team_run_id does not match the current TeamRun session.';
+
+function resolveBoundTeamRunId(context?: McpContext | null): string | undefined {
+  return process.env.AGENT_TOWER_TEAM_RUN_ID ?? context?.teamRunId;
+}
+
+function resolveTeamRunId(explicitTeamRunId?: string, context?: McpContext | null): string {
+  const boundTeamRunId = resolveBoundTeamRunId(context);
+  if (boundTeamRunId) {
+    if (explicitTeamRunId && explicitTeamRunId !== boundTeamRunId) {
+      throw new Error(TEAM_RUN_MISMATCH_ERROR);
+    }
+    return boundTeamRunId;
+  }
+
+  if (!explicitTeamRunId) {
     throw new Error('team_run_id is required outside a TeamRun agent session.');
   }
-  return teamRunId;
+  return explicitTeamRunId;
+}
+
+function resolveTeamRunAgentIdentity(context: McpContext | null, teamRunId: string): {
+  memberId?: string;
+  invocationId?: string;
+} {
+  if (
+    process.env.AGENT_TOWER_TEAM_RUN_ID === teamRunId
+    && process.env.AGENT_TOWER_MEMBER_ID
+    && process.env.AGENT_TOWER_INVOCATION_ID
+  ) {
+    return {
+      memberId: process.env.AGENT_TOWER_MEMBER_ID,
+      invocationId: process.env.AGENT_TOWER_INVOCATION_ID,
+    };
+  }
+
+  if (
+    context?.teamRunId === teamRunId
+    && context.memberId
+    && context.invocationId
+  ) {
+    return {
+      memberId: context.memberId,
+      invocationId: context.invocationId,
+    };
+  }
+
+  return {};
+}
+
+function resolveCurrentTeamMemberId(context: McpContext | null, teamRunId: string): string | null {
+  if (process.env.AGENT_TOWER_TEAM_RUN_ID === teamRunId && process.env.AGENT_TOWER_MEMBER_ID) {
+    return process.env.AGENT_TOWER_MEMBER_ID;
+  }
+
+  if (context?.teamRunId === teamRunId && context.memberId) {
+    return context.memberId;
+  }
+
+  return null;
 }
 
 function formatTeamMembersForAgent(teamRunId: string, members: any[]) {
-  const currentMemberId = process.env.AGENT_TOWER_MEMBER_ID || null;
+  const currentMemberId = process.env.AGENT_TOWER_TEAM_RUN_ID === teamRunId
+    ? process.env.AGENT_TOWER_MEMBER_ID || null
+    : null;
 
   return {
     teamRunId,
@@ -77,27 +133,26 @@ function formatTeamMembersForAgent(teamRunId: string, members: any[]) {
   };
 }
 
-function registerTeamRoomTools(server: McpServer, client: AgentTowerClient): void {
+function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, context: McpContext | null): void {
   server.tool(
     'post_room_message',
     'Post a TeamRun room message. Mentions create WorkRequests through the existing RoomMessage flow.',
     PostRoomMessageInput.shape,
     async (params) => {
       try {
-        const teamRunId = resolveTeamRunId(params.team_run_id);
-        const invocationId = process.env.AGENT_TOWER_INVOCATION_ID;
-        const memberId = process.env.AGENT_TOWER_MEMBER_ID;
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        const { invocationId, memberId } = resolveTeamRunAgentIdentity(context, teamRunId);
         const message = await client.createRoomMessage(teamRunId, {
           content: params.content,
           mentions: params.mentions,
           attachmentIds: params.attachmentIds,
           artifactRefs: params.artifactRefs,
           kind: params.kind,
-          ...(invocationId || memberId
+          ...(invocationId && memberId
             ? {
               senderType: 'agent',
-              senderId: memberId ?? null,
-              senderInvocationId: invocationId ?? null,
+              senderId: memberId,
+              senderInvocationId: invocationId,
             }
             : {}),
         });
@@ -114,7 +169,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient): voi
     ListRoomMessagesInput.shape,
     async (params) => {
       try {
-        const teamRunId = resolveTeamRunId(params.team_run_id);
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
         const messages = await client.listRoomMessages(teamRunId);
         const limited = params.limit ? messages.slice(-params.limit) : messages;
         return { content: [{ type: 'text', text: JSON.stringify(limited, null, 2) }] };
@@ -130,9 +185,13 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient): voi
     ListTeamMembersInput.shape,
     async (params) => {
       try {
-        const teamRunId = resolveTeamRunId(params.team_run_id);
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
         const members = await client.listTeamMembers(teamRunId);
-        const result = formatTeamMembersForAgent(teamRunId, members);
+        const memberId = resolveCurrentTeamMemberId(context, teamRunId);
+        const result = {
+          ...formatTeamMembersForAgent(teamRunId, members),
+          currentMemberId: memberId,
+        };
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
@@ -188,7 +247,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient): voi
     StopMemberWorkInput.shape,
     async (params) => {
       try {
-        const teamRunId = resolveTeamRunId(params.team_run_id);
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
         const result = await client.stopMemberWork(teamRunId, params.member_id, {
           cancelQueued: params.cancel_queued,
         });
@@ -215,7 +274,7 @@ export async function createMcpServer(baseUrl: string): Promise<McpServer> {
   registerProviderTools(server, client);
   registerWorkspaceTools(server, client);
   registerSessionTools(server, client);
-  registerTeamRoomTools(server, client);
+  registerTeamRoomTools(server, client, context);
 
   // 条件注册 get_context（仅当检测到工作空间上下文时）
   if (context) {

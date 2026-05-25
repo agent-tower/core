@@ -45,7 +45,7 @@ function flattenObject(obj: Record<string, unknown>, prefix = ''): [string, unkn
  * 对象转为 TOML inline table: { key = "value", key2 = 123 }
  */
 function toTomlLiteral(value: unknown): string {
-  if (typeof value === 'string') return `"${value}"`;
+  if (typeof value === 'string') return JSON.stringify(value);
   if (typeof value === 'boolean' || typeof value === 'number') return String(value);
   if (Array.isArray(value)) {
     return `[${value.map(v => toTomlLiteral(v)).join(', ')}]`;
@@ -58,6 +58,26 @@ function toTomlLiteral(value: unknown): string {
     return `{${pairs}}`;
   }
   return String(value);
+}
+
+const AGENT_TOWER_MCP_ENV_KEYS = [
+  'AGENT_TOWER_SESSION_ID',
+  'AGENT_TOWER_INVOCATION_ID',
+  'AGENT_TOWER_TEAM_RUN_ID',
+  'AGENT_TOWER_MEMBER_ID',
+] as const;
+
+export function buildAgentTowerMcpEnvConfigOverrides(env: ExecutorSpawnConfig['env']): string[] {
+  const args: string[] = [];
+
+  for (const key of AGENT_TOWER_MCP_ENV_KEYS) {
+    const value = env.get(key);
+    if (value) {
+      args.push('-c', `mcp_servers.agent-tower.env.${key}=${toTomlLiteral(value)}`);
+    }
+  }
+
+  return args;
 }
 
 /**
@@ -212,6 +232,8 @@ export class CodexExecutor extends BaseExecutor {
   async spawn(config: ExecutorSpawnConfig): Promise<SpawnedChild> {
     const commandBuilder = this.buildCommandBuilder();
 
+    commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env));
+
     // Codex 使用 exec 子命令进行非交互式执行
     commandBuilder.extendParams(['exec', '--json', '--skip-git-repo-check']);
 
@@ -243,6 +265,8 @@ export class CodexExecutor extends BaseExecutor {
     resetToMessageId?: string
   ): Promise<SpawnedChild> {
     const commandBuilder = this.buildCommandBuilder();
+
+    commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env));
 
     // Codex 使用 exec resume 命令继续会话（支持 JSON 输出）
     const additionalArgs = ['exec', 'resume', '--json', '--skip-git-repo-check'];

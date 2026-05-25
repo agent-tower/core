@@ -33,9 +33,20 @@ let createMcpServer: typeof import('../../mcp/server.js').createMcpServer;
 let teamRunRoutes: typeof import('../../routes/team-runs.js').teamRunRoutes;
 let workRequestSequence = 0;
 
+const TEAM_RUN_MISMATCH_ERROR = 'team_run_id does not match the current TeamRun session.';
+const TEAM_RUN_ENV_KEYS = [
+  'AGENT_TOWER_TEAM_RUN_ID',
+  'AGENT_TOWER_MEMBER_ID',
+  'AGENT_TOWER_INVOCATION_ID',
+  'AGENT_TOWER_SESSION_ID',
+] as const;
+
 type RouteSchedulerMock = NonNullable<TeamRunRouteDependencies['scheduler']> & {
   startedTeamRunIds: string[];
 };
+
+type TeamRunEnvKey = typeof TEAM_RUN_ENV_KEYS[number];
+type TeamRunEnvSnapshot = Record<TeamRunEnvKey, string | undefined>;
 
 const capabilities = {
   readRoom: true,
@@ -52,6 +63,36 @@ const capabilities = {
 
 function stringifyJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function captureTeamRunEnv(): TeamRunEnvSnapshot {
+  return TEAM_RUN_ENV_KEYS.reduce((snapshot, key) => ({
+    ...snapshot,
+    [key]: process.env[key],
+  }), {} as TeamRunEnvSnapshot);
+}
+
+function setTeamRunEnv(values: Partial<Record<TeamRunEnvKey, string | undefined>>) {
+  for (const key of TEAM_RUN_ENV_KEYS) {
+    if (!(key in values)) {
+      continue;
+    }
+    const value = values[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
+function restoreTeamRunEnv(snapshot: TeamRunEnvSnapshot) {
+  setTeamRunEnv(snapshot);
+}
+
+function getMcpToolText(result: unknown): string {
+  const content = (result as { content?: unknown }).content as Array<{ type: string; text?: string }> | undefined;
+  return content?.[0]?.type === 'text' ? content[0].text ?? '' : '';
 }
 
 function createSchedulerMock(lockService: TeamLockService): TeamReconcilerScheduler & {
@@ -679,6 +720,118 @@ describe('TeamReconcilerService', () => {
     }
   });
 
+  it('posts a room message from MCP workspace context identity when MCP env identity is missing', async () => {
+    const previousTeamRunId = process.env.AGENT_TOWER_TEAM_RUN_ID;
+    const previousMemberId = process.env.AGENT_TOWER_MEMBER_ID;
+    const previousInvocationId = process.env.AGENT_TOWER_INVOCATION_ID;
+    const previousSessionId = process.env.AGENT_TOWER_SESSION_ID;
+    const { workspace, teamRun, members } = await createFixture({ memberCount: 2 });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    const contextWorktreePath = fs.realpathSync(workspace.worktreePath);
+    await prisma.workspace.update({
+      where: { id: workspace.id },
+      data: { worktreePath: contextWorktreePath },
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      delete process.env.AGENT_TOWER_TEAM_RUN_ID;
+      delete process.env.AGENT_TOWER_MEMBER_ID;
+      delete process.env.AGENT_TOWER_INVOCATION_ID;
+      delete process.env.AGENT_TOWER_SESSION_ID;
+
+      await app.register((await import('../../routes/system.js')).systemRoutes, { prefix: '/api' });
+      await app.register(teamRunRoutes, { prefix: '/api' });
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const address = app.server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to start test server');
+      }
+
+      const previousCwd = process.cwd();
+      let server;
+      try {
+        process.chdir(contextWorktreePath);
+        server = await createMcpServer(`http://127.0.0.1:${address.port}`);
+      } finally {
+        process.chdir(previousCwd);
+      }
+      const client = new Client({ name: 'team-room-context-test-client', version: '0.1.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const result = await client.callTool({
+        name: 'post_room_message',
+        arguments: {
+          content: 'Implemented through context identity',
+          mentions: [{ memberId: members[1]!.id }],
+        },
+      });
+      await client.close();
+      await server.close();
+
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+      const resultContent = result.content as Array<{ type: string; text?: string }>;
+      const messageText = resultContent[0]?.type === 'text' ? resultContent[0].text ?? '' : '';
+      const message = JSON.parse(messageText) as { id: string; senderInvocationId: string; senderType: string };
+      expect(message).toMatchObject({
+        senderType: 'agent',
+        senderInvocationId: invocation.id,
+      });
+
+      await expect(prisma.roomMessage.findUnique({ where: { id: message.id } })).resolves.toMatchObject({
+        senderType: 'agent',
+        senderId: members[0]!.id,
+        senderInvocationId: invocation.id,
+      });
+      await expect(prisma.workRequest.findFirst({
+        where: {
+          teamRunId: teamRun.id,
+          triggerMessageId: message.id,
+          targetMemberId: members[1]!.id,
+        },
+      })).resolves.toMatchObject({
+        requesterType: 'agent',
+        requesterMemberId: members[0]!.id,
+        status: 'QUEUED',
+      });
+    } finally {
+      if (previousTeamRunId === undefined) {
+        delete process.env.AGENT_TOWER_TEAM_RUN_ID;
+      } else {
+        process.env.AGENT_TOWER_TEAM_RUN_ID = previousTeamRunId;
+      }
+      if (previousMemberId === undefined) {
+        delete process.env.AGENT_TOWER_MEMBER_ID;
+      } else {
+        process.env.AGENT_TOWER_MEMBER_ID = previousMemberId;
+      }
+      if (previousInvocationId === undefined) {
+        delete process.env.AGENT_TOWER_INVOCATION_ID;
+      } else {
+        process.env.AGENT_TOWER_INVOCATION_ID = previousInvocationId;
+      }
+      if (previousSessionId === undefined) {
+        delete process.env.AGENT_TOWER_SESSION_ID;
+      } else {
+        process.env.AGENT_TOWER_SESSION_ID = previousSessionId;
+      }
+      await app.close();
+    }
+  });
+
   it('lists TeamRun members through MCP without exposing role prompts', async () => {
     const previousTeamRunId = process.env.AGENT_TOWER_TEAM_RUN_ID;
     const previousMemberId = process.env.AGENT_TOWER_MEMBER_ID;
@@ -754,6 +907,158 @@ describe('TeamReconcilerService', () => {
       } else {
         process.env.AGENT_TOWER_MEMBER_ID = previousMemberId;
       }
+      await app.close();
+    }
+  });
+
+  it('rejects explicit mismatched team_run_id in bound MCP TeamRun tools', async () => {
+    const previousEnv = captureTeamRunEnv();
+    const { workspace, teamRun, members } = await createFixture({ memberCount: 1 });
+    const other = await createFixture({ memberCount: 1 });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+    });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      setTeamRunEnv({
+        AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
+        AGENT_TOWER_MEMBER_ID: members[0]!.id,
+        AGENT_TOWER_INVOCATION_ID: invocation.id,
+        AGENT_TOWER_SESSION_ID: undefined,
+      });
+
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const address = app.server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to start test server');
+      }
+
+      const server = await createMcpServer(`http://127.0.0.1:${address.port}`);
+      const client = new Client({ name: 'team-run-mismatch-test-client', version: '0.1.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        const cases = [
+          {
+            name: 'post_room_message',
+            arguments: {
+              team_run_id: other.teamRun.id,
+              content: 'This should be rejected before reaching the API',
+            },
+          },
+          {
+            name: 'list_room_messages',
+            arguments: {
+              team_run_id: other.teamRun.id,
+            },
+          },
+          {
+            name: 'list_team_members',
+            arguments: {
+              team_run_id: other.teamRun.id,
+            },
+          },
+          {
+            name: 'stop_member_work',
+            arguments: {
+              team_run_id: other.teamRun.id,
+              member_id: other.members[0]!.id,
+              cancel_queued: true,
+            },
+          },
+        ];
+
+        for (const toolCall of cases) {
+          const result = await client.callTool(toolCall);
+          expect(result.isError, toolCall.name).toBe(true);
+          expect(getMcpToolText(result), toolCall.name).toContain(TEAM_RUN_MISMATCH_ERROR);
+        }
+      } finally {
+        await client.close();
+        await server.close();
+      }
+
+      await expect(prisma.roomMessage.count()).resolves.toBe(0);
+      expect(routeScheduler.stopMemberWork).not.toHaveBeenCalled();
+    } finally {
+      restoreTeamRunEnv(previousEnv);
+      await app.close();
+    }
+  });
+
+  it('posts MCP room messages as user when bound TeamRun identity is partial', async () => {
+    const previousEnv = captureTeamRunEnv();
+    const { teamRun, members } = await createFixture({ memberCount: 2 });
+    const app = Fastify({ logger: false });
+
+    try {
+      setTeamRunEnv({
+        AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
+        AGENT_TOWER_MEMBER_ID: members[0]!.id,
+        AGENT_TOWER_INVOCATION_ID: undefined,
+        AGENT_TOWER_SESSION_ID: undefined,
+      });
+
+      await app.register(teamRunRoutes, { prefix: '/api' });
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const address = app.server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to start test server');
+      }
+
+      const server = await createMcpServer(`http://127.0.0.1:${address.port}`);
+      const client = new Client({ name: 'team-run-partial-identity-test-client', version: '0.1.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      let messageId: string;
+      try {
+        const result = await client.callTool({
+          name: 'post_room_message',
+          arguments: {
+            content: 'Partial identity should not be sent as agent',
+          },
+        });
+
+        expect(result.isError, getMcpToolText(result)).not.toBe(true);
+        const message = JSON.parse(getMcpToolText(result)) as {
+          id: string;
+          senderType: string;
+          senderId: string | null;
+          senderInvocationId: string | null;
+        };
+        messageId = message.id;
+        expect(message).toMatchObject({
+          senderType: 'user',
+          senderId: null,
+          senderInvocationId: null,
+        });
+      } finally {
+        await client.close();
+        await server.close();
+      }
+
+      await expect(prisma.roomMessage.findUnique({ where: { id: messageId! } })).resolves.toMatchObject({
+        senderType: 'user',
+        senderId: null,
+        senderInvocationId: null,
+      });
+    } finally {
+      restoreTeamRunEnv(previousEnv);
       await app.close();
     }
   });

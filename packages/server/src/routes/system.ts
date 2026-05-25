@@ -83,7 +83,7 @@ export async function systemRoutes(app: FastifyInstance) {
 
   // MCP 上下文检测：根据 cwd 路径查找匹配的活跃工作空间
   app.get('/system/workspace-context', async (request, reply) => {
-    const { path: cwdPath } = request.query as { path?: string };
+    const { path: cwdPath, sessionId } = request.query as { path?: string; sessionId?: string };
     if (!cwdPath) {
       reply.code(400);
       return { error: 'path query parameter is required' };
@@ -106,6 +106,48 @@ export async function systemRoutes(app: FastifyInstance) {
       taskTitle: workspace.task.title,
       workspaceId: workspace.id,
       workspaceBranch: workspace.branchName,
+      ...await resolveTeamRunContext(workspace.id, sessionId),
     };
   });
+}
+
+async function resolveTeamRunContext(workspaceId: string, sessionId?: string): Promise<{
+  teamRunId?: string;
+  memberId?: string;
+  invocationId?: string;
+}> {
+  if (sessionId) {
+    const invocation = await prisma.agentInvocation.findFirst({
+      where: { workspaceId, sessionId },
+      select: { id: true, teamRunId: true, memberId: true },
+    });
+    if (invocation) {
+      return {
+        teamRunId: invocation.teamRunId,
+        memberId: invocation.memberId,
+        invocationId: invocation.id,
+      };
+    }
+  }
+
+  const runningInvocations = await prisma.agentInvocation.findMany({
+    where: {
+      workspaceId,
+      status: { in: ['RUNNING', 'SESSION_ENDED', 'WAITING_ROOM_REPLY'] },
+    },
+    orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+    take: 2,
+    select: { id: true, teamRunId: true, memberId: true },
+  });
+
+  if (runningInvocations.length !== 1) {
+    return {};
+  }
+
+  const invocation = runningInvocations[0]!;
+  return {
+    teamRunId: invocation.teamRunId,
+    memberId: invocation.memberId,
+    invocationId: invocation.id,
+  };
 }
