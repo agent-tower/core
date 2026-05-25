@@ -29,6 +29,10 @@ const validateQuerySchema = z.object({
     }),
 });
 
+function isDirectoryEmpty(dirPath: string): boolean {
+  return fs.readdirSync(dirPath).length === 0;
+}
+
 /**
  * 统一错误处理
  */
@@ -195,19 +199,37 @@ export async function filesystemRoutes(app: FastifyInstance) {
 
       // 检查路径是否存在
       if (!fs.existsSync(dirPath)) {
-        return { valid: false, path: dirPath, error: 'Path does not exist' };
+        return { valid: false, path: dirPath, reason: 'not_found', error: 'Path does not exist' };
       }
 
       // 检查是否是目录
       const stat = fs.statSync(dirPath);
       if (!stat.isDirectory()) {
-        return { valid: false, path: dirPath, error: 'Path is not a directory' };
+        return { valid: false, path: dirPath, reason: 'not_directory', error: 'Path is not a directory' };
       }
 
       // 检查是否是 Git 仓库
       const gitPath = path.join(dirPath, '.git');
       if (!fs.existsSync(gitPath)) {
-        return { valid: false, path: dirPath, error: 'Not a Git repository (no .git found)' };
+        let isEmpty = false;
+        try {
+          isEmpty = isDirectoryEmpty(dirPath);
+        } catch {
+          return {
+            valid: false,
+            path: dirPath,
+            reason: 'permission_denied',
+            error: `Permission denied: ${dirPath}`,
+          };
+        }
+
+        return {
+          valid: false,
+          path: dirPath,
+          reason: 'no_git',
+          isEmpty,
+          error: 'Not a Git repository (no .git found)',
+        };
       }
 
       return { valid: true, path: dirPath };

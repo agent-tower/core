@@ -32,6 +32,7 @@ interface CreateProjectInput {
   name: string
   repoPath: string
   mainBranch?: string
+  initEmptyRepo?: boolean
   description?: string
 }
 

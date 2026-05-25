@@ -16,6 +16,7 @@ interface CreateProjectInput {
   description?: string;
   repoPath: string;
   mainBranch?: string;
+  initEmptyRepo?: boolean;
   copyFiles?: string;
   setupScript?: string;
   quickCommands?: string;
@@ -76,7 +77,7 @@ async function getRepoRemoteUrl(repoPath: string): Promise<string | null> {
   }
 }
 
-function assertRepoPathExists(resolvedPath: string): void {
+function assertDirectoryPathExists(resolvedPath: string): void {
   if (!fs.existsSync(resolvedPath)) {
     throw new ValidationError(
       `repoPath does not exist: ${resolvedPath}`
@@ -89,11 +90,28 @@ function assertRepoPathExists(resolvedPath: string): void {
       `repoPath is not a directory: ${resolvedPath}`
     );
   }
+}
 
+function hasGitMetadata(resolvedPath: string): boolean {
   const gitPath = path.join(resolvedPath, '.git');
-  if (!fs.existsSync(gitPath)) {
+  return fs.existsSync(gitPath);
+}
+
+function assertRepoPathExists(resolvedPath: string): void {
+  assertDirectoryPathExists(resolvedPath);
+
+  if (!hasGitMetadata(resolvedPath)) {
     throw new ValidationError(
       `repoPath is not a valid Git repository (no .git found): ${resolvedPath}`
+    );
+  }
+}
+
+async function assertDirectoryIsEmpty(resolvedPath: string): Promise<void> {
+  const entries = await fsPromises.readdir(resolvedPath);
+  if (entries.length > 0) {
+    throw new ValidationError(
+      `repoPath is not a Git repository and is not empty: ${resolvedPath}`
     );
   }
 }
@@ -107,7 +125,17 @@ async function ensureRepoHasCommit(repoPath: string): Promise<void> {
     await execGit(repoPath, ['rev-parse', '--verify', 'HEAD']);
   } catch {
     try {
-      await execGit(repoPath, ['commit', '--allow-empty', '-m', 'chore: initial commit']);
+      await execGit(repoPath, [
+        '-c',
+        'user.name=Agent Tower',
+        '-c',
+        'user.email=agent-tower@local',
+        'commit',
+        '--allow-empty',
+        '--no-gpg-sign',
+        '-m',
+        'chore: initial commit',
+      ]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new ValidationError(
@@ -115,6 +143,15 @@ async function ensureRepoHasCommit(repoPath: string): Promise<void> {
       );
     }
   }
+}
+
+async function initializeEmptyRepository(repoPath: string): Promise<void> {
+  await execGit(repoPath, ['init']);
+  await execGit(repoPath, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+}
+
+async function removeGitMetadata(repoPath: string): Promise<void> {
+  await fsPromises.rm(path.join(repoPath, '.git'), { recursive: true, force: true }).catch(() => {});
 }
 
 async function resolveAndValidateRepoPath(repoPath: string): Promise<{
@@ -127,6 +164,51 @@ async function resolveAndValidateRepoPath(repoPath: string): Promise<{
   return {
     resolvedPath,
     repoRemoteUrl: await getRepoRemoteUrl(resolvedPath),
+  };
+}
+
+async function prepareRepoForProjectCreate(
+  repoPath: string,
+  initEmptyRepo: boolean
+): Promise<{
+  resolvedPath: string;
+  repoRemoteUrl: string | null;
+  initialized: boolean;
+}> {
+  const resolvedPath = path.resolve(repoPath);
+  assertDirectoryPathExists(resolvedPath);
+
+  let initialized = false;
+  if (!hasGitMetadata(resolvedPath)) {
+    if (!initEmptyRepo) {
+      throw new ValidationError(
+        `repoPath is not a valid Git repository (no .git found): ${resolvedPath}`
+      );
+    }
+
+    await assertDirectoryIsEmpty(resolvedPath);
+    try {
+      await initializeEmptyRepository(resolvedPath);
+      initialized = true;
+    } catch (error) {
+      await removeGitMetadata(resolvedPath);
+      throw error;
+    }
+  }
+
+  try {
+    await ensureRepoHasCommit(resolvedPath);
+  } catch (error) {
+    if (initialized) {
+      await removeGitMetadata(resolvedPath);
+    }
+    throw error;
+  }
+
+  return {
+    resolvedPath,
+    repoRemoteUrl: await getRepoRemoteUrl(resolvedPath),
+    initialized,
   };
 }
 
@@ -242,13 +324,9 @@ export class ProjectService {
   /**
    * 创建项目
    * - 校验 repoPath 是否存在且为有效的 Git 仓库
+   * - 允许对空目录执行 Git 初始化
    */
   async create(input: CreateProjectInput) {
-    const { resolvedPath, repoRemoteUrl } = await resolveAndValidateRepoPath(input.repoPath);
-
-    // 空仓库（无任何 commit）自动创建初始提交，否则 worktree 无法工作
-    await ensureRepoHasCommit(resolvedPath);
-
     // 检查同名项目
     const existing = await prisma.project.findFirst({
       where: { name: input.name },
@@ -259,18 +337,30 @@ export class ProjectService {
       );
     }
 
-    return prisma.project.create({
-      data: {
-        name: input.name,
-        description: input.description,
-        repoPath: resolvedPath,
-        repoRemoteUrl,
-        mainBranch: input.mainBranch || 'main',
-        copyFiles: input.copyFiles,
-        setupScript: input.setupScript,
-        quickCommands: input.quickCommands,
-      },
-    });
+    const { resolvedPath, repoRemoteUrl, initialized } = await prepareRepoForProjectCreate(
+      input.repoPath,
+      input.initEmptyRepo ?? false
+    );
+
+    try {
+      return await prisma.project.create({
+        data: {
+          name: input.name,
+          description: input.description,
+          repoPath: resolvedPath,
+          repoRemoteUrl,
+          mainBranch: input.mainBranch || 'main',
+          copyFiles: input.copyFiles,
+          setupScript: input.setupScript,
+          quickCommands: input.quickCommands,
+        },
+      });
+    } catch (error) {
+      if (initialized) {
+        await removeGitMetadata(resolvedPath);
+      }
+      throw error;
+    }
   }
 
   /**

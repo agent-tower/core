@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Folder, FolderGit2, ChevronRight, Loader2, AlertCircle } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { Folder, FolderGit2, ChevronRight, Loader2, AlertCircle, Check } from 'lucide-react'
 import { apiClient } from '@/lib/api-client'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
@@ -23,8 +23,12 @@ interface BrowseResponse {
 interface ValidateResponse {
   valid: boolean
   path: string
+  reason?: string
+  isEmpty?: boolean
   error?: string
 }
+
+type ValidationMode = 'git' | 'directory'
 
 // === Props ===
 
@@ -33,11 +37,13 @@ export interface FolderPickerProps {
   value: string
   /** 路径变化回调 */
   onChange: (path: string) => void
+  /** 校验模式：git 要求 Git 仓库，directory 只选择目录并把校验交给外层流程 */
+  validationMode?: ValidationMode
   /** 占位文字 */
   placeholder?: string
 }
 
-export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps) {
+export function FolderPicker({ value, onChange, validationMode = 'git', placeholder }: FolderPickerProps) {
   const { t } = useI18n()
   // 浏览器当前目录
   const [currentPath, setCurrentPath] = useState('')
@@ -93,6 +99,12 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
 
   // === 验证并选中目录 ===
   const selectDirectory = useCallback(async (dirPath: string) => {
+    if (validationMode === 'directory') {
+      onChange(dirPath)
+      setValidationError(null)
+      return
+    }
+
     setIsValidating(true)
     setValidationError(null)
     try {
@@ -110,10 +122,16 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
     } finally {
       setIsValidating(false)
     }
-  }, [onChange])
+  }, [onChange, validationMode])
 
   // === 点击目录条目 ===
   const handleDirClick = useCallback((entry: DirEntry) => {
+    if (validationMode === 'directory') {
+      browsePath(entry.path)
+      setValidationError(null)
+      return
+    }
+
     if (entry.isGitRepo) {
       // Git 仓库 → 选中
       selectDirectory(entry.path)
@@ -124,13 +142,14 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
       browsePath(entry.path)
       setValidationError(null)
     }
-  }, [selectDirectory, browsePath])
+  }, [selectDirectory, browsePath, validationMode])
 
   // === 面包屑导航 ===
   const isWindows = pathSep === '\\'
-  const breadcrumbSegments = currentPath
-    ? currentPath.split(/[\\/]/).filter(Boolean)
-    : []
+  const breadcrumbSegments = useMemo(
+    () => currentPath ? currentPath.split(/[\\/]/).filter(Boolean) : [],
+    [currentPath],
+  )
 
   const handleBreadcrumbClick = useCallback((index: number) => {
     const segments = breadcrumbSegments.slice(0, index + 1)
@@ -179,16 +198,25 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
           )}
         />
         {value && (
-          <FolderGit2
-            size={14}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500"
-          />
+          validationMode === 'git' ? (
+            <FolderGit2
+              size={14}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500"
+            />
+          ) : (
+            <Folder
+              size={14}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500"
+            />
+          )
         )}
       </div>
 
       {/* 提示文字 */}
       <p className="text-xs text-neutral-400">
-        {t('Browse and select a Git repository, or type a path and press Enter')}
+        {validationMode === 'git'
+          ? t('Browse and select a Git repository, or type a path and press Enter')
+          : t('Browse and select a directory, or type a path and press Enter')}
       </p>
 
       {/* Windows 盘符快捷切换 */}
@@ -255,8 +283,23 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
               <span className="text-xs">{error}</span>
             </div>
           ) : dirs.length === 0 ? (
-            <div className="flex items-center justify-center py-8 text-neutral-400">
+            <div className="flex flex-col items-center justify-center gap-3 py-8 text-neutral-400">
               <span className="text-xs">No subdirectories</span>
+              {validationMode === 'directory' && currentPath && (
+                <button
+                  type="button"
+                  onClick={() => selectDirectory(currentPath)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors',
+                    currentPath === value
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50',
+                  )}
+                >
+                  <Check size={13} />
+                  <span>{t('Select Current')}</span>
+                </button>
+              )}
             </div>
           ) : (
             <ul className="divide-y divide-neutral-100">
@@ -275,6 +318,7 @@ export function FolderPicker({ value, onChange, placeholder }: FolderPickerProps
               {dirs.map((entry) => (
                 <li key={entry.path}>
                   <button
+                    type="button"
                     onClick={() => handleDirClick(entry)}
                     className={cn(
                       'w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors group',

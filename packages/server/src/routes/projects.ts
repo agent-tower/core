@@ -9,6 +9,7 @@ const createProjectSchema = z.object({
   description: z.string().optional(),
   repoPath: z.string().min(1, 'repoPath is required'),
   mainBranch: z.string().default('main'),
+  initEmptyRepo: z.boolean().optional().default(false),
   copyFiles: z.string().optional(),
   setupScript: z.string().optional(),
   quickCommands: z.string().optional(),

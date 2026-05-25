@@ -7,7 +7,7 @@ import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 import { toast } from 'sonner'
 import { adaptProject, adaptTaskForDetail, adaptTaskForList, mapTaskStatusToUI, mapUIStatusToTask } from '@/components/task/adapters'
-import { useProjects, useCreateProject } from '@/hooks/use-projects'
+import { useProjects } from '@/hooks/use-projects'
 import { useTasks, useCreateTask, useDeleteTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
 import { useStartSession } from '@/hooks/use-sessions'
 import { apiClient } from '@/lib/api-client'
@@ -26,6 +26,7 @@ import type { TeamRunMode } from '@agent-tower/shared'
 import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
 import { cn } from '@/lib/utils'
+import { CreateProjectModal } from '@/components/project/CreateProjectModal'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -43,10 +44,6 @@ const CREATE_STEP_LABEL: Record<CreateStep, string> = {
 const Modal = lazy(() =>
   import('@/components/ui/modal').then(m => ({ default: m.Modal }))
 )
-const FolderPicker = lazy(() =>
-  import('@/components/ui/folder-picker').then(m => ({ default: m.FolderPicker }))
-)
-
 // === rendering-hoist-jsx: 静态 Logo SVG 提升到组件外 ===
 const LOGO_ICON = (
   <svg
@@ -105,8 +102,6 @@ export function ProjectKanbanPage() {
   // Modal 状态
   const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false)
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false)
-  const [newProjectName, setNewProjectName] = useState('')
-  const [newProjectRepoPath, setNewProjectRepoPath] = useState('')
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDescription, setNewTaskDescription] = useState('')
   const [newTaskProjectId, setNewTaskProjectId] = useState<string>('')
@@ -263,7 +258,6 @@ export function ProjectKanbanPage() {
   }, [effectiveSelectedTaskId, rawTasks, projects])
 
   // === Mutations ===
-  const createProject = useCreateProject()
   const createTask = useCreateTask(newTaskProjectId)
   const createTaskTeamRun = useCreateTaskTeamRun()
   const deleteTask = useDeleteTask()
@@ -370,8 +364,6 @@ export function ProjectKanbanPage() {
 
   const handleCloseProjectModal = useCallback(() => {
     setIsCreateProjectOpen(false)
-    setNewProjectName('')
-    setNewProjectRepoPath('')
   }, [])
 
   const handleCloseTaskModal = useCallback(() => {
@@ -390,19 +382,6 @@ export function ProjectKanbanPage() {
     setCreateStep('idle')
     clearAttachments()
   }, [createStep, clearAttachments])
-
-  const handleSubmitProject = useCallback(async () => {
-    if (!newProjectName.trim() || !newProjectRepoPath.trim()) return
-    try {
-      await createProject.mutateAsync({
-        name: newProjectName.trim(),
-        repoPath: newProjectRepoPath.trim(),
-      })
-      handleCloseProjectModal()
-    } catch {
-      // mutation error 由 TanStack Query 管理
-    }
-  }, [newProjectName, newProjectRepoPath, createProject, handleCloseProjectModal])
 
   const startSession = useStartSession()
 
@@ -764,28 +743,10 @@ export function ProjectKanbanPage() {
             isDeleting={deleteTask.isPending}
           />
           {/* Modals 在移动端也需要 */}
-          <Suspense fallback={null}>
-            <Modal isOpen={isCreateProjectOpen} onClose={handleCloseProjectModal} title={t('Create New Project')}
-              action={<>
-                <button onClick={handleCloseProjectModal} className="px-4 py-2 text-sm text-neutral-600">{t('Cancel')}</button>
-                <button onClick={handleSubmitProject} disabled={!newProjectName.trim() || !newProjectRepoPath.trim() || createProject.isPending}
-                  className={`px-4 py-2 text-sm font-medium rounded-lg ${newProjectName.trim() && newProjectRepoPath.trim() && !createProject.isPending ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'}`}>
-                  {createProject.isPending ? t('Creating...') : t('Create')}
-                </button>
-              </>}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project Name')}</label>
-                  <input type="text" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} placeholder={t('e.g., Agent Tower')}
-                    className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400" autoFocus />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Repository Path')}</label>
-                  <FolderPicker value={newProjectRepoPath} onChange={setNewProjectRepoPath} />
-                </div>
-              </div>
-            </Modal>
-          </Suspense>
+          <CreateProjectModal
+            isOpen={isCreateProjectOpen}
+            onClose={handleCloseProjectModal}
+          />
         </>
       )
     }
@@ -827,26 +788,10 @@ export function ProjectKanbanPage() {
           )}
         </div>
         <Suspense fallback={null}>
-          <Modal isOpen={isCreateProjectOpen} onClose={handleCloseProjectModal} title={t('Create New Project')}
-            action={<>
-              <button onClick={handleCloseProjectModal} className="px-4 py-2 text-sm text-neutral-600">{t('Cancel')}</button>
-              <button onClick={handleSubmitProject} disabled={!newProjectName.trim() || !newProjectRepoPath.trim() || createProject.isPending}
-                className={`px-4 py-2 text-sm font-medium rounded-lg ${newProjectName.trim() && newProjectRepoPath.trim() && !createProject.isPending ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'}`}>
-                {createProject.isPending ? t('Creating...') : t('Create')}
-              </button>
-            </>}>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project Name')}</label>
-                <input type="text" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} placeholder={t('e.g., Agent Tower')}
-                  className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400" autoFocus />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Repository Path')}</label>
-                <FolderPicker value={newProjectRepoPath} onChange={setNewProjectRepoPath} />
-              </div>
-            </div>
-          </Modal>
+          <CreateProjectModal
+            isOpen={isCreateProjectOpen}
+            onClose={handleCloseProjectModal}
+          />
           <Modal isOpen={isCreateTaskOpen} onClose={handleCloseTaskModal} title={t('Create New Task')}
             className={newTaskMode === 'TEAM' ? 'max-w-5xl' : undefined}
             action={createTaskModalAction}>
@@ -920,62 +865,10 @@ export function ProjectKanbanPage() {
       {/* === Modals (懒加载) === */}
       <Suspense fallback={null}>
         {/* 创建项目 Modal */}
-        <Modal
+        <CreateProjectModal
           isOpen={isCreateProjectOpen}
           onClose={handleCloseProjectModal}
-          title={t('Create New Project')}
-          action={
-            <>
-              <button
-                onClick={handleCloseProjectModal}
-                className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors"
-              >
-                {t('Cancel')}
-              </button>
-              <button
-                onClick={handleSubmitProject}
-                disabled={!newProjectName.trim() || !newProjectRepoPath.trim() || createProject.isPending}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-                  newProjectName.trim() && newProjectRepoPath.trim() && !createProject.isPending
-                    ? 'bg-neutral-900 text-white hover:bg-black'
-                    : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
-                }`}
-              >
-                {createProject.isPending ? t('Creating...') : t('Create Project')}
-              </button>
-            </>
-          }
-        >
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                {t('Project Name')}
-              </label>
-              <input
-                type="text"
-                value={newProjectName}
-                onChange={e => setNewProjectName(e.target.value)}
-                placeholder={t('e.g., Agent Tower')}
-                className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors"
-                autoFocus
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-                {t('Repository Path')}
-              </label>
-              <FolderPicker
-                value={newProjectRepoPath}
-                onChange={setNewProjectRepoPath}
-              />
-            </div>
-            {createProject.isError && (
-              <p className="text-xs text-red-500">
-                {createProject.error instanceof Error ? createProject.error.message : t('Failed to create project')}
-              </p>
-            )}
-          </div>
-        </Modal>
+        />
 
         {/* 创建任务 Modal */}
         <Modal
