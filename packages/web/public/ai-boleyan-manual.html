@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI伯乐眼｜使用说明书</title>
+  <style>
+    :root{
+      --bg: #f6f4f1;
+      --page: #ffffff;
+      --text: #1f1f1f;
+      --subtext: #6f6a63;
+      --line: #e9e3dc;
+      --primary: #5c63d8;
+      --primary-soft: #eef0ff;
+      --accent: #c9824a;
+      --accent-soft: #fdf2e9;
+      --green: #1f9d68;
+      --green-soft: #edf9f3;
+      --shadow: 0 14px 36px rgba(71, 53, 33, 0.08);
+      --radius-xl: 28px;
+      --radius-lg: 18px;
+      --radius-md: 14px;
+      --maxw: 860px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body{
+      margin:0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(92,99,216,0.05), transparent 28%),
+        radial-gradient(circle at top right, rgba(201,130,74,0.05), transparent 22%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.8;
+    }
+
+    .page-wrap{
+      width: 100%;
+      max-width: var(--maxw);
+      margin: 0 auto;
+      padding: 24px 16px 56px;
+    }
+
+    .topbar{
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      background: rgba(246, 244, 241, 0.82);
+      border-bottom: 1px solid rgba(233, 227, 220, 0.9);
+    }
+
+    .topbar-inner{
+      width: 100%;
+      max-width: var(--maxw);
+      margin: 0 auto;
+      padding: 10px 16px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+    }
+
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+
+    .brand-badge{
+      width:36px;
+      height:36px;
+      border-radius:12px;
+      background: linear-gradient(135deg, #111 0%, #2a2a2a 100%);
+      color:#fff;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:17px;
+      font-weight:700;
+      box-shadow: var(--shadow);
+    }
+
+    .brand-title{
+      margin:0;
+      font-size:15px;
+      font-weight:800;
+      letter-spacing:.2px;
+    }
+
+    .brand-sub{
+      margin:0;
+      font-size:11px;
+      color: var(--subtext);
+      text-transform: uppercase;
+      letter-spacing: .6px;
+    }
+
+    .nav{
+      display:flex;
+      gap:8px;
+      flex-wrap: wrap;
+    }
+
+    .nav a{
+      text-decoration:none;
+      color: var(--subtext);
+      font-size:13px;
+      padding: 8px 12px;
+      border-radius:999px;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid var(--line);
+      transition: all .2s ease;
+    }
+
+    .nav a:hover{
+      color: var(--primary);
+      border-color: rgba(92,99,216,0.25);
+      background: var(--primary-soft);
+    }
+
+    .sheet{
+      background: var(--page);
+      border: 1px solid var(--line);
+      border-radius: 34px;
+      box-shadow: var(--shadow);
+      padding: 34px 28px 30px;
+      margin-top: 22px;
+      page-break-after: always;
+      break-inside: avoid;
+    }
+
+    .sheet:last-child{
+      page-break-after: auto;
+    }
+
+    .hero-sheet{
+      background: linear-gradient(135deg, #ffffff 0%, #f5f3ff 58%, #f8fbff 100%);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-sheet::after{
+      content:"";
+      position:absolute;
+      right:-40px;
+      top:-40px;
+      width:180px;
+      height:180px;
+      background: radial-gradient(circle, rgba(92,99,216,0.12), transparent 65%);
+      pointer-events:none;
+    }
+
+    .hero-top{
+      text-align: center;
+      margin-bottom: 28px;
+    }
+
+    .label{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      font-size:12px;
+      font-weight:700;
+      color: var(--primary);
+      background: rgba(92,99,216,0.10);
+      border: 1px solid rgba(92,99,216,0.16);
+      border-radius:999px;
+      padding: 6px 12px;
+    }
+
+    .hero-title{
+      margin: 18px 0 6px;
+      font-size: clamp(34px, 7vw, 54px);
+      line-height: 1.15;
+      font-weight: 800;
+      letter-spacing: -0.8px;
+    }
+
+    .hero-subtitle{
+      margin: 0;
+      font-size: clamp(28px, 5.8vw, 42px);
+      line-height: 1.18;
+      font-weight: 700;
+      color: #3b3632;
+    }
+
+    h2{
+      margin: 0 0 12px;
+      font-size: 22px;
+      line-height: 1.4;
+    }
+
+    h3{
+      margin: 24px 0 10px;
+      font-size: 18px;
+      line-height: 1.45;
+    }
+
+    p{
+      margin: 10px 0;
+      font-size: 16px;
+    }
+
+    .lead{
+      font-size: 17px;
+      color: #4d4843;
+    }
+
+    .highlight{
+      font-weight: 800;
+    }
+
+    .note{
+      margin-top: 18px;
+      padding: 14px 16px;
+      background: var(--green-soft);
+      border: 1px solid rgba(31,157,104,0.14);
+      color: #235b43;
+      border-radius: 16px;
+      font-size: 15px;
+    }
+
+    .function-intro{
+      color:#5b5650;
+      margin: 0 0 16px;
+    }
+
+    .function-list{
+      display:grid;
+      gap: 12px;
+    }
+
+    .function-item{
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, #fff 0%, #fcfbf9 100%);
+      border-radius: 18px;
+      overflow: hidden;
+    }
+
+    .function-item summary{
+      list-style:none;
+      cursor:pointer;
+      padding: 18px 18px;
+      font-weight:800;
+      font-size:16px;
+      position:relative;
+      padding-right:140px;
+    }
+
+    .function-item summary::-webkit-details-marker{ display:none; }
+
+    .function-item summary::after{
+      content:"点击展示详情";
+      position:absolute;
+      right:18px;
+      top:50%;
+      transform: translateY(-50%);
+      font-size:12px;
+      font-weight:500;
+      color: rgba(111,106,99,0.62);
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      pointer-events:none;
+    }
+
+    .function-item[open] summary::after{
+      content:"点击收起详情";
+      color: rgba(92,99,216,0.68);
+    }
+
+    .function-body{
+      padding: 0 18px 18px;
+      color: #524d47;
+      font-size: 14px;
+    }
+
+    .function-block{
+      margin-top: 12px;
+      padding: 14px;
+      background: #faf8f5;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    .function-block strong{
+      display:block;
+      margin-bottom: 6px;
+      color:#37332f;
+      font-size:14px;
+    }
+
+    ul{
+      margin: 8px 0 12px 20px;
+      padding: 0;
+    }
+
+    li{
+      margin: 8px 0;
+      font-size: 15px;
+    }
+
+    .good-bad{
+      display:grid;
+      gap: 12px;
+      margin: 12px 0;
+    }
+
+    .good,
+    .bad{
+      padding:14px;
+      border-radius:18px;
+      border:1px solid var(--line);
+    }
+
+    .good{
+      background: var(--green-soft);
+      border-color: rgba(31,157,104,0.14);
+    }
+
+    .bad{
+      background: #fff7f7;
+      border-color: rgba(196,91,91,0.14);
+    }
+
+    .good strong{ color:#166244; }
+    .bad strong{ color:#a14d4d; }
+
+    .tip{
+      margin-top: 16px;
+      padding: 14px 16px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(201,130,74,0.18);
+      color: #6a4a2a;
+      border-radius: 16px;
+      font-size: 15px;
+    }
+
+    .faq-group{
+      margin-top: 18px;
+    }
+
+    .faq-list{
+      display:grid;
+      gap:10px;
+    }
+
+    .faq-item{
+      border:1px solid var(--line);
+      background:#fff;
+      border-radius:18px;
+      overflow:hidden;
+    }
+
+    .faq-item summary{
+      list-style:none;
+      cursor:pointer;
+      padding:16px;
+      font-weight:700;
+      font-size:15px;
+      position:relative;
+      padding-right:42px;
+    }
+
+    .faq-item summary::-webkit-details-marker{ display:none; }
+
+    .faq-item summary::after{
+      content:"+";
+      position:absolute;
+      right:16px;
+      top:14px;
+      width:24px;
+      height:24px;
+      border-radius:999px;
+      border:1px solid var(--line);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color: var(--subtext);
+      font-weight:600;
+      background:#faf8f5;
+    }
+
+    .faq-item[open] summary::after{
+      content:"−";
+      color: var(--primary);
+      border-color: rgba(92,99,216,0.18);
+      background: var(--primary-soft);
+    }
+
+    .faq-answer{
+      padding: 0 16px 16px;
+      color:#514c46;
+      font-size:14px;
+    }
+
+    .footer{
+      margin-top: 18px;
+      text-align:center;
+      color: var(--subtext);
+      font-size:13px;
+    }
+
+    @media (max-width: 720px){
+      .nav{ display:none; }
+      .topbar-inner{ justify-content:flex-start; }
+      .sheet{
+        padding: 28px 18px 24px;
+        border-radius: 26px;
+      }
+      .hero-title{
+        font-size: clamp(32px, 11vw, 46px);
+      }
+      .hero-subtitle{
+        font-size: clamp(24px, 9vw, 36px);
+      }
+      p{ font-size:15px; }
+      .function-item summary{
+        padding-right: 110px;
+      }
+      .function-item summary::after{
+        font-size: 11px;
+        right: 16px;
+      }
+    }
+
+    @media print{
+      body{ background:#fff !important; }
+      .topbar{
+        position: static;
+        backdrop-filter:none;
+        background:#fff !important;
+      }
+      .nav{ display:none !important; }
+      .page-wrap{
+        max-width: 100%;
+        padding: 0;
+      }
+      .sheet{
+        box-shadow:none !important;
+        border-radius: 0;
+        border: none;
+        margin-top: 0;
+        padding: 20mm 14mm;
+        min-height: 270mm;
+        page-break-after: always;
+      }
+      .sheet:last-child{
+        page-break-after: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-badge">识</div>
+        <div>
+          <p class="brand-title">AI伯乐眼</p>
+          <p class="brand-sub">Candidate Guide</p>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="#page1">第一页</a>
+        <a href="#page2">第二页</a>
+        <a href="#page3">第三页</a>
+        <a href="#page4">FAQ</a>
+      </nav>
+    </div>
+  </div>
+
+  <main class="page-wrap">
+
+    <!-- 第1页 -->
+    <section class="sheet hero-sheet" id="page1">
+      <div class="hero-top">
+        <span class="label">📘 使用说明</span>
+        <h1 class="hero-title">AI伯乐眼</h1>
+        <p class="hero-subtitle">使用说明书</p>
+      </div>
+
+      <h2>这是什么？</h2>
+      <p class="lead">
+        <strong>AI伯乐眼</strong> 是一个能和你聊天的 AI 求职助手。它不只是回答问题，而是会一边和你聊，一边帮你
+        <span class="highlight">整理出一份属于你自己的人才档案</span>，再根据你的情况
+        <span class="highlight">推荐岗位、生成报告、优化简历</span>。
+      </p>
+      <p class="lead"><strong>简单说：它是一个会帮你干活的 AI 求职顾问。</strong></p>
+
+      <h2 style="margin-top:30px;">适合谁用？</h2>
+      <p class="lead">
+        不管你是大一大二还在迷茫的同学，大三大四开始找实习 / 校招的同学，还是即将毕业、正在投简历的应届生，
+        都可以用。<span class="highlight">越早开始用，AI 越懂你</span>，后面推荐和建议会越准。
+      </p>
+
+      <div class="note">
+        ⭐ 使用前请记住一件事：<strong>回答越具体，AI 越能帮上你。</strong>
+      </div>
+    </section>
+
+    <!-- 第2页 -->
+    <section class="sheet" id="page2">
+      <h2 style="font-size:28px; margin-bottom:8px;">你能在这里做的 6 件事</h2>
+      <p class="function-intro">
+        你不需要一上来就什么都想清楚。<br>
+        <strong>先从你现在最想解决的问题开始就行。</strong>
+      </p>
+
+      <div class="function-list">
+        <details class="function-item">
+          <summary>💼 找工作 / 看机会</summary>
+          <div class="function-body">
+            <div class="function-block">
+              <strong>什么时候适合用</strong>
+              当你已经大概知道想做什么方向，或者想看看市场上有哪些适合你的岗位时，就可以用这个功能。
+            </div>
+            <div class="function-block">
+              <strong>你可以怎么开口</strong>
+              “我想找一份 XX 方向的实习。”<br>
+              “帮我看看有什么适合我的岗位。”<br>
+              “我想在上海找和数据分析相关的工作。”
+            </div>
+            <div class="function-block">
+              <strong>AI 会怎么帮你</strong>
+              AI 会先了解你的求职意向，再根据你的人才档案推荐岗位。推荐时会告诉你：
+              <strong>命中点 / 缺口 / 风险</strong>，帮助你快速判断这个岗位值不值得看。
+            </div>
+            <div class="function-block">
+              <strong>你最后会得到什么</strong>
+              一批匹配岗位 + 每个岗位的匹配分析；如果你对某个岗位感兴趣，还可以直接<strong>申请引荐</strong>。
+            </div>
+          </div>
+        </details>
+
+        <details class="function-item">
+          <summary>🧭 职业发展规划</summary>
+          <div class="function-body">
+            <div class="function-block">
+              <strong>什么时候适合用</strong>
+              当你不知道自己适合做什么、在几个方向之间纠结，或者在“读研 vs 工作”之间拿不准时，适合用这个功能。
+            </div>
+            <div class="function-block">
+              <strong>你可以怎么开口</strong>
+              “我不知道自己适合做什么。”<br>
+              “我在产品和运营之间有点纠结。”<br>
+              “我现在不确定该直接工作还是继续读研。”
+            </div>
+            <div class="function-block">
+              <strong>AI 会怎么帮你</strong>
+              AI 会从你的<strong>兴趣、能力、价值观</strong>出发，再结合职业方向、行业、公司类型、城市等因素，帮你一步步梳理出更适合你的方向。
+            </div>
+            <div class="function-block">
+              <strong>你最后会得到什么</strong>
+              一份<strong>职业发展规划报告</strong>（HTML 格式），方便你保存、回看，也可以用浏览器“打印”保存为 PDF。
+            </div>
+          </div>
+        </details>
+
+        <details class="function-item">
+          <summary>📝 简历优化</summary>
+          <div class="function-body">
+            <div class="function-block">
+              <strong>什么时候适合用</strong>
+              当你已经有简历，但不知道写得怎么样，或者想针对某个具体岗位优化简历时，就适合用这个功能。
+            </div>
+            <div class="function-block">
+              <strong>你可以怎么开口</strong>
+              “帮我看看简历。”<br>
+              “我想针对产品经理实习改一下简历。”<br>
+              “我准备投咨询岗，你帮我把简历改得更匹配一点。”
+            </div>
+            <div class="function-block">
+              <strong>AI 会怎么帮你</strong>
+              最好直接上传简历。AI 会先帮你检查结构、表达、经历亮点和岗位匹配度，再给出修改建议；如果你需要，也可以直接帮你生成一份新版简历。
+            </div>
+            <div class="function-block">
+              <strong>你最后会得到什么</strong>
+              聊天里的具体修改建议，以及可下载的<strong>新版简历文件</strong>（支持 <strong>Markdown / HTML</strong> 格式）。
+            </div>
+          </div>
+        </details>
+
+        <details class="function-item">
+          <summary>🔍 诊断投递问题</summary>
+          <div class="function-body">
+            <div class="function-block">
+              <strong>什么时候适合用</strong>
+              当你投了很多岗位都没回音，或者遇到已读不回、聊了几句没下文时，适合用这个功能。
+            </div>
+            <div class="function-block">
+              <strong>你可以怎么开口</strong>
+              “我投了很多岗位都没回音。”<br>
+              “我投了某个岗位已读不回，帮我看看问题在哪。”<br>
+              “HR 和我聊了几句后就没下文了，怎么办？”
+            </div>
+            <div class="function-block">
+              <strong>AI 会怎么帮你</strong>
+              AI 会根据你的情况做<strong>单岗诊断</strong>或<strong>全局诊断</strong>，分析问题到底出在岗位、简历、招呼语、背景匹配，还是投递策略上。
+            </div>
+            <div class="function-block">
+              <strong>你最后会得到什么</strong>
+              一份<strong>求职投递诊断报告</strong>（HTML 格式）+ 更具体的修改建议，比如怎么改招呼语、怎么调整简历表达、怎么优化投递策略。
+            </div>
+          </div>
+        </details>
+
+        <details class="function-item">
+          <summary>💬 回答其他求职问题</summary>
+          <div class="function-body">
+            <div class="function-block">
+              <strong>什么时候适合用</strong>
+              当你只有一个具体问题想问，比如面试、行业、岗位、offer 选择等，可以直接用这个功能，不一定非得走完整流程。
+            </div>
+            <div class="function-block">
+              <strong>你可以怎么开口</strong>
+              “产品经理面试一般会问什么？”<br>
+              “应届生做咨询行业有什么路径？”<br>
+              “我有两个 offer，一个国企一个互联网，怎么选？”
+            </div>
+            <div class="function-block">
+              <strong>AI 会怎么帮你</strong>
+              AI 会根据你当前的问题直接给出判断和建议；如果需要更多背景，也会继续问你最关键的 1 个问题，帮你把答案说得更准。
+            </div>
+            <div class="function-block">
+              <strong>你最后会得到什么</strong>
+              一个更贴合你个人情况的回答，而不是泛泛的标准答案；必要时，AI 还会建议你下一步做什么。
+            </div>
+          </div>
+        </details>
+
+        <details class="function-item">
+          <summary>⭐ 工作特质测评</summary>
+          <div class="function-body">
+            <div class="function-block">
+              <strong>什么时候适合用</strong>
+              这个功能特别适合学生 / 应届生。如果你不知道自己适合什么类型的工作，或者想让企业更好地看到你的特质优势，可以先做这个。
+            </div>
+            <div class="function-block">
+              <strong>你可以怎么开口</strong>
+              “我想做测评。”<br>
+              “帮我看看我更适合什么类型的工作。”<br>
+              “我想先做一个职业相关的特质分析。”
+            </div>
+            <div class="function-block">
+              <strong>AI 会怎么帮你</strong>
+              AI 会通过 25 道情境题，从责任心、主动性、韧性与抗压、团队协作、学习力与问题解决等维度分析你，形成你的工作特质画像。
+            </div>
+            <div class="function-block">
+              <strong>你最后会得到什么</strong>
+              一份<strong>工作特质报告</strong>（HTML 格式）+ 一组会自动写入你人才档案的<strong>特质标签</strong>。<br>
+              <strong>如果你不知道从哪里开始，建议先从这个功能开始。</strong>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- 第3页 -->
+    <section class="sheet" id="page3">
+      <h2 style="font-size:28px;">怎么和 AI 高效互动（重要）</h2>
+      <p>这一部分很重要。很多大学生第一次用 AI 时，会回答得太短、不会主动提需求，结果没有把 AI 的能力真正用出来。按下面 6 条来，体验会好很多。</p>
+
+      <h3>1. 回答要具体一点，AI 才好帮你</h3>
+      <div class="good-bad">
+        <div class="bad">
+          <strong>❌ 不好的回答</strong><br>
+          “我没想好。”<br>
+          “都行。”<br>
+          “随便。”
+        </div>
+        <div class="good">
+          <strong>✅ 好的回答</strong><br>
+          “我比较想往互联网方向走，但又觉得国企稳定，有点纠结。”<br>
+          “想找北京或者上海的实习，最好和数据相关。”<br>
+          “我比较内向，不太想做销售类的工作。”
+        </div>
+      </div>
+
+      <h3>2. AI 一次问了好几个问题，请尽量都答完</h3>
+      <ul>
+        <li>这些问题都是 AI 为了更好地帮你而问的</li>
+        <li>答得越完整，下一步推荐 / 建议越准</li>
+        <li>跳过的问题，AI 后面可能还得再问你一次，反而更麻烦</li>
+      </ul>
+      <div class="note">
+        ✅ 如果某个问题你<strong>暂时没想法</strong>，也请明确告诉 AI：<br>
+        “前两个我答了，第三个我还没想好，能不能先帮我分析下？”
+      </div>
+
+      <h3>3. 你可以“指挥”AI，它不是只会问你</h3>
+      <ul>
+        <li>“帮我看看简历”</li>
+        <li>“再推荐 5 个岗位”</li>
+        <li>“这个方向我不感兴趣，换一个”</li>
+        <li>“帮我生成一份职业规划报告”</li>
+        <li>“帮我写一段求职招呼语”</li>
+        <li>“这个岗位帮我分析一下匹配度”</li>
+      </ul>
+
+      <h3>4. 不满意可以直接说</h3>
+      <ul>
+        <li>“这条建议太空了，能举个具体例子吗？”</li>
+        <li>“你刚才推荐的岗位都太高级了，我是应届生，换一些适合我的”</li>
+        <li>“这个分析太长了，简短点说重点”</li>
+        <li>“我不太认同你这个判断，因为我……”</li>
+      </ul>
+
+      <h3>5. 上传比口述更高效</h3>
+      <ul>
+        <li><strong>简历</strong> → 直接传 PDF / Word</li>
+        <li><strong>看到不懂的 JD</strong> → 截图发给 AI</li>
+        <li><strong>想分析某个岗位</strong> → 直接发链接或截图</li>
+      </ul>
+
+      <h3>6. 卡住的时候，就这样问 AI</h3>
+      <ul>
+        <li>“我现在该做什么？”</li>
+        <li>“你下一步建议我做什么？”</li>
+        <li>“基于我目前的情况，我最该优先做的是什么？”</li>
+      </ul>
+
+      <div class="tip">
+        💡 一句话总结：<strong>把 AI 当成会干活的求职顾问，而不是搜索引擎。你说得越多，它帮得越多。</strong>
+      </div>
+    </section>
+
+    <!-- 第4页 -->
+    <section class="sheet" id="page4">
+      <h2 style="font-size:28px;">FAQ 常见问题</h2>
+
+      <div class="faq-group">
+        <h3>账号 & 登录</h3>
+        <div class="faq-list">
+          <details class="faq-item">
+            <summary>Q1. 怎么注册？</summary>
+            <div class="faq-answer">首次进入用 <strong>手机号 + 短信验证码</strong> 注册并登录。进入产品后可以绑定邮箱、设置密码。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q2. 可以用微信登录吗？</summary>
+            <div class="faq-answer">暂不支持。目前只支持手机号 / 邮箱 / 密码登录。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q3. 忘了密码怎么办？</summary>
+            <div class="faq-answer">直接用手机号 + 短信验证码登录，登录后到“个人设置”里重新设置密码即可。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q4. 不登录能用吗？</summary>
+            <div class="faq-answer">未登录只能浏览首页，体验所有 AI 功能需要先登录。</div>
+          </details>
+        </div>
+      </div>
+
+      <div class="faq-group">
+        <h3>和 AI 聊天</h3>
+        <div class="faq-list">
+          <details class="faq-item">
+            <summary>Q5. AI 会记得我之前说的吗？</summary>
+            <div class="faq-answer">会。你的对话历史会一直保留，下次回来 AI 还能接着聊。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q6. 我能中途换话题吗？</summary>
+            <div class="faq-answer">可以，随时换。比如聊着职业规划突然想问面试问题，直接问就行。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q7. AI 问的问题我能不答吗？</summary>
+            <div class="faq-answer">建议尽量都答完，答得越完整推荐越准。如果某个问题暂时没想法，明确告诉 AI “这个我还没想好”，而不是直接跳过。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q8. AI 给的建议我不认可怎么办？</summary>
+            <div class="faq-answer">直接告诉 AI 你不认可的地方和原因，它会根据你的反馈调整。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q9. 我之前说错了一个信息，怎么改？</summary>
+            <div class="faq-answer">直接告诉 AI：“我之前说的 XX 应该改成 XX”，AI 会更新你的档案。</div>
+          </details>
+        </div>
+      </div>
+
+      <div class="faq-group">
+        <h3>信息、岗位与引荐</h3>
+        <div class="faq-list">
+          <details class="faq-item">
+            <summary>Q10. 右边“信息”里的内容是怎么生成的？</summary>
+            <div class="faq-answer">是 AI 在和你聊天过程中自动整理出来的。你聊得越多，档案越完整。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q11. 我能手动改人才档案吗？</summary>
+            <div class="faq-answer">不能手动改，但你可以直接告诉 AI 改什么，比如“把我的目标城市改成上海”。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q12. 上传简历后会自动填入档案吗？</summary>
+            <div class="faq-answer">会。AI 读完简历后会自动把里面的结构化信息（学校、专业、经历、项目、技能等）整理到你的人才档案里。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q13. 推荐的岗位从哪里来？</summary>
+            <div class="faq-answer">主要来自和我们合作的企业方（企业在他们自己的端口上传岗位）。AI 会根据你的人才档案进行匹配。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q14. 看上某个岗位怎么申请？</summary>
+            <div class="faq-answer">在“职位”里点开那个岗位，点击 <strong>申请引荐</strong>，填一下申请信息就提交了。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q15. 申请引荐之后会发生什么？</summary>
+            <div class="faq-answer">申请会进入“引荐”的 <strong>待确认</strong> 状态，等企业方处理。处理结果会更新为“已同意”或“已拒绝”。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q16. 待确认 / 已同意 / 已拒绝 / 已关闭分别是什么意思？</summary>
+            <div class="faq-answer">待确认：企业还没处理；已同意：企业同意了，可以进一步沟通；已拒绝：企业暂时不合适；已关闭：岗位已经下线或关闭。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q17. 企业会主动找我吗？</summary>
+            <div class="faq-answer">会。如果企业方主动向你发起引荐，会在“职位”和“引荐”相关页面置顶显示。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q18. 不感兴趣的岗位还会再出现吗？</summary>
+            <div class="faq-answer">点了“不感兴趣”后，那个岗位就不会再推荐给你了。</div>
+          </details>
+        </div>
+      </div>
+
+      <div class="faq-group">
+        <h3>简历、报告与文件</h3>
+        <div class="faq-list">
+          <details class="faq-item">
+            <summary>Q19. AI 能帮我生成新简历吗？</summary>
+            <div class="faq-answer">能。让 AI 帮你做简历优化时，可以让它直接生成一份新简历文件。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q20. 简历能下载吗？什么格式？</summary>
+            <div class="faq-answer">能下载，目前支持 <strong>Markdown（.md）</strong> 和 <strong>HTML（.html）</strong> 两种格式。HTML 格式可以在浏览器里打开，再用“打印”功能保存为 PDF。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q21. 职业规划报告 / 诊断报告 / 测评报告在哪里看？</summary>
+            <div class="faq-answer">报告生成后，AI 会直接给你下载链接，下载后用浏览器打开即可查看。HTML 格式可以用浏览器“打印”功能转成 PDF 保存。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q22. 能上传哪些类型的文件？</summary>
+            <div class="faq-answer">支持：截图（jpg / png）、PDF、Word（doc / docx）、文本文件（txt）。</div>
+          </details>
+        </div>
+      </div>
+
+      <div class="faq-group">
+        <h3>大学生最常问的</h3>
+        <div class="faq-list">
+          <details class="faq-item">
+            <summary>Q23. 我才大一大二，用这个是不是太早了？</summary>
+            <div class="faq-answer">不早。越早开始建档、做测评、想方向，AI 越懂你，等到你真正要找实习 / 工作时，效率会高很多。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q24. 我没有任何实习经历能用吗？</summary>
+            <div class="faq-answer">完全可以。对学生来说，课程项目、社团、志愿者、竞赛、课外作品等都是有效经历，AI 会主动帮你挖掘和整理。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q25. 我连自己想做什么都不知道，能用吗？</summary>
+            <div class="faq-answer">非常适合用。建议你从 ⭐ 工作特质测评 和 🧭 职业发展规划开始，AI 会带你一步步理清方向。</div>
+          </details>
+          <details class="faq-item">
+            <summary>Q26. 这个产品收费吗？</summary>
+            <div class="faq-answer"><strong>目前所有功能完全免费。</strong></div>
+          </details>
+          <details class="faq-item">
+            <summary>Q27. 我的数据安全吗？</summary>
+            <div class="faq-answer">你的人才档案信息只在你 <strong>申请引荐</strong> 或 <strong>企业主动发起引荐</strong> 时，对相关企业可见。其他情况下不会对外公开。</div>
+          </details>
+        </div>
+      </div>
+
+      <div class="footer">
+        <p>还有问题没在这里找到答案？直接打开 AI伯乐眼，问 AI 就行 😊</p>
+        <p><strong>识人科技 · AI伯乐眼 出品</strong></p>
+      </div>
+    </section>
+
+  </main>
+</body>
+</html>
