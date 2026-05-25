@@ -80,11 +80,18 @@ cpSync(atPrismaClientSrc, atPrismaDest, {
     return !rel.includes('node_modules');
   },
 });
-// .prisma/client 放到 @prisma/client/node_modules/.prisma/client/ 下
-// 这样 require('.prisma/client/default') 能通过 Node 模块解析找到
-const dotPrismaDest = resolve(atPrismaDest, 'node_modules/.prisma/client');
-mkdirSync(dotPrismaDest, { recursive: true });
-cpSync(resolve(prismaClientSrc, '.prisma/client'), dotPrismaDest, { recursive: true });
+// .prisma/client 同时放到 @prisma/client 包内和包根 node_modules 下
+const generatedPrismaClientSrc = resolve(prismaClientSrc, '.prisma/client');
+const atPrismaPackageClientDest = resolve(atPrismaDest, '.prisma/client');
+mkdirSync(atPrismaPackageClientDest, { recursive: true });
+cpSync(generatedPrismaClientSrc, atPrismaPackageClientDest, { recursive: true });
+const atPrismaPkgPath = resolve(atPrismaDest, 'package.json');
+const atPrismaPkg = JSON.parse(readFileSync(atPrismaPkgPath, 'utf-8'));
+atPrismaPkg.files = [...new Set([...(atPrismaPkg.files ?? []), '.prisma'])];
+writeFileSync(atPrismaPkgPath, JSON.stringify(atPrismaPkg, null, 2) + '\n');
+const rootDotPrismaDest = resolve(publishDir, 'node_modules/.prisma/client');
+mkdirSync(rootDotPrismaDest, { recursive: true });
+cpSync(generatedPrismaClientSrc, rootDotPrismaDest, { recursive: true });
 
 // 7. 将 prisma CLI 和 @prisma/engines 预打包（避免全局安装时 postinstall 脚本失败）
 const prismaSrc = resolve(root, 'node_modules/.pnpm/prisma@5.22.0/node_modules');
@@ -165,6 +172,7 @@ const publishPkg = {
     'dist/',
     'prisma/',
     'scripts/',
+    'node_modules/.prisma/',
     'node_modules/@agent-tower/',
     'node_modules/@prisma/',
     'node_modules/@shitiandmw/',
