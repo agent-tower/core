@@ -224,7 +224,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-2">
+      <div className="flex-1 overflow-auto scrollbar-app-thin p-2">
         {workingDir ? (
           <DirectoryNode
             workingDir={workingDir}

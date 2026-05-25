@@ -520,7 +520,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         <div className="flex-1 flex flex-col min-h-0">
           {/* Scrollable Logs */}
           <div className="relative flex-1 min-h-0">
-            <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden overscroll-y-contain px-3 pt-3 pb-2">
+            <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-app-thin overscroll-y-contain px-3 pt-3 pb-2">
             <div ref={contentRef}>
             {/* Task Description */}
             <div className="mb-3 pb-2 border-b border-neutral-100">

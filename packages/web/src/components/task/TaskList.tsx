@@ -227,7 +227,7 @@ export function TaskList({
 
       {/* 任务分组列表 */}
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-        <div className="flex-1 overflow-y-auto py-4 relative">
+        <div className="flex-1 overflow-y-auto scrollbar-app-thin py-4 relative">
           {TASK_GROUP_CONFIG.map(({ status, title, defaultOpen }) => (
             <TaskGroup
               key={status}

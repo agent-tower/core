@@ -46,7 +46,7 @@ function InlineDiff({ workingDir, filePath, type }: { workingDir: string; filePa
   const lines = diff.split('\n')
 
   return (
-    <div className="overflow-x-auto bg-neutral-950 rounded-lg mx-3 mb-3 font-mono text-[11px] leading-5">
+    <div className="overflow-x-auto scrollbar-app-thin bg-neutral-950 rounded-lg mx-3 mb-3 font-mono text-[11px] leading-5">
       {lines.map((line, i) => {
         let bgClass = ''
         let textClass = 'text-neutral-400'
@@ -192,7 +192,7 @@ export function MobileChangesView({ workingDir }: { workingDir?: string }) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto overscroll-y-contain">
+    <div className="flex-1 overflow-y-auto scrollbar-app-thin overscroll-y-contain">
       <ChangeGroup title="Uncommitted" entries={uncommitted} type="uncommitted" workingDir={workingDir} defaultOpen={true} />
       <ChangeGroup title="Committed" entries={committed} type="committed" workingDir={workingDir} defaultOpen={false} />
     </div>

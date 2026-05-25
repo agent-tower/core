@@ -173,7 +173,7 @@ const DiffViewer: React.FC<{
   const lines = diff.split('\n')
 
   return (
-    <div className="flex-1 overflow-auto font-mono text-xs leading-5">
+    <div className="flex-1 overflow-auto scrollbar-app-thin font-mono text-xs leading-5">
       {lines.map((line, i) => (
         <DiffLine key={i} line={line} lineNum={i + 1} />
       ))}
@@ -262,7 +262,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
         </div>
 
         {/* File list */}
-        <div className="flex-1 overflow-auto p-1.5">
+        <div className="flex-1 overflow-auto scrollbar-app-thin p-1.5">
           {totalChanges === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-neutral-400">
               <GitGraph size={28} className="mb-2" />

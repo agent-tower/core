@@ -37,14 +37,6 @@ function dirname(p: string) {
   return idx > 0 ? p.slice(0, idx) : ''
 }
 
-/* Thin scrollbar style (inline) */
-const SCROLL_STYLE = `
-  .history-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
-  .history-scroll::-webkit-scrollbar-track { background: transparent; }
-  .history-scroll::-webkit-scrollbar-thumb { background: #d4d4d4; border-radius: 2px; }
-  .history-scroll::-webkit-scrollbar-thumb:hover { background: #a3a3a3; }
-`
-
 /** Diff line renderer */
 const DiffLine: React.FC<{ line: string; lineNum: number }> = ({ line, lineNum }) => {
   let bgClass = ''
@@ -80,7 +72,7 @@ const CommitDiffViewer: React.FC<{ workingDir: string; hash: string; filePath: s
   if (!diff.trim()) return <div className="flex-1 flex items-center justify-center text-neutral-400 text-xs">{t('No diff content available.')}</div>
   const lines = diff.split('\n')
   return (
-    <div className="flex-1 overflow-auto history-scroll font-mono text-xs leading-5">
+    <div className="flex-1 overflow-auto scrollbar-app-thin font-mono text-xs leading-5">
       {lines.map((line, i) => <DiffLine key={i} line={line} lineNum={i + 1} />)}
     </div>
   )
@@ -198,8 +190,6 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
 
   return (
     <div className="flex h-full bg-white" style={isDragging ? { userSelect: 'none', cursor: 'col-resize' } : undefined}>
-      <style>{SCROLL_STYLE}</style>
-
       {/* Left: commit list with inline file expansion */}
       <div className="border-r border-neutral-200 flex flex-col shrink-0" style={{ width: panelWidth }}>
         <div className="px-3 py-2.5 border-b border-neutral-100 shrink-0">
@@ -210,7 +200,7 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
           </div>
         </div>
 
-        <div ref={scrollRef} className="flex-1 overflow-auto history-scroll p-1.5">
+        <div ref={scrollRef} className="flex-1 overflow-auto scrollbar-app-thin p-1.5">
           {commits.map((commit) => {
             const isSelected = selectedHash === commit.hash
             return (

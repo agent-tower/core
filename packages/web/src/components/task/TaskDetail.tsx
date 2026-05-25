@@ -937,7 +937,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                   </Button>
                 </div>
                 <div className="relative flex-1 min-h-0">
-                  <div ref={scrollRef} className="h-full overflow-y-auto px-6 pt-6 pb-4">
+                  <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
                     <div ref={contentRef} className="w-full">
                       {isLoadingSnapshot ? (
                         <div className="flex items-center justify-center py-12 gap-3 text-neutral-400">
@@ -983,7 +983,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             <>
           {/* Scrollable Logs */}
           <div className="relative flex-1 min-h-0">
-            <div ref={scrollRef} className="h-full overflow-y-auto px-6 pt-6 pb-4">
+            <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
             <div ref={contentRef} className="w-full">
               {/* Task Description */}
               <div className="mb-4 pb-4 border-b border-neutral-100">

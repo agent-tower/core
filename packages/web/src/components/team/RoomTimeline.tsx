@@ -476,7 +476,7 @@ export function RoomTimeline({
       )}
 
       <div className="relative flex-1 min-h-0">
-        <div ref={scrollRef} className="h-full overflow-y-auto bg-white px-4 py-4">
+        <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin bg-white px-4 py-4">
           <div ref={contentRef} className="space-y-4">
             {messageList.length === 0 ? (
               <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-200 bg-neutral-50 text-neutral-500">

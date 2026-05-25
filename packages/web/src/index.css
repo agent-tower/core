@@ -78,6 +78,12 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --scrollbar-size: 8px;
+  --scrollbar-thin-size: 4px;
+  --scrollbar-radius: 9999px;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: oklch(0.84 0 0);
+  --scrollbar-thumb-hover: oklch(0.708 0 0);
 }
 
 .dark {
@@ -112,6 +118,8 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --scrollbar-thumb: oklch(0.439 0 0);
+  --scrollbar-thumb-hover: oklch(0.556 0 0);
 }
 
 @layer base {
@@ -129,6 +137,42 @@
 
 /* Safe area utilities for notched mobile devices */
 @layer utilities {
+  .scrollbar-app {
+    --scrollbar-current-size: var(--scrollbar-size);
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+    scrollbar-width: auto;
+  }
+
+  .scrollbar-app-thin {
+    --scrollbar-current-size: var(--scrollbar-thin-size);
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-app::-webkit-scrollbar,
+  .scrollbar-app-thin::-webkit-scrollbar {
+    width: var(--scrollbar-current-size);
+    height: var(--scrollbar-current-size);
+  }
+
+  .scrollbar-app::-webkit-scrollbar-track,
+  .scrollbar-app-thin::-webkit-scrollbar-track,
+  .scrollbar-app::-webkit-scrollbar-corner,
+  .scrollbar-app-thin::-webkit-scrollbar-corner {
+    background: var(--scrollbar-track);
+  }
+
+  .scrollbar-app::-webkit-scrollbar-thumb,
+  .scrollbar-app-thin::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: var(--scrollbar-radius);
+  }
+
+  .scrollbar-app::-webkit-scrollbar-thumb:hover,
+  .scrollbar-app-thin::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+
   .pb-safe {
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }

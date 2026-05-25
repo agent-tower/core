@@ -254,7 +254,7 @@ export function TeamStatusPanel({ teamRun, onViewInvocationSession }: TeamStatus
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-app-thin px-4 py-4 space-y-4">
         {teamRun.reviewReason && (
           <div className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600">
             <div className="mb-1 font-medium text-neutral-700">{t('Review reason')}</div>
