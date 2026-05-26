@@ -3,6 +3,7 @@ import { Folder, FolderGit2, ChevronRight, Loader2, AlertCircle, Check } from 'l
 import { apiClient } from '@/lib/api-client'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
+import { getDirectoryClickAction } from './folder-picker-utils'
 
 // === API 响应类型 ===
 
@@ -126,13 +127,7 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
 
   // === 点击目录条目 ===
   const handleDirClick = useCallback((entry: DirEntry) => {
-    if (validationMode === 'directory') {
-      browsePath(entry.path)
-      setValidationError(null)
-      return
-    }
-
-    if (entry.isGitRepo) {
+    if (getDirectoryClickAction(entry) === 'select-and-browse') {
       // Git 仓库 → 选中
       selectDirectory(entry.path)
       // 同时也进入该目录方便用户查看子目录
@@ -142,7 +137,7 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
       browsePath(entry.path)
       setValidationError(null)
     }
-  }, [selectDirectory, browsePath, validationMode])
+  }, [selectDirectory, browsePath])
 
   // === 面包屑导航 ===
   const isWindows = pathSep === '\\'
