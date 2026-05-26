@@ -72,6 +72,14 @@ export async function workspaceRoutes(app: FastifyInstance) {
         code: error.code,
         conflictedFiles: error.conflictedFiles,
         conflictOp: error.conflictOp,
+        mergeAborted: error.mergeAborted,
+        mergeStrategy: error.mergeStrategy,
+        sourceBranch: error.sourceBranch,
+        targetBranch: error.targetBranch,
+        sourceWorktreePath: error.sourceWorktreePath,
+        targetWorktreePath: error.targetWorktreePath,
+        sourceWorkspaceId: error.sourceWorkspaceId,
+        targetWorkspaceId: error.targetWorkspaceId,
       };
     }
 

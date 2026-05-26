@@ -343,10 +343,18 @@ export class WorktreeManager {
         const conflictedFiles = await this.getConflictedFiles();
         if (conflictedFiles.length > 0) {
           // Abort the merge to leave the repo clean
-          await execGit(this.repoPath, ['merge', '--abort']).catch(() => {
+          const mergeAborted = await execGit(this.repoPath, ['merge', '--abort']).then(() => true).catch(() => {
             // merge --abort may fail if no merge in progress, ignore
+            return false;
           });
-          throw new MergeConflictError(conflictedFiles, ConflictOp.MERGE);
+          throw new MergeConflictError(conflictedFiles, ConflictOp.MERGE, {
+            mergeAborted,
+            mergeStrategy: 'squash',
+            sourceBranch: taskBranch,
+            targetBranch,
+            sourceWorktreePath: worktreePath,
+            targetWorktreePath: this.repoPath,
+          });
         }
       }
       throw err;
@@ -408,10 +416,18 @@ export class WorktreeManager {
       if (err instanceof GitError) {
         const conflictedFiles = await this.getConflictedFilesIn(targetWorktreePath);
         if (conflictedFiles.length > 0) {
-          await execGit(targetWorktreePath, ['merge', '--abort']).catch(() => {
+          const mergeAborted = await execGit(targetWorktreePath, ['merge', '--abort']).then(() => true).catch(() => {
             // merge --abort may fail if no merge in progress, ignore
+            return false;
           });
-          throw new MergeConflictError(conflictedFiles, ConflictOp.MERGE);
+          throw new MergeConflictError(conflictedFiles, ConflictOp.MERGE, {
+            mergeAborted,
+            mergeStrategy: 'no_ff',
+            sourceBranch,
+            targetBranch,
+            sourceWorktreePath,
+            targetWorktreePath,
+          });
         }
       }
       throw err;

@@ -63,8 +63,29 @@ export class WorktreeDirtyError extends GitError {
 export class MergeConflictError extends GitError {
   conflictedFiles: string[];
   conflictOp: ConflictOp;
+  mergeAborted?: boolean;
+  mergeStrategy?: 'squash' | 'no_ff';
+  sourceBranch?: string;
+  targetBranch?: string;
+  sourceWorktreePath?: string;
+  targetWorktreePath?: string;
+  sourceWorkspaceId?: string;
+  targetWorkspaceId?: string;
 
-  constructor(conflictedFiles: string[], conflictOp: ConflictOp = ConflictOp.MERGE) {
+  constructor(
+    conflictedFiles: string[],
+    conflictOp: ConflictOp = ConflictOp.MERGE,
+    context: {
+      mergeAborted?: boolean;
+      mergeStrategy?: 'squash' | 'no_ff';
+      sourceBranch?: string;
+      targetBranch?: string;
+      sourceWorktreePath?: string;
+      targetWorktreePath?: string;
+      sourceWorkspaceId?: string;
+      targetWorkspaceId?: string;
+    } = {}
+  ) {
     const fileList = conflictedFiles.join(', ');
     super(
       `Merge conflict in files: ${fileList}`,
@@ -73,6 +94,14 @@ export class MergeConflictError extends GitError {
     this.name = 'MergeConflictError';
     this.conflictedFiles = conflictedFiles;
     this.conflictOp = conflictOp;
+    this.mergeAborted = context.mergeAborted;
+    this.mergeStrategy = context.mergeStrategy;
+    this.sourceBranch = context.sourceBranch;
+    this.targetBranch = context.targetBranch;
+    this.sourceWorktreePath = context.sourceWorktreePath;
+    this.targetWorktreePath = context.targetWorktreePath;
+    this.sourceWorkspaceId = context.sourceWorkspaceId;
+    this.targetWorkspaceId = context.targetWorkspaceId;
   }
 }
 

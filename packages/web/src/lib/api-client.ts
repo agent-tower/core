@@ -4,6 +4,8 @@ type RequestOptions = RequestInit & {
   params?: Record<string, string>
 }
 
+type ApiErrorPayload = Record<string, unknown>
+
 class ApiClient {
   private baseUrl: string
 
@@ -31,8 +33,16 @@ class ApiClient {
     })
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({}))
-      throw new ApiError(response.status, error.message || error.error || 'Request failed')
+      const error = await response.json().catch(() => ({})) as ApiErrorPayload
+      throw new ApiError(
+        response.status,
+        typeof error.message === 'string'
+          ? error.message
+          : typeof error.error === 'string'
+            ? error.error
+            : 'Request failed',
+        error,
+      )
     }
 
     if (response.status === 204) {
@@ -77,11 +87,13 @@ class ApiClient {
 
 export class ApiError extends Error {
   status: number
+  details: ApiErrorPayload
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, details: ApiErrorPayload = {}) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.details = details
   }
 }
 

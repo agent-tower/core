@@ -379,6 +379,9 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '选择一个 Session...': 'Select a session...',
     '没有可用的 Session，请在 IDE 中手动解决冲突。':
       'No session is available. Please resolve the conflicts manually in your IDE.',
+    'TeamRun 模式下会把处理冲突请求发送到 Team Room，由团队调度处理。':
+      'In TeamRun mode, the conflict request will be sent to Team Room for team scheduling.',
+    '已发送到 Team Room': 'Sent to Team Room',
     '快捷命令': 'Quick Commands',
     '待办': 'Todos',
     '上下文: {used} / {max} tokens': 'Context: {used} / {max} tokens',

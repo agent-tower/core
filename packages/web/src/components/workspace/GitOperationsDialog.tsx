@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { GitBranch, GitMerge, AlertTriangle, CheckCircle, ArrowRight, Loader2, FileWarning } from 'lucide-react'
-import type { GitOperationStatus } from '@agent-tower/shared'
+import { ConflictOp, type GitOperationStatus } from '@agent-tower/shared'
 import { Modal } from '@/components/ui/modal'
 import { useRebaseWorkspace, useMergeWorkspace, useGitStatus } from '@/hooks/use-workspaces'
 import { useI18n } from '@/lib/i18n'
+import { ApiError } from '@/lib/api-client'
 
 interface GitOperationsDialogProps {
   open: boolean
@@ -15,10 +16,70 @@ interface GitOperationsDialogProps {
   commitMessage?: string | null
   /** 打开弹窗时补拉一次 workspace，兜底隐藏 session 造成的缓存延迟 */
   onRefreshCommitMessage?: () => void | Promise<unknown>
-  onConflict: () => void
+  onConflict: (details?: ConflictDetails) => void
 }
 
 type MergeStep = 'select' | 'confirm'
+
+export interface ConflictDetails {
+  conflictOp: ConflictOp
+  conflictedFiles: string[]
+  mergeAborted?: boolean
+  mergeStrategy?: 'squash' | 'no_ff'
+  sourceBranch?: string
+  targetBranch?: string
+  sourceWorktreePath?: string
+  targetWorktreePath?: string
+  sourceWorkspaceId?: string
+  targetWorkspaceId?: string
+}
+
+function getOptionalString(details: Record<string, unknown>, key: string): string | undefined {
+  const value = details[key]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+export function getConflictDetails(error: unknown): ConflictDetails | undefined {
+  if (!(error instanceof ApiError) || error.status !== 409) return undefined
+
+  const details = error.details
+  if (details.code !== 'MERGE_CONFLICT') return undefined
+  if (details.conflictOp !== ConflictOp.REBASE && details.conflictOp !== ConflictOp.MERGE) return undefined
+  if (!Array.isArray(details.conflictedFiles)) return undefined
+  if (!details.conflictedFiles.every((file): file is string => typeof file === 'string')) return undefined
+
+  const mergeStrategy = details.mergeStrategy === 'squash' || details.mergeStrategy === 'no_ff'
+    ? details.mergeStrategy
+    : undefined
+
+  return {
+    conflictOp: details.conflictOp,
+    conflictedFiles: details.conflictedFiles,
+    mergeAborted: typeof details.mergeAborted === 'boolean' ? details.mergeAborted : undefined,
+    mergeStrategy,
+    sourceBranch: getOptionalString(details, 'sourceBranch'),
+    targetBranch: getOptionalString(details, 'targetBranch'),
+    sourceWorktreePath: getOptionalString(details, 'sourceWorktreePath'),
+    targetWorktreePath: getOptionalString(details, 'targetWorktreePath'),
+    sourceWorkspaceId: getOptionalString(details, 'sourceWorkspaceId'),
+    targetWorkspaceId: getOptionalString(details, 'targetWorkspaceId'),
+  }
+}
+
+function handleMutationError(
+  err: unknown,
+  fallbackMessage: string,
+  onConflict: (details: ConflictDetails) => void,
+  setError: (message: string) => void,
+) {
+  const details = getConflictDetails(err)
+  if (details) {
+    onConflict(details)
+    return
+  }
+
+  setError(err instanceof Error ? err.message : fallbackMessage)
+}
 
 function StatusChip({ children, variant }: {
   children: React.ReactNode
@@ -154,13 +215,10 @@ export function GitOperationsDialog({
     rebaseWorkspace.mutate(workspaceId, {
       onSuccess: () => onOpenChange(false),
       onError: (err: unknown) => {
-        const apiErr = err as { status?: number; message?: string }
-        if (apiErr.status === 409) {
+        handleMutationError(err, t('变基失败'), (details) => {
           onOpenChange(false)
-          onConflict()
-        } else {
-          setError(apiErr.message ?? t('变基失败'))
-        }
+          onConflict(details)
+        }, setError)
       },
     })
   }
@@ -176,13 +234,10 @@ export function GitOperationsDialog({
     mergeWorkspace.mutate({ id: workspaceId, commitMessage: finalMessage }, {
       onSuccess: () => onOpenChange(false),
       onError: (err: unknown) => {
-        const apiErr = err as { status?: number; message?: string }
-        if (apiErr.status === 409) {
+        handleMutationError(err, t('合并失败'), (details) => {
           onOpenChange(false)
-          onConflict()
-        } else {
-          setError(apiErr.message ?? t('合并失败'))
-        }
+          onConflict(details)
+        }, setError)
       },
     })
   }

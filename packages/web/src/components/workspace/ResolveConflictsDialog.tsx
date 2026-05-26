@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import type { ConflictOp, Session } from '@agent-tower/shared'
+import { toast } from 'sonner'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
-import { buildResolveConflictsInstructions } from '@/lib/conflict-instructions'
+import { buildResolveConflictAiAction } from '@/lib/conflict-instructions'
 import { useSendMessage } from '@/hooks/use-sessions'
+import { usePostRoomMessage } from '@/hooks/use-team-run'
 import { useOpenInEditor } from '@/hooks/use-workspaces'
 import { useI18n } from '@/lib/i18n'
 
@@ -15,7 +17,17 @@ interface ResolveConflictsDialogProps {
   conflictedFiles: string[]
   sourceBranch: string
   targetBranch: string
+  operation?: 'idle' | 'rebase' | 'merge'
+  worktreePath?: string
+  mergeAborted?: boolean
+  mergeStrategy?: 'squash' | 'no_ff'
+  sourceWorkspaceId?: string
+  targetWorkspaceId?: string
+  sourceWorktreePath?: string
+  targetWorktreePath?: string
   sessions: Session[]
+  currentSessionId?: string
+  teamRunId?: string
 }
 
 export function ResolveConflictsDialog({
@@ -26,23 +38,63 @@ export function ResolveConflictsDialog({
   conflictedFiles,
   sourceBranch,
   targetBranch,
+  operation,
+  worktreePath,
+  mergeAborted,
+  mergeStrategy,
+  sourceWorkspaceId,
+  targetWorkspaceId,
+  sourceWorktreePath,
+  targetWorktreePath,
   sessions,
+  currentSessionId,
+  teamRunId,
 }: ResolveConflictsDialogProps) {
   const { t } = useI18n()
   const [selectedSessionId, setSelectedSessionId] = useState<string>('')
   const sendMessage = useSendMessage()
+  const postRoomMessage = usePostRoomMessage(teamRunId ?? '')
   const openInEditor = useOpenInEditor()
+  const isTeamRunMode = Boolean(teamRunId)
+  const targetSessionId = currentSessionId || selectedSessionId
+  const isSending = isTeamRunMode ? postRoomMessage.isPending : sendMessage.isPending
 
   const handleAiResolve = () => {
-    if (!selectedSessionId) return
-    const instructions = buildResolveConflictsInstructions(
+    const action = buildResolveConflictAiAction({
+      workspaceId,
+      worktreePath,
+      operation,
+      mergeAborted,
+      mergeStrategy,
+      sourceWorkspaceId,
+      targetWorkspaceId,
+      sourceWorktreePath,
+      targetWorktreePath,
       sourceBranch,
       targetBranch,
       conflictedFiles,
-      conflictOp
-    )
+      conflictOp,
+      teamRunId,
+      currentSessionId,
+      selectedSessionId,
+    })
+
+    if (action.type === 'team_room') {
+      postRoomMessage.mutate(
+        { content: action.message, kind: 'chat' },
+        {
+          onSuccess: () => {
+            toast.success(t('已发送到 Team Room'))
+            onOpenChange(false)
+          },
+        },
+      )
+      return
+    }
+
+    if (action.type !== 'session') return
     sendMessage.mutate(
-      { id: selectedSessionId, message: instructions },
+      { id: action.sessionId, message: action.message },
       { onSuccess: () => onOpenChange(false) }
     )
   }
@@ -55,6 +107,8 @@ export function ResolveConflictsDialog({
   }
 
   const opLabel = conflictOp === 'REBASE' ? 'Rebase' : 'Merge'
+  const shouldShowSessionSelect = !isTeamRunMode && !currentSessionId && sessions.length > 0
+  const canAiResolve = isTeamRunMode || Boolean(targetSessionId)
 
   return (
     <Modal
@@ -68,9 +122,9 @@ export function ResolveConflictsDialog({
           </Button>
           <Button
             onClick={handleAiResolve}
-            disabled={!selectedSessionId || sendMessage.isPending}
+            disabled={!canAiResolve || isSending}
           >
-            {sendMessage.isPending ? t('发送中...') : t('AI 辅助解决')}
+            {isSending ? t('发送中...') : t('AI 辅助解决')}
           </Button>
         </div>
       }
@@ -93,8 +147,14 @@ export function ResolveConflictsDialog({
           </div>
         </div>
 
+        {isTeamRunMode && (
+          <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+            {t('TeamRun 模式下会把处理冲突请求发送到 Team Room，由团队调度处理。')}
+          </div>
+        )}
+
         {/* Session 选择 */}
-        {sessions.length > 0 && (
+        {shouldShowSessionSelect && (
           <div>
             <h4 className="text-sm font-medium text-neutral-700 mb-2">
               {t('选择 Session（AI 辅助解决）')}
@@ -114,7 +174,7 @@ export function ResolveConflictsDialog({
           </div>
         )}
 
-        {sessions.length === 0 && (
+        {!isTeamRunMode && !targetSessionId && sessions.length === 0 && (
           <p className="text-sm text-neutral-500">
             {t('没有可用的 Session，请在 IDE 中手动解决冲突。')}
           </p>

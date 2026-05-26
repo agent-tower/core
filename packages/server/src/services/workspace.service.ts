@@ -1,7 +1,7 @@
 import { prisma } from '../utils/index.js';
 import { WorkspaceStatus, TaskStatus, SessionStatus, SessionPurpose } from '../types/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
-import { execGit } from '../git/git-cli.js';
+import { execGit, MergeConflictError } from '../git/git-cli.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 import { getSessionManager, getEventBus } from '../core/container.js';
 import { copyProjectFiles } from './copy-files.service.js';
@@ -684,11 +684,24 @@ export class WorkspaceService {
     await this.assertNoActiveWriteSessions(parentWorkspace.id);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-    const { sha } = await worktreeManager.mergeIntoWorktree(
-      workspace.worktreePath,
-      parentWorkspace.worktreePath,
-      { commitMessage: commitMessage || workspace.commitMessage || undefined }
-    );
+    let sha: string;
+    try {
+      ({ sha } = await worktreeManager.mergeIntoWorktree(
+        workspace.worktreePath,
+        parentWorkspace.worktreePath,
+        { commitMessage: commitMessage || workspace.commitMessage || undefined }
+      ));
+    } catch (error) {
+      if (error instanceof MergeConflictError) {
+        error.sourceWorkspaceId = workspace.id;
+        error.targetWorkspaceId = parentWorkspace.id;
+        error.sourceWorktreePath ??= workspace.worktreePath;
+        error.targetWorktreePath ??= parentWorkspace.worktreePath;
+        error.sourceBranch ??= workspace.branchName;
+        error.targetBranch ??= parentWorkspace.branchName;
+      }
+      throw error;
+    }
 
     await prisma.workspace.update({
       where: { id: workspace.id },
@@ -702,11 +715,23 @@ export class WorkspaceService {
     await this.assertTeamRunFinalMergeAllowed(workspace);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-    const { sha } = await worktreeManager.merge(
-      workspace.worktreePath,
-      this.getBaseBranch(workspace),
-      { commitMessage: commitMessage || workspace.commitMessage || undefined }
-    );
+    let sha: string;
+    const targetBranch = this.getBaseBranch(workspace);
+    try {
+      ({ sha } = await worktreeManager.merge(
+        workspace.worktreePath,
+        targetBranch,
+        { commitMessage: commitMessage || workspace.commitMessage || undefined }
+      ));
+    } catch (error) {
+      if (error instanceof MergeConflictError) {
+        error.sourceWorkspaceId = workspace.id;
+        error.sourceWorktreePath ??= workspace.worktreePath;
+        error.sourceBranch ??= workspace.branchName;
+        error.targetBranch ??= targetBranch;
+      }
+      throw error;
+    }
 
     await prisma.workspace.update({
       where: { id: workspace.id },
