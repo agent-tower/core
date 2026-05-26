@@ -269,6 +269,80 @@ describe('TeamRunService', () => {
     });
   });
 
+  it('derives TeamMember status from active invocations and open WorkRequests', async () => {
+    const runningPreset = await service.createMemberPreset(presetInput('Runner'));
+    const pendingPreset = await service.createMemberPreset(presetInput('Pending'));
+    const queuedPreset = await service.createMemberPreset(presetInput('Queued'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'CONFIRM',
+      memberPresetIds: [runningPreset.id, pendingPreset.id, queuedPreset.id],
+    });
+    const [runningMember, pendingMember, queuedMember] = teamRun.members ?? [];
+    expect(runningMember).toBeDefined();
+    expect(pendingMember).toBeDefined();
+    expect(queuedMember).toBeDefined();
+
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'team-shared-status',
+        worktreePath: testDir,
+        status: 'ACTIVE',
+      },
+    });
+    const runningRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: runningMember!.id,
+        triggerMessageId: 'running-trigger',
+        instruction: 'Running work',
+        status: 'STARTED',
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: runningRequest.id,
+        memberId: runningMember!.id,
+        workspaceId: workspace.id,
+        sessionId: null,
+        status: 'RUNNING',
+      },
+    });
+    await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: pendingMember!.id,
+        triggerMessageId: 'pending-trigger',
+        instruction: 'Pending work',
+        status: 'PENDING_APPROVAL',
+      },
+    });
+    await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: queuedMember!.id,
+        triggerMessageId: 'queued-trigger',
+        instruction: 'Queued work',
+        status: 'QUEUED',
+      },
+    });
+
+    const members = await service.listTeamMembers(teamRun.id);
+    const statuses = new Map(members.map((member) => [member.id, member.status]));
+
+    expect(statuses.get(runningMember!.id)).toBe('RUNNING');
+    expect(statuses.get(pendingMember!.id)).toBe('PENDING_APPROVAL');
+    expect(statuses.get(queuedMember!.id)).toBe('QUEUED');
+  });
+
   it('does not create USER_MESSAGES WorkRequests when a user message already has mentions', async () => {
     const leaderPreset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
     const coderPreset = await service.createMemberPreset(presetInput('Coder'));

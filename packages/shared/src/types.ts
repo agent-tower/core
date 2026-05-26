@@ -73,8 +73,12 @@ export type IfBusyPolicy = 'queue' | 'cancel_current_and_start'
 /** 团队成员状态 */
 export type TeamMemberStatus =
   | 'IDLE'
+  | 'PENDING_APPROVAL'
+  | 'QUEUED'
   | 'RUNNING'
   | 'WAITING'
+  | 'WAITING_ROOM_REPLY'
+  | 'SESSION_ENDED'
   | 'READY_FOR_REVIEW'
   | 'FAILED'
   | 'CANCELLED'

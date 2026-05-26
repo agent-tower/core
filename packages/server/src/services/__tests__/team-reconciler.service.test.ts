@@ -835,7 +835,19 @@ describe('TeamReconcilerService', () => {
   it('lists TeamRun members through MCP without exposing role prompts', async () => {
     const previousTeamRunId = process.env.AGENT_TOWER_TEAM_RUN_ID;
     const previousMemberId = process.env.AGENT_TOWER_MEMBER_ID;
-    const { teamRun, members } = await createFixture({ memberCount: 2 });
+    const { workspace, teamRun, members } = await createFixture({ memberCount: 2 });
+    const runningRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: runningRequest.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
     const app = Fastify({ logger: false });
 
     try {
@@ -880,7 +892,7 @@ describe('TeamReconcilerService', () => {
         id: members[0]!.id,
         name: 'Member 1',
         aliases: ['member-1'],
-        status: 'IDLE',
+        status: 'RUNNING',
         workspacePolicy: 'shared',
         triggerPolicy: 'MENTION_ONLY',
         sessionPolicy: 'new_per_request',

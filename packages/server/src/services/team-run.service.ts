@@ -10,6 +10,7 @@ import type {
   TeamMember,
   TeamMemberCapabilities,
   TeamMemberSessionPolicy,
+  TeamMemberStatus,
   TeamMemberTriggerPolicy,
   TeamRun,
   TeamRunMode,
@@ -134,6 +135,16 @@ const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
 };
 
 const DEFAULT_SESSION_POLICY: TeamMemberSessionPolicy = 'new_per_request';
+const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
+  'QUEUED',
+  'RUNNING',
+  'SESSION_ENDED',
+  'WAITING_ROOM_REPLY',
+];
+const OPEN_WORK_REQUEST_STATUSES: WorkRequestStatus[] = [
+  'PENDING_APPROVAL',
+  'QUEUED',
+];
 
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
   if (value == null || value === '') {
@@ -406,11 +417,26 @@ export class TeamRunService {
 
   async listTeamMembers(teamRunId: string): Promise<TeamMember[]> {
     await this.assertTeamRunExists(teamRunId);
-    const members = await prisma.teamMember.findMany({
-      where: { teamRunId },
-      orderBy: { createdAt: 'asc' },
-    });
-    return members.map((member) => this.serializeTeamMember(member));
+    const [members, invocations, workRequests] = await Promise.all([
+      prisma.teamMember.findMany({
+        where: { teamRunId },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.agentInvocation.findMany({
+        where: {
+          teamRunId,
+          status: { in: ACTIVE_INVOCATION_STATUSES },
+        },
+      }),
+      prisma.workRequest.findMany({
+        where: {
+          teamRunId,
+          status: { in: OPEN_WORK_REQUEST_STATUSES },
+        },
+      }),
+    ]);
+    const memberStatuses = this.deriveTeamMemberStatuses(members, invocations, workRequests);
+    return members.map((member) => this.serializeTeamMember(member, memberStatuses.get(member.id)));
   }
 
   async listRoomMessages(teamRunId: string): Promise<RoomMessage[]> {
@@ -710,20 +736,58 @@ export class TeamRunService {
   }
 
   private serializeTeamRun(teamRun: PrismaTeamRunWithRelations): TeamRun {
+    const memberStatuses = this.deriveTeamMemberStatuses(
+      teamRun.members ?? [],
+      teamRun.invocations ?? [],
+      teamRun.workRequests ?? []
+    );
+
     return {
       ...teamRun,
       mode: teamRun.mode as TeamRunMode,
       reviewReason: teamRun.reviewReason as TeamRunReviewReason | null,
       createdAt: toIso(teamRun.createdAt),
       updatedAt: toIso(teamRun.updatedAt),
-      members: teamRun.members?.map((member) => this.serializeTeamMember(member)),
+      members: teamRun.members?.map((member) => this.serializeTeamMember(member, memberStatuses.get(member.id))),
       messages: teamRun.messages?.map((message) => this.serializeRoomMessage(message)),
       workRequests: teamRun.workRequests?.map((workRequest) => this.serializeWorkRequest(workRequest)),
       invocations: teamRun.invocations?.map((invocation) => this.serializeAgentInvocation(invocation)),
     };
   }
 
-  private serializeTeamMember(member: PrismaTeamMember): TeamMember {
+  private deriveTeamMemberStatuses(
+    members: PrismaTeamMember[],
+    invocations: PrismaAgentInvocation[] = [],
+    workRequests: PrismaWorkRequest[] = []
+  ): Map<string, TeamMemberStatus> {
+    const statuses = new Map<string, TeamMemberStatus>();
+
+    for (const member of members) {
+      statuses.set(member.id, this.deriveTeamMemberStatus(member.id, invocations, workRequests));
+    }
+
+    return statuses;
+  }
+
+  private deriveTeamMemberStatus(
+    memberId: string,
+    invocations: PrismaAgentInvocation[],
+    workRequests: PrismaWorkRequest[]
+  ): TeamMemberStatus {
+    const memberInvocations = invocations.filter((invocation) => invocation.memberId === memberId);
+    if (memberInvocations.some((invocation) => invocation.status === 'RUNNING')) return 'RUNNING';
+    if (memberInvocations.some((invocation) => invocation.status === 'WAITING_ROOM_REPLY')) return 'WAITING_ROOM_REPLY';
+    if (memberInvocations.some((invocation) => invocation.status === 'SESSION_ENDED')) return 'SESSION_ENDED';
+    if (memberInvocations.some((invocation) => invocation.status === 'QUEUED')) return 'QUEUED';
+
+    const memberWorkRequests = workRequests.filter((request) => request.targetMemberId === memberId);
+    if (memberWorkRequests.some((request) => request.status === 'QUEUED')) return 'QUEUED';
+    if (memberWorkRequests.some((request) => request.status === 'PENDING_APPROVAL')) return 'PENDING_APPROVAL';
+
+    return 'IDLE';
+  }
+
+  private serializeTeamMember(member: PrismaTeamMember, status?: TeamMemberStatus): TeamMember {
     return {
       ...member,
       aliases: parseJsonField<string[]>(member.aliases, []),
@@ -732,6 +796,7 @@ export class TeamRunService {
       triggerPolicy: member.triggerPolicy as TeamMemberTriggerPolicy,
       sessionPolicy: member.sessionPolicy as TeamMemberSessionPolicy || DEFAULT_SESSION_POLICY,
       avatar: member.avatar ?? null,
+      status: status ?? 'IDLE',
       createdAt: toIso(member.createdAt),
       updatedAt: toIso(member.updatedAt),
     };
