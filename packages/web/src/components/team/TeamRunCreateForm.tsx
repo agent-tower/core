@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { Check, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import type { MemberPreset, TeamRunMode } from '@agent-tower/shared'
 import { Button } from '@/components/ui/button'
+import { MemberAvatar } from './MemberAvatar'
 import { useProviders } from '@/hooks/use-providers'
 import { useMemberPresets, useTeamTemplates } from '@/hooks/use-team-run'
 import { useI18n } from '@/lib/i18n'
@@ -321,6 +322,11 @@ export function TeamRunCreateForm({
                           disabled={disabled}
                           className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-400 disabled:cursor-not-allowed"
                         />
+                        <MemberAvatar
+                          name={preset.name}
+                          avatar={preset.avatar}
+                          className="mt-0.5 h-8 w-8 text-[11px]"
+                        />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
                           <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
@@ -356,9 +362,16 @@ export function TeamRunCreateForm({
                         key={preset.id}
                         className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-white px-3 py-2"
                       >
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
-                          <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
+                        <div className="flex min-w-0 items-center gap-2">
+                          <MemberAvatar
+                            name={preset.name}
+                            avatar={preset.avatar}
+                            className="h-8 w-8 text-[11px]"
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
+                            <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
+                          </div>
                         </div>
                         <div className="flex items-center gap-1">
                           <Button

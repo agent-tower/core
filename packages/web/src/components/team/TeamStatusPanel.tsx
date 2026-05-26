@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Ban, Bot, Check, ChevronDown, ChevronRight, Clock3, Layers3, MessageSquare, PanelRightOpen, RefreshCw, Square, Users, X } from 'lucide-react'
 import type { AgentInvocation, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
+import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import {
@@ -62,16 +63,6 @@ function statusClass(status: MemberStatus) {
   }
 }
 
-function getInitials(name: string) {
-  const trimmed = name.trim()
-  if (!trimmed) return '?'
-  const parts = trimmed.split(/\s+/).filter(Boolean)
-  if (parts.length >= 2) {
-    return `${parts[0]![0] ?? ''}${parts[1]![0] ?? ''}`.toUpperCase()
-  }
-  return Array.from(trimmed).slice(0, 2).join('').toUpperCase()
-}
-
 function requesterLabel(requesterType: WorkRequest['requesterType']) {
   switch (requesterType) {
     case 'user':
@@ -127,18 +118,6 @@ function sortInvocationsDesc(invocations: AgentInvocation[]) {
 
 function shortId(value?: string | null) {
   return value ? `${value.slice(0, 8)}...` : ''
-}
-
-function Avatar({ name, avatar }: { name: string; avatar?: string | null }) {
-  const initials = useMemo(() => getInitials(name), [name])
-  if (avatar) {
-    return <img src={avatar} alt={name} className="h-7 w-7 rounded-full border border-neutral-200 object-cover bg-white shrink-0" />
-  }
-  return (
-    <div className="h-7 w-7 rounded-full border border-neutral-200 bg-neutral-100 text-neutral-600 flex items-center justify-center text-[10px] font-semibold shrink-0">
-      {initials}
-    </div>
-  )
 }
 
 function resolveMemberStatus(
@@ -370,7 +349,7 @@ export function TeamStatusPanel({ teamRun, onViewInvocationSession }: TeamStatus
                       className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-neutral-50"
                     >
                       <div className="flex min-w-0 items-start gap-2">
-                        <Avatar name={member.name} avatar={member.avatar} />
+                        <MemberAvatar name={member.name} avatar={member.avatar} />
                         <div className="min-w-0">
                           <div className="truncate text-xs font-medium text-neutral-900">{member.name}</div>
                           <div className="truncate text-[11px] text-neutral-500">

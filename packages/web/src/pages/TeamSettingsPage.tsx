@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { toast } from 'sonner'
-import { Plus, Trash2, ChevronUp, ChevronDown } from 'lucide-react'
+import { Plus, Trash2, ChevronUp, ChevronDown, Upload } from 'lucide-react'
 import type {
+  Attachment,
   MemberPreset,
   TeamMemberCapabilities,
   TeamMemberSessionPolicy,
@@ -11,7 +12,10 @@ import type {
 } from '@agent-tower/shared'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
+import { AVATAR_PRESETS } from '@/components/team/avatar-presets'
+import { MemberAvatar } from '@/components/team/MemberAvatar'
 import { useProviders } from '@/hooks/use-providers'
 import {
   useCreateMemberPreset,
@@ -25,6 +29,13 @@ import {
 } from '@/hooks/use-team-run'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const MAX_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024
+const EMPTY_MEMBER_PRESETS: MemberPreset[] = []
+const EMPTY_TEAM_TEMPLATES: TeamTemplate[] = []
+type ProviderRow = NonNullable<ReturnType<typeof useProviders>['data']>[number]
+const EMPTY_PROVIDER_ROWS: ProviderRow[] = []
 
 type EditorTab = 'presets' | 'templates'
 type EditorMode = 'create' | 'edit'
@@ -162,36 +173,33 @@ function normalizeAvatar(raw: string): string | null {
   return trimmed ? trimmed : null
 }
 
-function isColorAvatar(value: string): boolean {
-  const trimmed = value.trim()
-  return /^#([0-9a-f]{3,8})$/i.test(trimmed)
-    || /^rgba?\(/i.test(trimmed)
-    || /^hsla?\(/i.test(trimmed)
-}
-
-function avatarBadgeText(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) return 'AT'
-  if (isColorAvatar(trimmed)) return ''
-  if (trimmed.length <= 2) return trimmed.toUpperCase()
-  return trimmed.slice(0, 2).toUpperCase()
-}
-
-function avatarBadgeStyle(value: string): CSSProperties | undefined {
-  const trimmed = value.trim()
-  if (!trimmed || !isColorAvatar(trimmed)) return undefined
-  return {
-    backgroundColor: trimmed,
-    color: '#ffffff',
-  }
-}
-
 function getCapabilityCount(capabilities: TeamMemberCapabilities): number {
   return CAPABILITY_FIELDS.reduce((count, field) => count + (capabilities[field.key] ? 1 : 0), 0)
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function isSupportedAvatarFile(file: File) {
+  return ['image/png', 'image/jpeg', 'image/webp'].includes(file.type)
+}
+
+async function uploadAvatarFile(file: File): Promise<Attachment> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${API_BASE_URL}/attachments/upload`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}))
+    throw new Error(error.error || error.message || `Upload failed (${response.status})`)
+  }
+
+  return response.json()
 }
 
 interface QueryErrorNoticeProps {
@@ -271,6 +279,9 @@ export function TeamSettingsPage() {
   const [presetForm, setPresetForm] = useState<MemberPresetFormState>(createBlankMemberPresetForm())
   const [presetDirty, setPresetDirty] = useState(false)
   const [deletePresetTarget, setDeletePresetTarget] = useState<MemberPreset | null>(null)
+  const [isAvatarPickerOpen, setIsAvatarPickerOpen] = useState(false)
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false)
+  const avatarFileInputRef = useRef<HTMLInputElement>(null)
 
   const [templateMode, setTemplateMode] = useState<EditorMode>('edit')
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
@@ -278,9 +289,9 @@ export function TeamSettingsPage() {
   const [templateDirty, setTemplateDirty] = useState(false)
   const [deleteTemplateTarget, setDeleteTemplateTarget] = useState<TeamTemplate | null>(null)
 
-  const presets = presetsData ?? []
-  const templates = templatesData ?? []
-  const providerRows = providersData ?? []
+  const presets = presetsData ?? EMPTY_MEMBER_PRESETS
+  const templates = templatesData ?? EMPTY_TEAM_TEMPLATES
+  const providerRows = providersData ?? EMPTY_PROVIDER_ROWS
 
   const presetById = useMemo(
     () => new Map(presets.map(preset => [preset.id, preset] as const)),
@@ -397,6 +408,42 @@ export function TeamSettingsPage() {
       },
     }))
     setPresetDirty(true)
+  }
+
+  const handleSelectPresetAvatar = (avatar: string) => {
+    updatePresetField('avatar', avatar)
+    setIsAvatarPickerOpen(false)
+  }
+
+  const handleClearAvatar = () => {
+    updatePresetField('avatar', '')
+  }
+
+  const handleAvatarUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    if (!isSupportedAvatarFile(file)) {
+      toast.error(t('仅支持 PNG、JPG、WebP 头像。'))
+      return
+    }
+
+    if (file.size > MAX_AVATAR_UPLOAD_BYTES) {
+      toast.error(t('头像图片不能超过 2MB。'))
+      return
+    }
+
+    setIsUploadingAvatar(true)
+    try {
+      const attachment = await uploadAvatarFile(file)
+      updatePresetField('avatar', `${API_BASE_URL}${attachment.url}`)
+      toast.success(t('头像已上传'))
+    } catch (error) {
+      toast.error(getErrorMessage(error, t('头像上传失败')))
+    } finally {
+      setIsUploadingAvatar(false)
+    }
   }
 
   const applyPresetSelection = (mode: EditorMode, preset: MemberPreset | null) => {
@@ -661,12 +708,11 @@ export function TeamSettingsPage() {
                       )}
                     >
                       <div className="flex items-start gap-3">
-                        <div
-                          className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-neutral-200 bg-neutral-100 text-[11px] font-semibold text-neutral-600"
-                          style={avatarBadgeStyle(preset.avatar ?? '')}
-                        >
-                          {avatarBadgeText(preset.avatar ?? '')}
-                        </div>
+                        <MemberAvatar
+                          name={preset.name}
+                          avatar={preset.avatar}
+                          className="h-10 w-10 text-[11px]"
+                        />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
@@ -770,22 +816,55 @@ export function TeamSettingsPage() {
                 )}
               </div>
               <div>
-                <label htmlFor="team-member-preset-avatar" className="block text-[13px] font-medium text-neutral-700 mb-1">{t('头像')}</label>
-                <div className="flex items-center gap-3">
-                  <div
-                    className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-neutral-200 bg-neutral-100 text-[11px] font-semibold text-neutral-600"
-                    style={avatarBadgeStyle(presetForm.avatar)}
+                <div className="mb-1 flex items-center justify-between gap-3">
+                  <label className="block text-[13px] font-medium text-neutral-700">{t('头像')}</label>
+                  <button
+                    type="button"
+                    onClick={handleClearAvatar}
+                    disabled={!presetForm.avatar.trim()}
+                    className="text-[11px] font-medium text-neutral-400 transition-colors hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    {avatarBadgeText(presetForm.avatar)}
+                    {t('清除头像')}
+                  </button>
+                </div>
+                <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <MemberAvatar
+                      name={presetForm.name || t('Agent')}
+                      avatar={presetForm.avatar}
+                      className="h-14 w-14 text-sm"
+                    />
+                    <div className="min-w-[180px] flex-1">
+                      <div className="truncate text-xs font-medium text-neutral-700">
+                        {presetForm.avatar.trim() ? presetForm.avatar : t('默认首字母头像')}
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => setIsAvatarPickerOpen(true)}>
+                          {t('选择预设')}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => avatarFileInputRef.current?.click()}
+                          disabled={isUploadingAvatar}
+                        >
+                          <Upload size={14} />
+                          {isUploadingAvatar ? t('上传中...') : t('上传头像')}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                   <input
-                    id="team-member-preset-avatar"
-                    aria-label={t('成员预设头像')}
-                    value={presetForm.avatar}
-                    onChange={(e) => updatePresetField('avatar', e.target.value)}
-                    placeholder="🙂 / AB / #6366f1"
-                    className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm focus:border-neutral-400 focus:outline-none"
+                    ref={avatarFileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    onChange={handleAvatarUpload}
                   />
+                  <p className="mt-2 text-[11px] text-neutral-400">
+                    {t('支持 PNG、JPG、WebP，最大 2MB。')}
+                  </p>
                 </div>
               </div>
             </div>
@@ -1010,6 +1089,11 @@ export function TeamSettingsPage() {
                             onChange={() => toggleTemplatePreset(preset.id)}
                             className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-400"
                           />
+                          <MemberAvatar
+                            name={preset.name}
+                            avatar={preset.avatar}
+                            className="mt-0.5 h-8 w-8 text-[11px]"
+                          />
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
                             <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
@@ -1037,10 +1121,17 @@ export function TeamSettingsPage() {
                         key={preset.id}
                         className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-white px-3 py-2"
                       >
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
-                          <div className="truncate text-xs text-neutral-500">
-                            {presetProviderLabelById.get(preset.providerId) ?? preset.providerId}
+                        <div className="flex min-w-0 items-center gap-2">
+                          <MemberAvatar
+                            name={preset.name}
+                            avatar={preset.avatar}
+                            className="h-8 w-8 text-[11px]"
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
+                            <div className="truncate text-xs text-neutral-500">
+                              {presetProviderLabelById.get(preset.providerId) ?? preset.providerId}
+                            </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-1">
@@ -1088,6 +1179,42 @@ export function TeamSettingsPage() {
         cancelText={t('取消')}
         isLoading={deletePreset.isPending}
       />
+
+      <Modal
+        isOpen={isAvatarPickerOpen}
+        onClose={() => setIsAvatarPickerOpen(false)}
+        title={t('选择预设头像')}
+        className="max-w-2xl"
+      >
+        <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
+          {AVATAR_PRESETS.map((preset) => {
+            const selected = presetForm.avatar === preset.src
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => handleSelectPresetAvatar(preset.src)}
+                className={cn(
+                  'group rounded-lg border bg-white p-2 text-center transition-colors hover:border-neutral-400 hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-900/15',
+                  selected ? 'border-neutral-900 ring-2 ring-neutral-900/10' : 'border-neutral-200',
+                )}
+                aria-pressed={selected}
+                aria-label={t('选择 {name} 头像', { name: preset.label })}
+              >
+                <img
+                  src={preset.src}
+                  alt={preset.label}
+                  loading="lazy"
+                  className="mx-auto h-14 w-14 rounded-full object-cover sm:h-16 sm:w-16"
+                />
+                <span className="mt-1 block truncate text-[10px] font-medium text-neutral-500">
+                  {preset.label}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </Modal>
 
       <ConfirmDialog
         isOpen={Boolean(deleteTemplateTarget)}

@@ -145,6 +145,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Session': '会话',
     'View log': '查看日志',
     'View details': '查看详情',
+    'Expand full message': '展开全部',
+    'Collapse message': '收起',
     'Invocation details': '调用详情',
     'Back to room': '返回群聊',
     'Pending approval': '待审批',

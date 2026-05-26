@@ -8,9 +8,11 @@ import {
   MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { MobileChangesView } from './MobileChangesView'
 import { MobileHistoryView } from './MobileHistoryView'
+import { useTaskTeamRun, useRoomMessages, usePostRoomMessage } from '@/hooks/use-team-run'
 import { useWorkspaces, useOpenInEditor } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
@@ -126,6 +128,10 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   // ============ Session Discovery ============
 
   const { data: workspaces, isLoading: isLoadingWorkspaces } = useWorkspaces(task.id)
+  const { data: taskTeamRun } = useTaskTeamRun(task.id)
+  const { data: roomMessages } = useRoomMessages(taskTeamRun?.id ?? '')
+  const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
+  const teamRun = taskTeamRun ?? null
 
   const activeSession = useMemo(() => {
     if (!workspaces) return null
@@ -170,6 +176,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   }, [workspaces])
 
   const sessionId = activeSession?.id ?? ''
+  const logSessionId = teamRun ? '' : sessionId
   const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
   const isProjectReadOnly = Boolean(task.projectArchivedAt)
   const isProjectRepoDeleted = Boolean(task.projectRepoDeletedAt)
@@ -187,12 +194,13 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   // ============ Provider Info ============
 
   const { data: providers } = useProviders()
-  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
-
-  // 当 session 的 providerId 变化时，同步 selectedProviderId
-  useEffect(() => {
-    setSelectedProviderId(activeSession?.providerId ?? null)
-  }, [activeSession?.providerId])
+  const [selectedProviderOverride, setSelectedProviderOverride] = useState<{ sessionId: string; providerId: string | null } | null>(null)
+  const selectedProviderId = selectedProviderOverride?.sessionId === sessionId
+    ? selectedProviderOverride.providerId
+    : activeSession?.providerId ?? null
+  const handleSelectProvider = useCallback((providerId: string | null) => {
+    setSelectedProviderOverride({ sessionId, providerId })
+  }, [sessionId])
 
   const workingDir = useMemo(() => {
     if (!workspaces) return undefined
@@ -256,8 +264,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   // ============ Log Stream ============
 
   const { isConnected, isLoadingSnapshot, logs, entries, attach } = useNormalizedLogs({
-    sessionId,
-    sessionStatus: activeSession?.status,
+    sessionId: logSessionId,
+    sessionStatus: teamRun ? undefined : activeSession?.status,
     onExit: useCallback(() => {
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }, [queryClient]),
@@ -277,8 +285,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const tokenUsage = useTokenUsage(logs, initialTokenUsage)
 
   useEffect(() => {
-    if (sessionId && isConnected) attach()
-  }, [sessionId, isConnected, attach])
+    if (logSessionId && isConnected) attach()
+  }, [logSessionId, isConnected, attach])
 
   // Note: no explicit detach effect needed here.
   // useNormalizedLogs' internal cleanup already sends UNSUBSCRIBE for the
@@ -324,6 +332,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
     await stopSession.mutateAsync(sessionId)
     queryClient.invalidateQueries({ queryKey: ['workspaces'] })
   }, [sessionId, stopSession, queryClient])
+
+  const handlePostRoomMessage = useCallback(
+    (messageInput: Parameters<typeof postRoomMessage.mutateAsync>[0]) => postRoomMessage.mutateAsync(messageInput),
+    [postRoomMessage],
+  )
 
   // ============ File Upload Handlers ============
 
@@ -509,7 +522,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
               }`}
             >
               <Icon size={13} />
-              <span>{label}</span>
+              <span>{key === 'chat' && teamRun ? t('Team room') : t(label)}</span>
             </button>
           ))}
         </div>
@@ -517,7 +530,18 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
       {/* Content Area */}
       {activeTab === 'chat' && (
-        <div className="flex-1 flex flex-col min-h-0">
+        teamRun ? (
+          <main className="flex-1 min-h-0 overflow-hidden">
+            <RoomTimeline
+              teamRun={teamRun}
+              messages={roomMessages ?? teamRun.messages ?? []}
+              readOnly={isProjectReadOnly}
+              readOnlyMessage={projectReadOnlyMessage}
+              onSendMessage={handlePostRoomMessage}
+            />
+          </main>
+        ) : (
+          <div className="flex-1 flex flex-col min-h-0">
           {/* Scrollable Logs */}
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-app-thin overscroll-y-contain px-3 pt-3 pb-2">
@@ -655,7 +679,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                         providers={providers}
                         currentProviderId={selectedProviderId}
                         agentType={activeSession.agentType}
-                        onSelect={setSelectedProviderId}
+                        onSelect={handleSelectProvider}
                       />
                     )}
                     <TokenUsageIndicator usage={tokenUsage} />
@@ -709,6 +733,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
             </div>
           )}
         </div>
+        )
       )}
 
       {activeTab === 'changes' && (

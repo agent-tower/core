@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useState, useRef } from 'react'
 import type { ChangeEvent, KeyboardEvent } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import {
   ArrowDown,
   ArrowUp,
   AtSign,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   MessageSquare,
   PanelRightOpen,
@@ -15,8 +17,13 @@ import type { UrlTransform } from 'streamdown'
 import type { AgentInvocation, RoomMessage, StructuredMention, TeamMember, TeamRun } from '@agent-tower/shared'
 import type { PostRoomMessageInput } from '@/hooks/use-team-run'
 import { Button } from '@/components/ui/button'
+import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
+import {
+  ROOM_MESSAGE_COLLAPSED_MAX_HEIGHT,
+  isRoomMessageContentOverflowing,
+} from './room-message-collapse'
 import 'streamdown/styles.css'
 
 interface RoomTimelineProps {
@@ -71,16 +78,6 @@ function formatMemberStatus(invocation?: AgentInvocation, pendingWorkRequest?: b
   if (invocation?.status === 'QUEUED') return 'queued'
   if (pendingWorkRequest) return 'pending approval'
   return 'idle'
-}
-
-function getInitials(name: string) {
-  const trimmed = name.trim()
-  if (!trimmed) return '?'
-  const parts = trimmed.split(/\s+/).filter(Boolean)
-  if (parts.length >= 2) {
-    return `${parts[0]![0] ?? ''}${parts[1]![0] ?? ''}`.toUpperCase()
-  }
-  return Array.from(trimmed).slice(0, 2).join('').toUpperCase()
 }
 
 function findInlineMention(value: string, cursor: number) {
@@ -162,14 +159,22 @@ function RoomMessageMarkdown({
   return (
     <div
       className={cn(
-        'prose prose-sm max-w-none break-words',
-        'prose-p:my-2 prose-p:first:mt-0 prose-p:last:mb-0',
-        'prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5',
-        'prose-pre:my-2 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:rounded-lg prose-pre:bg-neutral-950 prose-pre:p-3 prose-pre:text-xs',
-        'prose-code:break-words prose-code:text-[0.92em]',
-        'prose-headings:mb-2 prose-headings:mt-3 prose-headings:font-semibold',
-        'prose-hr:my-3',
-        isUser ? 'text-neutral-900 prose-strong:text-neutral-900' : 'text-neutral-800 prose-strong:text-neutral-900',
+        'prose prose-sm max-w-none break-words [overflow-wrap:anywhere]',
+        'prose-p:my-2 prose-p:first:mt-0 prose-p:last:mb-0 prose-p:leading-6',
+        'prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-li:pl-0 prose-li:leading-6 prose-li:marker:text-neutral-400',
+        'prose-blockquote:my-2 prose-blockquote:border-l-2 prose-blockquote:border-neutral-300 prose-blockquote:pl-3 prose-blockquote:text-neutral-600',
+        'prose-pre:my-3 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:rounded-md prose-pre:border prose-pre:border-neutral-800 prose-pre:bg-neutral-950 prose-pre:p-3 prose-pre:text-xs prose-pre:leading-relaxed prose-pre:shadow-inner',
+        'prose-code:break-words prose-code:rounded prose-code:bg-neutral-100 prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.9em] prose-code:font-medium prose-code:text-neutral-800',
+        'prose-pre:prose-code:bg-transparent prose-pre:prose-code:p-0 prose-pre:prose-code:text-neutral-100',
+        'prose-headings:mb-2 prose-headings:mt-3 prose-headings:font-semibold prose-headings:leading-snug',
+        'prose-a:text-blue-600 prose-a:underline-offset-2 hover:prose-a:text-blue-700',
+        'prose-hr:my-3 prose-hr:border-neutral-200',
+        isUser
+          ? [
+              'text-white prose-strong:text-white prose-headings:text-white prose-blockquote:border-white/30 prose-blockquote:text-neutral-200',
+              'prose-code:bg-white/15 prose-code:text-white prose-pre:border-neutral-700 prose-a:text-blue-200 hover:prose-a:text-blue-100 prose-hr:border-white/15',
+            ]
+          : 'text-neutral-800 prose-strong:text-neutral-900',
       )}
     >
       <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
@@ -179,32 +184,95 @@ function RoomMessageMarkdown({
   )
 }
 
-function Avatar({
-  name,
-  avatar,
-  className,
-}: {
-  name: string
-  avatar?: string | null
-  className?: string
-}) {
-  const [imageFailed, setImageFailed] = useState(false)
-  const initials = useMemo(() => getInitials(name), [name])
+type RoomMessageTone = 'agent' | 'user' | 'system'
 
-  if (avatar && !imageFailed) {
-    return (
-      <img
-        src={avatar}
-        alt={name}
-        onError={() => setImageFailed(true)}
-        className={cn('h-7 w-7 rounded-full border border-neutral-200 object-cover bg-white shrink-0', className)}
-      />
-    )
-  }
+function CollapsibleRoomMessageContent({
+  content,
+  isUser,
+  tone = isUser ? 'user' : 'agent',
+}: {
+  content: string
+  isUser?: boolean
+  tone?: RoomMessageTone
+}) {
+  const { t } = useI18n()
+  const contentId = useId()
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [expandedState, setExpandedState] = useState<{ content: string; expanded: boolean } | null>(null)
+  const [isCollapsible, setIsCollapsible] = useState(false)
+  const isExpanded = expandedState?.content === content && expandedState.expanded
+
+  const measureContent = useCallback(() => {
+    const element = contentRef.current
+    if (!element) return
+    setIsCollapsible(isRoomMessageContentOverflowing(element.scrollHeight))
+  }, [])
+
+  useLayoutEffect(() => {
+    measureContent()
+
+    const element = contentRef.current
+    if (!element) return
+
+    const animationFrame = window.requestAnimationFrame(measureContent)
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(measureContent)
+    resizeObserver?.observe(element)
+    window.addEventListener('resize', measureContent)
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame)
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', measureContent)
+    }
+  }, [content, measureContent])
+
+  const isCollapsed = isCollapsible && !isExpanded
 
   return (
-    <div className={cn('h-7 w-7 rounded-full border border-neutral-200 bg-neutral-100 text-neutral-600 flex items-center justify-center text-[10px] font-semibold shrink-0', className)}>
-      {initials}
+    <div className="relative">
+      <div
+        id={contentId}
+        ref={contentRef}
+        onLoadCapture={measureContent}
+        className={cn(
+          'relative transition-[max-height] duration-200 ease-out',
+          isCollapsed ? 'overflow-hidden' : '',
+        )}
+        style={isCollapsed ? { maxHeight: ROOM_MESSAGE_COLLAPSED_MAX_HEIGHT } : undefined}
+      >
+        <RoomMessageMarkdown content={content} isUser={isUser} />
+        {isCollapsed && (
+          <div
+            className={cn(
+              'pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-b from-transparent',
+              tone === 'system' ? 'to-amber-50' : tone === 'user' ? 'to-neutral-900' : 'to-neutral-100',
+            )}
+          />
+        )}
+      </div>
+
+      {isCollapsible && (
+        <button
+          type="button"
+          aria-expanded={isExpanded}
+          aria-controls={contentId}
+          aria-label={isExpanded ? t('Collapse message') : t('Expand full message')}
+          onClick={() => setExpandedState({ content, expanded: !isExpanded })}
+          className={cn(
+            'mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300',
+            tone === 'system'
+              ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+              : tone === 'user'
+                ? 'bg-white/10 text-neutral-100 hover:bg-white/15 hover:text-white'
+                : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900',
+          )}
+        >
+          {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          <span>{isExpanded ? t('Collapse message') : t('Expand full message')}</span>
+        </button>
+      )}
     </div>
   )
 }
@@ -444,7 +512,7 @@ export function RoomTimeline({
                   className="flex items-center justify-between gap-3 rounded-md border border-neutral-200 bg-white px-3 py-2"
                 >
                   <div className="flex min-w-0 items-center gap-2">
-                    <Avatar
+                    <MemberAvatar
                       name={member?.name ?? t('Agent')}
                       avatar={member?.avatar ?? null}
                     />
@@ -477,9 +545,9 @@ export function RoomTimeline({
 
       <div className="relative flex-1 min-h-0">
         <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin bg-white px-4 py-4">
-          <div ref={contentRef} className="space-y-4">
+          <div ref={contentRef} className="space-y-3">
             {messageList.length === 0 ? (
-              <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-200 bg-neutral-50 text-neutral-500">
+              <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-200 bg-white text-neutral-500">
                 <Users size={24} className="text-neutral-400" />
                 <span className="text-sm">{t('No room messages yet')}</span>
               </div>
@@ -501,8 +569,8 @@ export function RoomTimeline({
                 if (isSystem) {
                   return (
                     <div key={message.id} className="flex justify-center">
-                      <div className="max-w-[min(100%,34rem)] rounded-2xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 shadow-sm">
-                        <RoomMessageMarkdown content={displayContent} />
+                      <div className="max-w-[min(100%,42rem)] rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-sm">
+                        <CollapsibleRoomMessageContent content={displayContent} tone="system" />
                       </div>
                     </div>
                   )
@@ -512,47 +580,48 @@ export function RoomTimeline({
                   <div
                     key={message.id}
                     className={cn(
-                      'flex items-start gap-2',
-                      isUser ? 'justify-end pl-10' : 'justify-start pr-10',
+                      'group flex items-start gap-3',
+                      isUser ? 'justify-end pl-8 sm:pl-14' : 'justify-start pr-8 sm:pr-14',
                     )}
                   >
                     {!isUser && (
-                      <Avatar
+                      <MemberAvatar
                         name={senderName}
                         avatar={senderMember?.avatar ?? null}
                         className="mt-0.5 h-8 w-8 text-[11px]"
                       />
                     )}
-                    <div className={cn('max-w-[min(74%,42rem)]', isUser ? 'items-end' : 'items-start')}>
+                    <div className={cn('flex min-w-0 max-w-[min(86%,46rem)] flex-col', isUser ? 'items-end' : 'items-start')}>
                       <div
                         className={cn(
-                          'mb-1 flex items-center gap-2 px-1 text-[11px] text-neutral-500',
+                          'mb-1.5 flex max-w-full items-center gap-1.5 px-0.5 text-[11px] text-neutral-500',
                           isUser ? 'justify-end' : 'justify-start',
                         )}
                       >
-                        <span className="truncate font-medium text-neutral-700">{senderName}</span>
-                        <Clock3 size={11} />
-                        <span>{formatTime(message.createdAt)}</span>
+                        <span className="truncate font-semibold text-neutral-700">{senderName}</span>
+                        <span className="h-1 w-1 rounded-full bg-neutral-300" aria-hidden />
+                        <Clock3 size={11} className="text-neutral-400" />
+                        <span className="shrink-0">{formatTime(message.createdAt)}</span>
+                        {isUser && workRequestCount > 0 && mentions.length === 0 && (
+                          <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-600">
+                            {t('Work requests')}: {workRequestCount}
+                          </span>
+                        )}
                       </div>
                       <div
                         className={cn(
-                          'rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-sm',
+                          'max-w-full rounded-lg px-3.5 py-3 text-sm leading-6 transition-colors',
                           isUser
-                            ? 'rounded-tr-sm bg-neutral-200 text-neutral-900 shadow-none'
-                            : 'rounded-tl-sm border border-neutral-100 bg-white text-neutral-900 shadow-[0_1px_3px_rgba(15,23,42,0.04)]',
+                            ? 'rounded-tr-[2px] border border-neutral-900 bg-neutral-900 text-white shadow-sm'
+                            : 'rounded-tl-[2px] bg-neutral-100 text-neutral-900 shadow-sm',
                         )}
                       >
-                        <RoomMessageMarkdown content={displayContent} isUser={isUser} />
+                        <CollapsibleRoomMessageContent content={displayContent} isUser={isUser} />
 
-                        {workRequestCount > 0 && mentions.length === 0 && (
+                        {!isUser && workRequestCount > 0 && mentions.length === 0 && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             <span
-                              className={cn(
-                                'rounded-full px-2 py-0.5 text-[11px] font-medium',
-                                isUser
-                                  ? 'bg-neutral-300/70 text-neutral-700'
-                                  : 'bg-blue-50 text-blue-700',
-                              )}
+                              className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700"
                             >
                               {t('Work requests')}: {workRequestCount}
                             </span>
@@ -561,10 +630,10 @@ export function RoomTimeline({
                       </div>
                     </div>
                     {isUser && (
-                      <Avatar
+                      <MemberAvatar
                         name={senderName}
                         avatar={null}
-                        className="mt-0.5 h-8 w-8 border-neutral-200 bg-neutral-100 text-neutral-600 text-[11px]"
+                        className="mt-0.5 h-8 w-8 border-neutral-300 bg-neutral-900 text-white text-[11px]"
                       />
                     )}
                   </div>
@@ -616,7 +685,7 @@ export function RoomTimeline({
                           highlighted ? 'bg-neutral-100' : 'hover:bg-neutral-50',
                         )}
                       >
-                        <Avatar
+                        <MemberAvatar
                           name={member.name}
                           avatar={member.avatar}
                           className="h-8 w-8 text-[11px]"
