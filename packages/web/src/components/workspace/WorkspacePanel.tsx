@@ -8,6 +8,7 @@ import { TerminalTabs } from "./TerminalTabs"
 import { EditorView } from "./EditorView"
 import { ChangesView } from "./ChangesView"
 import { HistoryView } from "./HistoryView"
+import { PreviewPanel } from "./PreviewPanel"
 import { useProject } from "@/hooks/use-projects"
 import type { QuickCommand } from "@agent-tower/shared"
 
@@ -19,6 +20,7 @@ export interface WorkspacePanelProps {
   className?: string
   /** Session ID 用于 Agent 终端 Tab 接入 PTY */
   sessionId?: string
+  workspaceId?: string
   workingDir?: string
   /** 项目 ID，用于获取快捷命令 */
   projectId?: string
@@ -80,28 +82,11 @@ const TabButton: React.FC<{
   </button>
 )
 
-/** Coming Soon 占位面板 */
-const ComingSoonPlaceholder: React.FC<{
-  icon: React.ReactNode
-  title: string
-}> = ({ icon, title }) => {
-  const { t } = useI18n()
-
-  return (
-    <div className="flex-1 flex items-center justify-center bg-white">
-      <div className="flex flex-col items-center gap-2 text-neutral-400">
-        {icon}
-        <span className="text-sm font-medium text-neutral-500">{t(title)}</span>
-        <span className="text-xs">{t('Coming soon...')}</span>
-      </div>
-    </div>
-  )
-}
-
 export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
   function WorkspacePanel({
     className,
     sessionId: _sessionId,
+    workspaceId,
     workingDir,
     projectId,
     hideChanges,
@@ -180,12 +165,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
         <div className="flex-1 overflow-hidden relative">
           {/* Team Status Tab */}
           {activeTab === "team-status" && teamRun && (
-            teamStatus ?? (
-              <ComingSoonPlaceholder
-                icon={<Users size={32} />}
-                title="Team Status"
-              />
-            )
+            teamStatus
           )}
 
           {/* Editor Tab */}
@@ -206,10 +186,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
           {/* Preview Tab */}
           {activeTab === "preview" && (
-            <ComingSoonPlaceholder
-              icon={<Globe size={32} />}
-              title="Preview"
-            />
+            <PreviewPanel workspaceId={workspaceId} readOnly={readOnly} />
           )}
 
           {/* Changes Tab */}

@@ -188,6 +188,7 @@ model Workspace {
   worktreePath  String
   status        String    @default("ACTIVE")
   commitMessage String?   // AI 生成的 commit message（合并时使用）
+  previewTarget String?   // Preview 代理目标（仅允许 loopback 地址）
   hibernatedAt  DateTime? // 自动休眠时间
   sessions      Session[]
   createdAt     DateTime  @default(now())

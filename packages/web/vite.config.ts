@@ -6,6 +6,7 @@ import { getDevPort } from '@agent-tower/shared/dev-port'
 
 const monorepoRoot = path.resolve(__dirname, '../..')
 const backendPort = getDevPort(monorepoRoot)
+const backendTarget = `http://localhost:${backendPort}`
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -22,11 +23,16 @@ export default defineConfig({
     allowedHosts: ['.trycloudflare.com'],
     proxy: {
       '/api': {
-        target: `http://localhost:${backendPort}`,
+        target: backendTarget,
         changeOrigin: true,
       },
       '/socket.io': {
-        target: `http://localhost:${backendPort}`,
+        target: backendTarget,
+        changeOrigin: true,
+        ws: true,
+      },
+      '/view': {
+        target: backendTarget,
         changeOrigin: true,
         ws: true,
       },

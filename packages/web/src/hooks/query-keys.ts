@@ -27,6 +27,11 @@ export const queryKeys = {
     gitStatus: (id: string) => ['workspaces', 'gitStatus', id] as const,
   },
 
+  previews: {
+    all: ['previews'] as const,
+    status: (workspaceId: string) => ['previews', 'status', workspaceId] as const,
+  },
+
   sessions: {
     all: ['sessions'] as const,
     detail: (id: string) => ['sessions', 'detail', id] as const,

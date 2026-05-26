@@ -727,6 +727,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         <div className="flex-1 overflow-hidden">
           <WorkspacePanel
             sessionId={sessionId || undefined}
+            workspaceId={activeWorkspaceId}
             workingDir={workingDir}
             projectId={task.projectId}
             className="h-full"

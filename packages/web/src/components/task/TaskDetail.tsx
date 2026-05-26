@@ -1246,6 +1246,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           <div className="flex-1 flex flex-col min-w-0 bg-white">
             <WorkspacePanel
               sessionId={sessionId || undefined}
+              workspaceId={activeWorkspaceId}
               workingDir={workingDir}
               projectId={task.projectId}
               readOnly={isProjectReadOnly}
