@@ -157,6 +157,14 @@ function teamTemplateToForm(template: TeamTemplate): TeamTemplateFormState {
   }
 }
 
+function getInstanceLabel(name: string, index: number, ids: string[], id: string): string {
+  const totalForId = ids.filter(item => item === id).length
+  if (totalForId <= 1) return name
+
+  const instanceNumber = ids.slice(0, index + 1).filter(item => item === id).length
+  return `${name} #${instanceNumber}`
+}
+
 function parseAliasesText(raw: string): string[] {
   return Array.from(
     new Set(
@@ -590,16 +598,21 @@ export function TeamSettingsPage() {
     applyTemplateSelection('create', null)
   }
 
-  const toggleTemplatePreset = (presetId: string) => {
+  const addTemplatePreset = (presetId: string) => {
     setTemplateForm(prev => {
-      const exists = prev.memberPresetIds.includes(presetId)
       return {
         ...prev,
-        memberPresetIds: exists
-          ? prev.memberPresetIds.filter(id => id !== presetId)
-          : [...prev.memberPresetIds, presetId],
+        memberPresetIds: [...prev.memberPresetIds, presetId],
       }
     })
+    setTemplateDirty(true)
+  }
+
+  const removeTemplatePreset = (index: number) => {
+    setTemplateForm(prev => ({
+      ...prev,
+      memberPresetIds: prev.memberPresetIds.filter((_, itemIndex) => itemIndex !== index),
+    }))
     setTemplateDirty(true)
   }
 
@@ -973,9 +986,15 @@ export function TeamSettingsPage() {
                 {templates.map(template => {
                   const isSelected = templateMode === 'edit' && template.id === selectedTemplateId
                   const memberCount = template.members?.length ?? 0
+                  const memberPresetIds = template.members?.map(member => member.memberPresetId) ?? []
                   const memberPreview = template.members
                     ?.slice(0, 3)
-                    .map(member => member.memberPreset?.name ?? member.memberPresetId)
+                    .map((member, index) => getInstanceLabel(
+                      member.memberPreset?.name ?? member.memberPresetId,
+                      index,
+                      memberPresetIds,
+                      member.memberPresetId,
+                    ))
                     .join(' · ')
 
                   return (
@@ -1070,25 +1089,21 @@ export function TeamSettingsPage() {
                     </div>
                   ) : (
                     presets.map(preset => {
-                      const checked = templateForm.memberPresetIds.includes(preset.id)
+                      const selectedCount = templateForm.memberPresetIds.filter(id => id === preset.id).length
                       const providerLabel = presetProviderLabelById.get(preset.providerId) ?? preset.providerId
 
                       return (
-                        <label
+                        <button
                           key={preset.id}
+                          type="button"
+                          onClick={() => addTemplatePreset(preset.id)}
                           className={cn(
-                            'flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 transition-colors',
-                            checked
+                            'flex w-full items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
+                            selectedCount > 0
                               ? 'border-neutral-900 bg-neutral-50'
                               : 'border-neutral-200 bg-white hover:border-neutral-300 hover:bg-neutral-50',
                           )}
                         >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleTemplatePreset(preset.id)}
-                            className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-400"
-                          />
                           <MemberAvatar
                             name={preset.name}
                             avatar={preset.avatar}
@@ -1098,7 +1113,15 @@ export function TeamSettingsPage() {
                             <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
                             <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
                           </div>
-                        </label>
+                          <div className="flex shrink-0 items-center gap-2">
+                            {selectedCount > 0 && (
+                              <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-[11px] font-medium text-white">
+                                x{selectedCount}
+                              </span>
+                            )}
+                            <Plus size={15} className="text-neutral-500" />
+                          </div>
+                        </button>
                       )
                     })
                   )}
@@ -1116,48 +1139,66 @@ export function TeamSettingsPage() {
                       {t('尚未选择成员预设')}
                     </div>
                   ) : (
-                    selectedTemplateRows.map((preset, index) => (
-                      <div
-                        key={preset.id}
-                        className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-white px-3 py-2"
-                      >
-                        <div className="flex min-w-0 items-center gap-2">
-                          <MemberAvatar
-                            name={preset.name}
-                            avatar={preset.avatar}
-                            className="h-8 w-8 text-[11px]"
-                          />
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
-                            <div className="truncate text-xs text-neutral-500">
-                              {presetProviderLabelById.get(preset.providerId) ?? preset.providerId}
+                    selectedTemplateRows.map((preset, index) => {
+                      const displayName = getInstanceLabel(
+                        preset.name,
+                        index,
+                        templateForm.memberPresetIds,
+                        preset.id,
+                      )
+
+                      return (
+                        <div
+                          key={`${preset.id}-${index}`}
+                          className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-white px-3 py-2"
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <MemberAvatar
+                              name={preset.name}
+                              avatar={preset.avatar}
+                              className="h-8 w-8 text-[11px]"
+                            />
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium text-neutral-900">{displayName}</div>
+                              <div className="truncate text-xs text-neutral-500">
+                                {presetProviderLabelById.get(preset.providerId) ?? preset.providerId}
+                              </div>
                             </div>
                           </div>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => moveTemplatePreset(index, -1)}
+                              disabled={index === 0}
+                              title={t('上移')}
+                            >
+                              <ChevronUp size={14} />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => moveTemplatePreset(index, 1)}
+                              disabled={index === selectedTemplateRows.length - 1}
+                              title={t('下移')}
+                            >
+                              <ChevronDown size={14} />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => removeTemplatePreset(index)}
+                              title={t('移除')}
+                            >
+                              <Trash2 size={14} />
+                            </Button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => moveTemplatePreset(index, -1)}
-                            disabled={index === 0}
-                            title={t('上移')}
-                          >
-                            <ChevronUp size={14} />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => moveTemplatePreset(index, 1)}
-                            disabled={index === selectedTemplateRows.length - 1}
-                            title={t('下移')}
-                          >
-                            <ChevronDown size={14} />
-                          </Button>
-                        </div>
-                      </div>
-                    ))
+                      )
+                    })
                   )}
                 </div>
               </div>

@@ -288,7 +288,7 @@ function SelectOperationView({
             <div className="text-sm font-medium text-neutral-900">
               {mergePending ? t('合并中...') : t('合并 (Merge)')}
             </div>
-            <div className="text-xs text-neutral-500">{t('Squash merge 到 {targetBranch}', { targetBranch })}</div>
+            <div className="text-xs text-neutral-500">{t('合并到 {targetBranch}', { targetBranch })}</div>
           </div>
         </button>
       </div>

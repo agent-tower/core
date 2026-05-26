@@ -5,23 +5,110 @@ import { execGit } from '../git/git-cli.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 import { getSessionManager, getEventBus } from '../core/container.js';
 import { copyProjectFiles } from './copy-files.service.js';
+import { defaultTeamLockService, type TeamLockService } from './team-lock.service.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
+import path from 'node:path';
+import type { Prisma } from '@prisma/client';
 import type { EventBus } from '../core/event-bus.js';
 import type { GitOperationStatus } from '@agent-tower/shared';
 import { ensureProjectIsMutable } from './project-guards.js';
 
 const DEFAULT_IDLE_THRESHOLD_HOURS = 24;
+const WORKSPACE_READY_RETRY_COUNT = 20;
+const WORKSPACE_READY_RETRY_DELAY_MS = 50;
 
 const execAsync = promisify(exec);
 
 /** 过滤条件：只返回用户可见的 CHAT session */
 const visibleSessionsFilter = { where: { purpose: { not: SessionPurpose.COMMIT_MSG } } };
+const activeSessionStatuses = [SessionStatus.PENDING, SessionStatus.RUNNING];
+const finalChildWorkspaceStatuses = [WorkspaceStatus.MERGED, WorkspaceStatus.ABANDONED];
+
+export interface CreateWorkspaceOptions {
+  branchName?: string;
+  branchNamePrefix?: string;
+  startPoint?: string | null;
+  parentWorkspaceId?: string | null;
+  ownerMemberId?: string | null;
+  reuseInactive?: boolean;
+}
+
+export interface MergeWorkspaceOptions {
+  commitMessage?: string;
+  lockOwnerId?: string;
+}
+
+type WorkspaceWithTaskProject = Prisma.WorkspaceGetPayload<{
+  include: { task: { include: { project: true } } };
+}>;
+
+type WorkspaceWithVisibleSessions = Prisma.WorkspaceGetPayload<{
+  include: { sessions: typeof visibleSessionsFilter; task: { include: { project: true } } };
+}>;
+
+type MergeWorkspaceRecord = Prisma.WorkspaceGetPayload<{
+  include: { task: { include: { project: true; teamRun: true } } };
+}>;
+
+function normalizeCreateOptions(input?: string | CreateWorkspaceOptions): Required<CreateWorkspaceOptions> {
+  if (typeof input === 'string') {
+    return {
+      branchName: input,
+      branchNamePrefix: '',
+      startPoint: null,
+      parentWorkspaceId: null,
+      ownerMemberId: null,
+      reuseInactive: true,
+    };
+  }
+
+  return {
+    branchName: input?.branchName ?? '',
+    branchNamePrefix: input?.branchNamePrefix ?? '',
+    startPoint: input?.startPoint ?? null,
+    parentWorkspaceId: input?.parentWorkspaceId ?? null,
+    ownerMemberId: input?.ownerMemberId ?? null,
+    reuseInactive: input?.reuseInactive ?? true,
+  };
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: string }).code === 'P2002';
+}
+
+function branchFromOptions(workspaceId: string, options: Required<CreateWorkspaceOptions>): string {
+  if (options.branchName) {
+    return options.branchName;
+  }
+
+  if (options.branchNamePrefix) {
+    return `${options.branchNamePrefix}/${workspaceId.slice(0, 8)}`;
+  }
+
+  return `at/${workspaceId.slice(0, 8)}`;
+}
+
+function teamRunBranchPrefix(teamRunId: string): string {
+  return `at/team/${teamRunId.slice(0, 8)}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export class WorkspaceService {
+  private static readonly mainWorkspaceClaims = new Map<string, Promise<WorkspaceWithVisibleSessions>>();
+  private static readonly dedicatedWorkspaceClaims = new Map<string, Promise<WorkspaceWithVisibleSessions>>();
   private sessionService = getSessionManager();
   private eventBus: EventBus = getEventBus();
+
+  constructor(private readonly lockService: TeamLockService = defaultTeamLockService) {}
 
   private getBaseBranch(workspace: {
     baseBranch: string | null;
@@ -66,7 +153,8 @@ export class WorkspaceService {
    * - 创建后自动将关联 Task 状态改为 IN_PROGRESS
    * - 失败时回滚已创建的数据库记录
    */
-  async create(taskId: string, branchName?: string) {
+  async create(taskId: string, branchNameOrOptions?: string | CreateWorkspaceOptions) {
+    const options = normalizeCreateOptions(branchNameOrOptions);
     const task = await prisma.task.findUnique({
       where: { id: taskId },
       include: { project: true },
@@ -80,32 +168,22 @@ export class WorkspaceService {
     const worktreeManager = new WorktreeManager(task.project.repoPath);
 
     // 查找可复用的 MERGED 或 HIBERNATED workspace
-    if (!branchName) {
+    if (!options.branchName && options.reuseInactive) {
       const reusableWorkspace = await prisma.workspace.findFirst({
         where: {
           taskId,
+          parentWorkspaceId: options.parentWorkspaceId,
+          ownerMemberId: options.ownerMemberId,
           status: { in: [WorkspaceStatus.MERGED, WorkspaceStatus.HIBERNATED] },
         },
         orderBy: { updatedAt: 'desc' },
       });
 
       if (reusableWorkspace) {
-        const worktreePath = await worktreeManager.ensureWorktreeExists(reusableWorkspace.branchName);
-
-        this.runCopyFiles(task.project.repoPath, worktreePath, task.project.copyFiles);
-        this.fireSetupScript(reusableWorkspace.id, taskId, worktreePath, task.project.setupScript);
-
-        const updated = await prisma.workspace.update({
-          where: { id: reusableWorkspace.id },
-          data: {
-            status: WorkspaceStatus.ACTIVE,
-            worktreePath,
-            hibernatedAt: null,
-          },
-          include: { sessions: true, task: { include: { project: true } } },
+        return this.restoreInactiveWorkspace({
+          ...reusableWorkspace,
+          task: { ...task, project: task.project },
         });
-
-        return updated;
       }
     }
 
@@ -113,6 +191,8 @@ export class WorkspaceService {
     const workspace = await prisma.workspace.create({
       data: {
         taskId,
+        parentWorkspaceId: options.parentWorkspaceId,
+        ownerMemberId: options.ownerMemberId,
         branchName: '', // 占位，稍后更新
         worktreePath: '', // 占位，稍后更新
         status: WorkspaceStatus.ACTIVE,
@@ -121,23 +201,26 @@ export class WorkspaceService {
 
     try {
       // 生成分支名：用户指定 or 自动生成 at/{shortId}
-      const branch = branchName || `at/${workspace.id.slice(0, 8)}`;
+      const branch = branchFromOptions(workspace.id, options);
 
       // 空仓库（无任何 commit）无法创建 worktree，提前报错
-      let baseBranch: string | null = null;
-      try {
-        const currentBranch = (
-          await execGit(task.project.repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
-        ).trim();
-        baseBranch = currentBranch && currentBranch !== 'HEAD' ? currentBranch : null;
-      } catch {
-        throw new Error(
-          '仓库尚无任何提交记录，无法创建 Workspace。请重新编辑项目以触发自动初始化，或手动执行 git commit。'
-        );
+      const startPoint = options.startPoint || null;
+      let baseBranch: string | null = startPoint;
+      if (!startPoint) {
+        try {
+          const currentBranch = (
+            await execGit(task.project.repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
+          ).trim();
+          baseBranch = currentBranch && currentBranch !== 'HEAD' ? currentBranch : null;
+        } catch {
+          throw new Error(
+            '仓库尚无任何提交记录，无法创建 Workspace。请重新编辑项目以触发自动初始化，或手动执行 git commit。'
+          );
+        }
       }
 
       // WorktreeManager.create 内部已做分支名合法性校验和重复检查
-      const worktreePath = await worktreeManager.create(branch);
+      const worktreePath = await worktreeManager.create(branch, startPoint ?? undefined);
 
       // worktree 创建后：复制文件 + 异步执行 setup 脚本（fire-and-forget）
       this.runCopyFiles(task.project.repoPath, worktreePath, task.project.copyFiles);
@@ -158,6 +241,246 @@ export class WorkspaceService {
       });
       throw err;
     }
+  }
+
+  async getOrCreateMainWorkspace(teamRunId: string) {
+    const existingClaim = WorkspaceService.mainWorkspaceClaims.get(teamRunId);
+    if (existingClaim) {
+      return existingClaim;
+    }
+
+    const claim = this.findOrCreateMainWorkspace(teamRunId);
+    WorkspaceService.mainWorkspaceClaims.set(teamRunId, claim);
+
+    try {
+      return await claim;
+    } finally {
+      if (WorkspaceService.mainWorkspaceClaims.get(teamRunId) === claim) {
+        WorkspaceService.mainWorkspaceClaims.delete(teamRunId);
+      }
+    }
+  }
+
+  async getOrCreateDedicatedWorkspace(teamRunId: string, memberId: string) {
+    const mainWorkspace = await this.getOrCreateMainWorkspace(teamRunId);
+    const claimKey = `${mainWorkspace.id}:${memberId}`;
+    const existingClaim = WorkspaceService.dedicatedWorkspaceClaims.get(claimKey);
+    if (existingClaim) {
+      return existingClaim;
+    }
+
+    const claim = this.findOrCreateDedicatedWorkspace(teamRunId, memberId, mainWorkspace);
+    WorkspaceService.dedicatedWorkspaceClaims.set(claimKey, claim);
+
+    try {
+      return await claim;
+    } finally {
+      if (WorkspaceService.dedicatedWorkspaceClaims.get(claimKey) === claim) {
+        WorkspaceService.dedicatedWorkspaceClaims.delete(claimKey);
+      }
+    }
+  }
+
+  private async findOrCreateMainWorkspace(teamRunId: string): Promise<WorkspaceWithVisibleSessions> {
+    const teamRun = await prisma.teamRun.findUnique({
+      where: { id: teamRunId },
+      include: {
+        task: { include: { project: true } },
+        mainWorkspace: { include: { task: { include: { project: true } } } },
+      },
+    });
+
+    if (!teamRun) {
+      throw new NotFoundError('TeamRun', teamRunId);
+    }
+    ensureProjectIsMutable(teamRun.task.project, 'create workspaces');
+
+    if (
+      teamRun.mainWorkspace
+      && teamRun.mainWorkspace.taskId === teamRun.taskId
+      && teamRun.mainWorkspace.parentWorkspaceId == null
+      && teamRun.mainWorkspace.ownerMemberId == null
+      && teamRun.mainWorkspace.status === WorkspaceStatus.ACTIVE
+    ) {
+      return this.ensureActiveWorkspaceWorktree(teamRun.mainWorkspace);
+    }
+
+    const activeRoot = await prisma.workspace.findFirst({
+      where: {
+        taskId: teamRun.taskId,
+        parentWorkspaceId: null,
+        ownerMemberId: null,
+        status: WorkspaceStatus.ACTIVE,
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      include: { task: { include: { project: true } } },
+    });
+
+    if (activeRoot) {
+      await prisma.teamRun.update({
+        where: { id: teamRun.id },
+        data: { mainWorkspaceId: activeRoot.id },
+      });
+      return this.ensureActiveWorkspaceWorktree(activeRoot);
+    }
+
+    const workspace = await this.create(teamRun.taskId, {
+      branchNamePrefix: `${teamRunBranchPrefix(teamRun.id)}/main`,
+      parentWorkspaceId: null,
+      ownerMemberId: null,
+      reuseInactive: false,
+    });
+    await prisma.teamRun.update({
+      where: { id: teamRun.id },
+      data: { mainWorkspaceId: workspace.id },
+    });
+    return workspace;
+  }
+
+  private async findOrCreateDedicatedWorkspace(
+    teamRunId: string,
+    memberId: string,
+    mainWorkspace: WorkspaceWithVisibleSessions,
+  ): Promise<WorkspaceWithVisibleSessions> {
+    const teamRun = await prisma.teamRun.findUnique({
+      where: { id: teamRunId },
+      include: { task: { include: { project: true } } },
+    });
+    if (!teamRun) {
+      throw new NotFoundError('TeamRun', teamRunId);
+    }
+
+    const member = await prisma.teamMember.findFirst({
+      where: { id: memberId, teamRunId },
+      select: { id: true },
+    });
+    if (!member) {
+      throw new NotFoundError('TeamMember', memberId);
+    }
+    ensureProjectIsMutable(teamRun.task.project, 'create workspaces');
+
+    const existing = await this.findDedicatedWorkspace(mainWorkspace.id, memberId);
+    if (existing) {
+      return this.activateDedicatedWorkspace(existing);
+    }
+
+    try {
+      return await this.create(teamRun.taskId, {
+        branchNamePrefix: `${teamRunBranchPrefix(teamRun.id)}/member-${memberId.slice(0, 8)}`,
+        startPoint: mainWorkspace.branchName,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: memberId,
+        reuseInactive: false,
+      });
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+
+      const raced = await this.findDedicatedWorkspace(mainWorkspace.id, memberId);
+      if (!raced) {
+        throw error;
+      }
+      return this.activateDedicatedWorkspace(await this.waitForWorkspaceReady(raced));
+    }
+  }
+
+  private async findDedicatedWorkspace(
+    mainWorkspaceId: string,
+    memberId: string,
+  ): Promise<WorkspaceWithTaskProject | null> {
+    return prisma.workspace.findFirst({
+      where: {
+        parentWorkspaceId: mainWorkspaceId,
+        ownerMemberId: memberId,
+      },
+      include: { task: { include: { project: true } } },
+    });
+  }
+
+  private async activateDedicatedWorkspace(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
+    if (!workspace.branchName) {
+      workspace = await this.waitForWorkspaceReady(workspace);
+    }
+
+    if (workspace.status === WorkspaceStatus.ACTIVE) {
+      return this.ensureActiveWorkspaceWorktree(workspace);
+    }
+
+    if (workspace.status === WorkspaceStatus.HIBERNATED) {
+      return this.restoreInactiveWorkspace(workspace);
+    }
+
+    throw new ServiceError(
+      `Cannot reuse dedicated workspace in ${workspace.status} status`,
+      'DEDICATED_WORKSPACE_UNAVAILABLE',
+      409
+    );
+  }
+
+  private async waitForWorkspaceReady(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithTaskProject> {
+    if (workspace.branchName) {
+      return workspace;
+    }
+
+    for (let attempt = 0; attempt < WORKSPACE_READY_RETRY_COUNT; attempt++) {
+      await sleep(WORKSPACE_READY_RETRY_DELAY_MS);
+      const reloaded = await prisma.workspace.findUnique({
+        where: { id: workspace.id },
+        include: { task: { include: { project: true } } },
+      });
+      if (!reloaded) {
+        break;
+      }
+      if (reloaded.branchName) {
+        return reloaded;
+      }
+    }
+
+    throw new ServiceError(
+      `Workspace ${workspace.id} is still initializing`,
+      'WORKSPACE_INITIALIZING',
+      409
+    );
+  }
+
+  private async ensureActiveWorkspaceWorktree(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
+    if (!workspace.branchName) {
+      workspace = await this.waitForWorkspaceReady(workspace);
+    }
+
+    if (workspace.worktreePath) {
+      const gitFileExists = await fs
+        .access(path.join(workspace.worktreePath, '.git'))
+        .then(() => true)
+        .catch(() => false);
+      if (gitFileExists) {
+        return prisma.workspace.findUniqueOrThrow({
+          where: { id: workspace.id },
+          include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
+        });
+      }
+    }
+
+    return this.restoreInactiveWorkspace(workspace);
+  }
+
+  private async restoreInactiveWorkspace(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
+    const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
+    const worktreePath = await worktreeManager.ensureWorktreeExists(workspace.branchName);
+
+    this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
+    this.fireSetupScript(workspace.id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
+
+    return prisma.workspace.update({
+      where: { id: workspace.id },
+      data: {
+        status: WorkspaceStatus.ACTIVE,
+        worktreePath,
+        hibernatedAt: null,
+      },
+      include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
+    });
   }
 
   // ── Delete ───────────────────────────────────────────────────────────────────
@@ -296,58 +619,106 @@ export class WorkspaceService {
 
   // ── Merge (squash) ──────────────────────────────────────────────────────────
 
-  /**
-   * 合并 Workspace 到主分支（squash merge）
-   *
-   * @param commitMessage - 可选的自定义 commit message
-   * @returns squash commit 的 SHA
-   */
-  async merge(id: string, commitMessage?: string): Promise<string> {
-    const totalStart = performance.now();
-    const step = (label: string, start: number) =>
-      console.log(`[WorkspaceService.merge] ${label}: ${(performance.now() - start).toFixed(0)}ms`);
-
-    let t = performance.now();
+  async merge(id: string, commitMessage?: string): Promise<string>;
+  async merge(id: string, options?: MergeWorkspaceOptions): Promise<string>;
+  async merge(id: string, commitMessageOrOptions?: string | MergeWorkspaceOptions): Promise<string> {
+    const options = typeof commitMessageOrOptions === 'string'
+      ? { commitMessage: commitMessageOrOptions }
+      : (commitMessageOrOptions ?? {});
     const workspace = await prisma.workspace.findUnique({
       where: { id },
-      include: { task: { include: { project: true } } },
+      include: { task: { include: { project: true, teamRun: true } } },
     });
-    step('db findUnique', t);
 
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
     ensureProjectIsMutable(workspace.task.project, 'merge workspaces');
 
-    // 优先使用传入的 commitMessage，其次使用 AI 生成的缓存
-    const message = commitMessage || workspace.commitMessage || undefined;
+    return this.withProjectMergeLock(
+      workspace.task.projectId,
+      options.lockOwnerId,
+      () => this.mergeWithLock(workspace, options.commitMessage)
+    );
+  }
 
-    t = performance.now();
+  private async mergeWithLock(workspace: MergeWorkspaceRecord, commitMessage?: string): Promise<string> {
+    if (workspace.status !== WorkspaceStatus.ACTIVE) {
+      throw new ServiceError(
+        `Cannot merge workspace in ${workspace.status} status`,
+        'INVALID_WORKSPACE_STATE',
+        400
+      );
+    }
+
+    if (workspace.parentWorkspaceId) {
+      return this.mergeChildIntoParent(workspace, commitMessage);
+    }
+
+    return this.mergeRootWorkspaceToMain(workspace, commitMessage);
+  }
+
+  private async mergeChildIntoParent(workspace: MergeWorkspaceRecord, commitMessage?: string): Promise<string> {
+    const parentWorkspace = await prisma.workspace.findUnique({
+      where: { id: workspace.parentWorkspaceId ?? '' },
+      include: { task: { include: { project: true } } },
+    });
+    if (!parentWorkspace) {
+      throw new NotFoundError('Workspace', workspace.parentWorkspaceId ?? '');
+    }
+    if (parentWorkspace.taskId !== workspace.taskId || parentWorkspace.ownerMemberId != null) {
+      throw new ServiceError(
+        'Dedicated child workspace parent is not a valid TeamRun main workspace',
+        'INVALID_PARENT_WORKSPACE',
+        400
+      );
+    }
+    if (parentWorkspace.status !== WorkspaceStatus.ACTIVE) {
+      throw new ServiceError(
+        `Cannot merge into parent workspace in ${parentWorkspace.status} status`,
+        'INVALID_PARENT_WORKSPACE_STATE',
+        409
+      );
+    }
+
+    await this.assertNoActiveWriteSessions(parentWorkspace.id);
+
+    const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
+    const { sha } = await worktreeManager.mergeIntoWorktree(
+      workspace.worktreePath,
+      parentWorkspace.worktreePath,
+      { commitMessage: commitMessage || workspace.commitMessage || undefined }
+    );
+
+    await prisma.workspace.update({
+      where: { id: workspace.id },
+      data: { status: WorkspaceStatus.MERGED },
+    });
+
+    return sha;
+  }
+
+  private async mergeRootWorkspaceToMain(workspace: MergeWorkspaceRecord, commitMessage?: string): Promise<string> {
+    await this.assertTeamRunFinalMergeAllowed(workspace);
+
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     const { sha } = await worktreeManager.merge(
       workspace.worktreePath,
       this.getBaseBranch(workspace),
-      message ? { commitMessage: message } : undefined
+      { commitMessage: commitMessage || workspace.commitMessage || undefined }
     );
-    step('worktreeManager.merge', t);
 
-    // 更新 workspace：标记 MERGED，保留 worktreePath 供 cleanup() 后续清理物理目录
-    t = performance.now();
     await prisma.workspace.update({
-      where: { id },
+      where: { id: workspace.id },
       data: { status: WorkspaceStatus.MERGED },
     });
-    step('db update workspace', t);
 
-    // Task 推进到 DONE
     const advanceableStatuses = [TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW];
     if (advanceableStatuses.includes(workspace.task.status as TaskStatus)) {
-      t = performance.now();
       await prisma.task.update({
         where: { id: workspace.task.id },
         data: { status: TaskStatus.DONE },
       });
-      step('db update task', t);
       this.eventBus.emit('task:updated', {
         taskId: workspace.task.id,
         projectId: workspace.task.projectId,
@@ -355,8 +726,82 @@ export class WorkspaceService {
       });
     }
 
-    console.log(`[WorkspaceService.merge] TOTAL: ${(performance.now() - totalStart).toFixed(0)}ms`);
     return sha;
+  }
+
+  private async assertTeamRunFinalMergeAllowed(workspace: MergeWorkspaceRecord): Promise<void> {
+    const teamRun = workspace.task.teamRun;
+    if (!teamRun) {
+      return;
+    }
+    if (teamRun.mainWorkspaceId !== workspace.id) {
+      throw new ServiceError(
+        'Only the bound TeamRun main workspace can be merged into the project main branch',
+        'TEAM_RUN_NON_MAIN_WORKSPACE_FINAL_MERGE_FORBIDDEN',
+        409
+      );
+    }
+
+    const blockingChildren = await prisma.workspace.findMany({
+      where: {
+        parentWorkspaceId: workspace.id,
+        status: { notIn: finalChildWorkspaceStatuses },
+      },
+      select: { id: true, status: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+
+    if (blockingChildren.length > 0) {
+      throw new ServiceError(
+        'Cannot merge TeamRun main workspace before all dedicated child workspaces are merged or abandoned',
+        'TEAM_RUN_CHILD_WORKSPACES_NOT_FINAL',
+        409
+      );
+    }
+  }
+
+  private async assertNoActiveWriteSessions(workspaceId: string): Promise<void> {
+    const activeSession = await prisma.session.findFirst({
+      where: {
+        workspaceId,
+        status: { in: activeSessionStatuses },
+        purpose: SessionPurpose.CHAT,
+      },
+      select: { id: true },
+    });
+
+    if (activeSession) {
+      throw new ServiceError(
+        'Cannot merge into parent workspace while it has an active write session',
+        'PARENT_WORKSPACE_HAS_ACTIVE_SESSION',
+        409
+      );
+    }
+  }
+
+  private async withProjectMergeLock<T>(
+    projectId: string,
+    requestedOwnerId: string | undefined,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const lockKey = `project:${projectId}:merge`;
+    const ownerId = requestedOwnerId ?? `workspace-merge:${randomUUID()}`;
+    const alreadyHeldByOwner = this.lockService.isHeldBy(ownerId, lockKey);
+    if (!alreadyHeldByOwner && !this.lockService.acquire(ownerId, [lockKey])) {
+      throw new ServiceError(
+        'Another workspace merge is already running for this project',
+        'PROJECT_MERGE_LOCKED',
+        409
+      );
+    }
+
+    try {
+      return await fn();
+    } finally {
+      if (!alreadyHeldByOwner) {
+        this.lockService.release(ownerId, [lockKey]);
+      }
+    }
   }
 
   // ── Archive ──────────────────────────────────────────────────────────────────

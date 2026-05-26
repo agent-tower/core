@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { useQueryClient } from '@tanstack/react-query'
-import { SessionStatus, type Session } from '@agent-tower/shared'
+import { SessionStatus, WorkspaceStatus, type Session } from '@agent-tower/shared'
 import type { ConflictOp } from '@agent-tower/shared'
 import {
   ServerEvents,
@@ -20,6 +20,12 @@ import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
+import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher'
+import {
+  canRunWorkspaceGitOperations,
+  getWorkspaceMergeTargetBranch,
+  resolveDefaultWorkspaceId,
+} from '@/components/workspace/team-workspace-view'
 import { teamRunQueryKeys, useTaskTeamRun, useRoomMessages, usePostRoomMessage } from '@/hooks/use-team-run'
 import { useWorkspaces, useOpenInEditor, useGitStatus, useCreateWorkspace, useReactivateWorkspace } from '@/hooks/use-workspaces'
 import { queryKeys } from '@/hooks/query-keys'
@@ -209,6 +215,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const [isGitDialogOpen, setIsGitDialogOpen] = useState(false)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const [focusedInvocationSessionId, setFocusedInvocationSessionId] = useState<string | null>(null)
+  const [explicitWorkspaceId, setExplicitWorkspaceId] = useState<string | undefined>(undefined)
   // retry 后强制清空 session 显示，等待用户重新 Start Agent
   const [isJustRetried, setIsJustRetried] = useState(false)
   const inputContainerRef = useRef<HTMLDivElement>(null)
@@ -245,7 +252,29 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   useEffect(() => {
     setIsJustRetried(false)
     setFocusedInvocationSessionId(null)
+    setExplicitWorkspaceId(undefined)
   }, [task?.id])
+
+  const resolvedWorkspaceId = useMemo(
+    () => resolveDefaultWorkspaceId(workspaces, teamRun, explicitWorkspaceId),
+    [explicitWorkspaceId, teamRun, workspaces],
+  )
+
+  useEffect(() => {
+    if (explicitWorkspaceId && !workspaces?.some((workspace) => workspace.id === explicitWorkspaceId)) {
+      setExplicitWorkspaceId(undefined)
+    }
+  }, [explicitWorkspaceId, workspaces])
+
+  const selectedWorkspace = useMemo(
+    () => workspaces?.find((workspace) => workspace.id === resolvedWorkspaceId),
+    [resolvedWorkspaceId, workspaces],
+  )
+
+  const selectedWorkspaceOperationId = selectedWorkspace?.status === WorkspaceStatus.ACTIVE
+    ? selectedWorkspace.id
+    : undefined
+  const canRunSelectedWorkspaceGitOperations = canRunWorkspaceGitOperations(selectedWorkspace, teamRun)
 
   // 新 ACTIVE workspace session 出现后自动解除 retry 锁定
   useEffect(() => {
@@ -344,13 +373,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   // Derive workingDir from the active workspace's worktreePath
   const workingDir = useMemo(() => {
     if (!workspaces || isJustRetried) return undefined
+    if (selectedWorkspace) return selectedWorkspace.worktreePath || undefined
     for (const ws of workspaces) {
       if (ws.status === 'ACTIVE' && ws.worktreePath) {
         return ws.worktreePath
       }
     }
     return workspaces[0]?.worktreePath
-  }, [workspaces, isJustRetried])
+  }, [isJustRetried, selectedWorkspace, workspaces])
 
   const slashCommandMenu = useSlashCommandMenu({
     agentType: activeSession?.agentType,
@@ -372,37 +402,20 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     maxHeight: 300,
   })
 
-  // Derive active workspace ID for Open in IDE
-  const activeWorkspaceId = useMemo(() => {
-    if (!workspaces) return undefined
-    const active = workspaces.find(ws => ws.status === 'ACTIVE')
-    return active?.id
-  }, [workspaces])
-
   // ============ Git Status ============
 
-  const { data: gitStatus } = useGitStatus(activeWorkspaceId ?? '')
+  const { data: gitStatus } = useGitStatus(canRunSelectedWorkspaceGitOperations ? selectedWorkspaceOperationId ?? '' : '')
 
   // Collect sessions from active workspace for ResolveConflictsDialog
-  const activeWorkspaceSessions = useMemo(() => {
-    if (!workspaces) return []
-    const active = workspaces.find(ws => ws.status === 'ACTIVE')
-    return active?.sessions ?? []
-  }, [workspaces])
+  const selectedWorkspaceSessions = selectedWorkspace?.sessions ?? []
 
-  // Active workspace branch name
-  const activeWorkspaceBranch = useMemo(() => {
-    if (!workspaces) return ''
-    const active = workspaces.find(ws => ws.status === 'ACTIVE')
-    return active?.branchName ?? ''
-  }, [workspaces])
+  const selectedWorkspaceBranch = selectedWorkspace?.branchName ?? ''
 
-  // Active workspace AI-generated commit message
-  const activeWorkspaceCommitMessage = useMemo(() => {
-    if (!workspaces) return undefined
-    const active = workspaces.find(ws => ws.status === 'ACTIVE')
-    return active?.commitMessage
-  }, [workspaces])
+  const selectedWorkspaceCommitMessage = selectedWorkspace?.commitMessage
+  const selectedWorkspaceMergeTargetBranch = useMemo(
+    () => getWorkspaceMergeTargetBranch(selectedWorkspace, workspaces, task?.mainBranch ?? ''),
+    [selectedWorkspace, task?.mainBranch, workspaces],
+  )
 
   // ============ Query Client & Mutations ============
 
@@ -487,9 +500,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       retryTaskMutation, createWorkspaceMutation, startSessionMutation, queryClient])
 
   const handleOpenInIde = useCallback(() => {
-    if (!activeWorkspaceId) return
-    openInEditorMutation.mutate({ workspaceId: activeWorkspaceId })
-  }, [activeWorkspaceId, openInEditorMutation])
+    if (!selectedWorkspace?.id) return
+    openInEditorMutation.mutate({ workspaceId: selectedWorkspace.id })
+  }, [openInEditorMutation, selectedWorkspace?.id])
 
   const handleDeleteTask = useCallback(() => {
     if (!task?.id || !onDeleteTask) return
@@ -823,11 +836,19 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             onChangeStatus={!isProjectReadOnly && onTaskStatusChange ? (newStatus) => onTaskStatusChange(task.id, newStatus) : undefined}
           />
 
+          <WorkspaceSwitcher
+            workspaces={workspaces}
+            teamRun={teamRun}
+            selectedWorkspaceId={resolvedWorkspaceId}
+            onSelectWorkspace={setExplicitWorkspaceId}
+          />
+
           {/* Git Operations */}
-          {activeWorkspaceId && !isProjectReadOnly && (
+          {selectedWorkspace && !isProjectReadOnly && (
             <button
               onClick={() => setIsGitDialogOpen(true)}
-              className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
+              disabled={!canRunSelectedWorkspaceGitOperations}
+              className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title={t('Git 操作')}
             >
               <GitFork size={18} />
@@ -837,7 +858,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           {/* Open in IDE */}
           <button
             onClick={handleOpenInIde}
-            disabled={!activeWorkspaceId || isProjectReadOnly}
+            disabled={!selectedWorkspace?.worktreePath || isProjectReadOnly}
             className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             title={t('Open in IDE')}
           >
@@ -904,9 +925,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       </div>
 
       {/* Conflict Banner */}
-      {activeWorkspaceId && gitStatus && (
+      {canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId && gitStatus && (
         <ConflictBanner
-          workspaceId={activeWorkspaceId}
+          workspaceId={selectedWorkspaceOperationId}
           gitStatus={gitStatus}
           onResolve={() => setIsResolveDialogOpen(true)}
         />
@@ -1246,13 +1267,21 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           <div className="flex-1 flex flex-col min-w-0 bg-white">
             <WorkspacePanel
               sessionId={sessionId || undefined}
-              workspaceId={activeWorkspaceId}
+              workspaceId={resolvedWorkspaceId}
               workingDir={workingDir}
               projectId={task.projectId}
               readOnly={isProjectReadOnly}
               repoDeleted={isProjectRepoDeleted}
               teamRun={teamRun}
-              teamStatus={teamRun ? <TeamStatusPanel teamRun={teamRun} onViewInvocationSession={handleViewInvocationSession} /> : undefined}
+              teamStatus={teamRun ? (
+                <TeamStatusPanel
+                  teamRun={teamRun}
+                  workspaces={workspaces}
+                  selectedWorkspaceId={resolvedWorkspaceId}
+                  onSelectWorkspace={setExplicitWorkspaceId}
+                  onViewInvocationSession={handleViewInvocationSession}
+                />
+              ) : undefined}
             />
           </div>
         )}
@@ -1279,30 +1308,30 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       )}
 
       {/* Git Operations Dialog */}
-      {activeWorkspaceId && !isProjectReadOnly && (
+      {canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId && !isProjectReadOnly && (
         <GitOperationsDialog
           open={isGitDialogOpen}
           onOpenChange={setIsGitDialogOpen}
-          workspaceId={activeWorkspaceId}
-          branchName={activeWorkspaceBranch}
-          targetBranch={task.mainBranch}
-          commitMessage={activeWorkspaceCommitMessage}
+          workspaceId={selectedWorkspaceOperationId}
+          branchName={selectedWorkspaceBranch}
+          targetBranch={selectedWorkspaceMergeTargetBranch}
+          commitMessage={selectedWorkspaceCommitMessage}
           onRefreshCommitMessage={refreshWorkspaces}
           onConflict={() => setIsResolveDialogOpen(true)}
         />
       )}
 
       {/* Resolve Conflicts Dialog */}
-      {activeWorkspaceId && gitStatus && gitStatus.conflictOp && (
+      {canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId && gitStatus && gitStatus.conflictOp && (
         <ResolveConflictsDialog
           open={isResolveDialogOpen}
           onOpenChange={setIsResolveDialogOpen}
-          workspaceId={activeWorkspaceId}
+          workspaceId={selectedWorkspaceOperationId}
           conflictOp={gitStatus.conflictOp as ConflictOp}
           conflictedFiles={gitStatus.conflictedFiles}
-          sourceBranch={activeWorkspaceBranch}
-          targetBranch={task.mainBranch}
-          sessions={activeWorkspaceSessions}
+          sourceBranch={selectedWorkspaceBranch}
+          targetBranch={selectedWorkspaceMergeTargetBranch}
+          sessions={selectedWorkspaceSessions}
         />
       )}
 

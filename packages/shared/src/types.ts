@@ -260,6 +260,10 @@ export interface Task {
 export interface Workspace {
   id: string
   taskId: string
+  /** Parent workspace for TeamRun dedicated child workspaces. Null for root/main workspaces. */
+  parentWorkspaceId?: string | null
+  /** TeamRun member that owns this dedicated child workspace. Null for root/shared workspaces. */
+  ownerMemberId?: string | null
   /** 分支名称 (对应 Prisma branchName) */
   branchName: string
   /** 创建 workspace 时记录的基准分支 */
@@ -332,6 +336,8 @@ export interface TeamTemplateMember {
 export interface TeamRun {
   id: string
   taskId: string
+  /** Root workspace used as TeamRun main workspace for shared/none members and child workspace parent. */
+  mainWorkspaceId?: string | null
   mode: TeamRunMode
   reviewReason?: TeamRunReviewReason | null
   task?: Task

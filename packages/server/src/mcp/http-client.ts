@@ -17,9 +17,17 @@ export class AgentTowerClient {
       url += `?${params.toString()}`;
     }
 
+    const headers: Record<string, string> = {};
+    if (body) {
+      headers['Content-Type'] = 'application/json';
+    }
+    if (process.env.AGENT_TOWER_INVOCATION_ID) {
+      headers['x-agent-tower-invocation-id'] = process.env.AGENT_TOWER_INVOCATION_ID;
+    }
+
     const resp = await fetch(url, {
       method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
       body: body ? JSON.stringify(body) : undefined,
     });
 

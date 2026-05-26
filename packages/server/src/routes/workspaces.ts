@@ -158,7 +158,13 @@ export async function workspaceRoutes(app: FastifyInstance) {
     '/workspaces/:id/merge',
     async (request) => {
       const body = mergeSchema.parse(request.body || {});
-      const sha = await workspaceService.merge(request.params.id, body.commitMessage);
+      const lockOwnerId = typeof request.headers['x-agent-tower-invocation-id'] === 'string'
+        ? request.headers['x-agent-tower-invocation-id']
+        : undefined;
+      const sha = await workspaceService.merge(request.params.id, {
+        commitMessage: body.commitMessage,
+        lockOwnerId,
+      });
       return { success: true, sha };
     }
   );

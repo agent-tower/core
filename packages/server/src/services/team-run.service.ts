@@ -166,6 +166,28 @@ function toIso(date: Date): string {
   return date.toISOString();
 }
 
+function applyStableInstanceNames(snapshots: TeamMemberSnapshot[]): TeamMemberSnapshot[] {
+  const totalsByName = new Map<string, number>();
+  for (const snapshot of snapshots) {
+    totalsByName.set(snapshot.name, (totalsByName.get(snapshot.name) ?? 0) + 1);
+  }
+
+  const seenByName = new Map<string, number>();
+  return snapshots.map((snapshot) => {
+    const total = totalsByName.get(snapshot.name) ?? 0;
+    if (total <= 1) {
+      return snapshot;
+    }
+
+    const instanceIndex = (seenByName.get(snapshot.name) ?? 0) + 1;
+    seenByName.set(snapshot.name, instanceIndex);
+    return {
+      ...snapshot,
+      name: `${snapshot.name} #${instanceIndex}`,
+    };
+  });
+}
+
 function toConflict(message: string): ServiceError {
   return new ServiceError(message, 'CONFLICT', 409);
 }
@@ -340,7 +362,7 @@ export class TeamRunService {
       throw toConflict(`Task already has a TeamRun: ${taskId}`);
     }
 
-    const snapshots = await this.buildTeamMemberSnapshots(input);
+    const snapshots = applyStableInstanceNames(await this.buildTeamMemberSnapshots(input));
     if (snapshots.length === 0) {
       throw new ValidationError('TeamRun must include at least one member');
     }

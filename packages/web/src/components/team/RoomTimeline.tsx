@@ -11,6 +11,7 @@ import {
   MessageSquare,
   PanelRightOpen,
   Users,
+  X,
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
@@ -24,6 +25,11 @@ import {
   ROOM_MESSAGE_COLLAPSED_MAX_HEIGHT,
   isRoomMessageContentOverflowing,
 } from './room-message-collapse'
+import {
+  addSelectedMemberId,
+  buildStructuredMentionsFromSelectedMembers,
+  removeSelectedMemberId,
+} from './room-mentions'
 import 'streamdown/styles.css'
 
 interface RoomTimelineProps {
@@ -97,20 +103,6 @@ function memberMatchesQuery(member: TeamMember, query: string) {
   if (!normalized) return true
   const fields = [member.name, member.providerId, ...(member.aliases ?? [])]
   return fields.some((field) => field.toLowerCase().includes(normalized))
-}
-
-function getMentionLabels(member: TeamMember) {
-  return Array.from(new Set([member.name, ...(member.aliases ?? [])]
-    .map((label) => label.trim())
-    .filter(Boolean)))
-}
-
-function hasInlineMention(content: string, member: TeamMember) {
-  return getMentionLabels(member).some((label) => content.includes(`@${label}`))
-}
-
-function findMentionedMembers(content: string, members: TeamMember[]) {
-  return members.filter((member) => hasInlineMention(content, member))
 }
 
 function getMentionLabel(mention: StructuredMention, memberById: Map<string, TeamMember>) {
@@ -361,7 +353,7 @@ export function RoomTimeline({
   }, [])
 
   const handleSelectMention = useCallback((member: TeamMember) => {
-    setSelectedMemberIds((current) => current.includes(member.id) ? current : [...current, member.id])
+    setSelectedMemberIds((current) => addSelectedMemberId(current, member.id))
 
     const inserted = `@${member.name} `
     if (inlineMention) {
@@ -388,6 +380,10 @@ export function RoomTimeline({
     })
   }, [draft, inlineMention])
 
+  const handleRemoveSelectedMention = useCallback((memberId: string) => {
+    setSelectedMemberIds((current) => removeSelectedMemberId(current, memberId))
+  }, [])
+
   const handleDraftChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value
     setDraft(value)
@@ -396,9 +392,8 @@ export function RoomTimeline({
     element.style.height = 'auto'
     element.style.height = `${Math.max(72, Math.min(element.scrollHeight, 240))}px`
     setMentionPickerOpen(false)
-    setSelectedMemberIds(findMentionedMembers(value, teamRun.members ?? []).map((member) => member.id))
     syncInlineMention(value, element.selectionStart)
-  }, [syncInlineMention, teamRun.members])
+  }, [syncInlineMention])
 
   const handleSubmit = useCallback(async () => {
     if (readOnly || isSubmitting) return
@@ -408,11 +403,7 @@ export function RoomTimeline({
     setIsSubmitting(true)
     setSubmitError(null)
     try {
-      const mentionedMembers = findMentionedMembers(content, teamRun.members ?? [])
-      const mentions: StructuredMention[] = mentionedMembers.map((member) => ({
-        memberId: member.id,
-        label: member.name,
-      }))
+      const mentions = buildStructuredMentionsFromSelectedMembers(selectedMemberIds, teamRun.members ?? [])
       await onSendMessage({ content, mentions, senderType: 'user' })
       setDraft('')
       setSelectedMemberIds([])
@@ -427,7 +418,7 @@ export function RoomTimeline({
     } finally {
       setIsSubmitting(false)
     }
-  }, [draft, isSubmitting, onSendMessage, readOnly, scrollToBottom, teamRun.members])
+  }, [draft, isSubmitting, onSendMessage, readOnly, scrollToBottom, selectedMemberIds, teamRun.members])
 
   const handleDraftKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
@@ -700,7 +691,9 @@ export function RoomTimeline({
                             )}
                           </div>
                           <div className="truncate text-xs text-neutral-500">
-                            {member.aliases.length > 0 ? member.aliases.join(' / ') : member.providerId}
+                            {[member.providerId, member.id.slice(0, 8)]
+                              .filter(Boolean)
+                              .join(' · ')}
                           </div>
                         </div>
                         <AtSign size={15} className="text-neutral-400" />
@@ -708,6 +701,29 @@ export function RoomTimeline({
                     )
                   })}
                 </div>
+              </div>
+            )}
+
+            {selectedMembers.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 border-b border-neutral-100 px-3 py-2">
+                {selectedMembers.map((member) => (
+                  <span
+                    key={member.id}
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs text-neutral-700"
+                  >
+                    <span className="truncate font-medium">@{member.name}</span>
+                    <span className="shrink-0 text-[10px] text-neutral-400">{member.id.slice(0, 8)}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveSelectedMention(member.id)}
+                      className="shrink-0 rounded-full p-0.5 text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-700"
+                      title={t('Remove mention')}
+                      aria-label={`${t('Remove mention')} ${member.name}`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
               </div>
             )}
 

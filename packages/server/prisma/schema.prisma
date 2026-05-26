@@ -84,17 +84,21 @@ model TeamTemplateMember {
 }
 
 model TeamRun {
-  id           String            @id @default(uuid())
-  taskId       String            @unique
-  task         Task              @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  mode         String
-  reviewReason String?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  members      TeamMember[]
-  messages     RoomMessage[]
-  workRequests WorkRequest[]
-  invocations  AgentInvocation[]
+  id              String            @id @default(uuid())
+  taskId          String            @unique
+  task            Task              @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  mainWorkspaceId String?
+  mainWorkspace   Workspace?        @relation("TeamRunMainWorkspace", fields: [mainWorkspaceId], references: [id], onDelete: SetNull)
+  mode            String
+  reviewReason    String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  members         TeamMember[]
+  messages        RoomMessage[]
+  workRequests    WorkRequest[]
+  invocations     AgentInvocation[]
+
+  @@index([mainWorkspaceId])
 }
 
 model TeamMember {
@@ -112,6 +116,7 @@ model TeamMember {
   sessionPolicy   String   @default("new_per_request")
   avatar          String?
   status          String   @default("IDLE")
+  ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -183,6 +188,12 @@ model Workspace {
   id            String    @id @default(uuid())
   taskId        String
   task          Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  parentWorkspaceId String?
+  parentWorkspace   Workspace?  @relation("WorkspaceChildren", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
+  childWorkspaces   Workspace[] @relation("WorkspaceChildren")
+  ownerMemberId     String?
+  ownerMember       TeamMember? @relation("WorkspaceOwner", fields: [ownerMemberId], references: [id], onDelete: SetNull)
+  mainForTeamRuns   TeamRun[]   @relation("TeamRunMainWorkspace")
   branchName    String
   baseBranch    String?
   worktreePath  String
@@ -195,6 +206,10 @@ model Workspace {
   updatedAt     DateTime  @updatedAt
 
   @@index([taskId])
+  @@index([parentWorkspaceId])
+  @@index([ownerMemberId])
+  @@index([taskId, parentWorkspaceId])
+  @@unique([parentWorkspaceId, ownerMemberId])
 }
 
 // 会话 (一次 AI 代理执行)

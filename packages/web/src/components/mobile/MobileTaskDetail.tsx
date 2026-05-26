@@ -25,6 +25,8 @@ import { StartAgentDialog } from '@/components/task/StartAgentDialog'
 import { ProviderSelector } from '@/components/task/ProviderSelector'
 import { SlashCommandPopover } from '@/components/task/SlashCommandPopover'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher'
+import { resolveDefaultWorkspaceId } from '@/components/workspace/team-workspace-view'
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 import { useSlashCommandMenu } from '@/components/task/useSlashCommandMenu'
@@ -102,6 +104,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const [explicitWorkspaceId, setExplicitWorkspaceId] = useState<string | undefined>(undefined)
   const inputContainerRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -132,6 +135,26 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const { data: roomMessages } = useRoomMessages(taskTeamRun?.id ?? '')
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
   const teamRun = taskTeamRun ?? null
+
+  useEffect(() => {
+    setExplicitWorkspaceId(undefined)
+  }, [task.id])
+
+  const resolvedWorkspaceId = useMemo(
+    () => resolveDefaultWorkspaceId(workspaces, teamRun, explicitWorkspaceId),
+    [explicitWorkspaceId, teamRun, workspaces],
+  )
+
+  useEffect(() => {
+    if (explicitWorkspaceId && !workspaces?.some((workspace) => workspace.id === explicitWorkspaceId)) {
+      setExplicitWorkspaceId(undefined)
+    }
+  }, [explicitWorkspaceId, workspaces])
+
+  const selectedWorkspace = useMemo(
+    () => workspaces?.find((workspace) => workspace.id === resolvedWorkspaceId),
+    [resolvedWorkspaceId, workspaces],
+  )
 
   const activeSession = useMemo(() => {
     if (!workspaces) return null
@@ -204,11 +227,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   const workingDir = useMemo(() => {
     if (!workspaces) return undefined
+    if (selectedWorkspace) return selectedWorkspace.worktreePath || undefined
     for (const ws of workspaces) {
       if (ws.status === 'ACTIVE' && ws.worktreePath) return ws.worktreePath
     }
     return workspaces[0]?.worktreePath
-  }, [workspaces])
+  }, [selectedWorkspace, workspaces])
 
   const slashCommandMenu = useSlashCommandMenu({
     agentType: activeSession?.agentType,
@@ -230,10 +254,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
     maxHeight: 140,
   })
 
-  const activeWorkspaceId = useMemo(() => {
-    if (!workspaces) return undefined
-    return workspaces.find(ws => ws.status === 'ACTIVE')?.id
-  }, [workspaces])
+  const selectedWorkspaceOpenId = selectedWorkspace?.worktreePath ? selectedWorkspace.id : undefined
 
   // Build dynamic delete warning from workspace data
   const deleteDescription = useMemo(() => {
@@ -371,9 +392,9 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   }, [])
 
   const handleOpenInIde = useCallback(() => {
-    if (!activeWorkspaceId) return
-    openInEditorMutation.mutate({ workspaceId: activeWorkspaceId })
-  }, [activeWorkspaceId, openInEditorMutation])
+    if (!selectedWorkspaceOpenId) return
+    openInEditorMutation.mutate({ workspaceId: selectedWorkspaceOpenId })
+  }, [openInEditorMutation, selectedWorkspaceOpenId])
 
   // ============ Visual Viewport (iOS keyboard fix) ============
   // iOS Safari doesn't shrink dvh when the virtual keyboard opens.
@@ -477,7 +498,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           <StatusDot status={task.status} />
           <button
             onClick={handleOpenInIde}
-            disabled={!activeWorkspaceId || isProjectReadOnly}
+            disabled={!selectedWorkspaceOpenId || isProjectReadOnly}
             className="p-1.5 text-neutral-400 active:text-neutral-900 disabled:opacity-30"
           >
             <Code2 size={16} />
@@ -508,6 +529,18 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
             </div>
           )}
         </div>
+
+        {workspaces && workspaces.length > 1 && (
+          <div className="border-t border-neutral-100 px-2.5 py-2">
+            <WorkspaceSwitcher
+              workspaces={workspaces}
+              teamRun={teamRun}
+              selectedWorkspaceId={resolvedWorkspaceId}
+              onSelectWorkspace={setExplicitWorkspaceId}
+              className="w-full"
+            />
+          </div>
+        )}
 
         {/* Sub-Tab Bar */}
         <div className="flex border-t border-neutral-100">
@@ -752,7 +785,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         <div className="flex-1 overflow-hidden">
           <WorkspacePanel
             sessionId={sessionId || undefined}
-            workspaceId={activeWorkspaceId}
+            workspaceId={resolvedWorkspaceId}
             workingDir={workingDir}
             projectId={task.projectId}
             className="h-full"

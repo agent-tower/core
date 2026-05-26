@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
-import { Ban, Bot, Check, ChevronDown, ChevronRight, Clock3, Layers3, MessageSquare, PanelRightOpen, RefreshCw, Square, Users, X } from 'lucide-react'
-import type { AgentInvocation, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
+import { Ban, Bot, Check, ChevronDown, ChevronRight, Clock3, GitBranch, Layers3, MessageSquare, PanelRightOpen, RefreshCw, Square, Users, X } from 'lucide-react'
+import { WorkspaceStatus, type AgentInvocation, type TeamMember, type TeamRun, type Workspace, type WorkRequest } from '@agent-tower/shared'
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
+import { buildWorkspaceViews } from '@/components/workspace/team-workspace-view'
 import {
   useApproveWorkRequest,
   useCancelWorkRequest,
@@ -13,6 +14,9 @@ import {
 
 interface TeamStatusPanelProps {
   teamRun: TeamRun
+  workspaces?: Workspace[]
+  selectedWorkspaceId?: string | null
+  onSelectWorkspace?: (workspaceId: string) => void
   onViewInvocationSession?: (sessionId: string) => void
 }
 
@@ -110,6 +114,30 @@ function invocationStatusClass(status: AgentInvocation['status']) {
   }
 }
 
+function workspaceStatusClass(status: WorkspaceStatus) {
+  switch (status) {
+    case WorkspaceStatus.ACTIVE:
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    case WorkspaceStatus.MERGED:
+      return 'border-blue-200 bg-blue-50 text-blue-700'
+    case WorkspaceStatus.HIBERNATED:
+      return 'border-amber-200 bg-amber-50 text-amber-700'
+    case WorkspaceStatus.ABANDONED:
+      return 'border-neutral-200 bg-neutral-50 text-neutral-500'
+  }
+}
+
+function workspaceRoleClass(roleLabel: string) {
+  switch (roleLabel) {
+    case 'Main':
+      return 'border-indigo-200 bg-indigo-50 text-indigo-700'
+    case 'Child':
+      return 'border-cyan-200 bg-cyan-50 text-cyan-700'
+    default:
+      return 'border-neutral-200 bg-neutral-50 text-neutral-600'
+  }
+}
+
 function sortInvocationsDesc(invocations: AgentInvocation[]) {
   return [...invocations].sort(
     (a, b) => Date.parse(b.updatedAt ?? b.createdAt ?? '') - Date.parse(a.updatedAt ?? a.createdAt ?? ''),
@@ -140,7 +168,13 @@ function resolveMemberStatus(
   return 'idle'
 }
 
-export function TeamStatusPanel({ teamRun, onViewInvocationSession }: TeamStatusPanelProps) {
+export function TeamStatusPanel({
+  teamRun,
+  workspaces,
+  selectedWorkspaceId,
+  onSelectWorkspace,
+  onViewInvocationSession,
+}: TeamStatusPanelProps) {
   const { t } = useI18n()
   const approveWorkRequest = useApproveWorkRequest(teamRun.id)
   const rejectWorkRequest = useRejectWorkRequest(teamRun.id)
@@ -153,6 +187,10 @@ export function TeamStatusPanel({ teamRun, onViewInvocationSession }: TeamStatus
   const members = teamRun.members ?? EMPTY_MEMBERS
   const workRequests = teamRun.workRequests ?? EMPTY_WORK_REQUESTS
   const invocations = teamRun.invocations ?? EMPTY_INVOCATIONS
+  const workspaceViews = useMemo(
+    () => buildWorkspaceViews(workspaces, teamRun),
+    [teamRun, workspaces],
+  )
 
   const workRequestById = useMemo(
     () => new Map(workRequests.map((request) => [request.id, request])),
@@ -240,6 +278,65 @@ export function TeamStatusPanel({ teamRun, onViewInvocationSession }: TeamStatus
             <div>{teamRun.reviewReason}</div>
           </div>
         )}
+
+        <section className="space-y-2">
+          <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+            <Layers3 size={13} />
+            <span>{t('Workspaces')}</span>
+          </div>
+          <div className="space-y-2">
+            {workspaceViews.length === 0 ? (
+              <div className="rounded-md border border-dashed border-neutral-200 bg-neutral-50 px-3 py-3 text-sm text-neutral-500">
+                {t('No workspace')}
+              </div>
+            ) : (
+              workspaceViews.map((view) => {
+                const isSelected = selectedWorkspaceId === view.workspace.id
+                return (
+                  <div
+                    key={view.workspace.id}
+                    className={cn(
+                      'rounded-md border bg-white px-3 py-2',
+                      isSelected ? 'border-neutral-400 shadow-sm' : 'border-neutral-200',
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                          <span className="truncate text-xs font-medium text-neutral-900">{t(view.displayName)}</span>
+                          <span className={cn('shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium', workspaceRoleClass(view.roleLabel))}>
+                            {t(view.roleLabel)}
+                          </span>
+                          <span className={cn('shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium', workspaceStatusClass(view.workspace.status))}>
+                            {view.workspace.status}
+                          </span>
+                        </div>
+                        <div className="mt-1 truncate font-mono text-[11px] text-neutral-500">
+                          {view.workspace.branchName}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-neutral-400">
+                          {view.ownerName && <span>{t('Owner')}: {view.ownerName}</span>}
+                          {view.parentBranchName && <span>{t('Parent')}: {view.parentBranchName}</span>}
+                          <span>{t('Workspace')}: {shortId(view.workspace.id)}</span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onSelectWorkspace?.(view.workspace.id)}
+                        disabled={!onSelectWorkspace || isSelected}
+                        className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-neutral-200 bg-neutral-50 px-2 text-[11px] font-medium text-neutral-700 transition-colors hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={t('View workspace')}
+                      >
+                        {isSelected ? <Check size={11} /> : <GitBranch size={11} />}
+                        <span>{isSelected ? t('Selected') : t('Select')}</span>
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </section>
 
         <section className="space-y-2">
           <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-neutral-500">

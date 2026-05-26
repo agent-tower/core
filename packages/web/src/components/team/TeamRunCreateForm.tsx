@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Loader2, Plus, Trash2 } from 'lucide-react'
 import type { MemberPreset, TeamRunMode } from '@agent-tower/shared'
 import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
@@ -34,6 +34,14 @@ function getErrorMessage(error: unknown, fallback: string) {
 
 function countCapabilities(capabilities: MemberPreset['capabilities']) {
   return Object.values(capabilities).filter(Boolean).length
+}
+
+function getInstanceLabel(name: string, index: number, ids: string[], id: string): string {
+  const totalForId = ids.filter(item => item === id).length
+  if (totalForId <= 1) return name
+
+  const instanceNumber = ids.slice(0, index + 1).filter(item => item === id).length
+  return `${name} #${instanceNumber}`
 }
 
 function QueryErrorNotice({ title, error, isFetching, onRetry, disabled }: QueryErrorNoticeProps) {
@@ -143,11 +151,12 @@ export function TeamRunCreateForm({
 
   const handleToggleMemberPreset = (presetId: string) => {
     if (disabled) return
-    setSelectedMemberPresetIds((current) =>
-      current.includes(presetId)
-        ? current.filter((id) => id !== presetId)
-        : [...current, presetId],
-    )
+    setSelectedMemberPresetIds((current) => [...current, presetId])
+  }
+
+  const handleRemoveSelectedPreset = (index: number) => {
+    if (disabled) return
+    setSelectedMemberPresetIds((current) => current.filter((_, itemIndex) => itemIndex !== index))
   }
 
   const handleMoveSelectedPreset = (index: number, direction: -1 | 1) => {
@@ -234,9 +243,15 @@ export function TeamRunCreateForm({
                   {(teamTemplatesData ?? []).map((template) => {
                     const isSelected = template.id === selectedTemplateId
                     const memberCount = template.members?.length ?? 0
+                    const memberPresetIds = template.members?.map((member) => member.memberPresetId) ?? []
                     const memberPreview = template.members
                       ?.slice(0, 3)
-                      .map((member) => member.memberPreset?.name ?? member.memberPresetId)
+                      .map((member, index) => getInstanceLabel(
+                        member.memberPreset?.name ?? member.memberPresetId,
+                        index,
+                        memberPresetIds,
+                        member.memberPresetId,
+                      ))
                       .join(' · ')
 
                     return (
@@ -300,28 +315,24 @@ export function TeamRunCreateForm({
               ) : (
                 <div className="space-y-2">
                   {(memberPresetsData ?? []).map((preset) => {
-                    const checked = selectedMemberPresetIds.includes(preset.id)
+                    const selectedCount = selectedMemberPresetIds.filter((id) => id === preset.id).length
                     const providerLabel = providerLabelById.get(preset.providerId) ?? preset.providerId
                     const capabilityCount = countCapabilities(preset.capabilities)
 
                     return (
-                      <label
+                      <button
                         key={preset.id}
+                        type="button"
+                        onClick={() => handleToggleMemberPreset(preset.id)}
+                        disabled={disabled}
                         className={cn(
-                          'flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 transition-colors',
+                          'flex w-full items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
                           disabled && 'cursor-not-allowed opacity-60',
-                          checked
+                          selectedCount > 0
                             ? 'border-neutral-900 bg-neutral-50'
                             : 'border-neutral-200 bg-white hover:border-neutral-300 hover:bg-neutral-50',
                         )}
                       >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => handleToggleMemberPreset(preset.id)}
-                          disabled={disabled}
-                          className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-400 disabled:cursor-not-allowed"
-                        />
                         <MemberAvatar
                           name={preset.name}
                           avatar={preset.avatar}
@@ -331,10 +342,16 @@ export function TeamRunCreateForm({
                           <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
                           <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
                         </div>
-                        <div className="shrink-0 text-[11px] text-neutral-400">
-                          {capabilityCount}/10
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className="text-[11px] text-neutral-400">{capabilityCount}/10</span>
+                          {selectedCount > 0 && (
+                            <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-[11px] font-medium text-white">
+                              x{selectedCount}
+                            </span>
+                          )}
+                          <Plus size={15} className="text-neutral-500" />
                         </div>
-                      </label>
+                      </button>
                     )
                   })}
                 </div>
@@ -357,9 +374,10 @@ export function TeamRunCreateForm({
                 <div className="space-y-2">
                   {selectedMemberPresets.map((preset, index) => {
                     const providerLabel = providerLabelById.get(preset.providerId) ?? preset.providerId
+                    const displayName = getInstanceLabel(preset.name, index, selectedMemberPresetIds, preset.id)
                     return (
                       <div
-                        key={preset.id}
+                        key={`${preset.id}-${index}`}
                         className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-white px-3 py-2"
                       >
                         <div className="flex min-w-0 items-center gap-2">
@@ -369,7 +387,7 @@ export function TeamRunCreateForm({
                             className="h-8 w-8 text-[11px]"
                           />
                           <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
+                            <div className="truncate text-sm font-medium text-neutral-900">{displayName}</div>
                             <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
                           </div>
                         </div>
@@ -393,6 +411,16 @@ export function TeamRunCreateForm({
                             title={t('下移')}
                           >
                             <ChevronDown size={14} />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => handleRemoveSelectedPreset(index)}
+                            disabled={disabled}
+                            title={t('移除')}
+                          >
+                            <Trash2 size={14} />
                           </Button>
                         </div>
                       </div>

@@ -154,6 +154,45 @@ describe('TeamRunService', () => {
     });
   });
 
+  it('preserves repeated MemberPresets in TeamTemplate members', async () => {
+    const preset = await service.createMemberPreset(presetInput('Implementer', ['impl']));
+
+    const template = await service.createTeamTemplate({
+      name: 'Parallel implementers',
+      memberPresetIds: [preset.id, preset.id, preset.id],
+    });
+
+    expect(template.members).toHaveLength(3);
+    expect(template.members?.map((member) => member.memberPresetId)).toEqual([preset.id, preset.id, preset.id]);
+    expect(template.members?.map((member) => member.position)).toEqual([0, 1, 2]);
+    expect(template.members?.map((member) => member.memberPreset?.name)).toEqual([
+      'Implementer',
+      'Implementer',
+      'Implementer',
+    ]);
+  });
+
+  it('updates TeamTemplate members with repeated MemberPresets in order', async () => {
+    const first = await service.createMemberPreset(presetInput('Implementer', ['impl']));
+    const second = await service.createMemberPreset(presetInput('Reviewer', ['review']));
+    const template = await service.createTeamTemplate({
+      name: 'Initial team',
+      memberPresetIds: [second.id],
+    });
+
+    const updated = await service.updateTeamTemplate(template.id, {
+      memberPresetIds: [first.id, second.id, first.id],
+    });
+
+    expect(updated.members).toHaveLength(3);
+    expect(updated.members?.map((member) => member.memberPresetId)).toEqual([
+      first.id,
+      second.id,
+      first.id,
+    ]);
+    expect(updated.members?.map((member) => member.position)).toEqual([0, 1, 2]);
+  });
+
   it('creates TeamMember snapshots from multiple MemberPresets', async () => {
     const first = await service.createMemberPreset(presetInput('Planner', ['planner']));
     const second = await service.createMemberPreset(presetInput('Coder', ['coder']));
@@ -167,6 +206,66 @@ describe('TeamRunService', () => {
     expect(teamRun.members).toHaveLength(2);
     expect(teamRun.members?.map((member) => member.name)).toEqual(['Planner', 'Coder']);
     expect(teamRun.members?.map((member) => member.presetId)).toEqual([first.id, second.id]);
+  });
+
+  it('creates stable instance names when the same MemberPreset is selected more than once', async () => {
+    const preset = await service.createMemberPreset(presetInput('Implementer', ['impl']));
+    const task = await createTask();
+
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id, preset.id, preset.id],
+    });
+
+    expect(teamRun.members).toHaveLength(3);
+    expect(teamRun.members?.map((member) => member.name)).toEqual([
+      'Implementer #1',
+      'Implementer #2',
+      'Implementer #3',
+    ]);
+    expect(teamRun.members?.map((member) => member.presetId)).toEqual([preset.id, preset.id, preset.id]);
+    expect(teamRun.members?.map((member) => member.aliases)).toEqual([['impl'], ['impl'], ['impl']]);
+  });
+
+  it('creates stable instance names for repeated explicit TeamRun members', async () => {
+    const task = await createTask();
+
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      members: [
+        presetInput('Implementer', ['impl']),
+        presetInput('Implementer', ['impl']),
+      ],
+    });
+
+    expect(teamRun.members).toHaveLength(2);
+    expect(teamRun.members?.map((member) => member.name)).toEqual([
+      'Implementer #1',
+      'Implementer #2',
+    ]);
+    expect(teamRun.members?.map((member) => member.presetId)).toEqual([null, null]);
+  });
+
+  it('creates stable instance names across TeamTemplate and explicit MemberPreset duplicates', async () => {
+    const preset = await service.createMemberPreset(presetInput('Implementer', ['impl']));
+    const task = await createTask();
+    const template = await service.createTeamTemplate({
+      name: 'Three implementers',
+      memberPresetIds: [preset.id, preset.id],
+    });
+
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      teamTemplateId: template.id,
+      memberPresetIds: [preset.id],
+    });
+
+    expect(teamRun.members).toHaveLength(3);
+    expect(teamRun.members?.map((member) => member.name)).toEqual([
+      'Implementer #1',
+      'Implementer #2',
+      'Implementer #3',
+    ]);
   });
 
   it('keeps TeamMember snapshots unchanged after updating a MemberPreset', async () => {
@@ -341,6 +440,56 @@ describe('TeamRunService', () => {
     expect(statuses.get(runningMember!.id)).toBe('RUNNING');
     expect(statuses.get(pendingMember!.id)).toBe('PENDING_APPROVAL');
     expect(statuses.get(queuedMember!.id)).toBe('QUEUED');
+  });
+
+  it('creates WorkRequests only for the selected memberId when same-name members are mentioned', async () => {
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      members: [
+        presetInput('Coder'),
+        presetInput('Coder'),
+      ],
+    });
+    const [firstCoder, secondCoder] = teamRun.members ?? [];
+    expect(firstCoder).toBeDefined();
+    expect(secondCoder).toBeDefined();
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: '@Coder please implement this',
+      mentions: [{ memberId: secondCoder!.id, label: secondCoder!.name }],
+    });
+    const requests = await service.listWorkRequests(teamRun.id);
+
+    expect(message.mentions).toEqual([{ memberId: secondCoder!.id, label: secondCoder!.name }]);
+    expect(message.workRequestIds).toEqual([requests[0]?.id]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      targetMemberId: secondCoder!.id,
+      triggerMessageId: message.id,
+      instruction: '@Coder please implement this',
+      status: 'QUEUED',
+    });
+    expect(requests[0]?.targetMemberId).not.toBe(firstCoder!.id);
+  });
+
+  it('does not parse text @name into WorkRequests when structured mentions are omitted', async () => {
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      members: [
+        presetInput('Coder'),
+        presetInput('Coder'),
+      ],
+    });
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: '@Coder please implement this',
+    });
+
+    expect(message.mentions).toEqual([]);
+    expect(message.workRequestIds).toEqual([]);
+    await expect(service.listWorkRequests(teamRun.id)).resolves.toEqual([]);
   });
 
   it('does not create USER_MESSAGES WorkRequests when a user message already has mentions', async () => {

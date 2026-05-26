@@ -725,26 +725,130 @@ describe('TeamSchedulerService', () => {
     ]);
   });
 
-  it('leaves dedicated workspace members blocked because dedicated startup is reserved', async () => {
-    const { teamRun, members } = await createTeamRunFixture({
+  it('starts dedicated members in child workspaces without shared workspace locks', async () => {
+    const { workspace: mainWorkspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [writeCapabilities, writeCapabilities],
+      workspacePolicies: ['dedicated', 'dedicated'],
+    });
+    const first = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const second = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+    });
+    const childByMemberId = new Map<string, { id: string }>();
+    const workspaceService = {
+      create: vi.fn(),
+      getOrCreateMainWorkspace: vi.fn(async () => mainWorkspace!),
+      getOrCreateDedicatedWorkspace: vi.fn(async (_teamRunId: string, memberId: string) => {
+        const existing = childByMemberId.get(memberId);
+        if (existing) {
+          return existing;
+        }
+
+        const workspace = await prisma.workspace.create({
+          data: {
+            taskId: teamRun.taskId,
+            parentWorkspaceId: mainWorkspace!.id,
+            ownerMemberId: memberId,
+            branchName: `dedicated-${memberId.slice(0, 8)}`,
+            worktreePath: path.join(testDir, `dedicated-${memberId}`),
+            status: 'ACTIVE',
+          },
+        });
+        childByMemberId.set(memberId, workspace);
+        return workspace;
+      }),
+    };
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.planNext(teamRun.id)).resolves.toEqual([
+      expect.objectContaining({
+        workRequestId: first.id,
+        canStart: true,
+        lockKeys: [],
+        workspaceId: null,
+      }),
+      expect.objectContaining({
+        workRequestId: second.id,
+        canStart: true,
+        lockKeys: [],
+        workspaceId: null,
+      }),
+    ]);
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(2);
+    expect(new Set(invocations.map((invocation) => invocation.workspaceId)).size).toBe(2);
+    expect(new Set(invocations.map((invocation) => invocation.workRequestId))).toEqual(new Set([
+      first.id,
+      second.id,
+    ]));
+    expect(workspaceService.getOrCreateDedicatedWorkspace).toHaveBeenCalledTimes(2);
+    expect(workspaceService.create).not.toHaveBeenCalled();
+    expect(lockService.listLocks()).toEqual([]);
+    const childWorkspaces = await prisma.workspace.findMany({
+      where: { parentWorkspaceId: mainWorkspace!.id },
+      orderBy: { ownerMemberId: 'asc' },
+    });
+    expect(childWorkspaces).toHaveLength(2);
+    expect(new Set(childWorkspaces.map((workspace) => workspace.ownerMemberId))).toEqual(new Set([
+      members[0]!.id,
+      members[1]!.id,
+    ]));
+  });
+
+  it('records the dedicated child workspace for queued no-session invocations', async () => {
+    const { workspace: mainWorkspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [writeCapabilities],
       workspacePolicies: ['dedicated'],
     });
     const request = await createWorkRequest({
       teamRunId: teamRun.id,
       targetMemberId: members[0]!.id,
     });
+    const childWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: teamRun.taskId,
+        parentWorkspaceId: mainWorkspace!.id,
+        ownerMemberId: members[0]!.id,
+        branchName: 'dedicated-queued',
+        worktreePath: path.join(testDir, 'dedicated-queued'),
+        status: 'ACTIVE',
+      },
+    });
+    const workspaceService = {
+      create: vi.fn(),
+      getOrCreateMainWorkspace: vi.fn(async () => mainWorkspace!),
+      getOrCreateDedicatedWorkspace: vi.fn(async () => childWorkspace),
+    };
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+    });
 
-    await expect(service.planNext(teamRun.id)).resolves.toEqual([
-      expect.objectContaining({
-        workRequestId: request.id,
-        canStart: false,
-        blockedReason: 'unsupported_workspace_policy',
-      }),
-    ]);
-    await expect(service.startNext(teamRun.id)).resolves.toEqual([]);
-    await expect(prisma.agentInvocation.count()).resolves.toBe(0);
-    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+    const invocations = await service.startNext(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: childWorkspace.id,
+      sessionId: null,
       status: 'QUEUED',
+    });
+    expect(lockService.listLocks()).toEqual([]);
+    expect(workspaceService.getOrCreateDedicatedWorkspace).toHaveBeenCalledWith(teamRun.id, members[0]!.id);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocations[0]!.id } })).resolves.toMatchObject({
+      workspaceId: childWorkspace.id,
     });
   });
 
@@ -895,6 +999,214 @@ describe('TeamSchedulerService', () => {
       prompt: 'Role 1\n\nTask:\nContinue with context',
       status: 'RUNNING',
     });
+  });
+
+  it('starts new_per_request members without resuming previous native context', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture({
+      sessionPolicies: ['new_per_request'],
+    });
+    const previousRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+      instruction: 'Previous work',
+    });
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'previous prompt',
+        status: 'COMPLETED',
+        logSnapshot: JSON.stringify({ sessionId: 'agent-native-session-1', entries: [] }),
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: previousRequest.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace!.id,
+        sessionId: previousSession.id,
+        status: 'COMPLETED',
+      },
+    });
+    const nextRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Fresh request',
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({
+      workRequestId: nextRequest.id,
+      memberId: members[0]!.id,
+      sessionId: expect.any(String),
+      status: 'RUNNING',
+    });
+    expect(invocations[0]!.sessionId).not.toBe(previousSession.id);
+    expect(sessionManager.start).toHaveBeenCalledWith(invocations[0]!.sessionId);
+    expect(sessionManager.startFollowUp).not.toHaveBeenCalled();
+  });
+
+  it('does not resume_last from a different member even when native context exists in the same workspace', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities, readOnlyCapabilities],
+      sessionPolicies: ['resume_last', 'resume_last'],
+    });
+    const otherMemberRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'STARTED',
+      instruction: 'Other member previous work',
+    });
+    const otherMemberSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[1]!.providerId,
+        prompt: 'other member prompt',
+        status: 'COMPLETED',
+        logSnapshot: JSON.stringify({ sessionId: 'agent-native-session-2', entries: [] }),
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: otherMemberRequest.id,
+        memberId: members[1]!.id,
+        workspaceId: workspace!.id,
+        sessionId: otherMemberSession.id,
+        status: 'COMPLETED',
+      },
+    });
+    const nextRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Member 1 fresh work',
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({
+      workRequestId: nextRequest.id,
+      memberId: members[0]!.id,
+      status: 'RUNNING',
+    });
+    expect(sessionManager.start).toHaveBeenCalledWith(invocations[0]!.sessionId);
+    expect(sessionManager.startFollowUp).not.toHaveBeenCalled();
+  });
+
+  it('resume_last only resumes native context from the same member in the selected workspace', async () => {
+    const { task, workspace: selectedWorkspace, teamRun, members } = await createTeamRunFixture({
+      sessionPolicies: ['resume_last'],
+    });
+    const otherWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: selectedWorkspace!.id,
+        branchName: 'other-workspace',
+        worktreePath: path.join(testDir, 'other-workspace'),
+        status: 'ACTIVE',
+      },
+    });
+    const previousRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+      instruction: 'Previous work in another workspace',
+    });
+    const otherWorkspaceSession = await prisma.session.create({
+      data: {
+        workspaceId: otherWorkspace.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'previous prompt in other workspace',
+        status: 'COMPLETED',
+        logSnapshot: JSON.stringify({ sessionId: 'agent-native-session-other-workspace', entries: [] }),
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: previousRequest.id,
+        memberId: members[0]!.id,
+        workspaceId: otherWorkspace.id,
+        sessionId: otherWorkspaceSession.id,
+        status: 'COMPLETED',
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      },
+    });
+    const nextRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Continue in selected workspace',
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const firstRun = await service.startNextSessions(teamRun.id);
+
+    expect(firstRun).toHaveLength(1);
+    expect(firstRun[0]).toMatchObject({
+      workRequestId: nextRequest.id,
+      workspaceId: selectedWorkspace!.id,
+      status: 'RUNNING',
+    });
+    expect(sessionManager.start).toHaveBeenCalledWith(firstRun[0]!.sessionId);
+    expect(sessionManager.startFollowUp).not.toHaveBeenCalled();
+
+    await prisma.session.update({
+      where: { id: firstRun[0]!.sessionId! },
+      data: {
+        status: 'COMPLETED',
+        logSnapshot: JSON.stringify({ sessionId: 'agent-native-session-selected-workspace', entries: [] }),
+      },
+    });
+    await prisma.agentInvocation.update({
+      where: { id: firstRun[0]!.id },
+      data: { status: 'COMPLETED' },
+    });
+    const followUpRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Continue again in selected workspace',
+    });
+    sessionManager.start.mockClear();
+    sessionManager.startFollowUp.mockClear();
+
+    const secondRun = await service.startNextSessions(teamRun.id);
+
+    expect(secondRun).toHaveLength(1);
+    expect(secondRun[0]).toMatchObject({
+      workRequestId: followUpRequest.id,
+      workspaceId: selectedWorkspace!.id,
+      status: 'RUNNING',
+    });
+    expect(sessionManager.startFollowUp).toHaveBeenCalledWith(secondRun[0]!.sessionId, firstRun[0]!.sessionId);
+    expect(sessionManager.start).not.toHaveBeenCalled();
   });
 
   it('falls back to a normal session start for resume_last members without previous native context', async () => {
@@ -1143,6 +1455,79 @@ describe('TeamSchedulerService', () => {
     await expect(prisma.workRequest.findUnique({ where: { id: sameMemberRequest.id } })).resolves.toMatchObject({
       status: 'QUEUED',
     });
+  });
+
+  it('starts none-policy write and command members on the shared workspace without workspace locks', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [
+        { ...writeCapabilities, runCommands: true },
+        writeCapabilities,
+      ],
+      workspacePolicies: ['none', 'shared'],
+    });
+    const noneRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const sharedRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(2);
+    expect(invocations.map((invocation) => invocation.workspaceId)).toEqual([workspace!.id, workspace!.id]);
+    expect(new Set(invocations.map((invocation) => invocation.workRequestId))).toEqual(new Set([
+      noneRequest.id,
+      sharedRequest.id,
+    ]));
+    expect(lockService.listLocks()).toEqual([
+      { key: `workspace:task:${teamRun.taskId}:write`, ownerId: invocations[1]!.id },
+    ]);
+  });
+
+  it('keeps shared command locks on the stable task key after creating a real workspace', async () => {
+    const { task, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [commandCapabilities, commandCapabilities],
+      withWorkspace: false,
+    });
+    const first = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const second = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({
+      workRequestId: first.id,
+      workspaceId: expect.any(String),
+      status: 'RUNNING',
+    });
+    expect(lockService.listLocks()).toEqual([
+      { key: `workspace:task:${task.id}:command`, ownerId: invocations[0]!.id },
+    ]);
+    await expect(prisma.workspace.count({ where: { taskId: task.id, status: 'ACTIVE' } })).resolves.toBe(1);
+    await expect(prisma.workRequest.findUnique({ where: { id: second.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
   });
 
   it('keeps shared writer locks on the stable task key after creating a real workspace', async () => {

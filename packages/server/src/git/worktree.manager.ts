@@ -152,7 +152,7 @@ export class WorktreeManager {
    * - Checks branch does not already exist
    * - Creates the worktree base directory if needed
    */
-  async create(branchName: string): Promise<string> {
+  async create(branchName: string, startPoint?: string): Promise<string> {
     // Validate branch name
     const validation = isValidBranchName(branchName);
     if (!validation.valid) {
@@ -169,7 +169,11 @@ export class WorktreeManager {
     await fs.mkdir(this.worktreeBaseDir, { recursive: true });
 
     try {
-      await execGit(this.repoPath, ['worktree', 'add', '-b', branchName, worktreePath]);
+      const args = ['worktree', 'add', '-b', branchName, worktreePath];
+      if (startPoint) {
+        args.push(startPoint);
+      }
+      await execGit(this.repoPath, args);
     } catch (err) {
       // Wrap with more context
       if (err instanceof GitError) {
@@ -373,6 +377,49 @@ export class WorktreeManager {
 
     console.log(`[WorktreeManager.merge] TOTAL: ${(performance.now() - mergeStart).toFixed(0)}ms`);
     return { sha, taskBranch };
+  }
+
+  /**
+   * Merge a child workspace branch into its parent workspace branch.
+   *
+   * This keeps the parent workspace branch as the integration branch for a
+   * TeamRun. The merge commit is created in the parent worktree with --no-ff.
+   */
+  async mergeIntoWorktree(
+    sourceWorktreePath: string,
+    targetWorktreePath: string,
+    options?: { commitMessage?: string }
+  ): Promise<{ sha: string; sourceBranch: string; targetBranch: string }> {
+    const sourceBranch = (await execGit(sourceWorktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    const targetBranch = (await execGit(targetWorktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+
+    if (!(await this.isWorktreeClean(sourceWorktreePath))) {
+      throw new WorktreeDirtyError(sourceWorktreePath);
+    }
+
+    if (!(await this.isWorktreeClean(targetWorktreePath))) {
+      throw new WorktreeDirtyError(targetWorktreePath);
+    }
+
+    try {
+      const message = options?.commitMessage ?? `merge branch '${sourceBranch}' into '${targetBranch}'`;
+      await execGit(targetWorktreePath, ['merge', '--no-ff', sourceBranch, '-m', message]);
+    } catch (err) {
+      if (err instanceof GitError) {
+        const conflictedFiles = await this.getConflictedFilesIn(targetWorktreePath);
+        if (conflictedFiles.length > 0) {
+          await execGit(targetWorktreePath, ['merge', '--abort']).catch(() => {
+            // merge --abort may fail if no merge in progress, ignore
+          });
+          throw new MergeConflictError(conflictedFiles, ConflictOp.MERGE);
+        }
+      }
+      throw err;
+    }
+
+    const sha = (await execGit(targetWorktreePath, ['rev-parse', 'HEAD'])).trim();
+
+    return { sha, sourceBranch, targetBranch };
   }
 
   /**

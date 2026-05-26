@@ -58,6 +58,18 @@ export class TeamLockService {
     return true;
   }
 
+  isHeldBy(ownerId: string, lockKey: string): boolean {
+    return this.locks.get(lockKey) === ownerId;
+  }
+
+  release(ownerId: string, lockKeys: string[]): void {
+    for (const key of lockKeys) {
+      if (this.locks.get(key) === ownerId) {
+        this.locks.delete(key);
+      }
+    }
+  }
+
   releaseByOwner(ownerId: string): void {
     for (const [key, currentOwnerId] of this.locks) {
       if (currentOwnerId === ownerId) {
@@ -70,3 +82,5 @@ export class TeamLockService {
     return [...this.locks.entries()].map(([key, ownerId]) => ({ key, ownerId }));
   }
 }
+
+export const defaultTeamLockService = new TeamLockService();

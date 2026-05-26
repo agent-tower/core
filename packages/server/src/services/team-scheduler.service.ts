@@ -22,7 +22,7 @@ import { getProviderById, type Provider } from '../executors/index.js';
 import { getSessionManager } from '../core/container.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 import { prisma } from '../utils/index.js';
-import { TeamLockService, type LockRequest } from './team-lock.service.js';
+import { TeamLockService, defaultTeamLockService, type LockRequest } from './team-lock.service.js';
 import { WorkspaceService } from './workspace.service.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 
@@ -47,6 +47,7 @@ export interface StopMemberWorkResult {
 type SchedulerTeamRun = {
   id: string;
   taskId: string;
+  mainWorkspaceId: string | null;
   task: {
     projectId: string;
     workspaces: PrismaWorkspace[];
@@ -55,6 +56,8 @@ type SchedulerTeamRun = {
 
 type WorkspaceStarter = {
   create(taskId: string): Promise<{ id: string }>;
+  getOrCreateMainWorkspace?(teamRunId: string): Promise<{ id: string }>;
+  getOrCreateDedicatedWorkspace?(teamRunId: string, memberId: string): Promise<{ id: string }>;
 };
 
 type SessionStarter = {
@@ -106,8 +109,6 @@ const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
   mergeWorkspace: false,
 };
 
-const defaultLockService = new TeamLockService();
-
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
   if (value == null || value === '') {
     return fallback;
@@ -140,7 +141,7 @@ export class TeamSchedulerService {
   private readonly providerLookup: (providerId: string) => Provider | null;
 
   constructor(
-    private readonly lockService = defaultLockService,
+    private readonly lockService = defaultTeamLockService,
     dependencies: TeamSchedulerDependencies = {}
   ) {
     this.workspaceService = dependencies.workspaceService ?? new WorkspaceService();
@@ -176,20 +177,6 @@ export class TeamSchedulerService {
       const lockKeys = this.getRequiredLocks(context.teamRun, member);
       const requiresStopCurrent = workRequest.ifBusy === 'cancel_current_and_start'
         && activeMemberIds.has(member.id);
-
-      if (member.workspacePolicy === 'dedicated') {
-        plans.push({
-          workRequestId: workRequest.id,
-          memberId: member.id,
-          canStart: false,
-          blockedReason: 'unsupported_workspace_policy',
-          requiresStopCurrent: false,
-          lockKeys,
-          workspaceId,
-          projectId,
-        });
-        continue;
-      }
 
       if (activeMemberIds.has(member.id)) {
         plans.push({
@@ -259,7 +246,7 @@ export class TeamSchedulerService {
 
     for (const workRequest of context.workRequests) {
       const member = context.memberById.get(workRequest.targetMemberId);
-      if (!member || member.workspacePolicy === 'dedicated') {
+      if (!member) {
         continue;
       }
 
@@ -288,11 +275,13 @@ export class TeamSchedulerService {
           continue;
         }
 
+        const workspaceId = await this.resolveQueuedInvocationWorkspaceId(context.teamRun, member);
         const createdInvocation = await this.createInvocationForClaimedWorkRequest(
           context.teamRun,
           member,
           freshWorkRequest,
-          invocationId
+          invocationId,
+          workspaceId
         );
 
         if (!createdInvocation) {
@@ -323,7 +312,7 @@ export class TeamSchedulerService {
 
     for (const workRequest of context.workRequests) {
       const member = context.memberById.get(workRequest.targetMemberId);
-      if (!member || member.workspacePolicy === 'dedicated') {
+      if (!member) {
         continue;
       }
 
@@ -359,7 +348,7 @@ export class TeamSchedulerService {
           throw new ServiceError(`Provider not found: ${member.providerId}`, 'PROVIDER_NOT_FOUND', 400);
         }
 
-        const workspace = await this.getOrCreateSharedWorkspace(context.teamRun);
+        const workspace = await this.getOrCreateWorkspaceForMember(context.teamRun, member);
         const session = await this.sessionManager.create(
           workspace.id,
           provider.agentType as AgentType,
@@ -384,7 +373,7 @@ export class TeamSchedulerService {
           continue;
         }
 
-        const resumeFromSessionId = await this.findResumeSourceSessionId(member, session.id);
+        const resumeFromSessionId = await this.findResumeSourceSessionId(member, session.id, workspace.id);
         try {
           if (resumeFromSessionId && this.sessionManager.startFollowUp) {
             await this.sessionManager.startFollowUp(session.id, resumeFromSessionId);
@@ -533,7 +522,8 @@ export class TeamSchedulerService {
     teamRun: SchedulerTeamRun,
     member: PrismaTeamMember,
     workRequest: PrismaWorkRequest,
-    invocationId: string
+    invocationId: string,
+    workspaceId: string | null
   ): Promise<PrismaAgentInvocation | null> {
     return prisma.$transaction(async (tx) => {
       const claimed = await tx.workRequest.updateMany({
@@ -567,7 +557,7 @@ export class TeamSchedulerService {
           teamRunId: teamRun.id,
           workRequestId: workRequest.id,
           memberId: member.id,
-          workspaceId: this.resolveInvocationWorkspaceId(teamRun, member),
+          workspaceId,
           sessionId: null,
           status: 'QUEUED',
         },
@@ -634,7 +624,10 @@ export class TeamSchedulerService {
         task: {
           include: {
             workspaces: {
-              where: { status: 'ACTIVE' },
+              where: {
+                status: 'ACTIVE',
+                parentWorkspaceId: null,
+              },
               orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
               take: 1,
             },
@@ -823,6 +816,30 @@ export class TeamSchedulerService {
     return count > 0;
   }
 
+  private async getOrCreateWorkspaceForMember(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+  ): Promise<{ id: string }> {
+    if (member.workspacePolicy === 'dedicated') {
+      return this.getOrCreateDedicatedWorkspace(teamRun, member);
+    }
+
+    return this.getOrCreateSharedWorkspace(teamRun);
+  }
+
+  private async resolveQueuedInvocationWorkspaceId(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+  ): Promise<string | null> {
+    if (member.workspacePolicy !== 'dedicated') {
+      return this.resolveInvocationWorkspaceId(teamRun, member);
+    }
+
+    const workspace = await this.getOrCreateDedicatedWorkspace(teamRun, member);
+    await this.emitTeamRunInvalidated(teamRun, ['workspaces'], 'agent-invocation-updated');
+    return workspace.id;
+  }
+
   private async getOrCreateSharedWorkspace(teamRun: SchedulerTeamRun): Promise<{ id: string }> {
     const existingClaim = TeamSchedulerService.sharedWorkspaceClaims.get(teamRun.taskId);
     if (existingClaim) {
@@ -842,8 +859,18 @@ export class TeamSchedulerService {
   }
 
   private async findOrCreateSharedWorkspace(teamRun: SchedulerTeamRun): Promise<{ id: string }> {
+    if (this.workspaceService.getOrCreateMainWorkspace) {
+      const workspace = await this.workspaceService.getOrCreateMainWorkspace(teamRun.id);
+      await this.emitTeamRunInvalidated(teamRun, ['workspaces', 'team-run'], 'agent-invocation-updated');
+      return workspace;
+    }
+
     const activeWorkspace = await prisma.workspace.findFirst({
-      where: { taskId: teamRun.taskId, status: 'ACTIVE' },
+      where: {
+        taskId: teamRun.taskId,
+        parentWorkspaceId: null,
+        status: 'ACTIVE',
+      },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { id: true },
     });
@@ -857,11 +884,28 @@ export class TeamSchedulerService {
     return workspace;
   }
 
+  private async getOrCreateDedicatedWorkspace(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+  ): Promise<{ id: string }> {
+    if (!this.workspaceService.getOrCreateDedicatedWorkspace) {
+      throw new ServiceError('Dedicated workspace startup is not available', 'DEDICATED_WORKSPACE_UNAVAILABLE', 500);
+    }
+
+    const workspace = await this.workspaceService.getOrCreateDedicatedWorkspace(teamRun.id, member.id);
+    await this.emitTeamRunInvalidated(teamRun, ['workspaces', 'team-run'], 'agent-invocation-updated');
+    return workspace;
+  }
+
   private buildSessionPrompt(member: PrismaTeamMember, workRequest: PrismaWorkRequest): string {
     return `${member.rolePrompt}\n\nTask:\n${workRequest.instruction}`;
   }
 
-  private async findResumeSourceSessionId(member: PrismaTeamMember, currentSessionId: string): Promise<string | null> {
+  private async findResumeSourceSessionId(
+    member: PrismaTeamMember,
+    currentSessionId: string,
+    workspaceId: string,
+  ): Promise<string | null> {
     if (member.sessionPolicy !== 'resume_last') {
       return null;
     }
@@ -869,6 +913,7 @@ export class TeamSchedulerService {
     const previousInvocation = await prisma.agentInvocation.findFirst({
       where: {
         memberId: member.id,
+        workspaceId,
         sessionId: {
           not: null,
           notIn: [currentSessionId],
@@ -952,11 +997,15 @@ export class TeamSchedulerService {
   }
 
   private resolveInvocationWorkspaceId(teamRun: SchedulerTeamRun, member: PrismaTeamMember): string | null {
+    if (member.workspacePolicy === 'dedicated') {
+      return null;
+    }
+
     if (member.workspacePolicy !== 'shared' && member.workspacePolicy !== 'none') {
       return null;
     }
 
-    return teamRun.task.workspaces[0]?.id ?? null;
+    return teamRun.mainWorkspaceId ?? teamRun.task.workspaces[0]?.id ?? null;
   }
 
   private resolveLockWorkspaceId(teamRun: SchedulerTeamRun, member: PrismaTeamMember): string | null {
