@@ -8,6 +8,8 @@ import type { MsgStore } from './msg-store.js';
 const DEBUG_PARSER = process.env.DEBUG_PARSER === 'true';
 
 import {
+  type NormalizedEntry,
+  type ToolStatus,
   createAssistantMessage,
   createToolUse,
   createTokenUsageInfo,
@@ -17,6 +19,7 @@ import {
 import {
   EntryIndexProvider,
   addNormalizedEntry,
+  replaceNormalizedEntry,
   updateEntryContent,
   updateToolStatus,
   setSessionId,
@@ -30,15 +33,7 @@ import { stripAnsiSequences } from './utils/ansi.js';
 interface CodexEvent {
   type: string;
   thread_id?: string;
-  item?: {
-    id: string;
-    type: string;
-    text?: string;
-    command?: string;
-    aggregated_output?: string;
-    exit_code?: number | null;
-    status?: string;
-  };
+  item?: CodexItem;
   usage?: {
     input_tokens?: number;
     cached_input_tokens?: number;
@@ -50,6 +45,21 @@ interface CodexEvent {
   error?: {
     message?: string;
   };
+}
+
+interface CodexItem {
+  id: string;
+  type: string;
+  text?: string;
+  command?: string;
+  aggregated_output?: string;
+  exit_code?: number | null;
+  status?: string;
+  server?: string;
+  tool?: string;
+  arguments?: unknown;
+  result?: unknown;
+  error?: unknown;
 }
 
 /**
@@ -69,6 +79,8 @@ export class CodexParser {
   private pushedErrors = new Set<string>();
   /** 重试类错误的 entry index（用于原地更新而非创建新条目） */
   private retryErrorIndex: number | null = null;
+  /** mcp_tool_call item.id -> entry index */
+  private mcpToolEntryMap = new Map<string, number>();
 
   constructor(msgStore: MsgStore) {
     this.msgStore = msgStore;
@@ -121,13 +133,7 @@ export class CodexParser {
       // 可能是多个 JSON 拼接，尝试拆分
     }
 
-    // 按 `} {` 模式拆分（Codex 输出的多 JSON 行以空格分隔）
-    const segments = line.split(/\}\s*\{/).map((seg, i, arr) => {
-      if (arr.length === 1) return seg;
-      if (i === 0) return seg + '}';
-      if (i === arr.length - 1) return '{' + seg;
-      return '{' + seg + '}';
-    });
+    const segments = this.extractJsonObjects(line);
 
     for (const segment of segments) {
       try {
@@ -139,6 +145,57 @@ export class CodexParser {
         }
       }
     }
+  }
+
+  /**
+   * Extract complete top-level JSON objects from a line without splitting on
+   * braces that appear inside JSON strings.
+   */
+  private extractJsonObjects(line: string): string[] {
+    const segments: string[] = [];
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+
+      if (start === -1) {
+        if (char === '{') {
+          start = i;
+          depth = 1;
+          inString = false;
+          escaped = false;
+        }
+        continue;
+      }
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+      } else if (char === '{') {
+        depth += 1;
+      } else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          segments.push(line.slice(start, i + 1));
+          start = -1;
+        }
+      }
+    }
+
+    return segments;
   }
 
   /**
@@ -189,7 +246,9 @@ export class CodexParser {
     const item = event.item;
     if (!item) return;
 
-    if (item.type === 'command_execution' && item.command) {
+    if (item.type === 'mcp_tool_call') {
+      this.upsertMcpToolEntry(item, this.getMcpToolStatus(item));
+    } else if (item.type === 'command_execution' && item.command) {
       // 创建工具使用记录
       const toolUse = createToolUse(
         'bash',
@@ -221,6 +280,8 @@ export class CodexParser {
       const index = this.indexProvider.next();
       const patch = addNormalizedEntry(index, message);
       this.msgStore.pushPatch(patch);
+    } else if (item.type === 'mcp_tool_call') {
+      this.upsertMcpToolEntry(item, this.getMcpToolStatus(item));
     } else if (item.type === 'command_execution') {
       // 命令执行完成
       if (this.currentToolUseId === item.id && this.currentToolIndex !== null) {
@@ -233,6 +294,75 @@ export class CodexParser {
         this.toolOutputBuffer = '';
       }
     }
+  }
+
+  private upsertMcpToolEntry(item: CodexItem, status: ToolStatus): void {
+    const entry = this.createMcpToolEntry(item, status);
+    const existingIndex = this.mcpToolEntryMap.get(item.id);
+
+    if (existingIndex !== undefined) {
+      const patch = replaceNormalizedEntry(existingIndex, entry);
+      this.msgStore.pushPatch(patch);
+      return;
+    }
+
+    const index = this.indexProvider.next();
+    this.mcpToolEntryMap.set(item.id, index);
+    const patch = addNormalizedEntry(index, entry);
+    this.msgStore.pushPatch(patch);
+  }
+
+  private createMcpToolEntry(item: CodexItem, status: ToolStatus): NormalizedEntry {
+    const toolName = item.tool || 'mcp';
+    const content = this.formatMcpToolContent(item);
+    const entry = createToolUse(toolName, content, 'tool', item.id, item.id);
+
+    return {
+      ...entry,
+      metadata: {
+        ...entry.metadata,
+        status,
+      },
+    };
+  }
+
+  private formatMcpToolContent(item: CodexItem): string {
+    const target = item.server && item.tool ? `${item.server}/${item.tool}` : item.tool || item.server || 'mcp';
+    const lines = [`MCP tool call: ${target}`];
+
+    if (item.server) lines.push(`Server: ${item.server}`);
+    if (item.tool) lines.push(`Tool: ${item.tool}`);
+    if (item.status) lines.push(`Status: ${item.status}`);
+    if (item.arguments !== undefined) lines.push(`Arguments: ${this.formatJsonValue(item.arguments)}`);
+    if (item.result !== undefined && item.result !== null) lines.push(`Result: ${this.formatJsonValue(item.result)}`);
+    if (item.error !== undefined && item.error !== null) lines.push(`Error: ${this.formatJsonValue(item.error)}`);
+
+    return lines.join('\n');
+  }
+
+  private formatJsonValue(value: unknown): string {
+    if (typeof value === 'string') {
+      return stripAnsiSequences(value);
+    }
+
+    try {
+      return stripAnsiSequences(JSON.stringify(value, null, 2));
+    } catch {
+      return stripAnsiSequences(String(value));
+    }
+  }
+
+  private getMcpToolStatus(item: CodexItem): ToolStatus {
+    const rawStatus = item.status?.toLowerCase();
+
+    if (item.error != null) return 'failed';
+    if (rawStatus === 'completed' || rawStatus === 'success' || rawStatus === 'succeeded') return 'success';
+    if (rawStatus === 'failed' || rawStatus === 'error' || rawStatus === 'cancelled' || rawStatus === 'canceled') return 'failed';
+    if (rawStatus === 'denied') return 'denied';
+    if (rawStatus === 'pending_approval') return 'pending_approval';
+    if (rawStatus === 'timed_out' || rawStatus === 'timeout') return 'timed_out';
+
+    return 'created';
   }
 
   /**
