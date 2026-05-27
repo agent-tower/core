@@ -5,10 +5,11 @@ import { SessionStatus, type Session } from '@agent-tower/shared'
 import { LogStream, TodoPanel, TokenUsageIndicator } from '@/components/agent'
 import {
   ArrowLeft, ArrowUp, ArrowDown, Paperclip, Play, Square,
-  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History,
+  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History, Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
+import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
 import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
 import { MobileChangesView } from './MobileChangesView'
 import { MobileHistoryView } from './MobileHistoryView'
@@ -71,7 +72,7 @@ interface MobileTaskDetailProps {
   isDeleting?: boolean
 }
 
-type MobileTab = 'chat' | 'changes' | 'history' | 'workspace'
+type MobileTab = 'chat' | 'team-status' | 'changes' | 'history' | 'workspace'
 
 // ============ Status Badge ============
 
@@ -88,10 +89,17 @@ function StatusDot({ status }: { status: UITaskStatus }) {
 
 // ============ Tab Bar ============
 
-const TAB_CONFIG: { key: MobileTab; label: string; icon: typeof MessageSquare }[] = [
+const SOLO_TAB_CONFIG: { key: MobileTab; label: string; icon: typeof MessageSquare }[] = [
   { key: 'chat', label: 'Chat', icon: MessageSquare },
   { key: 'changes', label: 'Changes', icon: GitGraph },
   { key: 'history', label: 'History', icon: History },
+  { key: 'workspace', label: 'Workspace', icon: FolderOpen },
+]
+
+const TEAM_RUN_TAB_CONFIG: { key: MobileTab; label: string; icon: typeof MessageSquare }[] = [
+  { key: 'chat', label: 'Team room', icon: MessageSquare },
+  { key: 'team-status', label: 'Team Status', icon: Users },
+  { key: 'changes', label: 'Changes', icon: GitGraph },
   { key: 'workspace', label: 'Workspace', icon: FolderOpen },
 ]
 
@@ -104,6 +112,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const [focusedInvocationSessionId, setFocusedInvocationSessionId] = useState<string | null>(null)
   const [explicitWorkspaceId, setExplicitWorkspaceId] = useState<string | undefined>(undefined)
   const inputContainerRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDivElement>(null)
@@ -135,10 +144,21 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const { data: roomMessages } = useRoomMessages(taskTeamRun?.id ?? '')
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
   const teamRun = taskTeamRun ?? null
+  const tabConfig = teamRun ? TEAM_RUN_TAB_CONFIG : SOLO_TAB_CONFIG
 
   useEffect(() => {
     setExplicitWorkspaceId(undefined)
+    setFocusedInvocationSessionId(null)
   }, [task.id])
+
+  useEffect(() => {
+    if (teamRun && activeTab === 'history') {
+      setActiveTab('chat')
+    }
+    if (!teamRun && activeTab === 'team-status') {
+      setActiveTab('chat')
+    }
+  }, [activeTab, teamRun])
 
   const resolvedWorkspaceId = useMemo(
     () => resolveDefaultWorkspaceId(workspaces, teamRun, explicitWorkspaceId),
@@ -199,8 +219,17 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   }, [workspaces])
 
   const sessionId = activeSession?.id ?? ''
-  const logSessionId = teamRun ? '' : sessionId
-  const isSessionActive = activeSession?.status === SessionStatus.RUNNING || activeSession?.status === SessionStatus.PENDING
+  const logSessionId = teamRun ? focusedInvocationSessionId ?? '' : sessionId
+  const focusedSession = useMemo(() => {
+    if (!focusedInvocationSessionId || !workspaces) return null
+    for (const workspace of workspaces) {
+      const match = workspace.sessions?.find((session) => session.id === focusedInvocationSessionId)
+      if (match) return match
+    }
+    return null
+  }, [focusedInvocationSessionId, workspaces])
+  const displayedSession = focusedSession ?? activeSession ?? null
+  const isSessionActive = displayedSession?.status === SessionStatus.RUNNING || displayedSession?.status === SessionStatus.PENDING
   const isProjectReadOnly = Boolean(task.projectArchivedAt)
   const isProjectRepoDeleted = Boolean(task.projectRepoDeletedAt)
   const projectReadOnlyMessage = isProjectRepoDeleted
@@ -286,7 +315,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   const { isConnected, isLoadingSnapshot, logs, entries, attach } = useNormalizedLogs({
     sessionId: logSessionId,
-    sessionStatus: teamRun ? undefined : activeSession?.status,
+    sessionStatus: displayedSession?.status,
     onExit: useCallback(() => {
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }, [queryClient]),
@@ -358,6 +387,18 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
     (messageInput: Parameters<typeof postRoomMessage.mutateAsync>[0]) => postRoomMessage.mutateAsync(messageInput),
     [postRoomMessage],
   )
+
+  const handleViewInvocationSession = useCallback((invocationSessionId: string) => {
+    setFocusedInvocationSessionId(invocationSessionId)
+    setActiveTab('chat')
+    requestAnimationFrame(() => {
+      scrollToBottom()
+    })
+  }, [scrollToBottom])
+
+  const handleBackToTeamRoom = useCallback(() => {
+    setFocusedInvocationSessionId(null)
+  }, [])
 
   // ============ File Upload Handlers ============
 
@@ -484,8 +525,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           </button>
           <div className="flex-1 min-w-0">
             <h1 className="text-[13px] font-bold text-neutral-900 truncate leading-tight">{task.title}</h1>
-            <div className="flex items-center gap-1 text-[11px] text-neutral-500 leading-tight">
-              <span className={`font-medium ${task.projectColor}`}>{task.projectName}</span>
+            <div className="flex min-w-0 items-center gap-1 text-[11px] text-neutral-500 leading-tight">
+              <span className={`truncate font-medium ${task.projectColor}`}>{task.projectName}</span>
               {task.projectArchivedAt && (
                 <span className="rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500">
                   {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
@@ -530,32 +571,20 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           )}
         </div>
 
-        {workspaces && workspaces.length > 1 && (
-          <div className="border-t border-neutral-100 px-2.5 py-2">
-            <WorkspaceSwitcher
-              workspaces={workspaces}
-              teamRun={teamRun}
-              selectedWorkspaceId={resolvedWorkspaceId}
-              onSelectWorkspace={setExplicitWorkspaceId}
-              className="w-full"
-            />
-          </div>
-        )}
-
         {/* Sub-Tab Bar */}
         <div className="flex border-t border-neutral-100">
-          {TAB_CONFIG.map(({ key, label, icon: Icon }) => (
+          {tabConfig.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               onClick={() => setActiveTab(key)}
-              className={`flex-1 flex items-center justify-center gap-1 py-2 text-[11px] font-medium transition-colors ${
+              className={`flex min-w-0 flex-1 items-center justify-center gap-1 px-1 py-2 text-[11px] font-medium transition-colors ${
                 activeTab === key
                   ? 'text-neutral-900 border-b-2 border-neutral-900'
                   : 'text-neutral-400 border-b-2 border-transparent'
               }`}
             >
-              <Icon size={13} />
-              <span>{key === 'chat' && teamRun ? t('Team room') : t(label)}</span>
+              <Icon size={13} className="shrink-0" />
+              <span className="truncate">{t(label)}</span>
             </button>
           ))}
         </div>
@@ -565,13 +594,58 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
       {activeTab === 'chat' && (
         teamRun ? (
           <main className="flex-1 min-h-0 overflow-hidden">
-            <RoomTimeline
-              teamRun={teamRun}
-              messages={roomMessages ?? teamRun.messages ?? []}
-              readOnly={isProjectReadOnly}
-              readOnlyMessage={projectReadOnlyMessage}
-              onSendMessage={handlePostRoomMessage}
-            />
+            {focusedInvocationSessionId ? (
+              <div className="flex h-full min-h-0 flex-col bg-white">
+                <div className="flex shrink-0 items-center justify-between gap-3 border-b border-neutral-200 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-neutral-900">{t('Invocation details')}</div>
+                    <div className="truncate text-[11px] text-neutral-500">
+                      {focusedInvocationSessionId}
+                    </div>
+                  </div>
+                  <Button type="button" size="sm" variant="outline" onClick={handleBackToTeamRoom}>
+                    {t('Back to room')}
+                  </Button>
+                </div>
+
+                <div className="relative flex-1 min-h-0">
+                  <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-app-thin overscroll-y-contain px-3 pt-3 pb-2">
+                    <div ref={contentRef}>
+                      {isLoadingSnapshot ? (
+                        <LoadingSpinner label={t('Loading logs...')} />
+                      ) : logs.length === 0 ? (
+                        <div className="text-neutral-400 text-center py-8 text-sm">
+                          {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
+                        </div>
+                      ) : (
+                        <LogStream logs={logs} />
+                      )}
+                    </div>
+                  </div>
+
+                  {!isAtBottom && (
+                    <button
+                      onClick={() => scrollToBottom()}
+                      className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-2.5 py-1 bg-white/90 backdrop-blur-sm border border-neutral-200 rounded-full shadow-md text-[11px] text-neutral-600 active:bg-white transition-all"
+                      aria-label={t('Scroll to bottom')}
+                    >
+                      <ArrowDown size={12} />
+                      <span>{t('回到底部')}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <RoomTimeline
+                teamRun={teamRun}
+                messages={roomMessages ?? teamRun.messages ?? []}
+                readOnly={isProjectReadOnly}
+                readOnlyMessage={projectReadOnlyMessage}
+                onSendMessage={handlePostRoomMessage}
+                onViewInvocationSession={handleViewInvocationSession}
+                compactComposer
+              />
+            )}
           </main>
         ) : (
           <div className="flex-1 flex flex-col min-h-0">
@@ -769,8 +843,32 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         )
       )}
 
+      {activeTab === 'team-status' && teamRun && (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <TeamStatusPanel
+            teamRun={teamRun}
+            workspaces={workspaces}
+            selectedWorkspaceId={resolvedWorkspaceId}
+            onSelectWorkspace={setExplicitWorkspaceId}
+            onViewInvocationSession={handleViewInvocationSession}
+          />
+        </div>
+      )}
+
       {activeTab === 'changes' && (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          {workspaces && workspaces.length > 1 && (
+            <div className="shrink-0 border-b border-neutral-100 bg-white px-3 py-2">
+              <WorkspaceSwitcher
+                workspaces={workspaces}
+                teamRun={teamRun}
+                selectedWorkspaceId={resolvedWorkspaceId}
+                onSelectWorkspace={setExplicitWorkspaceId}
+                className="w-full"
+                buttonClassName="w-full max-w-none min-w-0 justify-start"
+              />
+            </div>
+          )}
           <MobileChangesView workingDir={workingDir} />
         </div>
       )}

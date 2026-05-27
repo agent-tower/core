@@ -19,13 +19,14 @@ import type {
 } from '@prisma/client';
 import { AgentType } from '../types/index.js';
 import { getProviderById, type Provider } from '../executors/index.js';
-import { getSessionManager } from '../core/container.js';
+import { getEventBus, getSessionManager } from '../core/container.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 import { prisma } from '../utils/index.js';
 import { TeamLockService, defaultTeamLockService, type LockRequest } from './team-lock.service.js';
 import { WorkspaceService } from './workspace.service.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
+import { TeamReconcilerService } from './team-reconciler.service.js';
 
 export interface SchedulePlan {
   workRequestId: string;
@@ -74,10 +75,15 @@ type SessionStarter = {
   stop?(id: string): Promise<unknown>;
 };
 
+type TeamRunReviewAdvancer = {
+  maybeAdvanceTeamRunToReview(teamRunId: string): Promise<boolean>;
+};
+
 interface TeamSchedulerDependencies {
   workspaceService?: WorkspaceStarter;
   sessionManager?: SessionStarter;
   getProviderById?: (providerId: string) => Provider | null;
+  teamRunReviewAdvancer?: TeamRunReviewAdvancer;
 }
 
 const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
@@ -140,6 +146,7 @@ export class TeamSchedulerService {
   private readonly workspaceService: WorkspaceStarter;
   private readonly sessionManager: SessionStarter;
   private readonly providerLookup: (providerId: string) => Provider | null;
+  private readonly teamRunReviewAdvancer: TeamRunReviewAdvancer;
 
   constructor(
     private readonly lockService = defaultTeamLockService,
@@ -148,6 +155,13 @@ export class TeamSchedulerService {
     this.workspaceService = dependencies.workspaceService ?? new WorkspaceService();
     this.sessionManager = dependencies.sessionManager ?? getSessionManager();
     this.providerLookup = dependencies.getProviderById ?? getProviderById;
+    this.teamRunReviewAdvancer = dependencies.teamRunReviewAdvancer ?? new TeamReconcilerService({
+      eventBus: getEventBus(),
+      scheduler: {
+        releaseInvocationLocks: (invocationId) => this.releaseInvocationLocks(invocationId),
+        startNextSessions: (nextTeamRunId) => this.startNextSessions(nextTeamRunId),
+      },
+    });
   }
 
   async planNext(teamRunId: string): Promise<SchedulePlan[]> {
@@ -310,6 +324,7 @@ export class TeamSchedulerService {
   async startNextSessions(teamRunId: string): Promise<AgentInvocation[]> {
     const context = await this.getSchedulingContext(teamRunId);
     const startedInvocations: AgentInvocation[] = [];
+    let createdTerminalInvocation = false;
 
     for (const workRequest of context.workRequests) {
       const member = context.memberById.get(workRequest.targetMemberId);
@@ -344,9 +359,33 @@ export class TeamSchedulerService {
 
         const provider = this.providerLookup(member.providerId);
         if (!provider) {
+          console.warn(
+            '[TeamSchedulerService] Skipping TeamRun WorkRequest because provider was not found:',
+            {
+              teamRunId,
+              workRequestId: freshWorkRequest.id,
+              memberId: member.id,
+              providerId: member.providerId,
+            }
+          );
+          const failedInvocation = await this.createFailedInvocationForClaimedWorkRequest(
+            context.teamRun,
+            member,
+            freshWorkRequest,
+            invocationId,
+            null
+          );
           this.lockService.releaseByOwner(invocationId);
           invocationId = null;
-          throw new ServiceError(`Provider not found: ${member.providerId}`, 'PROVIDER_NOT_FOUND', 400);
+          if (failedInvocation) {
+            createdTerminalInvocation = true;
+            await this.emitTeamRunInvalidated(
+              context.teamRun,
+              ['work-requests', 'agent-invocations'],
+              'agent-invocation-updated'
+            );
+          }
+          continue;
         }
 
         const workspace = await this.getOrCreateWorkspaceForMember(context.teamRun, member);
@@ -399,6 +438,10 @@ export class TeamSchedulerService {
       } finally {
         this.releaseMemberSchedulingLock(memberLockKey);
       }
+    }
+
+    if (createdTerminalInvocation) {
+      await this.teamRunReviewAdvancer.maybeAdvanceTeamRunToReview(teamRunId);
     }
 
     return startedInvocations;
@@ -609,6 +652,53 @@ export class TeamSchedulerService {
           workspaceId,
           sessionId,
           status: 'RUNNING',
+        },
+      });
+    });
+  }
+
+  private async createFailedInvocationForClaimedWorkRequest(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+    workRequest: PrismaWorkRequest,
+    invocationId: string,
+    workspaceId: string | null
+  ): Promise<PrismaAgentInvocation | null> {
+    return prisma.$transaction(async (tx) => {
+      const claimed = await tx.workRequest.updateMany({
+        where: {
+          id: workRequest.id,
+          teamRunId: teamRun.id,
+          status: 'QUEUED',
+        },
+        data: { status: 'STARTED' },
+      });
+
+      if (claimed.count !== 1) {
+        return null;
+      }
+
+      if (workRequest.cancelQueued) {
+        await tx.workRequest.updateMany({
+          where: {
+            teamRunId: teamRun.id,
+            targetMemberId: member.id,
+            status: 'QUEUED',
+            id: { not: workRequest.id },
+          },
+          data: { status: 'CANCELLED' },
+        });
+      }
+
+      return tx.agentInvocation.create({
+        data: {
+          id: invocationId,
+          teamRunId: teamRun.id,
+          workRequestId: workRequest.id,
+          memberId: member.id,
+          workspaceId,
+          sessionId: null,
+          status: 'FAILED',
         },
       });
     });

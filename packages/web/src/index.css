@@ -137,6 +137,48 @@
 
 /* Safe area utilities for notched mobile devices */
 @layer utilities {
+  .active-work-dots {
+    display: inline-block;
+    width: 1.5em;
+    text-align: left;
+  }
+
+  .active-work-dots__second {
+    animation: active-work-dot-2 1.8s steps(1, end) infinite;
+  }
+
+  .active-work-dots__third {
+    animation: active-work-dot-3 1.8s steps(1, end) infinite;
+  }
+
+  @keyframes active-work-dot-2 {
+    0% {
+      opacity: 0;
+    }
+    33%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes active-work-dot-3 {
+    0%,
+    33% {
+      opacity: 0;
+    }
+    66%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .active-work-dots__second,
+    .active-work-dots__third {
+      animation: none;
+    }
+  }
+
   .scrollbar-app {
     --scrollbar-current-size: var(--scrollbar-size);
     scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);

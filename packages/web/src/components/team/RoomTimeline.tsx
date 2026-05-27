@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useState, useRef } from 'react'
-import type { ChangeEvent, KeyboardEvent } from 'react'
+import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import {
   ArrowDown,
   ArrowUp,
   AtSign,
+  Ban,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -12,18 +14,22 @@ import {
   Clock3,
   ExternalLink,
   FileText,
-  MessageSquare,
-  PanelRightOpen,
   Paperclip,
   Users,
   X,
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
-import type { AgentInvocation, Attachment, RoomMessage, StructuredMention, TeamMember, TeamRun } from '@agent-tower/shared'
+import type { AgentInvocation, Attachment, RoomMessage, StructuredMention, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
 import type { PostRoomMessageInput } from '@/hooks/use-team-run'
 import { useAttachmentMetadata, useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
+import {
+  useApproveWorkRequest,
+  useCancelWorkRequest,
+  useRejectWorkRequest,
+  useStopMemberWork,
+} from '@/hooks/use-team-run'
 import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
@@ -37,6 +43,8 @@ import {
   buildStructuredMentionsFromSelectedMembers,
   removeSelectedMemberId,
 } from './room-mentions'
+import { ACTIVE_ROOM_INVOCATION_STATUSES, buildRoomTimelineItems } from './room-timeline-items'
+import { ActiveWorkList } from './ActiveWorkList'
 import 'streamdown/styles.css'
 
 interface RoomTimelineProps {
@@ -46,13 +54,8 @@ interface RoomTimelineProps {
   readOnlyMessage?: string
   onSendMessage: (input: PostRoomMessageInput) => Promise<unknown>
   onViewInvocationSession?: (sessionId: string) => void
+  compactComposer?: boolean
 }
-
-const ACTIVE_INVOCATION_STATUSES = new Set<AgentInvocation['status']>([
-  'RUNNING',
-  'WAITING_ROOM_REPLY',
-  'QUEUED',
-])
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
@@ -150,12 +153,8 @@ function formatTime(value?: string) {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function formatMemberStatus(invocation?: AgentInvocation, pendingWorkRequest?: boolean) {
-  if (invocation?.status === 'RUNNING') return 'running'
-  if (invocation?.status === 'WAITING_ROOM_REPLY') return 'waiting room reply'
-  if (invocation?.status === 'QUEUED') return 'queued'
-  if (pendingWorkRequest) return 'pending approval'
-  return 'idle'
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback
 }
 
 function findInlineMention(value: string, cursor: number) {
@@ -549,6 +548,239 @@ function CollapsibleRoomMessageContent({
   )
 }
 
+function RoomMessageRow({
+  senderName,
+  avatar,
+  createdAt,
+  isUser,
+  isSystem,
+  children,
+  headerAddon,
+  bubbleClassName,
+  isPending,
+}: {
+  senderName: string
+  avatar?: string | null
+  createdAt?: string
+  isUser?: boolean
+  isSystem?: boolean
+  children: ReactNode
+  headerAddon?: ReactNode
+  bubbleClassName?: string
+  isPending?: boolean
+}) {
+  if (isSystem) {
+    return (
+      <div className="flex justify-center">
+        <div className="max-w-[min(100%,42rem)] rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-sm">
+          {children}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className={cn(
+        'group flex items-start gap-3',
+        isUser ? 'justify-end pl-8 sm:pl-14' : 'justify-start pr-8 sm:pr-14',
+      )}
+    >
+      {!isUser && (
+        <MemberAvatar
+          name={senderName}
+          avatar={avatar ?? null}
+          className="mt-0.5 h-8 w-8 text-[11px]"
+        />
+      )}
+      <div className={cn('flex min-w-0 max-w-[min(86%,46rem)] flex-col', isUser ? 'items-end' : 'items-start')}>
+        <div
+          className={cn(
+            'mb-1.5 flex max-w-full items-center gap-1.5 px-0.5 text-[11px] text-neutral-500',
+            isUser ? 'justify-end' : 'justify-start',
+          )}
+        >
+          <span className="truncate font-semibold text-neutral-700">{senderName}</span>
+          <span className="h-1 w-1 rounded-full bg-neutral-300" aria-hidden />
+          <Clock3 size={11} className="text-neutral-400" />
+          <span className="shrink-0">{formatTime(createdAt)}</span>
+          {headerAddon}
+        </div>
+        <div
+          className={cn(
+            'max-w-full rounded-lg px-3.5 py-3 text-sm leading-6 transition-colors',
+            isUser
+              ? 'rounded-tr-[2px] border border-neutral-900 bg-neutral-900 text-white shadow-sm'
+              : 'rounded-tl-[2px] bg-neutral-100 text-neutral-900 shadow-sm',
+            bubbleClassName,
+            isPending ? 'opacity-70' : '',
+          )}
+        >
+          {children}
+        </div>
+      </div>
+      {isUser && (
+        <MemberAvatar
+          name={senderName}
+          avatar={null}
+          className="mt-0.5 h-8 w-8 border-neutral-300 bg-neutral-900 text-white text-[11px]"
+        />
+      )}
+    </div>
+  )
+}
+
+function RoomChatMessage({
+  message,
+  senderName,
+  senderMember,
+  displayContent,
+  onOpenImage,
+}: {
+  message: RoomMessage
+  senderName: string
+  senderMember?: TeamMember | null
+  displayContent: string
+  onOpenImage: (attachments: Attachment[], index: number) => void
+}) {
+  const { t } = useI18n()
+  const isUser = message.senderType === 'user'
+  const isSystem = message.senderType === 'system'
+  const pendingStatus = isPendingRoomMessage(message) ? message.pendingStatus : null
+  const mentions = message.mentions ?? []
+  const workRequestCount = message.workRequestIds?.length ?? 0
+  const headerAddon = (
+    <>
+      {isUser && workRequestCount > 0 && mentions.length === 0 && (
+        <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-600">
+          {t('Work requests')}: {workRequestCount}
+        </span>
+      )}
+      {pendingStatus === 'sending' && (
+        <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-500">
+          {t('发送中...')}
+        </span>
+      )}
+      {pendingStatus === 'failed' && (
+        <span className="ml-0.5 shrink-0 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-red-600">
+          {t('发送失败')}
+        </span>
+      )}
+    </>
+  )
+
+  return (
+    <RoomMessageRow
+      senderName={senderName}
+      avatar={senderMember?.avatar ?? null}
+      createdAt={message.createdAt}
+      isUser={isUser}
+      isSystem={isSystem}
+      headerAddon={headerAddon}
+      bubbleClassName={isUser && pendingStatus === 'failed' ? 'border-red-200 bg-red-50 text-red-900' : undefined}
+      isPending={pendingStatus === 'sending'}
+    >
+      <RoomMessageBody
+        content={displayContent}
+        attachmentIds={message.attachmentIds}
+        isUser={isUser && pendingStatus !== 'failed'}
+        tone={isSystem ? 'system' : undefined}
+        onOpenImage={onOpenImage}
+      />
+
+      {!isUser && !isSystem && workRequestCount > 0 && mentions.length === 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+            {t('Work requests')}: {workRequestCount}
+          </span>
+        </div>
+      )}
+    </RoomMessageRow>
+  )
+}
+
+function PendingApprovalBubble({
+  request,
+  member,
+  onApprove,
+  onReject,
+  onCancel,
+  isActionPending,
+  isApprovePending,
+  isRejectPending,
+  isCancelPending,
+}: {
+  request: WorkRequest
+  member?: TeamMember | null
+  onApprove: () => void
+  onReject: () => void
+  onCancel: () => void
+  isActionPending: boolean
+  isApprovePending: boolean
+  isRejectPending: boolean
+  isCancelPending: boolean
+}) {
+  const { t } = useI18n()
+
+  return (
+    <RoomMessageRow
+      senderName={member?.name ?? t('Agent')}
+      avatar={member?.avatar ?? null}
+      createdAt={request.createdAt}
+      bubbleClassName="border border-amber-200/80 bg-amber-50/80"
+    >
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+            <Clock3 size={11} />
+            {t('Pending approval')}
+          </span>
+          <span className="text-[11px] text-neutral-500">{t('Requester')}: {t(request.requesterType === 'user' ? 'User' : request.requesterType === 'system' ? 'System' : 'Agent')}</span>
+        </div>
+
+        <div className="text-sm leading-6 text-neutral-800 [overflow-wrap:anywhere]">
+          {request.instruction}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={isActionPending}
+            className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800"
+            onClick={onApprove}
+          >
+            <Check size={12} />
+            <span>{isApprovePending ? t('Approving') : t('Approve')}</span>
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={isActionPending}
+            onClick={onReject}
+          >
+            <X size={12} />
+            <span>{isRejectPending ? t('Rejecting') : t('Reject')}</span>
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={isActionPending}
+            className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800"
+            onClick={onCancel}
+          >
+            <Ban size={12} />
+            <span>{isCancelPending ? t('Cancelling') : t('Cancel')}</span>
+          </Button>
+        </div>
+      </div>
+    </RoomMessageRow>
+  )
+}
+
 export function RoomTimeline({
   teamRun,
   messages,
@@ -556,8 +788,13 @@ export function RoomTimeline({
   readOnlyMessage,
   onSendMessage,
   onViewInvocationSession,
+  compactComposer,
 }: RoomTimelineProps) {
   const { t } = useI18n()
+  const approveWorkRequest = useApproveWorkRequest(teamRun.id)
+  const rejectWorkRequest = useRejectWorkRequest(teamRun.id)
+  const cancelWorkRequest = useCancelWorkRequest(teamRun.id)
+  const stopMemberWork = useStopMemberWork(teamRun.id)
   const [draft, setDraft] = useState('')
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false)
   const [inlineMention, setInlineMention] = useState<{ start: number; end: number; query: string } | null>(null)
@@ -566,6 +803,7 @@ export function RoomTimeline({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [pendingMessages, setPendingMessages] = useState<PendingRoomMessage[]>([])
+  const [stopPromptInvocationId, setStopPromptInvocationId] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const {
@@ -605,20 +843,19 @@ export function RoomTimeline({
     })
   }, [messages, pendingMessages])
 
-  const activeInvocations = useMemo(() => {
-    const invocations = (teamRun.invocations ?? [])
-      .filter((invocation) => ACTIVE_INVOCATION_STATUSES.has(invocation.status))
-      .sort((a, b) => {
-        const aTime = Date.parse(a.updatedAt ?? a.createdAt ?? '')
-        const bTime = Date.parse(b.updatedAt ?? b.createdAt ?? '')
-        return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime)
-      })
+  const workRequestById = useMemo(() => {
+    return new Map((teamRun.workRequests ?? []).map((request) => [request.id, request]))
+  }, [teamRun.workRequests])
 
-    return invocations.map((invocation) => ({
-      invocation,
-      member: memberById.get(invocation.memberId) ?? null,
-    }))
-  }, [teamRun.invocations, memberById])
+  const timelineItems = useMemo(
+    () => buildRoomTimelineItems(messageList, teamRun.workRequests ?? [], teamRun.invocations ?? []),
+    [messageList, teamRun.invocations, teamRun.workRequests],
+  )
+
+  const activeInvocations = useMemo(
+    () => (teamRun.invocations ?? []).filter((invocation) => ACTIVE_ROOM_INVOCATION_STATUSES.has(invocation.status)),
+    [teamRun.invocations],
+  )
 
   const selectedMembers = useMemo(() => {
     return selectedMemberIds
@@ -687,10 +924,10 @@ export function RoomTimeline({
     setSubmitError(null)
     const element = event.target
     element.style.height = 'auto'
-    element.style.height = `${Math.max(72, Math.min(element.scrollHeight, 240))}px`
+    element.style.height = `${Math.max(compactComposer ? 40 : 72, Math.min(element.scrollHeight, compactComposer ? 140 : 240))}px`
     setMentionPickerOpen(false)
     syncInlineMention(value, element.selectionStart)
-  }, [syncInlineMention])
+  }, [compactComposer, syncInlineMention])
 
   const handleFileInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const fileList = event.target.files
@@ -741,7 +978,7 @@ export function RoomTimeline({
     setInlineMention(null)
     clearAttachments()
     if (textareaRef.current) {
-      textareaRef.current.style.height = '72px'
+      textareaRef.current.style.height = compactComposer ? '40px' : '72px'
     }
     requestAnimationFrame(() => scrollToBottom())
 
@@ -766,7 +1003,7 @@ export function RoomTimeline({
     } finally {
       setIsSubmitting(false)
     }
-  }, [attachmentFiles, buildMarkdownLinks, clearAttachments, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, restoreAttachments, scrollToBottom, selectedMemberIds, teamRun.id, teamRun.members])
+  }, [attachmentFiles, buildMarkdownLinks, clearAttachments, compactComposer, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, restoreAttachments, scrollToBottom, selectedMemberIds, teamRun.id, teamRun.members])
 
   const handleDraftKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
@@ -810,10 +1047,32 @@ export function RoomTimeline({
     setSubmitError(null)
     setPendingMessages([])
     clearAttachments()
+    setStopPromptInvocationId(null)
     if (textareaRef.current) {
-      textareaRef.current.style.height = '72px'
+      textareaRef.current.style.height = compactComposer ? '40px' : '72px'
     }
-  }, [clearAttachments, teamRun.id])
+  }, [clearAttachments, compactComposer, teamRun.id])
+
+  const pendingApprovalError =
+    approveWorkRequest.isError
+      ? approveWorkRequest.error
+      : rejectWorkRequest.isError
+        ? rejectWorkRequest.error
+        : cancelWorkRequest.isError
+          ? cancelWorkRequest.error
+          : null
+
+  const isPendingApprovalActionPending =
+    approveWorkRequest.isPending
+    || rejectWorkRequest.isPending
+    || cancelWorkRequest.isPending
+
+  const handleStopMember = useCallback((memberId: string, cancelQueued: boolean) => {
+    stopMemberWork.mutate(
+      { memberId, cancelQueued },
+      { onSuccess: () => setStopPromptInvocationId(null) },
+    )
+  }, [stopMemberWork])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
@@ -825,83 +1084,46 @@ export function RoomTimeline({
           onSelect={(index) => setLightboxState((current) => current ? { ...current, index } : current)}
         />
       )}
-      <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <MessageSquare size={14} className="text-neutral-500 shrink-0" />
-          <span className="text-xs font-semibold text-neutral-900">{t('Team room')}</span>
-          <span className="rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500">
-            {messageList.length}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-[11px] text-neutral-500 shrink-0">
-          <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 font-medium text-neutral-600">
-            {teamRun.mode}
-          </span>
-          {teamRun.reviewReason && (
-            <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 font-medium text-neutral-600">
-              {teamRun.reviewReason}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {activeInvocations.length > 0 && (
-        <div className="border-b border-neutral-200 bg-neutral-50/70 px-4 py-3 shrink-0">
-          <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-neutral-500">
-            <Users size={13} />
-            <span>{t('Active invocations')}</span>
-          </div>
-          <div className="space-y-2">
-            {activeInvocations.map(({ invocation, member }) => {
-              const canOpenSession = Boolean(invocation.sessionId && onViewInvocationSession)
-              const statusLabel = formatMemberStatus(invocation)
-              return (
-                <div
-                  key={invocation.id}
-                  className="flex items-center justify-between gap-3 rounded-md border border-neutral-200 bg-white px-3 py-2"
-                >
-                  <div className="flex min-w-0 items-center gap-2">
-                    <MemberAvatar
-                      name={member?.name ?? t('Agent')}
-                      avatar={member?.avatar ?? null}
-                    />
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-medium text-neutral-900">
-                        {member?.name ?? t('Agent')}
-                      </div>
-                      <div className="truncate text-[11px] text-neutral-500">
-                        {t(statusLabel)}
-                        {invocation.sessionId ? ` · ${invocation.sessionId.slice(0, 8)}…` : ''}
-                      </div>
-                    </div>
-                  </div>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    disabled={!canOpenSession}
-                    onClick={() => invocation.sessionId && onViewInvocationSession?.(invocation.sessionId)}
-                  >
-                    <PanelRightOpen size={12} />
-                    <span>{t('View details')}</span>
-                  </Button>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
       <div className="relative flex-1 min-h-0">
-        <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin bg-white px-4 py-4">
-          <div ref={contentRef} className="space-y-3">
-            {messageList.length === 0 ? (
+        <div
+          ref={scrollRef}
+          className={cn(
+            'h-full overflow-y-auto scrollbar-app-thin bg-white',
+            compactComposer ? 'px-3 py-3' : 'px-4 py-4',
+          )}
+        >
+          <div ref={contentRef} className={cn(compactComposer ? 'space-y-2.5' : 'space-y-3')}>
+            {timelineItems.length === 0 ? (
               <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-200 bg-white text-neutral-500">
                 <Users size={24} className="text-neutral-400" />
                 <span className="text-sm">{t('No room messages yet')}</span>
               </div>
             ) : (
-              messageList.map((message) => {
+              timelineItems.map((item) => {
+                if (item.kind === 'pendingApproval') {
+                  const request = item.request
+                  const member = memberById.get(request.targetMemberId)
+                  const isApprovePending = approveWorkRequest.isPending && approveWorkRequest.variables === request.id
+                  const isRejectPending = rejectWorkRequest.isPending && rejectWorkRequest.variables === request.id
+                  const isCancelPending = cancelWorkRequest.isPending && cancelWorkRequest.variables === request.id
+
+                  return (
+                    <PendingApprovalBubble
+                      key={item.key}
+                      request={request}
+                      member={member}
+                      onApprove={() => approveWorkRequest.mutate(request.id)}
+                      onReject={() => rejectWorkRequest.mutate(request.id)}
+                      onCancel={() => cancelWorkRequest.mutate(request.id)}
+                      isActionPending={isPendingApprovalActionPending}
+                      isApprovePending={isApprovePending}
+                      isRejectPending={isRejectPending}
+                      isCancelPending={isCancelPending}
+                    />
+                  )
+                }
+
+                const message = item.message
                 const senderMember = resolveSenderMember(message, memberById, invocationById)
                 const senderName =
                   message.senderType === 'user'
@@ -909,109 +1131,30 @@ export function RoomTimeline({
                     : message.senderType === 'system'
                       ? t('System')
                       : senderMember?.name ?? t('Agent')
-                const isUser = message.senderType === 'user'
-                const isSystem = message.senderType === 'system'
-                const pendingStatus = isPendingRoomMessage(message) ? message.pendingStatus : null
-                const mentions = message.mentions ?? []
-                const workRequestCount = message.workRequestIds?.length ?? 0
                 const displayContent = getDisplayContent(message, memberById)
 
-                if (isSystem) {
-                  return (
-                    <div key={message.id} className="flex justify-center">
-                      <div className="max-w-[min(100%,42rem)] rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-sm">
-                        <RoomMessageBody
-                          content={displayContent}
-                          attachmentIds={message.attachmentIds}
-                          tone="system"
-                          onOpenImage={(images, index) => setLightboxState({ images, index })}
-                        />
-                      </div>
-                    </div>
-                  )
-                }
-
                 return (
-                  <div
-                    key={message.id}
-                    className={cn(
-                      'group flex items-start gap-3',
-                      isUser ? 'justify-end pl-8 sm:pl-14' : 'justify-start pr-8 sm:pr-14',
-                    )}
-                  >
-                    {!isUser && (
-                      <MemberAvatar
-                        name={senderName}
-                        avatar={senderMember?.avatar ?? null}
-                        className="mt-0.5 h-8 w-8 text-[11px]"
-                      />
-                    )}
-                    <div className={cn('flex min-w-0 max-w-[min(86%,46rem)] flex-col', isUser ? 'items-end' : 'items-start')}>
-                      <div
-                        className={cn(
-                          'mb-1.5 flex max-w-full items-center gap-1.5 px-0.5 text-[11px] text-neutral-500',
-                          isUser ? 'justify-end' : 'justify-start',
-                        )}
-                      >
-                        <span className="truncate font-semibold text-neutral-700">{senderName}</span>
-                        <span className="h-1 w-1 rounded-full bg-neutral-300" aria-hidden />
-                        <Clock3 size={11} className="text-neutral-400" />
-                        <span className="shrink-0">{formatTime(message.createdAt)}</span>
-                        {isUser && workRequestCount > 0 && mentions.length === 0 && (
-                          <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-600">
-                            {t('Work requests')}: {workRequestCount}
-                          </span>
-                        )}
-                        {pendingStatus === 'sending' && (
-                          <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-500">
-                            {t('发送中...')}
-                          </span>
-                        )}
-                        {pendingStatus === 'failed' && (
-                          <span className="ml-0.5 shrink-0 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-red-600">
-                            {t('发送失败')}
-                          </span>
-                        )}
-                      </div>
-                      <div
-                        className={cn(
-                          'max-w-full rounded-lg px-3.5 py-3 text-sm leading-6 transition-colors',
-                          isUser && pendingStatus === 'failed'
-                            ? 'rounded-tr-[2px] border border-red-200 bg-red-50 text-red-900 shadow-sm'
-                            : isUser
-                              ? 'rounded-tr-[2px] border border-neutral-900 bg-neutral-900 text-white shadow-sm'
-                              : 'rounded-tl-[2px] bg-neutral-100 text-neutral-900 shadow-sm',
-                          pendingStatus === 'sending' ? 'opacity-70' : '',
-                        )}
-                      >
-                        <RoomMessageBody
-                          content={displayContent}
-                          attachmentIds={message.attachmentIds}
-                          isUser={isUser && pendingStatus !== 'failed'}
-                          onOpenImage={(images, index) => setLightboxState({ images, index })}
-                        />
-
-                        {!isUser && workRequestCount > 0 && mentions.length === 0 && (
-                          <div className="mt-2 flex flex-wrap gap-1.5">
-                            <span
-                              className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700"
-                            >
-                              {t('Work requests')}: {workRequestCount}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    {isUser && (
-                      <MemberAvatar
-                        name={senderName}
-                        avatar={null}
-                        className="mt-0.5 h-8 w-8 border-neutral-300 bg-neutral-900 text-white text-[11px]"
-                      />
-                    )}
-                  </div>
+                  <RoomChatMessage
+                    key={item.key}
+                    message={message}
+                    senderName={senderName}
+                    senderMember={senderMember}
+                    displayContent={displayContent}
+                    onOpenImage={(images, index) => setLightboxState({ images, index })}
+                  />
                 )
               })
+            )}
+
+            {pendingApprovalError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {getErrorMessage(pendingApprovalError, t('Failed to update work request'))}
+              </div>
+            )}
+            {stopMemberWork.isError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {getErrorMessage(stopMemberWork.error, t('Failed to stop member work'))}
+              </div>
             )}
           </div>
         </div>
@@ -1028,7 +1171,21 @@ export function RoomTimeline({
         )}
       </div>
 
-      <div className="shrink-0 border-t border-transparent bg-white px-6 pb-6 pt-2">
+      <div className={cn(
+        'shrink-0 border-t border-transparent bg-white',
+        compactComposer ? 'px-3 pb-2 pt-1.5' : 'px-6 pb-6 pt-2',
+      )}>
+        <ActiveWorkList
+          invocations={activeInvocations}
+          memberById={memberById}
+          workRequestById={workRequestById}
+          onViewInvocationSession={onViewInvocationSession}
+          onStopMember={handleStopMember}
+          isStopPending={stopMemberWork.isPending}
+          stoppingMemberId={stopMemberWork.variables?.memberId ?? null}
+          stopPromptInvocationId={stopPromptInvocationId}
+          onToggleStopConfirm={(invocationId) => setStopPromptInvocationId((current) => current === invocationId ? null : invocationId)}
+        />
         {readOnly ? (
           <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-500">
             {readOnlyMessage ?? t('This project is read-only')}
@@ -1114,17 +1271,23 @@ export function RoomTimeline({
             <textarea
               ref={textareaRef}
               value={draft}
+              rows={compactComposer ? 1 : undefined}
               onChange={handleDraftChange}
               onKeyDown={handleDraftKeyDown}
               onPaste={handlePaste}
               onClick={(event) => syncInlineMention(draft, event.currentTarget.selectionStart)}
               onSelect={(event) => syncInlineMention(draft, event.currentTarget.selectionStart)}
               placeholder={t('Message the team room...')}
-              className="w-full resize-none border-none bg-transparent px-4 pb-2 pt-4 text-sm leading-relaxed text-neutral-900 placeholder-neutral-400 focus:outline-none"
-              style={{ minHeight: 60, maxHeight: 220 }}
+              className={cn(
+                'w-full resize-none border-none bg-transparent text-neutral-900 placeholder-neutral-400 focus:outline-none',
+                compactComposer
+                  ? 'px-3 pb-1 pt-2.5 text-[15px] leading-5'
+                  : 'px-4 pb-2 pt-4 text-sm leading-relaxed',
+              )}
+              style={compactComposer ? { minHeight: 40, maxHeight: 140 } : { minHeight: 60, maxHeight: 220 }}
             />
 
-            <div className="flex items-center justify-between px-2 pb-2 pt-1">
+            <div className={cn('flex items-center justify-between', compactComposer ? 'px-2 pb-1.5 pt-0.5' : 'px-2 pb-2 pt-1')}>
               <div className="flex items-center gap-1">
                 <input
                   ref={fileInputRef}
@@ -1153,7 +1316,8 @@ export function RoomTimeline({
                   title={t('Mention members')}
                   aria-label={t('Mention members')}
                   className={cn(
-                    'rounded-lg p-2 transition-colors',
+                    'rounded-lg transition-colors',
+                    compactComposer ? 'p-1.5' : 'p-2',
                     mentionPickerOpen
                       ? 'bg-neutral-100 text-neutral-700'
                       : 'text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600',
@@ -1162,7 +1326,7 @@ export function RoomTimeline({
                       : '',
                   )}
                 >
-                  <AtSign size={18} />
+                  <AtSign size={compactComposer ? 15 : 18} />
                 </button>
                 {selectedMembers.length > 0 && (
                   <span className="text-[11px] text-neutral-500">
@@ -1178,14 +1342,15 @@ export function RoomTimeline({
                 title={isUploading ? t('Uploading...') : isSubmitting ? t('发送中...') : t('发送')}
                 aria-label={isUploading ? t('Uploading...') : isSubmitting ? t('发送中...') : t('发送')}
                 className={cn(
-                  'rounded-lg p-2 transition-all duration-200',
+                  'rounded-lg transition-all duration-200',
+                  compactComposer ? 'p-1.5' : 'p-2',
                   (draft.trim() || hasSendableAttachments) && !readOnly && !isSubmitting && !isUploading
                     ? 'bg-neutral-900 text-white shadow-md hover:bg-black'
                     : 'cursor-not-allowed bg-transparent text-neutral-300',
                   isSubmitting || isUploading ? 'opacity-70' : '',
                 )}
               >
-                <ArrowUp size={18} />
+                <ArrowUp size={compactComposer ? 15 : 18} />
               </button>
             </div>
 

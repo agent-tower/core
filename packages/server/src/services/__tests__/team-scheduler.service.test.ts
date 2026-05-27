@@ -11,7 +11,7 @@ import type {
   WorkspacePolicy,
   WorkRequestStatus,
 } from '@agent-tower/shared';
-import { AgentType } from '../../types/index.js';
+import { AgentType, TaskStatus } from '../../types/index.js';
 import { TeamLockService } from '../team-lock.service.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-team-scheduler-'));
@@ -56,7 +56,7 @@ function stringifyJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-async function createTask(title = 'Team scheduler task') {
+async function createTask(title = 'Team scheduler task', status = TaskStatus.TODO) {
   const project = await prisma.project.create({
     data: {
       name: `${title} project`,
@@ -68,6 +68,7 @@ async function createTask(title = 'Team scheduler task') {
     data: {
       title,
       projectId: project.id,
+      status,
     },
   });
 
@@ -79,8 +80,9 @@ async function createTeamRunFixture(options: {
   workspacePolicies?: WorkspacePolicy[];
   sessionPolicies?: Array<'new_per_request' | 'resume_last'>;
   withWorkspace?: boolean;
+  taskStatus?: TaskStatus;
 } = {}) {
-  const { project, task } = await createTask();
+  const { project, task } = await createTask('Team scheduler task', options.taskStatus);
   const teamRun = await prisma.teamRun.create({
     data: {
       taskId: task.id,
@@ -1733,7 +1735,7 @@ describe('TeamSchedulerService', () => {
     expect(lockService.listLocks()).toEqual([]);
   });
 
-  it('fails clearly and leaves no session or lock when a provider is missing', async () => {
+  it('marks a request failed and leaves no session or lock when a provider is missing', async () => {
     const { teamRun, members } = await createTeamRunFixture({
       memberCapabilities: [writeCapabilities],
       withWorkspace: false,
@@ -1750,19 +1752,113 @@ describe('TeamSchedulerService', () => {
       getProviderById: vi.fn(() => null),
     });
 
-    await expect(service.startNextSessions(teamRun.id)).rejects.toMatchObject({
-      code: 'PROVIDER_NOT_FOUND',
-      message: `Provider not found: ${members[0]!.providerId}`,
-    });
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
 
     expect(workspaceService.create).not.toHaveBeenCalled();
     expect(sessionManager.create).not.toHaveBeenCalled();
     expect(lockService.listLocks()).toEqual([]);
     await expect(prisma.session.count()).resolves.toBe(0);
-    await expect(prisma.agentInvocation.count()).resolves.toBe(0);
-    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
-      status: 'QUEUED',
+    await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: request.id } })).resolves.toMatchObject({
+      memberId: members[0]!.id,
+      sessionId: null,
+      status: 'FAILED',
     });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+  });
+
+  it('advances an idle TeamRun to review when provider missing failures consume all queued work', async () => {
+    const { task, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [writeCapabilities],
+      withWorkspace: false,
+      taskStatus: TaskStatus.IN_PROGRESS,
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager: createSessionManagerMock(),
+      getProviderById: vi.fn(() => null),
+    });
+
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      sessionId: null,
+    });
+    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+      status: TaskStatus.IN_REVIEW,
+    });
+    await expect(prisma.teamRun.findUnique({ where: { id: teamRun.id } })).resolves.toMatchObject({
+      reviewReason: 'TEAM_QUIESCENT',
+    });
+    expect(lockService.listLocks()).toEqual([]);
+  });
+
+  it('continues starting later queued work when an earlier request has a missing provider', async () => {
+    const { teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [writeCapabilities, readOnlyCapabilities],
+      withWorkspace: false,
+    });
+    const missingProviderRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const validProviderRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+    });
+    const workspaceService = createWorkspaceServiceMock();
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager,
+      getProviderById: vi.fn((providerId: string) => (
+        providerId === members[0]!.providerId
+          ? null
+          : {
+            id: providerId,
+            name: providerId,
+            agentType: AgentType.CODEX,
+            env: {},
+            config: {},
+            isDefault: false,
+          }
+      )),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({
+      workRequestId: validProviderRequest.id,
+      memberId: members[1]!.id,
+      status: 'RUNNING',
+      sessionId: expect.any(String),
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: missingProviderRequest.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    await expect(prisma.agentInvocation.findFirst({
+      where: { workRequestId: missingProviderRequest.id },
+    })).resolves.toMatchObject({
+      memberId: members[0]!.id,
+      sessionId: null,
+      status: 'FAILED',
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: validProviderRequest.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    expect(sessionManager.create).toHaveBeenCalledTimes(1);
+    expect(lockService.listLocks()).toEqual([]);
   });
 
   it('marks invocation and session failed and releases locks when session start fails', async () => {

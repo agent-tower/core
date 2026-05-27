@@ -5,6 +5,7 @@ import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { buildWorkspaceViews } from '@/components/workspace/team-workspace-view'
+import { ACTIVE_ROOM_INVOCATION_STATUSES } from './room-timeline-items'
 import {
   useApproveWorkRequest,
   useCancelWorkRequest,
@@ -24,7 +25,7 @@ const EMPTY_MEMBERS: TeamMember[] = []
 const EMPTY_WORK_REQUESTS: WorkRequest[] = []
 const EMPTY_INVOCATIONS: AgentInvocation[] = []
 
-type MemberStatus = 'running' | 'waiting room reply' | 'queued' | 'pending approval' | 'idle'
+type MemberStatus = 'running' | 'waiting room reply' | 'queued' | 'session ended' | 'pending approval' | 'idle'
 
 function formatTime(value?: string) {
   if (!value) return ''
@@ -45,6 +46,8 @@ function statusLabel(status: MemberStatus) {
       return 'Waiting room reply'
     case 'queued':
       return 'Queued'
+    case 'session ended':
+      return 'Session ended'
     case 'pending approval':
       return 'Pending approval'
     case 'idle':
@@ -59,6 +62,7 @@ function statusClass(status: MemberStatus) {
     case 'waiting room reply':
       return 'border-amber-200 bg-amber-50 text-amber-700'
     case 'queued':
+    case 'session ended':
       return 'border-blue-200 bg-blue-50 text-blue-700'
     case 'pending approval':
       return 'border-neutral-200 bg-neutral-50 text-neutral-600'
@@ -157,6 +161,7 @@ function resolveMemberStatus(
   if (memberInvocations.some((invocation) => invocation.status === 'RUNNING')) return 'running'
   if (memberInvocations.some((invocation) => invocation.status === 'WAITING_ROOM_REPLY')) return 'waiting room reply'
   if (memberInvocations.some((invocation) => invocation.status === 'QUEUED')) return 'queued'
+  if (memberInvocations.some((invocation) => invocation.status === 'SESSION_ENDED')) return 'session ended'
 
   const pendingWorkRequest = workRequests.find(
     (workRequest) =>
@@ -197,14 +202,12 @@ export function TeamStatusPanel({
     [workRequests],
   )
 
+  const roomMessageCount = teamRun.messages?.length ?? 0
+
   const activeInvocations = useMemo(
     () =>
       invocations
-        .filter((invocation) =>
-          invocation.status === 'RUNNING'
-          || invocation.status === 'WAITING_ROOM_REPLY'
-          || invocation.status === 'QUEUED',
-        )
+        .filter((invocation) => ACTIVE_ROOM_INVOCATION_STATUSES.has(invocation.status))
         .sort((a, b) => Date.parse(b.updatedAt ?? b.createdAt ?? '') - Date.parse(a.updatedAt ?? a.createdAt ?? '')),
     [invocations],
   )
@@ -272,12 +275,27 @@ export function TeamStatusPanel({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-app-thin px-4 py-4 space-y-4">
-        {teamRun.reviewReason && (
-          <div className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600">
-            <div className="mb-1 font-medium text-neutral-700">{t('Review reason')}</div>
-            <div>{teamRun.reviewReason}</div>
+        <section className="space-y-2">
+          <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+            <MessageSquare size={13} />
+            <span>{t('Team room')}</span>
           </div>
-        )}
+          <div className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-neutral-500">
+              <span className="rounded-full border border-neutral-200 bg-white px-2 py-0.5 font-medium text-neutral-600">
+                {t('Messages')}: {roomMessageCount}
+              </span>
+              <span className="rounded-full border border-neutral-200 bg-white px-2 py-0.5 font-medium text-neutral-600">
+                {t('Team mode')}: {teamRun.mode}
+              </span>
+              {teamRun.reviewReason && (
+                <span className="rounded-full border border-neutral-200 bg-white px-2 py-0.5 font-medium text-neutral-600">
+                  {t('Review reason')}: {teamRun.reviewReason}
+                </span>
+              )}
+            </div>
+          </div>
+        </section>
 
         <section className="space-y-2">
           <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-neutral-500">
@@ -595,7 +613,7 @@ export function TeamStatusPanel({
             ) : (
               activeInvocations.map((invocation) => {
                 const member = members.find((item) => item.id === invocation.memberId)
-                const canStop = invocation.status === 'RUNNING' && !!member
+                const canStop = ACTIVE_ROOM_INVOCATION_STATUSES.has(invocation.status) && !!member
                 const isConfirmingStop = stopPromptInvocationId === invocation.id
                 const isStoppingMember = stopMemberWork.isPending && stopMemberWork.variables?.memberId === member?.id
                 return (

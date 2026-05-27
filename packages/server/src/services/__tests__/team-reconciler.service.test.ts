@@ -689,16 +689,24 @@ describe('TeamReconcilerService', () => {
         senderId: members[0]!.id,
         senderInvocationId: invocation.id,
       });
-      await expect(prisma.workRequest.findFirst({
+      const createdRequest = await prisma.workRequest.findFirst({
         where: {
           teamRunId: teamRun.id,
           triggerMessageId: message.id,
           targetMemberId: members[1]!.id,
         },
-      })).resolves.toMatchObject({
+      });
+      expect(createdRequest).toMatchObject({
         requesterType: 'agent',
         requesterMemberId: members[0]!.id,
-        status: 'QUEUED',
+        status: 'STARTED',
+      });
+      await expect(prisma.agentInvocation.findFirst({
+        where: { workRequestId: createdRequest!.id },
+      })).resolves.toMatchObject({
+        memberId: members[1]!.id,
+        sessionId: null,
+        status: 'FAILED',
       });
     } finally {
       if (previousTeamRunId === undefined) {
@@ -796,16 +804,24 @@ describe('TeamReconcilerService', () => {
         senderId: members[0]!.id,
         senderInvocationId: invocation.id,
       });
-      await expect(prisma.workRequest.findFirst({
+      const createdRequest = await prisma.workRequest.findFirst({
         where: {
           teamRunId: teamRun.id,
           triggerMessageId: message.id,
           targetMemberId: members[1]!.id,
         },
-      })).resolves.toMatchObject({
+      });
+      expect(createdRequest).toMatchObject({
         requesterType: 'agent',
         requesterMemberId: members[0]!.id,
-        status: 'QUEUED',
+        status: 'STARTED',
+      });
+      await expect(prisma.agentInvocation.findFirst({
+        where: { workRequestId: createdRequest!.id },
+      })).resolves.toMatchObject({
+        memberId: members[1]!.id,
+        sessionId: null,
+        status: 'FAILED',
       });
     } finally {
       if (previousTeamRunId === undefined) {

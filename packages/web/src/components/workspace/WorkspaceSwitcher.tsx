@@ -12,6 +12,7 @@ interface WorkspaceSwitcherProps {
   onSelectWorkspace: (workspaceId: string) => void
   disabled?: boolean
   className?: string
+  buttonClassName?: string
 }
 
 function statusClass(status: WorkspaceStatus) {
@@ -50,6 +51,7 @@ export function WorkspaceSwitcher({
   onSelectWorkspace,
   disabled,
   className,
+  buttonClassName,
 }: WorkspaceSwitcherProps) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
@@ -83,7 +85,10 @@ export function WorkspaceSwitcher({
         type="button"
         onClick={() => setOpen((value) => !value)}
         disabled={disabled}
-        className="inline-flex h-8 max-w-[340px] items-center gap-2 rounded-md border border-neutral-200 bg-white px-2.5 text-left text-xs text-neutral-700 transition-colors hover:border-neutral-300 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-50"
+        className={cn(
+          'inline-flex h-8 max-w-[340px] items-center gap-2 rounded-md border border-neutral-200 bg-white px-2.5 text-left text-xs text-neutral-700 transition-colors hover:border-neutral-300 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-50',
+          buttonClassName,
+        )}
         title={t('Workspace')}
       >
         <Layers3 size={14} className="shrink-0 text-neutral-500" />
