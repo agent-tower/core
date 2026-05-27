@@ -576,7 +576,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'TeamRun 模式': 'TeamRun mode',
     '确认模式': 'Confirm mode',
     '自动模式': 'Auto mode',
-    '默认使用确认模式，便于先检查团队编排。': 'Confirm mode is the default so you can review the team setup first.',
+    '默认使用自动模式，团队消息会直接排队执行。': 'Auto mode is the default. Team messages are queued for execution directly.',
     '模板成员会先加入，随后按顺序追加所选成员。': 'Template members are added first, then the selected members are appended in order.',
     '请选择至少一个团队模板或成员预设。': 'Select at least one team template or member preset.',
     '该任务已经存在 TeamRun。请刷新后再试。': 'This task already has a TeamRun. Refresh and try again.',

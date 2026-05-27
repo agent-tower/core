@@ -177,7 +177,7 @@ export function TeamRunCreateForm({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-sm font-medium text-neutral-900">{t('TeamRun 模式')}</div>
-          <div className="text-xs text-neutral-500">{t('默认使用确认模式，便于先检查团队编排。')}</div>
+          <div className="text-xs text-neutral-500">{t('默认使用自动模式，团队消息会直接排队执行。')}</div>
         </div>
         <div className="inline-flex rounded-md border border-neutral-200 bg-neutral-50 p-1">
           <button

@@ -69,7 +69,7 @@ const updateTeamTemplateSchema = createTeamTemplateSchema.partial();
 const createTeamRunMemberSchema = teamMemberSnapshotSchema;
 
 const createTeamRunSchema = z.object({
-  mode: z.enum(['CONFIRM', 'AUTO']),
+  mode: z.enum(['CONFIRM', 'AUTO']).default('AUTO'),
   teamTemplateId: z.string().min(1).optional(),
   memberPresetIds: z.array(z.string().min(1)).optional(),
   members: z.array(createTeamRunMemberSchema).optional(),

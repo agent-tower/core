@@ -15,7 +15,7 @@ interface CreateTeamRunDialogProps {
 
 export function CreateTeamRunDialog({ isOpen, onClose, taskId }: CreateTeamRunDialogProps) {
   const { t } = useI18n()
-  const [mode, setMode] = useState<TeamRunMode>('CONFIRM')
+  const [mode, setMode] = useState<TeamRunMode>('AUTO')
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [selectedMemberPresetIds, setSelectedMemberPresetIds] = useState<string[]>([])
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -23,7 +23,7 @@ export function CreateTeamRunDialog({ isOpen, onClose, taskId }: CreateTeamRunDi
 
   useEffect(() => {
     if (!isOpen) return
-    setMode('CONFIRM')
+    setMode('AUTO')
     setSelectedTemplateId(null)
     setSelectedMemberPresetIds([])
     setSubmitError(null)
