@@ -5,6 +5,10 @@ import {
   buildStructuredMentionsFromSelectedMembers,
   removeSelectedMemberId,
 } from '../room-mentions';
+import {
+  buildRoomMessageSubmitInput,
+  filterGeneratedAttachmentMarkdown,
+} from '../RoomTimeline';
 
 describe('RoomTimeline mention contract', () => {
   const sameNameMembers = [
@@ -45,5 +49,64 @@ describe('RoomTimeline mention contract', () => {
 
     expect(manuallyTypedContent).toContain('@Coder');
     expect(buildStructuredMentionsFromSelectedMembers([], sameNameMembers)).toEqual([]);
+  });
+
+  it('builds room message content with attachment markdown and attachmentIds', () => {
+    expect(buildRoomMessageSubmitInput({
+      draft: 'Please inspect this',
+      attachmentMarkdown: '![screenshot.png](/tmp/screenshot.png)',
+      attachmentIds: ['attachment-1'],
+      mentions: [{ memberId: 'member-2', label: 'Coder' }],
+    })).toEqual({
+      content: 'Please inspect this\n\n![screenshot.png](/tmp/screenshot.png)',
+      mentions: [{ memberId: 'member-2', label: 'Coder' }],
+      senderType: 'user',
+      attachmentIds: ['attachment-1'],
+    });
+  });
+
+  it('allows attachment-only room messages', () => {
+    expect(buildRoomMessageSubmitInput({
+      draft: '',
+      attachmentMarkdown: '![screenshot.png](/tmp/screenshot.png)',
+      attachmentIds: ['attachment-1'],
+      mentions: [],
+    })).toMatchObject({
+      content: '![screenshot.png](/tmp/screenshot.png)',
+      attachmentIds: ['attachment-1'],
+    });
+  });
+
+  it('filters generated attachment markdown when attachment metadata is available', () => {
+    expect(filterGeneratedAttachmentMarkdown(
+      'Please inspect this\n\n![screenshot.png](/tmp/screenshot.png)',
+      [{
+        originalName: 'screenshot.png',
+        mimeType: 'image/png',
+        storagePath: '/tmp/screenshot.png',
+      }],
+    )).toBe('Please inspect this');
+  });
+
+  it('keeps non-generated markdown while filtering generated attachment markdown', () => {
+    expect(filterGeneratedAttachmentMarkdown(
+      'Please inspect this\n\n![external.png](https://example.com/external.png)\n![screenshot.png](/tmp/screenshot.png)',
+      [{
+        originalName: 'screenshot.png',
+        mimeType: 'image/png',
+        storagePath: '/tmp/screenshot.png',
+      }],
+    )).toBe('Please inspect this\n\n![external.png](https://example.com/external.png)');
+  });
+
+  it('keeps appended mention labels when filtering generated attachment-only markdown', () => {
+    expect(filterGeneratedAttachmentMarkdown(
+      '![screenshot.png](/tmp/screenshot.png) @Coder',
+      [{
+        originalName: 'screenshot.png',
+        mimeType: 'image/png',
+        storagePath: '/tmp/screenshot.png',
+      }],
+    )).toBe('@Coder');
   });
 });

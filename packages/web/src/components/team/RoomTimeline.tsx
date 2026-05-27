@@ -6,17 +6,24 @@ import {
   ArrowUp,
   AtSign,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Clock3,
+  ExternalLink,
+  FileText,
   MessageSquare,
   PanelRightOpen,
+  Paperclip,
   Users,
   X,
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
-import type { AgentInvocation, RoomMessage, StructuredMention, TeamMember, TeamRun } from '@agent-tower/shared'
+import type { AgentInvocation, Attachment, RoomMessage, StructuredMention, TeamMember, TeamRun } from '@agent-tower/shared'
 import type { PostRoomMessageInput } from '@/hooks/use-team-run'
+import { useAttachmentMetadata, useAttachments } from '@/hooks/use-attachments'
+import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
@@ -70,6 +77,40 @@ const MarkdownImage = ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImage
 )
 
 const streamdownComponents = { img: MarkdownImage }
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+}
+
+function formatGeneratedAttachmentMarkdown(attachment: Pick<Attachment, 'originalName' | 'mimeType' | 'storagePath'>): string {
+  const prefix = attachment.mimeType.startsWith('image/') ? '!' : ''
+  return `${prefix}[${attachment.originalName}](${attachment.storagePath})`
+}
+
+export function filterGeneratedAttachmentMarkdown(content: string, attachments: Array<Pick<Attachment, 'originalName' | 'mimeType' | 'storagePath'>>): string {
+  if (attachments.length === 0) return content
+
+  const generatedLines = new Set(attachments.map(formatGeneratedAttachmentMarkdown))
+  return content
+    .split('\n')
+    .map((line) => {
+      const leadingWhitespace = line.match(/^\s*/)?.[0] ?? ''
+      const normalizedLine = line.trimStart()
+      for (const generatedLine of generatedLines) {
+        if (normalizedLine === generatedLine) return null
+        if (normalizedLine.startsWith(`${generatedLine} `) || normalizedLine.startsWith(`${generatedLine}\t`)) {
+          return `${leadingWhitespace}${normalizedLine.slice(generatedLine.length).trimStart()}`
+        }
+      }
+      return line
+    })
+    .filter((line): line is string => line != null)
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
 
 function formatTime(value?: string) {
   if (!value) return ''
@@ -174,6 +215,214 @@ function RoomMessageMarkdown({
       </Streamdown>
     </div>
   )
+}
+
+function MessageAttachments({
+  hasAttachmentIds,
+  attachments,
+  isLoading,
+  onOpenImage,
+}: {
+  hasAttachmentIds: boolean
+  attachments: Attachment[]
+  isLoading: boolean
+  onOpenImage: (attachments: Attachment[], index: number) => void
+}) {
+  if (!hasAttachmentIds) return null
+  if (isLoading && attachments.length === 0) {
+    return (
+      <div className="mt-3 text-xs text-neutral-400">
+        Loading attachments...
+      </div>
+    )
+  }
+  if (attachments.length === 0) return null
+
+  const imageAttachments = attachments.filter((attachment) => attachment.mimeType.startsWith('image/'))
+  const imageIndexById = new Map(imageAttachments.map((attachment, index) => [attachment.id, index]))
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-2 text-neutral-700">
+      {attachments.map((attachment) => {
+        const attachmentUrl = `${API_BASE_URL}${attachment.url}`
+        const isImage = attachment.mimeType.startsWith('image/')
+        if (isImage) {
+          const imageIndex = imageIndexById.get(attachment.id) ?? 0
+          return (
+            <button
+              key={attachment.id}
+              type="button"
+              onClick={() => onOpenImage(imageAttachments, imageIndex)}
+              className="group relative h-24 w-24 overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50 shadow-sm transition-opacity hover:opacity-90"
+              title={attachment.originalName}
+            >
+              <img
+                src={attachmentUrl}
+                alt={attachment.originalName}
+                className="h-full w-full object-cover"
+                loading="lazy"
+              />
+              <span className="absolute inset-x-0 bottom-0 truncate bg-black/55 px-1.5 py-1 text-left text-[10px] text-white">
+                {attachment.originalName}
+              </span>
+            </button>
+          )
+        }
+
+        return (
+          <a
+            key={attachment.id}
+            href={attachmentUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex max-w-[220px] items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-700 shadow-sm hover:bg-neutral-50"
+            title={attachment.originalName}
+          >
+            <FileText size={16} className="shrink-0 text-neutral-400" aria-hidden />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium">{attachment.originalName}</span>
+              <span className="text-neutral-400">{formatAttachmentSize(attachment.sizeBytes)}</span>
+            </span>
+            <ExternalLink size={13} className="shrink-0 text-neutral-400" aria-hidden />
+          </a>
+        )
+      })}
+    </div>
+  )
+}
+
+function RoomMessageBody({
+  content,
+  attachmentIds,
+  isUser,
+  tone,
+  onOpenImage,
+}: {
+  content: string
+  attachmentIds?: string[] | null
+  isUser?: boolean
+  tone?: RoomMessageTone
+  onOpenImage: (attachments: Attachment[], index: number) => void
+}) {
+  const ids = useMemo(() => Array.from(new Set(attachmentIds ?? [])), [attachmentIds])
+  const { data: attachments = [], isLoading } = useAttachmentMetadata(ids)
+  const renderedContent = attachments.length > 0
+    ? filterGeneratedAttachmentMarkdown(content, attachments)
+    : content
+
+  return (
+    <>
+      {renderedContent.trim() && (
+        <CollapsibleRoomMessageContent
+          content={renderedContent}
+          isUser={isUser}
+          tone={tone}
+        />
+      )}
+      <MessageAttachments
+        hasAttachmentIds={ids.length > 0}
+        attachments={attachments}
+        isLoading={isLoading}
+        onOpenImage={onOpenImage}
+      />
+    </>
+  )
+}
+
+function AttachmentLightbox({
+  images,
+  index,
+  onClose,
+  onSelect,
+}: {
+  images: Attachment[]
+  index: number
+  onClose: () => void
+  onSelect: (index: number) => void
+}) {
+  const current = images[index]
+  if (!current) return null
+
+  const hasPrevious = index > 0
+  const hasNext = index < images.length - 1
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" role="dialog" aria-modal="true">
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
+        aria-label="Close image preview"
+      >
+        <X size={20} />
+      </button>
+
+      {hasPrevious && (
+        <button
+          type="button"
+          onClick={() => onSelect(index - 1)}
+          className="absolute left-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          aria-label="Previous image"
+        >
+          <ChevronLeft size={24} aria-hidden />
+        </button>
+      )}
+
+      <div className="flex max-h-full max-w-full flex-col items-center gap-3">
+        <img
+          src={`${API_BASE_URL}${current.url}`}
+          alt={current.originalName}
+          className="max-h-[82vh] max-w-[92vw] rounded-lg object-contain"
+        />
+        <div className="flex items-center gap-3 text-sm text-white">
+          <span className="max-w-[70vw] truncate">{current.originalName}</span>
+          <a
+            href={`${API_BASE_URL}${current.url}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/20"
+          >
+            <ExternalLink size={13} aria-hidden />
+            Open
+          </a>
+        </div>
+      </div>
+
+      {hasNext && (
+        <button
+          type="button"
+          onClick={() => onSelect(index + 1)}
+          className="absolute right-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          aria-label="Next image"
+        >
+          <ChevronRight size={24} aria-hidden />
+        </button>
+      )}
+    </div>
+  )
+}
+
+export function buildRoomMessageSubmitInput({
+  draft,
+  attachmentMarkdown,
+  attachmentIds,
+  mentions,
+}: {
+  draft: string
+  attachmentMarkdown: string
+  attachmentIds: string[]
+  mentions: StructuredMention[]
+}): PostRoomMessageInput | null {
+  const content = draft.trim()
+  const messageContent = [content, attachmentMarkdown].filter(Boolean).join('\n\n')
+  if (!messageContent) return null
+
+  return {
+    content: messageContent,
+    mentions,
+    senderType: 'user',
+    ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+  }
 }
 
 type RoomMessageTone = 'agent' | 'user' | 'system'
@@ -286,6 +535,18 @@ export function RoomTimeline({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const {
+    files: attachmentFiles,
+    addFiles,
+    removeFile,
+    clear: clearAttachments,
+    buildMarkdownLinks,
+    getDoneAttachments,
+    isUploading,
+  } = useAttachments()
+  const hasSendableAttachments = attachmentFiles.some((file) => file.status === 'done' && file.attachment)
+  const [lightboxState, setLightboxState] = useState<{ images: Attachment[]; index: number } | null>(null)
 
   const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
     resize: 'smooth',
@@ -395,20 +656,52 @@ export function RoomTimeline({
     syncInlineMention(value, element.selectionStart)
   }, [syncInlineMention])
 
+  const handleFileInputChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const fileList = event.target.files
+    if (fileList && fileList.length > 0) {
+      void addFiles(Array.from(fileList))
+      setSubmitError(null)
+    }
+    event.target.value = ''
+  }, [addFiles])
+
+  const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files: File[] = []
+    for (const item of event.clipboardData.items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) files.push(file)
+      }
+    }
+    if (files.length > 0) {
+      event.preventDefault()
+      void addFiles(files)
+      setSubmitError(null)
+    }
+  }, [addFiles])
+
   const handleSubmit = useCallback(async () => {
-    if (readOnly || isSubmitting) return
-    const content = draft.trim()
-    if (!content) return
+    if (readOnly || isSubmitting || isUploading) return
+    const attachmentMarkdown = buildMarkdownLinks()
+    const attachmentIds = getDoneAttachments().map((attachment) => attachment.id)
+    const mentions = buildStructuredMentionsFromSelectedMembers(selectedMemberIds, teamRun.members ?? [])
+    const input = buildRoomMessageSubmitInput({
+      draft,
+      attachmentMarkdown,
+      attachmentIds,
+      mentions,
+    })
+    if (!input || (!draft.trim() && !hasSendableAttachments)) return
 
     setIsSubmitting(true)
     setSubmitError(null)
     try {
-      const mentions = buildStructuredMentionsFromSelectedMembers(selectedMemberIds, teamRun.members ?? [])
-      await onSendMessage({ content, mentions, senderType: 'user' })
+      await onSendMessage(input)
       setDraft('')
       setSelectedMemberIds([])
       setMentionPickerOpen(false)
       setInlineMention(null)
+      clearAttachments()
       if (textareaRef.current) {
         textareaRef.current.style.height = '72px'
       }
@@ -418,7 +711,7 @@ export function RoomTimeline({
     } finally {
       setIsSubmitting(false)
     }
-  }, [draft, isSubmitting, onSendMessage, readOnly, scrollToBottom, selectedMemberIds, teamRun.members])
+  }, [buildMarkdownLinks, clearAttachments, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, scrollToBottom, selectedMemberIds, teamRun.members])
 
   const handleDraftKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
@@ -460,13 +753,22 @@ export function RoomTimeline({
     setMentionPickerOpen(false)
     setInlineMention(null)
     setSubmitError(null)
+    clearAttachments()
     if (textareaRef.current) {
       textareaRef.current.style.height = '72px'
     }
-  }, [teamRun.id])
+  }, [clearAttachments, teamRun.id])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
+      {lightboxState && (
+        <AttachmentLightbox
+          images={lightboxState.images}
+          index={lightboxState.index}
+          onClose={() => setLightboxState(null)}
+          onSelect={(index) => setLightboxState((current) => current ? { ...current, index } : current)}
+        />
+      )}
       <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           <MessageSquare size={14} className="text-neutral-500 shrink-0" />
@@ -561,7 +863,12 @@ export function RoomTimeline({
                   return (
                     <div key={message.id} className="flex justify-center">
                       <div className="max-w-[min(100%,42rem)] rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-sm">
-                        <CollapsibleRoomMessageContent content={displayContent} tone="system" />
+                        <RoomMessageBody
+                          content={displayContent}
+                          attachmentIds={message.attachmentIds}
+                          tone="system"
+                          onOpenImage={(images, index) => setLightboxState({ images, index })}
+                        />
                       </div>
                     </div>
                   )
@@ -607,7 +914,12 @@ export function RoomTimeline({
                             : 'rounded-tl-[2px] bg-neutral-100 text-neutral-900 shadow-sm',
                         )}
                       >
-                        <CollapsibleRoomMessageContent content={displayContent} isUser={isUser} />
+                        <RoomMessageBody
+                          content={displayContent}
+                          attachmentIds={message.attachmentIds}
+                          isUser={isUser}
+                          onOpenImage={(images, index) => setLightboxState({ images, index })}
+                        />
 
                         {!isUser && workRequestCount > 0 && mentions.length === 0 && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -727,11 +1039,14 @@ export function RoomTimeline({
               </div>
             )}
 
+            <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
+
             <textarea
               ref={textareaRef}
               value={draft}
               onChange={handleDraftChange}
               onKeyDown={handleDraftKeyDown}
+              onPaste={handlePaste}
               onClick={(event) => syncInlineMention(draft, event.currentTarget.selectionStart)}
               onSelect={(event) => syncInlineMention(draft, event.currentTarget.selectionStart)}
               placeholder={t('Message the team room...')}
@@ -741,6 +1056,22 @@ export function RoomTimeline({
 
             <div className="flex items-center justify-between px-2 pb-2 pt-1">
               <div className="flex items-center gap-1">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileInputChange}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title={t('Upload file')}
+                  aria-label={t('Upload file')}
+                  className="rounded-lg p-2 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600"
+                >
+                  <Paperclip size={18} />
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -773,15 +1104,15 @@ export function RoomTimeline({
               <button
                 type="button"
                 onClick={() => void handleSubmit()}
-                disabled={readOnly || isSubmitting || !draft.trim()}
-                title={isSubmitting ? t('Sending...') : t('Send')}
-                aria-label={isSubmitting ? t('Sending...') : t('Send')}
+                disabled={readOnly || isSubmitting || isUploading || (!draft.trim() && !hasSendableAttachments)}
+                title={isUploading ? t('Uploading...') : isSubmitting ? t('发送中...') : t('发送')}
+                aria-label={isUploading ? t('Uploading...') : isSubmitting ? t('发送中...') : t('发送')}
                 className={cn(
                   'rounded-lg p-2 transition-all duration-200',
-                  draft.trim() && !readOnly && !isSubmitting
+                  (draft.trim() || hasSendableAttachments) && !readOnly && !isSubmitting && !isUploading
                     ? 'bg-neutral-900 text-white shadow-md hover:bg-black'
                     : 'cursor-not-allowed bg-transparent text-neutral-300',
-                  isSubmitting ? 'opacity-70' : '',
+                  isSubmitting || isUploading ? 'opacity-70' : '',
                 )}
               >
                 <ArrowUp size={18} />

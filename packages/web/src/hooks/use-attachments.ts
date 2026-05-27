@@ -1,5 +1,7 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useMemo, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { Attachment } from '@agent-tower/shared'
+import { apiClient } from '@/lib/api-client'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
@@ -76,6 +78,13 @@ export function useAttachments() {
     )
   }, [])
 
+  /** 获取所有上传完成的附件，生成 markdown 链接文本 */
+  const getDoneAttachments = useCallback((): Attachment[] => {
+    return filesRef.current
+      .filter((f) => f.status === 'done' && f.attachment)
+      .map((f) => f.attachment!)
+  }, [])
+
   const removeFile = useCallback((tempId: string) => {
     setFiles((prev) => prev.filter((f) => f.tempId !== tempId))
   }, [])
@@ -84,14 +93,12 @@ export function useAttachments() {
     setFiles([])
   }, [])
 
-  /** 获取所有上传完成的附件，生成 markdown 链接文本 */
   const buildMarkdownLinks = useCallback((): string => {
-    const doneFiles = filesRef.current.filter((f) => f.status === 'done' && f.attachment)
+    const doneFiles = getDoneAttachments()
     if (doneFiles.length === 0) return ''
 
     return doneFiles
-      .map((f) => {
-        const att = f.attachment!
+      .map((att) => {
         const isImage = att.mimeType.startsWith('image/')
         const prefix = isImage ? '!' : ''
         // 使用磁盘路径传给 Agent，Agent 会读取文件并转换为 base64
@@ -99,10 +106,23 @@ export function useAttachments() {
         return `${prefix}[${att.originalName}](${att.storagePath})`
       })
       .join('\n')
-  }, [])
+  }, [getDoneAttachments])
 
   const hasFiles = files.length > 0
   const isUploading = files.some((f) => f.status === 'uploading')
 
-  return { files, addFiles, removeFile, clear, buildMarkdownLinks, hasFiles, isUploading }
+  return { files, addFiles, removeFile, clear, buildMarkdownLinks, getDoneAttachments, hasFiles, isUploading }
+}
+
+export function useAttachmentMetadata(ids: string[]) {
+  const uniqueIds = useMemo(() => Array.from(new Set(ids.filter(Boolean))), [ids])
+
+  return useQuery({
+    queryKey: ['attachments', 'metadata', uniqueIds],
+    queryFn: () => apiClient.get<Attachment[]>('/attachments/metadata', {
+      params: { ids: uniqueIds.join(',') },
+    }),
+    enabled: uniqueIds.length > 0,
+    staleTime: 5 * 60 * 1000,
+  })
 }

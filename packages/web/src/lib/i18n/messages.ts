@@ -230,6 +230,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Continue conversation...': '继续对话...',
     'Message Agent...': '给 Agent 发送消息...',
     'Upload file': '上传文件',
+    'Uploading...': '上传中...',
   },
   en: {
     '设置': 'Settings',

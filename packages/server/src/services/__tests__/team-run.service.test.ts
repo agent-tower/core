@@ -714,6 +714,68 @@ describe('TeamRunService', () => {
     expect(messages[0]?.attachmentIds).toEqual(['attachment-1', 'attachment-2']);
   });
 
+  it('adds attachment markdown context to WorkRequest instructions from RoomMessage attachmentIds', async () => {
+    const preset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+    const attachment = await prisma.attachment.create({
+      data: {
+        originalName: 'screenshot.png',
+        mimeType: 'image/png',
+        sizeBytes: 128,
+        storagePath: path.join(testDir, 'screenshot.png'),
+        hash: 'attachment-context-hash',
+      },
+    });
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'Please inspect this UI',
+      mentions: [{ memberId: teamRun.members![0]!.id, label: 'Coder' }],
+      attachmentIds: [attachment.id],
+    });
+    const request = await prisma.workRequest.findUnique({
+      where: { id: message.workRequestIds![0]! },
+    });
+
+    expect(request?.instruction).toBe(
+      `Please inspect this UI\n\nAttachments:\n![screenshot.png](${attachment.storagePath})`
+    );
+  });
+
+  it('does not duplicate WorkRequest attachment context when content already includes the storage path', async () => {
+    const preset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+    const attachment = await prisma.attachment.create({
+      data: {
+        originalName: 'screenshot.png',
+        mimeType: 'image/png',
+        sizeBytes: 128,
+        storagePath: path.join(testDir, 'screenshot-dedup.png'),
+        hash: 'attachment-context-dedup-hash',
+      },
+    });
+    const content = `Please inspect this UI\n\n![screenshot.png](${attachment.storagePath})`;
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content,
+      mentions: [{ memberId: teamRun.members![0]!.id, label: 'Coder' }],
+      attachmentIds: [attachment.id],
+    });
+    const request = await prisma.workRequest.findUnique({
+      where: { id: message.workRequestIds![0]! },
+    });
+
+    expect(request?.instruction).toBe(content);
+    expect(request?.instruction).not.toContain('Attachments:');
+  });
+
   it('returns a clear conflict when creating a second TeamRun for one Task', async () => {
     const preset = await service.createMemberPreset(presetInput('Coder'));
     const task = await createTask();

@@ -128,6 +128,7 @@ async function createWorkRequest(options: {
   ifBusy?: IfBusyPolicy;
   cancelQueued?: boolean;
   instruction?: string;
+  triggerMessageId?: string;
 }) {
   return prisma.workRequest.create({
     data: {
@@ -135,7 +136,7 @@ async function createWorkRequest(options: {
       requesterMemberId: null,
       requesterType: 'user',
       targetMemberId: options.targetMemberId,
-      triggerMessageId: `message-${Math.random().toString(16).slice(2)}`,
+      triggerMessageId: options.triggerMessageId ?? `message-${Math.random().toString(16).slice(2)}`,
       instruction: options.instruction ?? 'Please do the work',
       ifBusy: options.ifBusy ?? 'queue',
       cancelQueued: options.cancelQueued ?? false,
@@ -926,6 +927,106 @@ describe('TeamSchedulerService', () => {
       providerId: members[0]!.providerId,
       status: 'RUNNING',
     });
+  });
+
+  it('builds session prompt attachment context from the trigger RoomMessage attachmentIds', async () => {
+    const { task, teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const attachment = await prisma.attachment.create({
+      data: {
+        originalName: 'reference.png',
+        mimeType: 'image/png',
+        sizeBytes: 256,
+        storagePath: path.join(testDir, 'reference.png'),
+        hash: 'scheduler-attachment-context-hash',
+      },
+    });
+    const message = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        kind: 'work_request',
+        content: 'Use this reference',
+        mentions: stringifyJson([{ memberId: members[0]!.id, label: 'Member 1' }]),
+        workRequestIds: stringifyJson([]),
+        artifactRefs: stringifyJson([]),
+        attachmentIds: stringifyJson([attachment.id]),
+      },
+    });
+    await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Use this reference',
+      triggerMessageId: message.id,
+    });
+    const workspaceService = createWorkspaceServiceMock();
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await service.startNextSessions(teamRun.id);
+
+    expect(workspaceService.create).toHaveBeenCalledWith(task.id);
+    expect(sessionManager.create).toHaveBeenCalledWith(
+      expect.any(String),
+      AgentType.CODEX,
+      `Role 1\n\nTask:\nUse this reference\n\nAttachments:\n![reference.png](${attachment.storagePath})`,
+      'DEFAULT',
+      members[0]!.providerId
+    );
+  });
+
+  it('does not duplicate session prompt attachment context when the WorkRequest instruction already includes the storage path', async () => {
+    const { task, teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const attachment = await prisma.attachment.create({
+      data: {
+        originalName: 'reference.png',
+        mimeType: 'image/png',
+        sizeBytes: 256,
+        storagePath: path.join(testDir, 'reference-dedup.png'),
+        hash: 'scheduler-attachment-context-dedup-hash',
+      },
+    });
+    const instruction = `Use this reference\n\n![reference.png](${attachment.storagePath})`;
+    const message = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        kind: 'work_request',
+        content: instruction,
+        mentions: stringifyJson([{ memberId: members[0]!.id, label: 'Member 1' }]),
+        workRequestIds: stringifyJson([]),
+        artifactRefs: stringifyJson([]),
+        attachmentIds: stringifyJson([attachment.id]),
+      },
+    });
+    await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction,
+      triggerMessageId: message.id,
+    });
+    const workspaceService = createWorkspaceServiceMock();
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await service.startNextSessions(teamRun.id);
+
+    expect(workspaceService.create).toHaveBeenCalledWith(task.id);
+    expect(sessionManager.create).toHaveBeenCalledWith(
+      expect.any(String),
+      AgentType.CODEX,
+      `Role 1\n\nTask:\n${instruction}`,
+      'DEFAULT',
+      members[0]!.providerId
+    );
+    expect(sessionManager.create.mock.calls[0]?.[2]).not.toContain('Attachments:');
   });
 
   it('starts resume_last members with executor resume context while keeping a new Tower session and invocation', async () => {

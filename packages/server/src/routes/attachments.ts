@@ -18,6 +18,25 @@ async function ensureStorageDir(dir: string) {
   await fs.mkdir(dir, { recursive: true });
 }
 
+function serializeAttachment(attachment: {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  storagePath: string;
+  createdAt?: Date;
+}) {
+  return {
+    id: attachment.id,
+    originalName: attachment.originalName,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    url: `/attachments/${attachment.id}/file`,
+    storagePath: attachment.storagePath,
+    createdAt: attachment.createdAt?.toISOString(),
+  };
+}
+
 export async function attachmentRoutes(app: FastifyInstance) {
   /**
    * POST /upload
@@ -53,14 +72,7 @@ export async function attachmentRoutes(app: FastifyInstance) {
     // 检查是否已存在相同 hash 的文件
     const existing = await prisma.attachment.findFirst({ where: { hash } });
     if (existing) {
-      return {
-        id: existing.id,
-        originalName: existing.originalName,
-        mimeType: existing.mimeType,
-        sizeBytes: existing.sizeBytes,
-        url: `/attachments/${existing.id}/file`,
-        storagePath: existing.storagePath,
-      };
+      return serializeAttachment(existing);
     }
 
     // 存储文件: data/attachments/{hash前2位}/{hash}_{原始文件名}
@@ -82,14 +94,34 @@ export async function attachmentRoutes(app: FastifyInstance) {
       },
     });
 
-    return {
-      id: attachment.id,
-      originalName: attachment.originalName,
-      mimeType: attachment.mimeType,
-      sizeBytes: attachment.sizeBytes,
-      url: `/attachments/${attachment.id}/file`,
-      storagePath: attachment.storagePath,
-    };
+    return serializeAttachment(attachment);
+  });
+
+  /**
+   * GET /metadata?ids=id1,id2
+   * 批量获取附件元数据，用于消息历史展示。
+   */
+  app.get('/metadata', async (request) => {
+    const { ids } = request.query as { ids?: string };
+    const attachmentIds = (ids ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    if (attachmentIds.length === 0) {
+      return [];
+    }
+
+    const uniqueIds = Array.from(new Set(attachmentIds));
+    const attachments = await prisma.attachment.findMany({
+      where: { id: { in: uniqueIds } },
+    });
+    const attachmentById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+
+    return uniqueIds
+      .map((id) => attachmentById.get(id))
+      .filter((attachment): attachment is NonNullable<typeof attachment> => Boolean(attachment))
+      .map(serializeAttachment);
   });
 
   /**

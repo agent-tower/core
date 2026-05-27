@@ -24,6 +24,7 @@ import { NotFoundError, ServiceError } from '../errors.js';
 import { prisma } from '../utils/index.js';
 import { TeamLockService, defaultTeamLockService, type LockRequest } from './team-lock.service.js';
 import { WorkspaceService } from './workspace.service.js';
+import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 
 export interface SchedulePlan {
@@ -352,7 +353,7 @@ export class TeamSchedulerService {
         const session = await this.sessionManager.create(
           workspace.id,
           provider.agentType as AgentType,
-          this.buildSessionPrompt(member, freshWorkRequest),
+          await this.buildSessionPrompt(member, freshWorkRequest),
           'DEFAULT',
           member.providerId
         );
@@ -897,8 +898,15 @@ export class TeamSchedulerService {
     return workspace;
   }
 
-  private buildSessionPrompt(member: PrismaTeamMember, workRequest: PrismaWorkRequest): string {
-    return `${member.rolePrompt}\n\nTask:\n${workRequest.instruction}`;
+  private async buildSessionPrompt(member: PrismaTeamMember, workRequest: PrismaWorkRequest): Promise<string> {
+    const triggerMessage = await prisma.roomMessage.findUnique({
+      where: { id: workRequest.triggerMessageId },
+      select: { attachmentIds: true },
+    });
+    const attachmentIds = parseJsonField<string[]>(triggerMessage?.attachmentIds, []);
+    const instruction = await appendAttachmentMarkdownContext(workRequest.instruction, attachmentIds);
+
+    return `${member.rolePrompt}\n\nTask:\n${instruction}`;
   }
 
   private async findResumeSourceSessionId(

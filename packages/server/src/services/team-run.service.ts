@@ -34,6 +34,7 @@ import type {
 } from '@prisma/client';
 import { ServiceError, NotFoundError, ValidationError } from '../errors.js';
 import { prisma } from '../utils/index.js';
+import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 
 export interface CreateMemberPresetInput {
@@ -500,6 +501,7 @@ export class TeamRunService {
     const workRequestStatus: WorkRequestStatus = teamRun.mode === 'CONFIRM'
       ? 'PENDING_APPROVAL'
       : 'QUEUED';
+    const workRequestInstruction = await appendAttachmentMarkdownContext(input.content, input.attachmentIds);
 
     let messageId = '';
     await prisma.$transaction(async (tx) => {
@@ -580,7 +582,7 @@ export class TeamRunService {
             requesterType: senderType as WorkRequestRequesterType,
             targetMemberId: targetRequest.targetMemberId,
             triggerMessageId: message.id,
-            instruction: input.content,
+            instruction: workRequestInstruction,
             ifBusy: targetRequest.ifBusy,
             cancelQueued: targetRequest.cancelQueued,
             status: workRequestStatus,
