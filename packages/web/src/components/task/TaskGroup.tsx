@@ -117,7 +117,7 @@ function DraggableTaskCard({
         onTouchStart={handleTouchStart}
         onTouchEnd={clearLongPress}
         onTouchMove={clearLongPress}
-        className={`flex items-start pl-8 pr-4 py-2 text-sm w-full text-left transition-all border-l-2 group
+        className={`flex items-start pl-7 pr-4 py-2 text-sm w-full text-left transition-all border-l-2 group
           ${isDragging ? 'opacity-30' : ''}
           ${isSelected
             ? 'bg-neutral-100 border-neutral-800'
@@ -288,7 +288,7 @@ export const TaskGroup = memo(function TaskGroup({
             ${isEmpty && isGlobalDragging ? 'border border-dashed border-neutral-300' : ''}`}
         >
           {isEmpty ? (
-            <span className="text-xs text-neutral-300 py-2 pl-8">{t('No tasks')}</span>
+            <span className="text-xs text-neutral-300 py-2 pl-7">{t('No tasks')}</span>
           ) : (
             tasks.map(task => {
               const project = projects.find(p => p.id === task.projectId)
