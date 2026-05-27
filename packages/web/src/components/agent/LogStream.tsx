@@ -341,7 +341,7 @@ ToolGroupItem.displayName = 'ToolGroupItem'
 
 // 4. Agent 主文本 — 纯文本无图标
 const AgentText = memo(({ content, compact }: { content: string; compact?: boolean }) => (
-  <div className={`text-neutral-800 whitespace-pre-wrap min-w-0 ${compact ? 'text-[13px] leading-6 mb-1' : 'text-sm leading-7 mb-2'}`}>
+  <div className={`text-neutral-800 whitespace-pre-wrap min-w-0 ${compact ? 'text-[13px] leading-6' : 'text-sm leading-7'}`}>
     {content}
   </div>
 ))
@@ -349,7 +349,7 @@ AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
 const AssistantMessage = memo(({ content, compact }: { content: string; compact?: boolean }) => (
-  <div className={`text-neutral-800 min-w-0 ${compact ? 'text-[13px] leading-6 mb-1' : 'text-sm leading-7 mb-2'}`}>
+  <div className={`text-neutral-800 min-w-0 ${compact ? 'text-[13px] leading-6' : 'text-sm leading-7'}`}>
     <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>{content}</Streamdown>
   </div>
 ))
