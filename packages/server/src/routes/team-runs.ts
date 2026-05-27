@@ -113,6 +113,28 @@ function handleError(error: unknown, reply: any) {
   return { error: 'Internal server error', code: 'INTERNAL_ERROR' };
 }
 
+function startNextSessionsInBackground(
+  app: FastifyInstance,
+  scheduler: TeamRunRouteScheduler,
+  teamRunId: string
+) {
+  setImmediate(() => {
+    try {
+      void scheduler.startNextSessions(teamRunId).catch((error) => {
+        app.log.warn(
+          { err: error, teamRunId },
+          'Failed to auto-start TeamRun work after room message'
+        );
+      });
+    } catch (error) {
+      app.log.warn(
+        { err: error, teamRunId },
+        'Failed to auto-start TeamRun work after room message'
+      );
+    }
+  });
+}
+
 export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteDependencies = {}) {
   const service = options.service ?? new TeamRunService();
   const scheduler = options.scheduler ?? new TeamSchedulerService();
@@ -244,14 +266,7 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
       if (workRequestIds.length > 0) {
         const teamRun = await service.getTeamRunById(request.params.id);
         if (teamRun.mode === 'AUTO') {
-          try {
-            await scheduler.startNextSessions(request.params.id);
-          } catch (error) {
-            app.log.warn(
-              { err: error, teamRunId: request.params.id },
-              'Failed to auto-start TeamRun work after room message'
-            );
-          }
+          startNextSessionsInBackground(app, scheduler, request.params.id);
         }
       }
       reply.code(201);

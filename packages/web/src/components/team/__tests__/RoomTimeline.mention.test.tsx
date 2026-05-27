@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TeamMember } from '@agent-tower/shared';
+import type { RoomMessage } from '@agent-tower/shared';
+import { upsertRoomMessage } from '@/hooks/use-team-run';
 import {
   addSelectedMemberId,
   buildStructuredMentionsFromSelectedMembers,
@@ -108,5 +110,38 @@ describe('RoomTimeline mention contract', () => {
         storagePath: '/tmp/screenshot.png',
       }],
     )).toBe('@Coder');
+  });
+
+  it('appends returned room messages to the messages cache', () => {
+    const message = {
+      id: 'message-1',
+      teamRunId: 'team-run-1',
+      senderType: 'user',
+      kind: 'chat',
+      content: 'Hello',
+      mentions: [],
+      createdAt: '2026-05-27T00:00:00.000Z',
+    } as RoomMessage;
+
+    expect(upsertRoomMessage([], message)).toEqual([message]);
+  });
+
+  it('replaces duplicate returned room messages in the messages cache', () => {
+    const original = {
+      id: 'message-1',
+      teamRunId: 'team-run-1',
+      senderType: 'user',
+      kind: 'chat',
+      content: 'Old',
+      mentions: [],
+      createdAt: '2026-05-27T00:00:00.000Z',
+    } as RoomMessage;
+    const updated = {
+      ...original,
+      content: 'Updated',
+      workRequestIds: ['work-request-1'],
+    } as RoomMessage;
+
+    expect(upsertRoomMessage([original], updated)).toEqual([updated]);
   });
 });

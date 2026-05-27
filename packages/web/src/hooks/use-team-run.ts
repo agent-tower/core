@@ -44,6 +44,23 @@ export type PostRoomMessageInput = {
   kind?: RoomMessageKind
 }
 
+export function upsertRoomMessage(messages: RoomMessage[] | undefined, message: RoomMessage): RoomMessage[] {
+  const currentMessages = messages ?? []
+  const existingIndex = currentMessages.findIndex((item) => item.id === message.id)
+  if (existingIndex >= 0) {
+    return currentMessages.map((item, index) => index === existingIndex ? message : item)
+  }
+  return [...currentMessages, message]
+}
+
+function upsertTeamRunRoomMessage(teamRun: TeamRun | null | undefined, message: RoomMessage) {
+  if (!teamRun || teamRun.id !== message.teamRunId) return teamRun
+  return {
+    ...teamRun,
+    messages: upsertRoomMessage(teamRun.messages, message),
+  }
+}
+
 export type CreateMemberPresetInput = {
   name: string
   aliases: string[]
@@ -327,7 +344,24 @@ export function usePostRoomMessage(teamRunId: string) {
   return useMutation({
     mutationFn: (input: PostRoomMessageInput) =>
       apiClient.post<RoomMessage>(`/team-runs/${teamRunId}/messages`, input),
-    onSuccess: () => {
+    onSuccess: (message) => {
+      queryClient.setQueryData<RoomMessage[]>(
+        teamRunQueryKeys.messages(teamRunId),
+        (current) => upsertRoomMessage(current, message),
+      )
+      queryClient.setQueryData<TeamRun | null>(
+        teamRunQueryKeys.detail(teamRunId),
+        (current) => upsertTeamRunRoomMessage(current, message),
+      )
+
+      const taskId = getCachedTeamRunTaskId(queryClient, teamRunId)
+      if (taskId) {
+        queryClient.setQueryData<TeamRun | null>(
+          teamRunQueryKeys.task(taskId),
+          (current) => upsertTeamRunRoomMessage(current, message),
+        )
+      }
+
       queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.all })
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })

@@ -18,7 +18,7 @@ export function AttachmentPreview({ files, onRemove }: AttachmentPreviewProps) {
   if (files.length === 0) return null
 
   return (
-    <div className="flex flex-wrap gap-2 px-4 pt-3 pb-1">
+    <div aria-label="Attachments" className="flex flex-wrap gap-2 px-4 pt-3 pb-1">
       {files.map((f) => (
         <AttachmentItem key={f.tempId} item={f} onRemove={onRemove} />
       ))}

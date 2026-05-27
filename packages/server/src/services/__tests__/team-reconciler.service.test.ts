@@ -1082,6 +1082,11 @@ describe('TeamReconcilerService', () => {
       triggerPolicies: ['USER_MESSAGES', 'MENTION_ONLY'],
     });
     const routeScheduler = createRouteSchedulerMock();
+    const startedTeamRunIds: string[] = [];
+    routeScheduler.startNextSessions = vi.fn(async (teamRunId: string) => {
+      startedTeamRunIds.push(teamRunId);
+      return await new Promise<AgentInvocation[]>(() => {});
+    });
     const app = Fastify({ logger: false });
 
     try {
@@ -1100,21 +1105,24 @@ describe('TeamReconcilerService', () => {
       const message = response.json() as { id: string; workRequestIds: string[]; mentions: unknown[] };
       expect(message.mentions).toEqual([]);
       expect(message.workRequestIds).toHaveLength(1);
-      expect(routeScheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
-      expect(routeScheduler.startedTeamRunIds).toEqual([teamRun.id]);
+      expect(routeScheduler.startNextSessions).not.toHaveBeenCalled();
 
       await expect(prisma.workRequest.findUnique({ where: { id: message.workRequestIds[0]! } })).resolves.toMatchObject({
         targetMemberId: members[0]!.id,
         instruction: '普通用户消息',
-        status: 'STARTED',
+        status: 'QUEUED',
       });
       await expect(prisma.agentInvocation.count({
         where: {
           teamRunId: teamRun.id,
           memberId: members[0]!.id,
-          status: 'RUNNING',
         },
-      })).resolves.toBe(1);
+      })).resolves.toBe(0);
+
+      await vi.waitFor(() => {
+        expect(routeScheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+        expect(startedTeamRunIds).toEqual([teamRun.id]);
+      });
     } finally {
       await app.close();
     }

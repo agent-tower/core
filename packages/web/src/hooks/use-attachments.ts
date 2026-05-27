@@ -93,6 +93,24 @@ export function useAttachments() {
     setFiles([])
   }, [])
 
+  const restoreFiles = useCallback((filesToRestore: PendingAttachment[]) => {
+    if (filesToRestore.length === 0) return
+
+    setFiles((prev) => {
+      const existingKeys = new Set(
+        prev.map((file) => file.attachment?.id ?? file.tempId),
+      )
+      const restored = filesToRestore.filter((file) => {
+        const key = file.attachment?.id ?? file.tempId
+        if (existingKeys.has(key)) return false
+        existingKeys.add(key)
+        return true
+      })
+
+      return restored.length > 0 ? [...prev, ...restored] : prev
+    })
+  }, [])
+
   const buildMarkdownLinks = useCallback((): string => {
     const doneFiles = getDoneAttachments()
     if (doneFiles.length === 0) return ''
@@ -111,7 +129,7 @@ export function useAttachments() {
   const hasFiles = files.length > 0
   const isUploading = files.some((f) => f.status === 'uploading')
 
-  return { files, addFiles, removeFile, clear, buildMarkdownLinks, getDoneAttachments, hasFiles, isUploading }
+  return { files, addFiles, removeFile, clear, restoreFiles, buildMarkdownLinks, getDoneAttachments, hasFiles, isUploading }
 }
 
 export function useAttachmentMetadata(ids: string[]) {

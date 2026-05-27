@@ -56,6 +56,37 @@ const ACTIVE_INVOCATION_STATUSES = new Set<AgentInvocation['status']>([
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
+type PendingRoomMessageStatus = 'sending' | 'failed'
+type PendingRoomMessage = RoomMessage & {
+  pendingStatus: PendingRoomMessageStatus
+  error?: string
+}
+
+let pendingRoomMessageCounter = 0
+
+function createPendingRoomMessage(teamRunId: string, input: PostRoomMessageInput): PendingRoomMessage {
+  pendingRoomMessageCounter += 1
+  return {
+    id: `pending-room-message-${Date.now()}-${pendingRoomMessageCounter}`,
+    teamRunId,
+    senderType: input.senderType ?? 'user',
+    senderId: input.senderId ?? null,
+    senderInvocationId: input.senderInvocationId ?? null,
+    kind: input.kind ?? ((input.mentions?.length ?? 0) > 0 ? 'work_request' : 'chat'),
+    content: input.content,
+    mentions: input.mentions ?? [],
+    workRequestIds: [],
+    artifactRefs: input.artifactRefs ?? [],
+    attachmentIds: input.attachmentIds ?? [],
+    createdAt: new Date().toISOString(),
+    pendingStatus: 'sending',
+  }
+}
+
+function isPendingRoomMessage(message: RoomMessage): message is PendingRoomMessage {
+  return 'pendingStatus' in message
+}
+
 const attachmentUrlTransform: UrlTransform = (url) => {
   if (url.includes('://')) return url
   if (url.startsWith('/api/')) return url
@@ -534,6 +565,7 @@ export function RoomTimeline({
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [pendingMessages, setPendingMessages] = useState<PendingRoomMessage[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const {
@@ -541,6 +573,7 @@ export function RoomTimeline({
     addFiles,
     removeFile,
     clear: clearAttachments,
+    restoreFiles: restoreAttachments,
     buildMarkdownLinks,
     getDoneAttachments,
     isUploading,
@@ -562,12 +595,15 @@ export function RoomTimeline({
   }, [teamRun.invocations])
 
   const messageList = useMemo(() => {
-    return [...messages].sort((a, b) => {
+    const confirmedIds = new Set(messages.map((message) => message.id))
+    const visiblePendingMessages = pendingMessages.filter((message) => !confirmedIds.has(message.id))
+
+    return [...messages, ...visiblePendingMessages].sort((a, b) => {
       const aTime = Date.parse(a.createdAt ?? '')
       const bTime = Date.parse(b.createdAt ?? '')
       return (Number.isNaN(aTime) ? 0 : aTime) - (Number.isNaN(bTime) ? 0 : bTime)
     })
-  }, [messages])
+  }, [messages, pendingMessages])
 
   const activeInvocations = useMemo(() => {
     const invocations = (teamRun.invocations ?? [])
@@ -693,25 +729,44 @@ export function RoomTimeline({
     })
     if (!input || (!draft.trim() && !hasSendableAttachments)) return
 
+    const pendingMessage = createPendingRoomMessage(teamRun.id, input)
+    const previousDraft = draft
+    const previousSelectedMemberIds = selectedMemberIds
+    const previousAttachmentFiles = attachmentFiles
+
+    setPendingMessages((current) => [...current, pendingMessage])
+    setDraft('')
+    setSelectedMemberIds([])
+    setMentionPickerOpen(false)
+    setInlineMention(null)
+    clearAttachments()
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '72px'
+    }
+    requestAnimationFrame(() => scrollToBottom())
+
     setIsSubmitting(true)
     setSubmitError(null)
     try {
-      await onSendMessage(input)
-      setDraft('')
-      setSelectedMemberIds([])
-      setMentionPickerOpen(false)
-      setInlineMention(null)
-      clearAttachments()
-      if (textareaRef.current) {
-        textareaRef.current.style.height = '72px'
+      const savedMessage = await onSendMessage(input)
+      setPendingMessages((current) => current.filter((message) => message.id !== pendingMessage.id))
+      if (savedMessage && typeof savedMessage === 'object' && 'id' in savedMessage) {
+        requestAnimationFrame(() => scrollToBottom())
       }
-      requestAnimationFrame(() => scrollToBottom())
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : 'Failed to send room message')
+      const message = error instanceof Error ? error.message : 'Failed to send room message'
+      setPendingMessages((current) => current.map((item) => item.id === pendingMessage.id
+        ? { ...item, pendingStatus: 'failed', error: message }
+        : item))
+      setDraft((current) => current.length === 0 ? previousDraft : current)
+      setSelectedMemberIds((current) => current.length === 0 ? previousSelectedMemberIds : current)
+      restoreAttachments(previousAttachmentFiles)
+      setSubmitError(message)
+      requestAnimationFrame(() => scrollToBottom())
     } finally {
       setIsSubmitting(false)
     }
-  }, [buildMarkdownLinks, clearAttachments, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, scrollToBottom, selectedMemberIds, teamRun.members])
+  }, [attachmentFiles, buildMarkdownLinks, clearAttachments, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, restoreAttachments, scrollToBottom, selectedMemberIds, teamRun.id, teamRun.members])
 
   const handleDraftKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
@@ -753,6 +808,7 @@ export function RoomTimeline({
     setMentionPickerOpen(false)
     setInlineMention(null)
     setSubmitError(null)
+    setPendingMessages([])
     clearAttachments()
     if (textareaRef.current) {
       textareaRef.current.style.height = '72px'
@@ -855,6 +911,7 @@ export function RoomTimeline({
                       : senderMember?.name ?? t('Agent')
                 const isUser = message.senderType === 'user'
                 const isSystem = message.senderType === 'system'
+                const pendingStatus = isPendingRoomMessage(message) ? message.pendingStatus : null
                 const mentions = message.mentions ?? []
                 const workRequestCount = message.workRequestIds?.length ?? 0
                 const displayContent = getDisplayContent(message, memberById)
@@ -905,19 +962,32 @@ export function RoomTimeline({
                             {t('Work requests')}: {workRequestCount}
                           </span>
                         )}
+                        {pendingStatus === 'sending' && (
+                          <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-500">
+                            {t('发送中...')}
+                          </span>
+                        )}
+                        {pendingStatus === 'failed' && (
+                          <span className="ml-0.5 shrink-0 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-red-600">
+                            {t('发送失败')}
+                          </span>
+                        )}
                       </div>
                       <div
                         className={cn(
                           'max-w-full rounded-lg px-3.5 py-3 text-sm leading-6 transition-colors',
-                          isUser
-                            ? 'rounded-tr-[2px] border border-neutral-900 bg-neutral-900 text-white shadow-sm'
-                            : 'rounded-tl-[2px] bg-neutral-100 text-neutral-900 shadow-sm',
+                          isUser && pendingStatus === 'failed'
+                            ? 'rounded-tr-[2px] border border-red-200 bg-red-50 text-red-900 shadow-sm'
+                            : isUser
+                              ? 'rounded-tr-[2px] border border-neutral-900 bg-neutral-900 text-white shadow-sm'
+                              : 'rounded-tl-[2px] bg-neutral-100 text-neutral-900 shadow-sm',
+                          pendingStatus === 'sending' ? 'opacity-70' : '',
                         )}
                       >
                         <RoomMessageBody
                           content={displayContent}
                           attachmentIds={message.attachmentIds}
-                          isUser={isUser}
+                          isUser={isUser && pendingStatus !== 'failed'}
                           onOpenImage={(images, index) => setLightboxState({ images, index })}
                         />
 
