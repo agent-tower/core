@@ -59,6 +59,15 @@ export interface DiffResult {
   stat: string;
 }
 
+export interface WorktreeRemoveResult {
+  /** Outcome of the remove attempt. */
+  status: 'removed' | 'missing' | 'stale_removed' | 'unregistered';
+  /** Absolute path that was checked/removed. */
+  path: string;
+  /** Whether the path is under this project's managed .worktrees directory. */
+  managed: boolean;
+}
+
 // ─── WorktreeManager ──────────────────────────────────────────────────────────
 
 export class WorktreeManager {
@@ -67,7 +76,7 @@ export class WorktreeManager {
 
   constructor(repoPath: string) {
     this.repoPath = repoPath;
-    this.worktreeBaseDir = path.join(repoPath, '..', '.worktrees');
+    this.worktreeBaseDir = path.resolve(repoPath, '..', '.worktrees');
   }
 
   // ── Read-only Queries ───────────────────────────────────────────────────────
@@ -191,28 +200,47 @@ export class WorktreeManager {
   /**
    * Remove a worktree. If the worktree does not exist, this is a no-op.
    */
-  async remove(worktreePath: string): Promise<void> {
-    // Check if the worktree path actually exists on disk
-    const pathExists = await fs
-      .access(worktreePath)
-      .then(() => true)
-      .catch(() => false);
+  async remove(worktreePath: string): Promise<WorktreeRemoveResult> {
+    const targetPath = path.resolve(worktreePath);
+    const managed = await this.isManagedWorktreePath(targetPath);
+    const pathExists = await this.pathExists(targetPath);
 
     if (!pathExists) {
       // Worktree directory doesn't exist — run prune to clean up stale refs, then return
       await this.prune();
-      return;
+      return { status: 'missing', path: targetPath, managed };
+    }
+
+    const worktrees = await this.listWorktrees();
+    const registered = await this.isRegisteredWorktreePath(targetPath, worktrees);
+    if (!registered) {
+      return this.removeUnregisteredPath(targetPath, managed, worktrees);
     }
 
     try {
-      await execGit(this.repoPath, ['worktree', 'remove', worktreePath, '--force']);
+      await execGit(this.repoPath, ['worktree', 'remove', targetPath, '--force']);
+      return { status: 'removed', path: targetPath, managed };
     } catch (err) {
-      // If the error indicates the worktree is not registered, treat as no-op
-      if (err instanceof GitError && err.message.includes('is not a working tree')) {
-        return;
+      // Re-check Git's registry instead of matching localized stderr text.
+      let stillRegistered = true;
+      try {
+        stillRegistered = await this.isRegisteredWorktreePath(targetPath);
+      } catch {
+        throw err;
       }
-      throw err;
+
+      if (stillRegistered) {
+        throw err;
+      }
     }
+
+    const stillExists = await this.pathExists(targetPath);
+    if (!stillExists) {
+      await this.prune();
+      return { status: 'missing', path: targetPath, managed };
+    }
+
+    return this.removeUnregisteredPath(targetPath, managed, await this.listWorktrees());
   }
 
   /**
@@ -639,6 +667,75 @@ export class WorktreeManager {
     }
 
     return worktrees;
+  }
+
+  private async pathExists(targetPath: string): Promise<boolean> {
+    return fs.access(targetPath).then(() => true).catch(() => false);
+  }
+
+  private async isManagedWorktreePath(targetPath: string): Promise<boolean> {
+    const [basePath, normalizedTargetPath] = await Promise.all([
+      this.normalizeExistingPath(this.worktreeBaseDir),
+      this.normalizeExistingPath(targetPath),
+    ]);
+    const relative = path.relative(basePath, normalizedTargetPath);
+    return relative !== ''
+      && relative !== '..'
+      && !relative.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relative);
+  }
+
+  private async isRegisteredWorktreePath(
+    targetPath: string,
+    worktrees?: WorktreeInfo[],
+  ): Promise<boolean> {
+    const normalizedTarget = await this.normalizeExistingPath(targetPath);
+    const candidates = worktrees ?? await this.listWorktrees();
+    for (const worktree of candidates) {
+      if (await this.normalizeExistingPath(worktree.path) === normalizedTarget) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async hasRegisteredDescendantWorktree(
+    targetPath: string,
+    worktrees: WorktreeInfo[],
+  ): Promise<boolean> {
+    const normalizedTarget = await this.normalizeExistingPath(targetPath);
+    for (const worktree of worktrees) {
+      const relative = path.relative(normalizedTarget, await this.normalizeExistingPath(worktree.path));
+      if (relative !== ''
+        && relative !== '..'
+        && !relative.startsWith(`..${path.sep}`)
+        && !path.isAbsolute(relative)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async normalizeExistingPath(targetPath: string): Promise<string> {
+    return fs.realpath(targetPath).catch(() => path.resolve(targetPath));
+  }
+
+  private async removeUnregisteredPath(
+    targetPath: string,
+    managed: boolean,
+    worktrees: WorktreeInfo[],
+  ): Promise<WorktreeRemoveResult> {
+    if (!managed) {
+      return { status: 'unregistered', path: targetPath, managed };
+    }
+
+    if (await this.hasRegisteredDescendantWorktree(targetPath, worktrees)) {
+      return { status: 'unregistered', path: targetPath, managed };
+    }
+
+    await fs.rm(targetPath, { recursive: true, force: true });
+    await this.prune();
+    return { status: 'stale_removed', path: targetPath, managed };
   }
 
   /**

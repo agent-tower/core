@@ -1079,7 +1079,13 @@ export class WorkspaceService {
 
         // 清理残留 worktree（如果还存在）
         if (workspace.worktreePath) {
-          await worktreeManager.remove(workspace.worktreePath);
+          const removeResult = await worktreeManager.remove(workspace.worktreePath);
+          if (removeResult.status === 'unregistered') {
+            console.warn(
+              `[WorkspaceService] cleanup: workspace ${workspace.id} path is unregistered or unsafe to remove: ${removeResult.path}`,
+            );
+            continue;
+          }
         }
 
         // Task 已 DONE，branch 不再需要，删除

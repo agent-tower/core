@@ -11,11 +11,20 @@ const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-workspace-ser
 const dbPath = path.join(testDir, 'test.db');
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
 
-const { createWorktreeMock, ensureWorktreeExistsMock, mergeWorktreeMock, mergeIntoWorktreeMock } = vi.hoisted(() => ({
+const {
+  createWorktreeMock,
+  ensureWorktreeExistsMock,
+  removeWorktreeMock,
+  mergeWorktreeMock,
+  mergeIntoWorktreeMock,
+  execGitMock,
+} = vi.hoisted(() => ({
   createWorktreeMock: vi.fn(),
   ensureWorktreeExistsMock: vi.fn(),
+  removeWorktreeMock: vi.fn(),
   mergeWorktreeMock: vi.fn(),
   mergeIntoWorktreeMock: vi.fn(),
+  execGitMock: vi.fn(),
 }));
 
 vi.mock('../../git/worktree.manager.js', () => ({
@@ -23,7 +32,7 @@ vi.mock('../../git/worktree.manager.js', () => ({
     return {
       create: createWorktreeMock,
       ensureWorktreeExists: ensureWorktreeExistsMock,
-      remove: vi.fn(),
+      remove: removeWorktreeMock,
       getDiff: vi.fn(),
       rebase: vi.fn(),
       getGitOperationStatus: vi.fn(),
@@ -36,7 +45,11 @@ vi.mock('../../git/worktree.manager.js', () => ({
 }));
 
 vi.mock('../../git/git-cli.js', () => ({
-  execGit: vi.fn(async (_repoPath: string, args: string[]) => {
+  execGit: execGitMock,
+  MergeConflictError: class MergeConflictError extends Error {},
+}));
+
+execGitMock.mockImplementation(async (_repoPath: string, args: string[]) => {
     if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) {
       return 'main\n';
     }
@@ -44,8 +57,7 @@ vi.mock('../../git/git-cli.js', () => ({
       return '';
     }
     return '';
-  }),
-}));
+});
 
 vi.mock('../copy-files.service.js', () => ({
   copyProjectFiles: vi.fn(),
@@ -137,8 +149,22 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    execGitMock.mockImplementation(async (_repoPath: string, args: string[]) => {
+      if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) {
+        return 'main\n';
+      }
+      if (args[0] === 'status') {
+        return '';
+      }
+      return '';
+    });
     createWorktreeMock.mockImplementation(async (branchName: string) => mockCreatedWorktreePath(branchName));
     ensureWorktreeExistsMock.mockImplementation(async (branchName: string) => mockRestoredWorktreePath(branchName));
+    removeWorktreeMock.mockImplementation(async (worktreePath: string) => ({
+      status: 'removed',
+      path: worktreePath,
+      managed: true,
+    }));
     mergeWorktreeMock.mockResolvedValue({ sha: 'root-merge-sha', taskBranch: 'team-main' });
     mergeIntoWorktreeMock.mockResolvedValue({
       sha: 'child-merge-sha',
@@ -615,5 +641,149 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
 
     const sha = await lockedService.merge(workspace.id, { lockOwnerId: 'external-owner' });
     expect(sha).toBe('root-merge-sha');
+  });
+
+  it('cleans up stale managed worktree records and deletes their branches', async () => {
+    const { project, task } = await createTask('cleanup stale workspace task');
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { status: 'DONE' },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'at/12345678',
+        worktreePath: path.join(project.repoPath, '..', '.worktrees', 'at', '12345678'),
+        status: 'MERGED',
+      },
+    });
+    removeWorktreeMock.mockResolvedValueOnce({
+      status: 'stale_removed',
+      path: workspace.worktreePath,
+      managed: true,
+    });
+
+    const cleaned = await service.cleanup();
+
+    expect(cleaned).toBe(1);
+    expect(removeWorktreeMock).toHaveBeenCalledWith(workspace.worktreePath);
+    expect(execGitMock).toHaveBeenCalledWith(project.repoPath, ['branch', '-D', workspace.branchName]);
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toBeNull();
+  });
+
+  it('cleans up stale managed TeamRun nested worktree records', async () => {
+    const { project, task, teamRun } = await createTeamRunWithMember();
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { status: 'DONE' },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: `at/team/${teamRun.id.slice(0, 8)}/main/87654321`,
+        worktreePath: path.join(
+          project.repoPath,
+          '..',
+          '.worktrees',
+          'at',
+          'team',
+          teamRun.id.slice(0, 8),
+          'main',
+          '87654321',
+        ),
+        status: 'MERGED',
+      },
+    });
+    removeWorktreeMock.mockResolvedValueOnce({
+      status: 'stale_removed',
+      path: workspace.worktreePath,
+      managed: true,
+    });
+
+    const cleaned = await service.cleanup();
+
+    expect(cleaned).toBe(1);
+    expect(removeWorktreeMock).toHaveBeenCalledWith(workspace.worktreePath);
+    expect(execGitMock).toHaveBeenCalledWith(project.repoPath, ['branch', '-D', workspace.branchName]);
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toBeNull();
+  });
+
+  it('keeps non-managed unregistered worktree records for retry', async () => {
+    const { task } = await createTask('cleanup unmanaged workspace task');
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { status: 'DONE' },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'at/unmanaged',
+        worktreePath: path.join(testDir, 'outside-managed-worktree'),
+        status: 'MERGED',
+      },
+    });
+    removeWorktreeMock.mockResolvedValueOnce({
+      status: 'unregistered',
+      path: workspace.worktreePath,
+      managed: false,
+    });
+
+    const cleaned = await service.cleanup();
+
+    expect(cleaned).toBe(0);
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({
+      id: workspace.id,
+    });
+  });
+
+  it('keeps managed unregistered ancestor worktree records for retry', async () => {
+    const { project, task, teamRun } = await createTeamRunWithMember();
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { status: 'DONE' },
+    });
+    const ancestorPath = path.join(project.repoPath, '..', '.worktrees', 'at', 'team', teamRun.id.slice(0, 8));
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: `at/team/${teamRun.id.slice(0, 8)}`,
+        worktreePath: ancestorPath,
+        status: 'MERGED',
+      },
+    });
+    removeWorktreeMock.mockResolvedValueOnce({
+      status: 'unregistered',
+      path: ancestorPath,
+      managed: true,
+    });
+
+    const cleaned = await service.cleanup();
+
+    expect(cleaned).toBe(0);
+    expect(execGitMock).not.toHaveBeenCalledWith(project.repoPath, ['branch', '-D', workspace.branchName]);
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({
+      id: workspace.id,
+    });
+  });
+
+  it('does not cleanup active workspaces', async () => {
+    const { task } = await createTask('cleanup active workspace task');
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { status: 'DONE' },
+    });
+    await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'at/active',
+        worktreePath: path.join(testDir, 'active-worktree'),
+        status: 'ACTIVE',
+      },
+    });
+
+    const cleaned = await service.cleanup();
+
+    expect(cleaned).toBe(0);
+    expect(removeWorktreeMock).not.toHaveBeenCalled();
   });
 });
