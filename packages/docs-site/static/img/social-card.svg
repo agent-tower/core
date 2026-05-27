@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="Agent Tower">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="45%" stop-color="#182235"/>
+      <stop offset="100%" stop-color="#2a2438"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#2dd4bf"/>
+      <stop offset="100%" stop-color="#14b8a6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="78" y="76" width="1044" height="478" rx="28" fill="rgba(15,23,42,0.78)" stroke="rgba(148,163,184,0.22)"/>
+  <rect x="112" y="116" width="248" height="398" rx="20" fill="rgba(30,41,59,0.82)" stroke="rgba(148,163,184,0.16)"/>
+  <rect x="394" y="116" width="690" height="398" rx="20" fill="rgba(30,41,59,0.66)" stroke="rgba(148,163,184,0.16)"/>
+  <rect x="112" y="116" width="248" height="46" rx="20" fill="rgba(15,23,42,0.92)"/>
+  <circle cx="142" cy="139" r="6" fill="#64748b"/>
+  <circle cx="164" cy="139" r="6" fill="#64748b"/>
+  <circle cx="186" cy="139" r="6" fill="#64748b"/>
+  <text x="226" y="145" fill="#cbd5e1" font-size="18" font-family="Inter, Arial, sans-serif" font-weight="700">Agent Tower</text>
+  <text x="148" y="196" fill="#94a3b8" font-size="16" font-family="Inter, Arial, sans-serif" font-weight="700">IN REVIEW</text>
+  <rect x="132" y="214" width="208" height="84" rx="14" fill="rgba(20,184,166,0.10)" stroke="rgba(45,212,191,0.34)"/>
+  <circle cx="150" cy="236" r="6" fill="#f59e0b"/>
+  <text x="168" y="243" fill="#f8fafc" font-size="18" font-family="Inter, Arial, sans-serif" font-weight="700">web / diff viewer</text>
+  <text x="168" y="268" fill="#94a3b8" font-size="14" font-family="Inter, Arial, sans-serif">Codex · ready</text>
+  <rect x="132" y="314" width="208" height="84" rx="14" fill="rgba(30,41,59,0.4)" stroke="rgba(148,163,184,0.12)"/>
+  <circle cx="150" cy="336" r="6" fill="#22c55e"/>
+  <text x="168" y="343" fill="#f8fafc" font-size="18" font-family="Inter, Arial, sans-serif" font-weight="700">server / MCP tools</text>
+  <text x="168" y="368" fill="#94a3b8" font-size="14" font-family="Inter, Arial, sans-serif">Claude Code · running</text>
+  <rect x="132" y="414" width="208" height="84" rx="14" fill="rgba(30,41,59,0.4)" stroke="rgba(148,163,184,0.12)"/>
+  <circle cx="150" cy="436" r="6" fill="#64748b"/>
+  <text x="168" y="443" fill="#f8fafc" font-size="18" font-family="Inter, Arial, sans-serif" font-weight="700">docs / guide</text>
+  <text x="168" y="468" fill="#94a3b8" font-size="14" font-family="Inter, Arial, sans-serif">Gemini · queued</text>
+  <rect x="420" y="140" width="642" height="60" rx="16" fill="rgba(15,23,42,0.92)"/>
+  <text x="452" y="175" fill="#f8fafc" font-size="22" font-family="Inter, Arial, sans-serif" font-weight="700">Review Workspace</text>
+  <text x="452" y="194" fill="#94a3b8" font-size="14" font-family="Inter, Arial, sans-serif">feat/task-diff-panel</text>
+  <rect x="976" y="154" width="72" height="32" rx="10" fill="url(#accent)"/>
+  <text x="993" y="175" fill="#042f2e" font-size="15" font-family="Inter, Arial, sans-serif" font-weight="700">Merge</text>
+  <rect x="420" y="224" width="298" height="246" rx="16" fill="rgba(15,23,42,0.55)" stroke="rgba(148,163,184,0.16)"/>
+  <rect x="738" y="224" width="324" height="246" rx="16" fill="rgba(15,23,42,0.55)" stroke="rgba(148,163,184,0.16)"/>
+  <text x="442" y="252" fill="#94a3b8" font-size="15" font-family="Inter, Arial, sans-serif" font-weight="700">Agent log</text>
+  <rect x="442" y="276" width="248" height="14" rx="7" fill="rgba(148,163,184,0.16)"/>
+  <rect x="442" y="306" width="224" height="14" rx="7" fill="rgba(148,163,184,0.16)"/>
+  <rect x="442" y="336" width="190" height="14" rx="7" fill="rgba(148,163,184,0.16)"/>
+  <rect x="442" y="376" width="248" height="10" rx="5" fill="rgba(45,212,191,0.25)"/>
+  <rect x="442" y="394" width="160" height="10" rx="5" fill="rgba(45,212,191,0.18)"/>
+  <text x="760" y="252" fill="#94a3b8" font-size="15" font-family="Inter, Arial, sans-serif" font-weight="700">Git changes</text>
+  <text x="760" y="286" fill="#a7f3d0" font-size="15" font-family="SFMono-Regular, Consolas, monospace">+ export async function mergeWorkspace()</text>
+  <text x="760" y="314" fill="#fca5a5" font-size="15" font-family="SFMono-Regular, Consolas, monospace">- app.post('/merge', handler)</text>
+  <text x="760" y="342" fill="#a7f3d0" font-size="15" font-family="SFMono-Regular, Consolas, monospace">+ tests passed</text>
+  <text x="78" y="602" fill="#f8fafc" font-size="28" font-family="Inter, Arial, sans-serif" font-weight="700">Agent Tower</text>
+  <text x="78" y="607" fill="#cbd5e1" font-size="0" font-family="Inter, Arial, sans-serif">.</text>
+  <text x="240" y="602" fill="#cbd5e1" font-size="18" font-family="Inter, Arial, sans-serif">Local-first AI agent command center</text>
+</svg>

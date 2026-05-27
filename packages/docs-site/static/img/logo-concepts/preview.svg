@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-label="Agent Tower logo concepts preview">
+  <defs>
+    <style>
+      .bg { fill: #0b1220; }
+      .panel { fill: #111b2d; stroke: rgba(148,163,184,0.18); stroke-width: 2; }
+      .title { fill: #f8fafc; font: 700 28px Inter, Arial, sans-serif; letter-spacing: 0; }
+      .meta { fill: #94a3b8; font: 500 16px Inter, Arial, sans-serif; letter-spacing: 0; }
+      .label { fill: #f8fafc; font: 700 18px Inter, Arial, sans-serif; letter-spacing: 0; }
+      .note { fill: #cbd5e1; font: 400 14px Inter, Arial, sans-serif; letter-spacing: 0; }
+    </style>
+  </defs>
+  <rect width="1200" height="760" class="bg"/>
+  <text x="60" y="70" class="title">Agent Tower Logo Concepts</text>
+  <text x="60" y="102" class="meta">Dark, local-first, command-center direction based on the current docs site.</text>
+
+  <rect x="60" y="140" width="520" height="250" rx="24" class="panel"/>
+  <rect x="620" y="140" width="520" height="250" rx="24" class="panel"/>
+  <rect x="60" y="430" width="520" height="250" rx="24" class="panel"/>
+  <rect x="620" y="430" width="520" height="250" rx="24" class="panel"/>
+
+  <image href="/img/logo-concepts/tower-beacon.svg" x="92" y="174" width="170" height="170"/>
+  <text x="290" y="204" class="label">Tower Beacon</text>
+  <text x="290" y="236" class="note">Vertical mark, clear hierarchy, easy navbar fit.</text>
+
+  <image href="/img/logo-concepts/worktree-stack.svg" x="652" y="174" width="170" height="170"/>
+  <text x="850" y="204" class="label">Worktree Stack</text>
+  <text x="850" y="236" class="note">Layered worktree feel, more product-system oriented.</text>
+
+  <image href="/img/logo-concepts/control-node.svg" x="92" y="464" width="170" height="170"/>
+  <text x="290" y="494" class="label">Control Node</text>
+  <text x="290" y="526" class="note">Most like a command center / orchestration hub.</text>
+
+  <image href="/img/logo-concepts/monogram.svg" x="652" y="464" width="170" height="170"/>
+  <text x="850" y="494" class="label">Monogram</text>
+  <text x="850" y="526" class="note">More brand-like, compact, closer to an emblem.</text>
+</svg>

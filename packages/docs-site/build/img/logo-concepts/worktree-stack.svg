@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Agent Tower worktree stack logo">
+  <rect width="64" height="64" rx="16" fill="#0f172a"/>
+  <path d="M14 26h22l6 6v16H20l-6-6z" fill="none" stroke="#2dd4bf" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M20 20h22l6 6v16H26l-6-6z" fill="none" stroke="#f8fafc" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M26 14h22l6 6v16H32l-6-6z" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M30 37h10M24 31h10M36 25h10" fill="none" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="42" cy="23" r="2.5" fill="#14b8a6"/>
+  <circle cx="36" cy="29" r="2.5" fill="#f59e0b"/>
+  <circle cx="30" cy="35" r="2.5" fill="#2dd4bf"/>
+  <path d="M32 43v7" fill="none" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="32" cy="52" r="3" fill="#f8fafc"/>
+</svg>

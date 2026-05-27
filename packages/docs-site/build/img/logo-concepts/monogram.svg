@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Agent Tower monogram logo">
+  <rect width="64" height="64" rx="16" fill="#0f172a"/>
+  <path d="M18 49L32 14l14 35" fill="none" stroke="#2dd4bf" stroke-width="3.5" stroke-linejoin="round"/>
+  <path d="M23 35h18" fill="none" stroke="#f8fafc" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M26 26h12" fill="none" stroke="#f59e0b" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M32 20v29" fill="none" stroke="#f8fafc" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="32" cy="14" r="3" fill="#f59e0b"/>
+  <path d="M18 49h28M22 45h20" fill="none" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="20" cy="49" r="2.2" fill="#14b8a6"/>
+  <circle cx="44" cy="49" r="2.2" fill="#f8fafc"/>
+</svg>

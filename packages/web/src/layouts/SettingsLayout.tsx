@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Cpu, Bell, FolderGit2, Languages, Users } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
+import { BrandLogo } from '@/components/BrandLogo'
 
 const NAV_ITEMS = [
   { to: '/settings/general', label: '通用', icon: Languages },
@@ -9,21 +10,6 @@ const NAV_ITEMS = [
   { to: '/settings/projects', label: '项目配置', icon: FolderGit2 },
   { to: '/settings/notifications', label: '通知', icon: Bell },
 ]
-
-const LOGO_ICON = (
-  <svg
-    width="22"
-    height="22"
-    viewBox="0 0 24 24"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    className="text-neutral-900"
-  >
-    <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="currentColor" />
-    <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-)
 
 export function SettingsLayout() {
   const navigate = useNavigate()
@@ -34,7 +20,7 @@ export function SettingsLayout() {
       {/* Top bar — matches homepage h-12 style */}
       <header className="h-12 flex items-center justify-between px-4 border-b border-neutral-100 bg-white shrink-0 z-30">
         <div className="flex items-center gap-2.5">
-          {LOGO_ICON}
+          <BrandLogo />
           <span className="text-sm font-bold tracking-tight text-neutral-900">Agent Tower</span>
           <span className="text-neutral-200 text-sm">/</span>
           <span className="text-sm text-neutral-500">{t('设置')}</span>

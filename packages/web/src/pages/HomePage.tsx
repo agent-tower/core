@@ -1,13 +1,17 @@
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useI18n } from '@/lib/i18n'
+import { BrandLogo } from '@/components/BrandLogo'
 
 export function HomePage() {
   const { t } = useI18n()
 
   return (
     <div className="container mx-auto p-8">
-      <h1 className="text-4xl font-bold mb-8">Agent Tower</h1>
+      <div className="mb-8 flex items-center gap-4">
+        <BrandLogo className="h-12 w-12" />
+        <h1 className="text-4xl font-bold">Agent Tower</h1>
+      </div>
       <p className="text-muted-foreground mb-8">{t('AI Agent Task Management Dashboard')}</p>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

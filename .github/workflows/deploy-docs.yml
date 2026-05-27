@@ -1,0 +1,50 @@
+name: Deploy docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/deploy-docs.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'packages/docs-site/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-docs
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build docs
+        run: pnpm --filter @agent-tower/docs-site build
+
+      - name: Publish to agent-tower.github.io
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.DOCS_DEPLOY_TOKEN }}
+          external_repository: agent-tower/agent-tower.github.io
+          publish_branch: main
+          publish_dir: packages/docs-site/build

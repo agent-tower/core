@@ -27,6 +27,7 @@ import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
 import { cn } from '@/lib/utils'
 import { CreateProjectModal } from '@/components/project/CreateProjectModal'
+import { BrandLogo } from '@/components/BrandLogo'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -43,33 +44,6 @@ const CREATE_STEP_LABEL: Record<CreateStep, string> = {
 // === bundle-dynamic-imports: Modal 组件懒加载 ===
 const Modal = lazy(() =>
   import('@/components/ui/modal').then(m => ({ default: m.Modal }))
-)
-// === rendering-hoist-jsx: 静态 Logo SVG 提升到组件外 ===
-const LOGO_ICON = (
-  <svg
-    width="20"
-    height="20"
-    viewBox="0 0 24 24"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    className="text-neutral-900"
-  >
-    <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="currentColor" />
-    <path
-      d="M2 17L12 22L22 17"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <path
-      d="M2 12L12 17L22 12"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
 )
 
 // === rendering-hoist-jsx: 静态顶部栏标题文字 ===
@@ -758,7 +732,7 @@ export function ProjectKanbanPage() {
           {/* 顶部栏 */}
           <header className="h-12 bg-white border-b border-neutral-200 flex items-center px-4 justify-between shrink-0 z-10">
             <div className="flex items-center gap-2">
-              {LOGO_ICON}
+              <BrandLogo />
               {HEADER_TITLE}
             </div>
             <div className="flex items-center gap-1">
@@ -808,7 +782,7 @@ export function ProjectKanbanPage() {
       {/* === 顶部栏 === */}
       <header className="h-12 bg-white border-b border-neutral-200 flex items-center px-4 justify-between flex-shrink-0 z-10 relative">
         <div className="flex items-center gap-2">
-          {LOGO_ICON}
+          <BrandLogo />
           {HEADER_TITLE}
         </div>
         <div className="flex items-center gap-1">
