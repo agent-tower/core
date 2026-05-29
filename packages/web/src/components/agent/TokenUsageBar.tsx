@@ -1,10 +1,11 @@
 import { Gauge } from 'lucide-react'
-import { Tooltip } from '@/components/ui/tooltip'
+import { Tooltip, type TooltipSide } from '@/components/ui/tooltip'
 import type { TokenUsageInfo } from '../../hooks/useTokenUsage'
 import { useI18n } from '@/lib/i18n'
 
 interface TokenUsageIndicatorProps {
   usage: TokenUsageInfo | null
+  tooltipSide?: TooltipSide
 }
 
 function formatNumber(n: number): string {
@@ -19,7 +20,7 @@ function getUsageColor(ratio: number): string {
   return 'text-neutral-400'
 }
 
-export function TokenUsageIndicator({ usage }: TokenUsageIndicatorProps) {
+export function TokenUsageIndicator({ usage, tooltipSide = 'top' }: TokenUsageIndicatorProps) {
   const { t } = useI18n()
   if (!usage) return null
 
@@ -33,7 +34,7 @@ export function TokenUsageIndicator({ usage }: TokenUsageIndicatorProps) {
     : <span>{t('已使用: {used} tokens', { used: formatNumber(usage.totalTokens) })}</span>
 
   return (
-    <Tooltip content={tooltipContent}>
+    <Tooltip content={tooltipContent} side={tooltipSide}>
       <div className="flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-lg hover:bg-neutral-100 transition-colors cursor-default select-none">
         <Gauge size={14} className={colorClass} />
         <span className={`tabular-nums ${colorClass}`}>

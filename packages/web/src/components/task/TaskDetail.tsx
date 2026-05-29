@@ -15,7 +15,7 @@ import { LogStream } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
-import { Paperclip, ArrowUp, ArrowDown, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, RotateCcw, Plus } from 'lucide-react'
+import { Paperclip, ArrowUp, ArrowDown, ArrowLeft, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, RotateCcw, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
@@ -41,6 +41,7 @@ import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { StartAgentDialog } from './StartAgentDialog'
+import { getSessionTokenUsage, SessionReadonlyMeta } from './SessionReadonlyMeta'
 import { CreateTeamRunDialog } from '@/components/team/CreateTeamRunDialog'
 import { ProviderSelector } from './ProviderSelector'
 import { SlashCommandPopover } from './SlashCommandPopover'
@@ -346,7 +347,23 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     return null
   }, [focusedInvocationSessionId, workspaces])
 
-  const displayedSession = focusedSession ?? activeSession ?? null
+  const focusedInvocation = useMemo(() => {
+    if (!focusedInvocationSessionId || !teamRun?.invocations) return null
+    const matches = teamRun.invocations.filter((invocation) => invocation.sessionId === focusedInvocationSessionId)
+    if (matches.length === 0) return null
+    return matches.sort((a, b) => {
+      const aTime = Date.parse(a.updatedAt ?? a.createdAt ?? '')
+      const bTime = Date.parse(b.updatedAt ?? b.createdAt ?? '')
+      return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime)
+    })[0] ?? null
+  }, [focusedInvocationSessionId, teamRun?.invocations])
+
+  const focusedInvocationMember = useMemo(() => {
+    if (!focusedInvocation?.memberId || !teamRun?.members) return null
+    return teamRun.members.find((member) => member.id === focusedInvocation.memberId) ?? null
+  }, [focusedInvocation?.memberId, teamRun?.members])
+
+  const displayedSession = focusedInvocationSessionId ? focusedSession : activeSession ?? null
   const isSessionActive = displayedSession?.status === SessionStatus.RUNNING || displayedSession?.status === SessionStatus.PENDING
   const isProjectReadOnly = Boolean(task?.projectArchivedAt)
   const isProjectRepoDeleted = Boolean(task?.projectRepoDeletedAt)
@@ -627,11 +644,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
 
   // Token usage — 取最新一条，回退到持久化值
   const initialTokenUsage = useMemo(() => {
-    if (!activeSession?.tokenUsage) return undefined
-    const tu = activeSession.tokenUsage
-    if (typeof tu.totalTokens === 'number') return tu as { totalTokens: number; modelContextWindow?: number }
-    return undefined
-  }, [activeSession?.tokenUsage])
+    return getSessionTokenUsage(displayedSession)
+  }, [displayedSession?.tokenUsage])
   const tokenUsage = useTokenUsage(logs, initialTokenUsage)
 
   // Auto-attach: 当 sessionId 或连接状态变化时自动 attach
@@ -966,16 +980,33 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           {isTeamRunMode && teamRun ? (
             focusedInvocationSessionId ? (
               <>
-                <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 shrink-0">
+                <div className="relative z-20 flex shrink-0 items-center justify-between gap-3 overflow-visible border-b border-neutral-200 px-4 py-3">
                   <div className="min-w-0">
                     <div className="text-xs font-semibold text-neutral-900">{t('Invocation details')}</div>
                     <div className="truncate text-[11px] text-neutral-500">
                       {focusedInvocationSessionId}
                     </div>
                   </div>
-                  <Button type="button" size="sm" variant="outline" onClick={handleBackToTeamRoom}>
-                    {t('Back to room')}
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <SessionReadonlyMeta
+                      session={displayedSession}
+                      providers={providers}
+                      usage={tokenUsage}
+                      providerIdFallback={focusedInvocationMember?.providerId}
+                      agentTypeFallback={displayedSession?.agentType}
+                      tokenTooltipSide="bottom"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 gap-1 rounded-lg border border-neutral-200/70 bg-white/60 px-2 text-xs font-medium text-neutral-500 hover:border-neutral-300 hover:bg-neutral-100 hover:text-neutral-900"
+                      onClick={handleBackToTeamRoom}
+                    >
+                      <ArrowLeft size={13} />
+                      <span>{t('Team room')}</span>
+                    </Button>
+                  </div>
                 </div>
                 <div className="relative flex-1 min-h-0">
                   <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">

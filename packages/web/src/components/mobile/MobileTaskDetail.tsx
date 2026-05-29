@@ -23,6 +23,7 @@ import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { StartAgentDialog } from '@/components/task/StartAgentDialog'
+import { getSessionTokenUsage, SessionReadonlyMeta } from '@/components/task/SessionReadonlyMeta'
 import { ProviderSelector } from '@/components/task/ProviderSelector'
 import { SlashCommandPopover } from '@/components/task/SlashCommandPopover'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -228,7 +229,21 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
     }
     return null
   }, [focusedInvocationSessionId, workspaces])
-  const displayedSession = focusedSession ?? activeSession ?? null
+  const focusedInvocation = useMemo(() => {
+    if (!focusedInvocationSessionId || !teamRun?.invocations) return null
+    const matches = teamRun.invocations.filter((invocation) => invocation.sessionId === focusedInvocationSessionId)
+    if (matches.length === 0) return null
+    return matches.sort((a, b) => {
+      const aTime = Date.parse(a.updatedAt ?? a.createdAt ?? '')
+      const bTime = Date.parse(b.updatedAt ?? b.createdAt ?? '')
+      return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime)
+    })[0] ?? null
+  }, [focusedInvocationSessionId, teamRun?.invocations])
+  const focusedInvocationMember = useMemo(() => {
+    if (!focusedInvocation?.memberId || !teamRun?.members) return null
+    return teamRun.members.find((member) => member.id === focusedInvocation.memberId) ?? null
+  }, [focusedInvocation?.memberId, teamRun?.members])
+  const displayedSession = focusedInvocationSessionId ? focusedSession : activeSession ?? null
   const isSessionActive = displayedSession?.status === SessionStatus.RUNNING || displayedSession?.status === SessionStatus.PENDING
   const isProjectReadOnly = Boolean(task.projectArchivedAt)
   const isProjectRepoDeleted = Boolean(task.projectRepoDeletedAt)
@@ -327,11 +342,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   // Token usage — 取最新一条，回退到持久化值
   const initialTokenUsage = useMemo(() => {
-    if (!activeSession?.tokenUsage) return undefined
-    const tu = activeSession.tokenUsage
-    if (typeof tu.totalTokens === 'number') return tu as { totalTokens: number; modelContextWindow?: number }
-    return undefined
-  }, [activeSession?.tokenUsage])
+    return getSessionTokenUsage(displayedSession)
+  }, [displayedSession?.tokenUsage])
   const tokenUsage = useTokenUsage(logs, initialTokenUsage)
 
   useEffect(() => {
@@ -596,16 +608,34 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           <main className="flex-1 min-h-0 overflow-hidden">
             {focusedInvocationSessionId ? (
               <div className="flex h-full min-h-0 flex-col bg-white">
-                <div className="flex shrink-0 items-center justify-between gap-3 border-b border-neutral-200 px-3 py-2.5">
+                <div className="relative z-20 flex shrink-0 items-center justify-between gap-3 overflow-visible border-b border-neutral-200 px-3 py-2.5">
                   <div className="min-w-0">
                     <div className="text-xs font-semibold text-neutral-900">{t('Invocation details')}</div>
                     <div className="truncate text-[11px] text-neutral-500">
                       {focusedInvocationSessionId}
                     </div>
                   </div>
-                  <Button type="button" size="sm" variant="outline" onClick={handleBackToTeamRoom}>
-                    {t('Back to room')}
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <SessionReadonlyMeta
+                      session={displayedSession}
+                      providers={providers}
+                      usage={tokenUsage}
+                      compact
+                      providerIdFallback={focusedInvocationMember?.providerId}
+                      agentTypeFallback={displayedSession?.agentType}
+                      tokenTooltipSide="bottom"
+                    />
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="h-7 gap-1 rounded-lg border border-neutral-200/70 bg-white/60 px-1.5 text-[11px] font-medium text-neutral-500 hover:border-neutral-300 hover:bg-neutral-100 hover:text-neutral-900 active:bg-neutral-100"
+                      onClick={handleBackToTeamRoom}
+                    >
+                      <ArrowLeft size={12} />
+                      <span>{t('Team room')}</span>
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="relative flex-1 min-h-0">
