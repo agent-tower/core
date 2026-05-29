@@ -67,6 +67,9 @@ export type TeamMemberTriggerPolicy = 'MENTION_ONLY' | 'USER_MESSAGES'
 /** 团队成员 Session 策略 */
 export type TeamMemberSessionPolicy = 'new_per_request' | 'resume_last'
 
+/** 团队成员队列管理策略 */
+export type TeamMemberQueueManagementPolicy = 'own_only' | 'team_pending'
+
 /** 目标成员忙碌时的处理策略 */
 export type IfBusyPolicy = 'queue' | 'cancel_current_and_start'
 
@@ -309,6 +312,7 @@ export interface MemberPreset {
   workspacePolicy: WorkspacePolicy
   triggerPolicy: TeamMemberTriggerPolicy
   sessionPolicy: TeamMemberSessionPolicy
+  queueManagementPolicy: TeamMemberQueueManagementPolicy
   avatar?: string | null
   createdAt?: string
   updatedAt?: string
@@ -362,6 +366,7 @@ export interface TeamMember {
   workspacePolicy: WorkspacePolicy
   triggerPolicy: TeamMemberTriggerPolicy
   sessionPolicy: TeamMemberSessionPolicy
+  queueManagementPolicy: TeamMemberQueueManagementPolicy
   avatar?: string | null
   status: TeamMemberStatus
   createdAt?: string

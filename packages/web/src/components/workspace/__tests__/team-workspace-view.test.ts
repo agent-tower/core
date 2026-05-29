@@ -49,6 +49,7 @@ const teamRun = {
       workspacePolicy: 'dedicated',
       triggerPolicy: 'MENTION_ONLY',
       sessionPolicy: 'new_per_request',
+      queueManagementPolicy: 'own_only',
       status: 'IDLE',
     },
   ],

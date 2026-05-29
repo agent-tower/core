@@ -8,7 +8,6 @@ import { buildWorkspaceViews } from '@/components/workspace/team-workspace-view'
 import { ACTIVE_ROOM_INVOCATION_STATUSES } from './room-timeline-items'
 import {
   useApproveWorkRequest,
-  useCancelWorkRequest,
   useRejectWorkRequest,
   useStopMemberWork,
 } from '@/hooks/use-team-run'
@@ -183,8 +182,6 @@ export function TeamStatusPanel({
   const { t } = useI18n()
   const approveWorkRequest = useApproveWorkRequest(teamRun.id)
   const rejectWorkRequest = useRejectWorkRequest(teamRun.id)
-  const cancelPendingWorkRequest = useCancelWorkRequest(teamRun.id)
-  const cancelQueuedWorkRequest = useCancelWorkRequest(teamRun.id)
   const stopMemberWork = useStopMemberWork(teamRun.id)
   const [stopPromptInvocationId, setStopPromptInvocationId] = useState<string | null>(null)
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null)
@@ -246,20 +243,11 @@ export function TeamStatusPanel({
       ? approveWorkRequest.error
       : rejectWorkRequest.isError
         ? rejectWorkRequest.error
-        : cancelPendingWorkRequest.isError
-          ? cancelPendingWorkRequest.error
-          : null
-
-  const queuedRequestError = cancelQueuedWorkRequest.isError
-    ? cancelQueuedWorkRequest.error
-    : null
+        : null
 
   const isPendingApprovalActionPending =
     approveWorkRequest.isPending
     || rejectWorkRequest.isPending
-    || cancelPendingWorkRequest.isPending
-
-  const isQueuedCancelPending = cancelQueuedWorkRequest.isPending
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
@@ -371,7 +359,6 @@ export function TeamStatusPanel({
                 const member = members.find((item) => item.id === request.targetMemberId)
                 const isApprovePending = approveWorkRequest.isPending && approveWorkRequest.variables === request.id
                 const isRejectPending = rejectWorkRequest.isPending && rejectWorkRequest.variables === request.id
-                const isCancelPending = cancelPendingWorkRequest.isPending && cancelPendingWorkRequest.variables === request.id
 
                 return (
                   <div key={request.id} className="rounded-md border border-neutral-200 bg-white px-3 py-2">
@@ -414,16 +401,6 @@ export function TeamStatusPanel({
                       >
                         <X size={11} />
                         <span className="truncate">{isRejectPending ? t('Rejecting') : t('Reject')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => cancelPendingWorkRequest.mutate(request.id)}
-                        disabled={isPendingApprovalActionPending}
-                        className="inline-flex h-6 min-w-0 items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        title={t('Cancel')}
-                      >
-                        <Ban size={11} />
-                        <span className="truncate">{isCancelPending ? t('Cancelling') : t('Cancel')}</span>
                       </button>
                     </div>
                   </div>
@@ -561,7 +538,6 @@ export function TeamStatusPanel({
             ) : (
               queuedRequests.map((request) => {
                 const member = members.find((item) => item.id === request.targetMemberId)
-                const isCancelPending = cancelQueuedWorkRequest.isPending && cancelQueuedWorkRequest.variables === request.id
                 return (
                   <div key={request.id} className="rounded-md border border-neutral-200 bg-white px-3 py-2">
                     <div className="flex items-start justify-between gap-3">
@@ -573,16 +549,6 @@ export function TeamStatusPanel({
                           {request.instruction}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => cancelQueuedWorkRequest.mutate(request.id)}
-                        disabled={isQueuedCancelPending}
-                        className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        title={t('Cancel')}
-                      >
-                        <Ban size={11} />
-                        <span>{isCancelPending ? t('Cancelling') : t('Cancel')}</span>
-                      </button>
                     </div>
                     <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-500">
                       <Clock3 size={11} />
@@ -593,11 +559,6 @@ export function TeamStatusPanel({
               })
             )}
           </div>
-          {queuedRequestError && (
-            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              {getErrorMessage(queuedRequestError, t('Failed to cancel work request'))}
-            </div>
-          )}
         </section>
 
         <section className="space-y-2">

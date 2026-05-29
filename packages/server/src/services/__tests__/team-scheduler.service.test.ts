@@ -8,6 +8,7 @@ import type { PrismaClient } from '@prisma/client';
 import type {
   IfBusyPolicy,
   TeamMemberCapabilities,
+  TeamMemberQueueManagementPolicy,
   WorkspacePolicy,
   WorkRequestStatus,
 } from '@agent-tower/shared';
@@ -77,6 +78,7 @@ async function createTask(title = 'Team scheduler task', status = TaskStatus.TOD
 
 async function createTeamRunFixture(options: {
   memberCapabilities?: TeamMemberCapabilities[];
+  queueManagementPolicies?: TeamMemberQueueManagementPolicy[];
   workspacePolicies?: WorkspacePolicy[];
   sessionPolicies?: Array<'new_per_request' | 'resume_last'>;
   withWorkspace?: boolean;
@@ -115,6 +117,7 @@ async function createTeamRunFixture(options: {
         workspacePolicy: options.workspacePolicies?.[index] ?? 'shared',
         triggerPolicy: 'MENTION_ONLY',
         sessionPolicy: options.sessionPolicies?.[index] ?? 'new_per_request',
+        queueManagementPolicy: options.queueManagementPolicies?.[index] ?? 'own_only',
         avatar: null,
       },
     }));
@@ -374,7 +377,7 @@ describe('TeamSchedulerService', () => {
     });
   });
 
-  it('cancels pending and queued WorkRequests', async () => {
+  it('rejects TeamRun WorkRequest cancellation without member scope', async () => {
     const { teamRun, members } = await createTeamRunFixture();
     const pending = await createWorkRequest({
       teamRunId: teamRun.id,
@@ -387,8 +390,139 @@ describe('TeamSchedulerService', () => {
       status: 'QUEUED',
     });
 
-    await expect(service.cancelWorkRequest(pending.id)).resolves.toMatchObject({ status: 'CANCELLED' });
-    await expect(service.cancelWorkRequest(queued.id)).resolves.toMatchObject({ status: 'CANCELLED' });
+    await expect(service.cancelWorkRequest(pending.id, undefined as any)).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+    await expect(service.cancelWorkRequest(queued.id, {} as any)).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+    await expect(prisma.workRequest.findMany({ where: { id: { in: [pending.id, queued.id] } } })).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: pending.id, status: 'PENDING_APPROVAL' }),
+        expect.objectContaining({ id: queued.id, status: 'QUEUED' }),
+      ])
+    );
+  });
+
+  it('allows a member to cancel their own pending or queued WorkRequest', async () => {
+    const { teamRun, members } = await createTeamRunFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+
+    await expect(service.cancelWorkRequest(request.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).resolves.toMatchObject({ status: 'CANCELLED' });
+  });
+
+  it('allows members with team_pending queueManagementPolicy to cancel TeamRun queue requests for others', async () => {
+    const { teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities, readOnlyCapabilities],
+      queueManagementPolicies: ['team_pending', 'own_only'],
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+
+    await expect(service.cancelWorkRequest(request.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).resolves.toMatchObject({ status: 'CANCELLED' });
+  });
+
+  it('does not use stopMemberWork capability as queue cancellation permission', async () => {
+    const { teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [
+        { ...readOnlyCapabilities, stopMemberWork: true },
+        readOnlyCapabilities,
+      ],
+      queueManagementPolicies: ['own_only', 'own_only'],
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'QUEUED',
+    });
+
+    await expect(service.cancelWorkRequest(request.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      statusCode: 403,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+  });
+
+  it('rejects restricted cancellation for another member without queue management capability', async () => {
+    const { teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities, readOnlyCapabilities],
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'QUEUED',
+    });
+
+    await expect(service.cancelWorkRequest(request.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      statusCode: 403,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+  });
+
+  it('does not cancel a WorkRequest outside the bound TeamRun', async () => {
+    const first = await createTeamRunFixture();
+    const second = await createTeamRunFixture();
+    const request = await createWorkRequest({
+      teamRunId: second.teamRun.id,
+      targetMemberId: second.members[0]!.id,
+      status: 'QUEUED',
+    });
+
+    await expect(service.cancelWorkRequest(request.id, {
+      teamRunId: first.teamRun.id,
+      requesterMemberId: first.members[0]!.id,
+    })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+  });
+
+  it('requires requester member identity for TeamRun-scoped cancellation', async () => {
+    const { teamRun, members } = await createTeamRunFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+
+    await expect(service.cancelWorkRequest(request.id, {
+      teamRunId: teamRun.id,
+    } as any)).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
   });
 
   it('does not cancel a started WorkRequest', async () => {
@@ -399,7 +533,10 @@ describe('TeamSchedulerService', () => {
       status: 'STARTED',
     });
 
-    await expect(service.cancelWorkRequest(request.id)).rejects.toMatchObject({
+    await expect(service.cancelWorkRequest(request.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).rejects.toMatchObject({
       code: 'INVALID_STATE_TRANSITION',
       statusCode: 400,
     });
@@ -422,7 +559,10 @@ describe('TeamSchedulerService', () => {
       return originalTransaction(arg, ...rest);
     });
 
-    await expect(service.cancelWorkRequest(request.id)).rejects.toMatchObject({
+    await expect(service.cancelWorkRequest(request.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).rejects.toMatchObject({
       code: 'INVALID_STATE_TRANSITION',
       statusCode: 400,
       message: expect.stringContaining('STARTED'),

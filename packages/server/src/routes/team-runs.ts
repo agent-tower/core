@@ -47,6 +47,7 @@ const teamMemberSnapshotSchema = z.object({
   workspacePolicy: z.enum(['none', 'shared', 'dedicated']),
   triggerPolicy: z.enum(['MENTION_ONLY', 'USER_MESSAGES']),
   sessionPolicy: z.enum(['new_per_request', 'resume_last']).default('new_per_request'),
+  queueManagementPolicy: z.enum(['own_only', 'team_pending']).default('own_only'),
   avatar: z.string().nullable().optional(),
 });
 
@@ -88,6 +89,11 @@ const roomMessageSchema = z.object({
 
 const stopMemberWorkSchema = z.object({
   cancelQueued: z.boolean().optional(),
+});
+
+const cancelWorkRequestSchema = z.object({
+  teamRunId: z.string().min(1),
+  requesterMemberId: z.string().min(1),
 });
 
 function handleError(error: unknown, reply: any) {
@@ -303,6 +309,14 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
     }
   });
 
+  app.get<{ Params: { id: string; memberId: string } }>('/team-runs/:id/members/:memberId/work-requests', async (request, reply) => {
+    try {
+      return await service.listQueuedWorkRequestsForMember(request.params.id, request.params.memberId);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
   app.post<{ Params: { id: string } }>('/team-runs/work-requests/:id/approve', async (request, reply) => {
     try {
       return await scheduler.approveWorkRequestAndStartNext(request.params.id);
@@ -321,7 +335,11 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.post<{ Params: { id: string } }>('/team-runs/work-requests/:id/cancel', async (request, reply) => {
     try {
-      return await scheduler.cancelWorkRequest(request.params.id);
+      const body = cancelWorkRequestSchema.parse(request.body ?? {});
+      return await scheduler.cancelWorkRequest(request.params.id, {
+        teamRunId: body.teamRunId,
+        requesterMemberId: body.requesterMemberId,
+      });
     } catch (error) {
       return handleError(error, reply);
     }

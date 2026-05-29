@@ -9,6 +9,7 @@ import type {
   StructuredMention,
   TeamMember,
   TeamMemberCapabilities,
+  TeamMemberQueueManagementPolicy,
   TeamMemberSessionPolicy,
   TeamMemberStatus,
   TeamMemberTriggerPolicy,
@@ -46,6 +47,7 @@ export interface CreateMemberPresetInput {
   workspacePolicy: WorkspacePolicy;
   triggerPolicy: TeamMemberTriggerPolicy;
   sessionPolicy: TeamMemberSessionPolicy;
+  queueManagementPolicy: TeamMemberQueueManagementPolicy;
   avatar?: string | null;
 }
 
@@ -77,6 +79,7 @@ export interface CreateTeamRunMemberInput {
   workspacePolicy: WorkspacePolicy;
   triggerPolicy: TeamMemberTriggerPolicy;
   sessionPolicy: TeamMemberSessionPolicy;
+  queueManagementPolicy: TeamMemberQueueManagementPolicy;
   avatar?: string | null;
 }
 
@@ -98,6 +101,31 @@ export interface CreateRoomMessageInput {
   kind?: RoomMessageKind;
 }
 
+export interface WorkRequestQueueItem extends WorkRequest {
+  triggerMessage: {
+    id: string;
+    senderType: RoomMessageSenderType;
+    senderId: string | null;
+    senderInvocationId: string | null;
+    kind: RoomMessageKind;
+    contentPreview: string;
+    createdAt: string;
+  } | null;
+  targetMember: {
+    id: string;
+    name: string;
+    label: string;
+  } | null;
+}
+
+export interface MemberWorkRequestQueue {
+  teamRunId: string;
+  currentMemberId: string;
+  queueManagementPolicy: TeamMemberQueueManagementPolicy;
+  canManageTeamRunQueue: boolean;
+  workRequests: WorkRequestQueueItem[];
+}
+
 interface TeamMemberSnapshot {
   presetId: string | null;
   name: string;
@@ -108,6 +136,7 @@ interface TeamMemberSnapshot {
   workspacePolicy: WorkspacePolicy;
   triggerPolicy: TeamMemberTriggerPolicy;
   sessionPolicy: TeamMemberSessionPolicy;
+  queueManagementPolicy: TeamMemberQueueManagementPolicy;
   avatar: string | null;
 }
 
@@ -136,6 +165,7 @@ const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
 };
 
 const DEFAULT_SESSION_POLICY: TeamMemberSessionPolicy = 'new_per_request';
+const DEFAULT_QUEUE_MANAGEMENT_POLICY: TeamMemberQueueManagementPolicy = 'own_only';
 const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
   'QUEUED',
   'RUNNING',
@@ -337,6 +367,7 @@ export class TeamRunService {
         workspacePolicy: input.workspacePolicy,
         triggerPolicy: input.triggerPolicy,
         sessionPolicy: input.sessionPolicy,
+        queueManagementPolicy: input.queueManagementPolicy,
         avatar: input.avatar ?? null,
       },
     });
@@ -360,6 +391,7 @@ export class TeamRunService {
         ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
         ...(input.triggerPolicy !== undefined ? { triggerPolicy: input.triggerPolicy } : {}),
         ...(input.sessionPolicy !== undefined ? { sessionPolicy: input.sessionPolicy } : {}),
+        ...(input.queueManagementPolicy !== undefined ? { queueManagementPolicy: input.queueManagementPolicy } : {}),
         ...(input.avatar !== undefined ? { avatar: input.avatar } : {}),
       },
     });
@@ -503,6 +535,7 @@ export class TeamRunService {
               workspacePolicy: snapshot.workspacePolicy,
               triggerPolicy: snapshot.triggerPolicy,
               sessionPolicy: snapshot.sessionPolicy,
+              queueManagementPolicy: snapshot.queueManagementPolicy,
               avatar: snapshot.avatar,
             },
           });
@@ -573,6 +606,7 @@ export class TeamRunService {
               workspacePolicy: snapshot.workspacePolicy,
               triggerPolicy: snapshot.triggerPolicy,
               sessionPolicy: snapshot.sessionPolicy,
+              queueManagementPolicy: snapshot.queueManagementPolicy,
               avatar: snapshot.avatar,
             },
           });
@@ -720,6 +754,50 @@ export class TeamRunService {
       orderBy: { createdAt: 'asc' },
     });
     return workRequests.map((workRequest) => this.serializeWorkRequest(workRequest));
+  }
+
+  async listQueuedWorkRequestsForMember(teamRunId: string, memberId: string): Promise<MemberWorkRequestQueue> {
+    const member = await this.getTeamMemberOrThrow(teamRunId, memberId);
+    const queueManagementPolicy = this.resolveQueueManagementPolicy(member.queueManagementPolicy);
+    const canManageTeamRunQueue = queueManagementPolicy === 'team_pending';
+    const workRequests = await prisma.workRequest.findMany({
+      where: {
+        teamRunId,
+        status: { in: OPEN_WORK_REQUEST_STATUSES },
+        ...(canManageTeamRunQueue ? {} : { targetMemberId: memberId }),
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+
+    const triggerMessageIds = Array.from(new Set(workRequests.map((workRequest) => workRequest.triggerMessageId)));
+    const targetMemberIds = Array.from(new Set(workRequests.map((workRequest) => workRequest.targetMemberId)));
+    const [triggerMessages, targetMembers] = await Promise.all([
+      triggerMessageIds.length > 0
+        ? prisma.roomMessage.findMany({ where: { id: { in: triggerMessageIds }, teamRunId } })
+        : [],
+      targetMemberIds.length > 0
+        ? prisma.teamMember.findMany({
+          where: { id: { in: targetMemberIds }, teamRunId },
+          select: { id: true, name: true },
+        })
+        : [],
+    ]);
+    const triggerMessageById = new Map(triggerMessages.map((message) => [message.id, message]));
+    const targetMemberById = new Map(targetMembers.map((targetMember) => [targetMember.id, targetMember]));
+
+    return {
+      teamRunId,
+      currentMemberId: memberId,
+      queueManagementPolicy,
+      canManageTeamRunQueue,
+      workRequests: workRequests.map((workRequest) => (
+        this.serializeWorkRequestQueueItem(
+          workRequest,
+          triggerMessageById.get(workRequest.triggerMessageId) ?? null,
+          targetMemberById.get(workRequest.targetMemberId) ?? null
+        )
+      )),
+    };
   }
 
   async listAgentInvocations(teamRunId: string): Promise<AgentInvocation[]> {
@@ -888,6 +966,7 @@ export class TeamRunService {
         workspacePolicy: member.workspacePolicy,
         triggerPolicy: member.triggerPolicy,
         sessionPolicy: member.sessionPolicy,
+        queueManagementPolicy: member.queueManagementPolicy,
         avatar: member.avatar ?? null,
       })));
     }
@@ -906,6 +985,7 @@ export class TeamRunService {
       workspacePolicy: preset.workspacePolicy as WorkspacePolicy,
       triggerPolicy: preset.triggerPolicy as TeamMemberTriggerPolicy,
       sessionPolicy: preset.sessionPolicy as TeamMemberSessionPolicy || DEFAULT_SESSION_POLICY,
+      queueManagementPolicy: this.resolveQueueManagementPolicy(preset.queueManagementPolicy),
       avatar: preset.avatar ?? null,
     };
   }
@@ -937,6 +1017,27 @@ export class TeamRunService {
     }
   }
 
+  private async getTeamMemberOrThrow(teamRunId: string, memberId: string): Promise<PrismaTeamMember> {
+    const member = await prisma.teamMember.findFirst({ where: { id: memberId, teamRunId } });
+    if (member) {
+      return member;
+    }
+
+    await this.assertTeamRunExists(teamRunId);
+    throw new NotFoundError('TeamMember', memberId);
+  }
+
+  private resolveQueueManagementPolicy(
+    value: string | null | undefined
+  ): TeamMemberQueueManagementPolicy {
+    return value === 'team_pending' ? 'team_pending' : DEFAULT_QUEUE_MANAGEMENT_POLICY;
+  }
+
+  private contentPreview(content: string): string {
+    const compact = content.replace(/\s+/g, ' ').trim();
+    return compact.length <= 240 ? compact : `${compact.slice(0, 237)}...`;
+  }
+
   private teamRunInclude() {
     return {
       members: { orderBy: { createdAt: 'asc' as const } },
@@ -954,6 +1055,7 @@ export class TeamRunService {
       workspacePolicy: preset.workspacePolicy as WorkspacePolicy,
       triggerPolicy: preset.triggerPolicy as TeamMemberTriggerPolicy,
       sessionPolicy: preset.sessionPolicy as TeamMemberSessionPolicy || DEFAULT_SESSION_POLICY,
+      queueManagementPolicy: this.resolveQueueManagementPolicy(preset.queueManagementPolicy),
       avatar: preset.avatar ?? null,
       createdAt: toIso(preset.createdAt),
       updatedAt: toIso(preset.updatedAt),
@@ -1046,6 +1148,7 @@ export class TeamRunService {
       workspacePolicy: member.workspacePolicy as WorkspacePolicy,
       triggerPolicy: member.triggerPolicy as TeamMemberTriggerPolicy,
       sessionPolicy: member.sessionPolicy as TeamMemberSessionPolicy || DEFAULT_SESSION_POLICY,
+      queueManagementPolicy: this.resolveQueueManagementPolicy(member.queueManagementPolicy),
       avatar: member.avatar ?? null,
       status: status ?? 'IDLE',
       createdAt: toIso(member.createdAt),
@@ -1074,6 +1177,34 @@ export class TeamRunService {
       status: workRequest.status as WorkRequestStatus,
       createdAt: toIso(workRequest.createdAt),
       updatedAt: toIso(workRequest.updatedAt),
+    };
+  }
+
+  private serializeWorkRequestQueueItem(
+    workRequest: PrismaWorkRequest,
+    triggerMessage: PrismaRoomMessage | null,
+    targetMember: Pick<PrismaTeamMember, 'id' | 'name'> | null
+  ): WorkRequestQueueItem {
+    return {
+      ...this.serializeWorkRequest(workRequest),
+      triggerMessage: triggerMessage
+        ? {
+          id: triggerMessage.id,
+          senderType: triggerMessage.senderType as RoomMessageSenderType,
+          senderId: triggerMessage.senderId,
+          senderInvocationId: triggerMessage.senderInvocationId,
+          kind: triggerMessage.kind as RoomMessageKind,
+          contentPreview: this.contentPreview(triggerMessage.content),
+          createdAt: toIso(triggerMessage.createdAt),
+        }
+        : null,
+      targetMember: targetMember
+        ? {
+          id: targetMember.id,
+          name: targetMember.name,
+          label: targetMember.name,
+        }
+        : null,
     };
   }
 

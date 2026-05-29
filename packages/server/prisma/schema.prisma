@@ -59,6 +59,7 @@ model MemberPreset {
   workspacePolicy String
   triggerPolicy   String
   sessionPolicy   String   @default("new_per_request")
+  queueManagementPolicy String @default("own_only")
   avatar          String? // JSON or string ref
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -114,6 +115,7 @@ model TeamMember {
   workspacePolicy String
   triggerPolicy   String
   sessionPolicy   String   @default("new_per_request")
+  queueManagementPolicy String @default("own_only")
   avatar          String?
   status          String   @default("IDLE")
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")

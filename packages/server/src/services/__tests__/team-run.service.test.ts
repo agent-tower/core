@@ -43,6 +43,7 @@ function presetInput(name: string, aliases: string[] = [name.toLowerCase()]): Cr
     workspacePolicy: 'dedicated',
     triggerPolicy: 'MENTION_ONLY',
     sessionPolicy: 'new_per_request',
+    queueManagementPolicy: 'own_only',
     avatar: null,
   };
 }
@@ -115,6 +116,7 @@ describe('TeamRunService', () => {
     expect(preset.aliases).toEqual(['reviewer', 'review']);
     expect(preset.capabilities).toEqual(capabilities);
     expect(preset.sessionPolicy).toBe('new_per_request');
+    expect(preset.queueManagementPolicy).toBe('own_only');
   });
 
   it('preserves session policy in MemberPreset and TeamMember snapshots', async () => {
@@ -440,6 +442,174 @@ describe('TeamRunService', () => {
     expect(statuses.get(runningMember!.id)).toBe('RUNNING');
     expect(statuses.get(pendingMember!.id)).toBe('PENDING_APPROVAL');
     expect(statuses.get(queuedMember!.id)).toBe('QUEUED');
+  });
+
+  it('lists only current member pending and queued WorkRequests by default', async () => {
+    const firstPreset = await service.createMemberPreset(presetInput('First'));
+    const secondPreset = await service.createMemberPreset(presetInput('Second'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [firstPreset.id, secondPreset.id],
+    });
+    const [firstMember, secondMember] = teamRun.members ?? [];
+    expect(firstMember).toBeDefined();
+    expect(secondMember).toBeDefined();
+    const firstMessage = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        senderId: null,
+        senderInvocationId: null,
+        kind: 'chat',
+        content: 'First queued request\n\nwith more context',
+        mentions: '[]',
+        workRequestIds: '[]',
+        artifactRefs: '[]',
+        attachmentIds: '[]',
+      },
+    });
+    const secondMessage = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        senderId: null,
+        senderInvocationId: null,
+        kind: 'chat',
+        content: 'Second queued request',
+        mentions: '[]',
+        workRequestIds: '[]',
+        artifactRefs: '[]',
+        attachmentIds: '[]',
+      },
+    });
+    const firstQueued = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: firstMember!.id,
+        triggerMessageId: firstMessage.id,
+        instruction: 'First queued request',
+        status: 'QUEUED',
+      },
+    });
+    await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: firstMember!.id,
+        triggerMessageId: firstMessage.id,
+        instruction: 'Started request',
+        status: 'STARTED',
+      },
+    });
+    await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: secondMember!.id,
+        triggerMessageId: secondMessage.id,
+        instruction: 'Second queued request',
+        status: 'QUEUED',
+      },
+    });
+
+    const queue = await service.listQueuedWorkRequestsForMember(teamRun.id, firstMember!.id);
+
+    expect(queue).toMatchObject({
+      teamRunId: teamRun.id,
+      currentMemberId: firstMember!.id,
+      queueManagementPolicy: 'own_only',
+      canManageTeamRunQueue: false,
+    });
+    expect(queue.workRequests).toHaveLength(1);
+    expect(queue.workRequests[0]).toMatchObject({
+      id: firstQueued.id,
+      targetMemberId: firstMember!.id,
+      status: 'QUEUED',
+      targetMember: {
+        id: firstMember!.id,
+        name: firstMember!.name,
+        label: firstMember!.name,
+      },
+      triggerMessage: {
+        id: firstMessage.id,
+        senderType: 'user',
+        kind: 'chat',
+        contentPreview: 'First queued request with more context',
+      },
+    });
+  });
+
+  it('lists all pending and queued WorkRequests for members with team_pending queueManagementPolicy', async () => {
+    const managerPreset = await service.createMemberPreset({
+      ...presetInput('Manager'),
+      queueManagementPolicy: 'team_pending',
+    });
+    const workerPreset = await service.createMemberPreset(presetInput('Worker'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'CONFIRM',
+      memberPresetIds: [managerPreset.id, workerPreset.id],
+    });
+    const [manager, worker] = teamRun.members ?? [];
+    expect(manager).toBeDefined();
+    expect(worker).toBeDefined();
+    const message = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        senderId: null,
+        senderInvocationId: null,
+        kind: 'chat',
+        content: 'Queue visible to manager',
+        mentions: '[]',
+        workRequestIds: '[]',
+        artifactRefs: '[]',
+        attachmentIds: '[]',
+      },
+    });
+    const workerPending = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: worker!.id,
+        triggerMessageId: message.id,
+        instruction: 'Worker pending',
+        status: 'PENDING_APPROVAL',
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 1)),
+      },
+    });
+    const managerQueued = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: manager!.id,
+        triggerMessageId: message.id,
+        instruction: 'Manager queued',
+        status: 'QUEUED',
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 2)),
+      },
+    });
+
+    const queue = await service.listQueuedWorkRequestsForMember(teamRun.id, manager!.id);
+
+    expect(queue.canManageTeamRunQueue).toBe(true);
+    expect(queue.queueManagementPolicy).toBe('team_pending');
+    expect(queue.workRequests.map((request) => request.id)).toEqual([workerPending.id, managerQueued.id]);
+    expect(queue.workRequests[0]).toMatchObject({
+      targetMemberId: worker!.id,
+      targetMember: {
+        id: worker!.id,
+        name: worker!.name,
+        label: worker!.name,
+      },
+    });
   });
 
   it('creates WorkRequests only for the selected memberId when same-name members are mentioned', async () => {

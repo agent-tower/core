@@ -5,6 +5,7 @@ import type {
   Attachment,
   MemberPreset,
   TeamMemberCapabilities,
+  TeamMemberQueueManagementPolicy,
   TeamMemberSessionPolicy,
   TeamMemberTriggerPolicy,
   TeamTemplate,
@@ -49,6 +50,7 @@ interface MemberPresetFormState {
   workspacePolicy: WorkspacePolicy
   triggerPolicy: TeamMemberTriggerPolicy
   sessionPolicy: TeamMemberSessionPolicy
+  queueManagementPolicy: TeamMemberQueueManagementPolicy
   avatar: string
 }
 
@@ -115,6 +117,16 @@ const SESSION_POLICY_LABELS: Record<TeamMemberSessionPolicy, string> = {
   resume_last: '复用上次会话',
 }
 
+const QUEUE_MANAGEMENT_POLICY_OPTIONS: Array<{ value: TeamMemberQueueManagementPolicy; label: string }> = [
+  { value: 'own_only', label: '仅自己队列' },
+  { value: 'team_pending', label: '全队列待处理' },
+]
+
+const QUEUE_MANAGEMENT_POLICY_LABELS: Record<TeamMemberQueueManagementPolicy, string> = {
+  own_only: '仅自己队列',
+  team_pending: '全队列待处理',
+}
+
 function createBlankMemberPresetForm(): MemberPresetFormState {
   return {
     name: '',
@@ -125,6 +137,7 @@ function createBlankMemberPresetForm(): MemberPresetFormState {
     workspacePolicy: 'none',
     triggerPolicy: 'MENTION_ONLY',
     sessionPolicy: 'new_per_request',
+    queueManagementPolicy: 'own_only',
     avatar: '',
   }
 }
@@ -139,6 +152,7 @@ function memberPresetToForm(preset: MemberPreset): MemberPresetFormState {
     workspacePolicy: preset.workspacePolicy,
     triggerPolicy: preset.triggerPolicy,
     sessionPolicy: preset.sessionPolicy,
+    queueManagementPolicy: preset.queueManagementPolicy,
     avatar: preset.avatar ?? '',
   }
 }
@@ -483,6 +497,7 @@ export function TeamSettingsPage() {
       workspacePolicy: presetForm.workspacePolicy,
       triggerPolicy: presetForm.triggerPolicy,
       sessionPolicy: presetForm.sessionPolicy,
+      queueManagementPolicy: presetForm.queueManagementPolicy,
       avatar: normalizeAvatar(presetForm.avatar),
     }
 
@@ -746,6 +761,9 @@ export function TeamSettingsPage() {
                             <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">
                               {t(SESSION_POLICY_LABELS[preset.sessionPolicy])}
                             </span>
+                            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">
+                              {t(QUEUE_MANAGEMENT_POLICY_LABELS[preset.queueManagementPolicy])}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -919,7 +937,7 @@ export function TeamSettingsPage() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div>
                 <label className="block text-[13px] font-medium text-neutral-700 mb-1">{t('工作区策略')}</label>
                 <Select
@@ -948,6 +966,17 @@ export function TeamSettingsPage() {
                   value={presetForm.sessionPolicy}
                   onChange={(value) => updatePresetField('sessionPolicy', value as TeamMemberSessionPolicy)}
                   options={SESSION_POLICY_OPTIONS.map(option => ({
+                    value: option.value,
+                    label: t(option.label),
+                  }))}
+                />
+              </div>
+              <div>
+                <label className="block text-[13px] font-medium text-neutral-700 mb-1">{t('队列管理')}</label>
+                <Select
+                  value={presetForm.queueManagementPolicy}
+                  onChange={(value) => updatePresetField('queueManagementPolicy', value as TeamMemberQueueManagementPolicy)}
+                  options={QUEUE_MANAGEMENT_POLICY_OPTIONS.map(option => ({
                     value: option.value,
                     label: t(option.label),
                   }))}

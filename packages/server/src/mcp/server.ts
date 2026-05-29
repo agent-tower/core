@@ -39,8 +39,16 @@ const ListTeamMembersInput = z.object({
   team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
 });
 
+const ListMemberWorkRequestsInput = z.object({
+  team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
+});
+
 const WorkRequestControlInput = z.object({
   work_request_id: z.string().min(1).describe('WorkRequest ID.'),
+});
+
+const CancelWorkRequestInput = WorkRequestControlInput.extend({
+  team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
 });
 
 const StopMemberWorkInput = z.object({
@@ -111,6 +119,14 @@ function resolveCurrentTeamMemberId(context: McpContext | null, teamRunId: strin
   return null;
 }
 
+function requireCurrentTeamMemberId(context: McpContext | null, teamRunId: string): string {
+  const memberId = resolveCurrentTeamMemberId(context, teamRunId);
+  if (!memberId) {
+    throw new Error('Current TeamRun member identity is required for this tool.');
+  }
+  return memberId;
+}
+
 function formatTeamMembersForAgent(teamRunId: string, members: any[]) {
   const currentMemberId = process.env.AGENT_TOWER_TEAM_RUN_ID === teamRunId
     ? process.env.AGENT_TOWER_MEMBER_ID || null
@@ -128,6 +144,7 @@ function formatTeamMembersForAgent(teamRunId: string, members: any[]) {
       workspacePolicy: member.workspacePolicy,
       triggerPolicy: member.triggerPolicy,
       sessionPolicy: member.sessionPolicy,
+      queueManagementPolicy: member.queueManagementPolicy,
       providerId: member.providerId,
     })),
   };
@@ -181,7 +198,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
 
   server.tool(
     'list_team_members',
-    'List TeamRun members for assigning work. Returns member IDs for post_room_message mentions plus status, capabilities, workspace policy, trigger policy, and provider ID. Does not expose role prompts.',
+    'List TeamRun members for assigning work. Returns member IDs for post_room_message mentions plus status, capabilities, workspace policy, trigger policy, session policy, queue management policy, and provider ID. Does not expose role prompts.',
     ListTeamMembersInput.shape,
     async (params) => {
       try {
@@ -192,6 +209,22 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
           ...formatTeamMembersForAgent(teamRunId, members),
           currentMemberId: memberId,
         };
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (e: any) {
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'list_member_work_requests',
+    'List pending/queued TeamRun WorkRequests visible to the current member. Regular members see only requests targeting themselves; queue managers may see the TeamRun queue.',
+    ListMemberWorkRequestsInput.shape,
+    async (params) => {
+      try {
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        const memberId = requireCurrentTeamMemberId(context, teamRunId);
+        const result = await client.listMemberWorkRequests(teamRunId, memberId);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
@@ -230,10 +263,15 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
   server.tool(
     'cancel_work_request',
     'Cancel a pending or queued TeamRun WorkRequest.',
-    WorkRequestControlInput.shape,
+    CancelWorkRequestInput.shape,
     async (params) => {
       try {
-        const result = await client.cancelWorkRequest(params.work_request_id);
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        const memberId = requireCurrentTeamMemberId(context, teamRunId);
+        const result = await client.cancelWorkRequest(params.work_request_id, {
+          teamRunId,
+          requesterMemberId: memberId,
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };

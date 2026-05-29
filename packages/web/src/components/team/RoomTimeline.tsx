@@ -5,7 +5,6 @@ import {
   ArrowDown,
   ArrowUp,
   AtSign,
-  Ban,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -26,7 +25,6 @@ import { useAttachmentMetadata, useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import {
   useApproveWorkRequest,
-  useCancelWorkRequest,
   useRejectWorkRequest,
   useStopMemberWork,
 } from '@/hooks/use-team-run'
@@ -704,21 +702,17 @@ function PendingApprovalBubble({
   member,
   onApprove,
   onReject,
-  onCancel,
   isActionPending,
   isApprovePending,
   isRejectPending,
-  isCancelPending,
 }: {
   request: WorkRequest
   member?: TeamMember | null
   onApprove: () => void
   onReject: () => void
-  onCancel: () => void
   isActionPending: boolean
   isApprovePending: boolean
   isRejectPending: boolean
-  isCancelPending: boolean
 }) {
   const { t } = useI18n()
 
@@ -764,17 +758,6 @@ function PendingApprovalBubble({
             <X size={12} />
             <span>{isRejectPending ? t('Rejecting') : t('Reject')}</span>
           </Button>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            disabled={isActionPending}
-            className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800"
-            onClick={onCancel}
-          >
-            <Ban size={12} />
-            <span>{isCancelPending ? t('Cancelling') : t('Cancel')}</span>
-          </Button>
         </div>
       </div>
     </RoomMessageRow>
@@ -793,7 +776,6 @@ export function RoomTimeline({
   const { t } = useI18n()
   const approveWorkRequest = useApproveWorkRequest(teamRun.id)
   const rejectWorkRequest = useRejectWorkRequest(teamRun.id)
-  const cancelWorkRequest = useCancelWorkRequest(teamRun.id)
   const stopMemberWork = useStopMemberWork(teamRun.id)
   const [draft, setDraft] = useState('')
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false)
@@ -1058,14 +1040,11 @@ export function RoomTimeline({
       ? approveWorkRequest.error
       : rejectWorkRequest.isError
         ? rejectWorkRequest.error
-        : cancelWorkRequest.isError
-          ? cancelWorkRequest.error
-          : null
+        : null
 
   const isPendingApprovalActionPending =
     approveWorkRequest.isPending
     || rejectWorkRequest.isPending
-    || cancelWorkRequest.isPending
 
   const handleStopMember = useCallback((memberId: string, cancelQueued: boolean) => {
     stopMemberWork.mutate(
@@ -1105,7 +1084,6 @@ export function RoomTimeline({
                   const member = memberById.get(request.targetMemberId)
                   const isApprovePending = approveWorkRequest.isPending && approveWorkRequest.variables === request.id
                   const isRejectPending = rejectWorkRequest.isPending && rejectWorkRequest.variables === request.id
-                  const isCancelPending = cancelWorkRequest.isPending && cancelWorkRequest.variables === request.id
 
                   return (
                     <PendingApprovalBubble
@@ -1114,11 +1092,9 @@ export function RoomTimeline({
                       member={member}
                       onApprove={() => approveWorkRequest.mutate(request.id)}
                       onReject={() => rejectWorkRequest.mutate(request.id)}
-                      onCancel={() => cancelWorkRequest.mutate(request.id)}
                       isActionPending={isPendingApprovalActionPending}
                       isApprovePending={isApprovePending}
                       isRejectPending={isRejectPending}
-                      isCancelPending={isCancelPending}
                     />
                   )
                 }

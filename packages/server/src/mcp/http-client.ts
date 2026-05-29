@@ -150,6 +150,10 @@ export class AgentTowerClient {
     return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/members`);
   }
 
+  async listMemberWorkRequests(teamRunId: string, memberId: string) {
+    return this.request<any>('GET', `/api/team-runs/${teamRunId}/members/${memberId}/work-requests`);
+  }
+
   async approveWorkRequest(workRequestId: string) {
     return this.request<any>('POST', `/api/team-runs/work-requests/${workRequestId}/approve`);
   }
@@ -158,8 +162,11 @@ export class AgentTowerClient {
     return this.request<any>('POST', `/api/team-runs/work-requests/${workRequestId}/reject`);
   }
 
-  async cancelWorkRequest(workRequestId: string) {
-    return this.request<any>('POST', `/api/team-runs/work-requests/${workRequestId}/cancel`);
+  async cancelWorkRequest(workRequestId: string, input: {
+    teamRunId?: string;
+    requesterMemberId?: string;
+  } = {}) {
+    return this.request<any>('POST', `/api/team-runs/work-requests/${workRequestId}/cancel`, input);
   }
 
   async stopMemberWork(teamRunId: string, memberId: string, input: {

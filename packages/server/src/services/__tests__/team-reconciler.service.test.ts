@@ -168,7 +168,7 @@ function createRouteSchedulerMock(): RouteSchedulerMock {
     where: { id: workRequestId },
     data: { status: 'REJECTED' },
   }).then(asWorkRequest));
-  scheduler.cancelWorkRequest = vi.fn(async (workRequestId: string) => prisma.workRequest.update({
+  scheduler.cancelWorkRequest = vi.fn(async (workRequestId: string, _options: unknown) => prisma.workRequest.update({
     where: { id: workRequestId },
     data: { status: 'CANCELLED' },
   }).then(asWorkRequest));
@@ -230,6 +230,7 @@ async function createFixture(options: {
         workspacePolicy: 'shared',
         triggerPolicy: options.triggerPolicies?.[index] ?? 'MENTION_ONLY',
         sessionPolicy: 'new_per_request',
+        queueManagementPolicy: 'own_only',
         avatar: null,
       },
     }));
@@ -253,6 +254,7 @@ async function createMemberPreset(options: {
       workspacePolicy: 'shared',
       triggerPolicy: options.triggerPolicy ?? 'USER_MESSAGES',
       sessionPolicy: 'new_per_request',
+      queueManagementPolicy: 'own_only',
       avatar: null,
     },
   });
@@ -1035,11 +1037,24 @@ describe('TeamReconcilerService', () => {
             },
           },
           {
+            name: 'list_member_work_requests',
+            arguments: {
+              team_run_id: other.teamRun.id,
+            },
+          },
+          {
             name: 'stop_member_work',
             arguments: {
               team_run_id: other.teamRun.id,
               member_id: other.members[0]!.id,
               cancel_queued: true,
+            },
+          },
+          {
+            name: 'cancel_work_request',
+            arguments: {
+              team_run_id: other.teamRun.id,
+              work_request_id: request.id,
             },
           },
         ];
@@ -1056,6 +1071,129 @@ describe('TeamReconcilerService', () => {
 
       await expect(prisma.roomMessage.count()).resolves.toBe(0);
       expect(routeScheduler.stopMemberWork).not.toHaveBeenCalled();
+    } finally {
+      restoreTeamRunEnv(previousEnv);
+      await app.close();
+    }
+  });
+
+  it('lists and cancels current member queued WorkRequests through MCP', async () => {
+    const previousEnv = captureTeamRunEnv();
+    const { teamRun, members } = await createFixture({ memberCount: 2 });
+    const triggerMessage = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        senderId: null,
+        senderInvocationId: null,
+        kind: 'chat',
+        content: 'Please handle this queued request',
+        mentions: '[]',
+        workRequestIds: '[]',
+        artifactRefs: '[]',
+        attachmentIds: '[]',
+      },
+    });
+    const ownRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+      instruction: 'Own queued request',
+    });
+    await prisma.workRequest.update({
+      where: { id: ownRequest.id },
+      data: { triggerMessageId: triggerMessage.id },
+    });
+    const otherRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'QUEUED',
+      instruction: 'Other queued request',
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      setTeamRunEnv({
+        AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
+        AGENT_TOWER_MEMBER_ID: members[0]!.id,
+        AGENT_TOWER_INVOCATION_ID: undefined,
+        AGENT_TOWER_SESSION_ID: undefined,
+      });
+
+      await app.register(teamRunRoutes, { prefix: '/api' });
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const address = app.server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to start test server');
+      }
+
+      const server = await createMcpServer(`http://127.0.0.1:${address.port}`);
+      const client = new Client({ name: 'team-run-queue-test-client', version: '0.1.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        const listResult = await client.callTool({
+          name: 'list_member_work_requests',
+          arguments: {},
+        });
+        expect(listResult.isError, getMcpToolText(listResult)).not.toBe(true);
+        const queue = JSON.parse(getMcpToolText(listResult)) as {
+          currentMemberId: string;
+          queueManagementPolicy: string;
+          canManageTeamRunQueue: boolean;
+          workRequests: Array<{
+            id: string;
+            targetMemberId: string;
+            targetMember: { id: string; name: string; label: string } | null;
+            triggerMessage: { contentPreview: string };
+          }>;
+        };
+        expect(queue).toMatchObject({
+          currentMemberId: members[0]!.id,
+          queueManagementPolicy: 'own_only',
+          canManageTeamRunQueue: false,
+        });
+        expect(queue.workRequests).toHaveLength(1);
+        expect(queue.workRequests[0]).toMatchObject({
+          id: ownRequest.id,
+          targetMemberId: members[0]!.id,
+          targetMember: {
+            id: members[0]!.id,
+            name: members[0]!.name,
+            label: members[0]!.name,
+          },
+          triggerMessage: { contentPreview: 'Please handle this queued request' },
+        });
+
+        const cancelResult = await client.callTool({
+          name: 'cancel_work_request',
+          arguments: { work_request_id: ownRequest.id },
+        });
+        expect(cancelResult.isError, getMcpToolText(cancelResult)).not.toBe(true);
+        expect(JSON.parse(getMcpToolText(cancelResult))).toMatchObject({
+          id: ownRequest.id,
+          status: 'CANCELLED',
+        });
+
+        const forbiddenCancel = await client.callTool({
+          name: 'cancel_work_request',
+          arguments: { work_request_id: otherRequest.id },
+        });
+        expect(forbiddenCancel.isError).toBe(true);
+        expect(getMcpToolText(forbiddenCancel)).toContain('FORBIDDEN');
+      } finally {
+        await client.close();
+        await server.close();
+      }
+
+      await expect(prisma.workRequest.findUnique({ where: { id: ownRequest.id } })).resolves.toMatchObject({
+        status: 'CANCELLED',
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: otherRequest.id } })).resolves.toMatchObject({
+        status: 'QUEUED',
+      });
     } finally {
       restoreTeamRunEnv(previousEnv);
       await app.close();
@@ -1122,6 +1260,84 @@ describe('TeamReconcilerService', () => {
       });
     } finally {
       restoreTeamRunEnv(previousEnv);
+      await app.close();
+    }
+  });
+
+  it('enforces requester member scope for REST WorkRequest cancellation', async () => {
+    const { teamRun, members } = await createFixture({ memberCount: 3 });
+    await prisma.teamMember.update({
+      where: { id: members[2]!.id },
+      data: { queueManagementPolicy: 'team_pending' },
+    });
+    const ownQueued = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+      instruction: 'Own queued request',
+    });
+    const otherQueued = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'QUEUED',
+      instruction: 'Other queued request',
+    });
+    const managerQueued = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'QUEUED',
+      instruction: 'Manager cancellable request',
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api' });
+
+      const anonymousCancel = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/work-requests/${ownQueued.id}/cancel`,
+        payload: {},
+      });
+      expect(anonymousCancel.statusCode).toBe(400);
+      expect(anonymousCancel.json()).toMatchObject({ code: 'VALIDATION_ERROR' });
+
+      const ownCancel = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/work-requests/${ownQueued.id}/cancel`,
+        payload: {
+          teamRunId: teamRun.id,
+          requesterMemberId: members[0]!.id,
+        },
+      });
+      expect(ownCancel.statusCode).toBe(200);
+      expect(ownCancel.json()).toMatchObject({ id: ownQueued.id, status: 'CANCELLED' });
+
+      const forbiddenCancel = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/work-requests/${otherQueued.id}/cancel`,
+        payload: {
+          teamRunId: teamRun.id,
+          requesterMemberId: members[0]!.id,
+        },
+      });
+      expect(forbiddenCancel.statusCode).toBe(403);
+      expect(forbiddenCancel.json()).toMatchObject({ code: 'FORBIDDEN' });
+
+      const managerCancel = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/work-requests/${managerQueued.id}/cancel`,
+        payload: {
+          teamRunId: teamRun.id,
+          requesterMemberId: members[2]!.id,
+        },
+      });
+      expect(managerCancel.statusCode).toBe(200);
+      expect(managerCancel.json()).toMatchObject({ id: managerQueued.id, status: 'CANCELLED' });
+
+      await expect(prisma.workRequest.findUnique({ where: { id: otherQueued.id } })).resolves.toMatchObject({
+        status: 'QUEUED',
+      });
+    } finally {
       await app.close();
     }
   });

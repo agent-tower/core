@@ -6,6 +6,7 @@ import type {
   TeamRunInvalidationReason,
   TeamRunInvalidationScope,
   TeamMemberCapabilities,
+  TeamMemberQueueManagementPolicy,
   WorkRequest,
   WorkRequestRequesterType,
   WorkRequestStatus,
@@ -44,6 +45,11 @@ export interface StopMemberWorkResult {
   cancelledInvocationIds: string[];
   cancelledWorkRequestIds: string[];
   startedInvocations: AgentInvocation[];
+}
+
+export interface CancelWorkRequestOptions {
+  teamRunId: string;
+  requesterMemberId: string;
 }
 
 type SchedulerTeamRun = {
@@ -115,6 +121,7 @@ const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
   readDiff: false,
   mergeWorkspace: false,
 };
+const DEFAULT_QUEUE_MANAGEMENT_POLICY: TeamMemberQueueManagementPolicy = 'own_only';
 
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
   if (value == null || value === '') {
@@ -478,7 +485,24 @@ export class TeamSchedulerService {
     return workRequest;
   }
 
-  async cancelWorkRequest(workRequestId: string): Promise<WorkRequest> {
+  async cancelWorkRequest(
+    workRequestId: string,
+    options: CancelWorkRequestOptions
+  ): Promise<WorkRequest> {
+    if (!options?.teamRunId || !options.requesterMemberId) {
+      throw new ServiceError(
+        'teamRunId and requesterMemberId are required when cancelling a TeamRun WorkRequest',
+        'VALIDATION_ERROR',
+        400
+      );
+    }
+
+    const current = await this.getWorkRequestOrThrow(workRequestId);
+    if (current.teamRunId !== options.teamRunId) {
+      throw new NotFoundError('WorkRequest', workRequestId);
+    }
+    await this.assertMemberCanCancelWorkRequest(current, options.requesterMemberId);
+
     const workRequest = await this.transitionWorkRequestStatus(
       workRequestId,
       'cancel',
@@ -770,6 +794,32 @@ export class TeamSchedulerService {
       throw new NotFoundError('TeamRun', teamRunId);
     }
     throw new NotFoundError('TeamMember', memberId);
+  }
+
+  private async assertMemberCanCancelWorkRequest(
+    workRequest: PrismaWorkRequest,
+    requesterMemberId: string
+  ): Promise<void> {
+    if (workRequest.targetMemberId === requesterMemberId) {
+      return;
+    }
+
+    const requester = await this.getTeamMemberOrThrow(workRequest.teamRunId, requesterMemberId);
+    if (this.resolveQueueManagementPolicy(requester.queueManagementPolicy) === 'team_pending') {
+      return;
+    }
+
+    throw new ServiceError(
+      'Current TeamRun member cannot cancel WorkRequest for another member',
+      'FORBIDDEN',
+      403
+    );
+  }
+
+  private resolveQueueManagementPolicy(
+    value: string | null | undefined
+  ): TeamMemberQueueManagementPolicy {
+    return value === 'team_pending' ? 'team_pending' : DEFAULT_QUEUE_MANAGEMENT_POLICY;
   }
 
   private async transitionWorkRequestStatus(

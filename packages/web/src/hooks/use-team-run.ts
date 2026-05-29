@@ -10,6 +10,7 @@ import type {
   RoomMessageKind,
   TeamTemplate,
   TeamMemberCapabilities,
+  TeamMemberQueueManagementPolicy,
   WorkspacePolicy,
   TeamMemberSessionPolicy,
   TeamMemberTriggerPolicy,
@@ -70,6 +71,7 @@ export type CreateMemberPresetInput = {
   workspacePolicy: WorkspacePolicy
   triggerPolicy: TeamMemberTriggerPolicy
   sessionPolicy: TeamMemberSessionPolicy
+  queueManagementPolicy: TeamMemberQueueManagementPolicy
   avatar?: string | null
 }
 
@@ -95,6 +97,11 @@ export type CreateTaskTeamRunInput = {
 export type StopMemberWorkInput = {
   memberId: string
   cancelQueued?: boolean
+}
+
+export type CancelWorkRequestInput = {
+  workRequestId: string
+  requesterMemberId: string
 }
 
 type ApproveWorkRequestResponse = {
@@ -400,8 +407,11 @@ export function useCancelWorkRequest(teamRunId: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (workRequestId: string) =>
-      apiClient.post<WorkRequest>(`/team-runs/work-requests/${workRequestId}/cancel`),
+    mutationFn: ({ workRequestId, requesterMemberId }: CancelWorkRequestInput) =>
+      apiClient.post<WorkRequest>(`/team-runs/work-requests/${workRequestId}/cancel`, {
+        teamRunId,
+        requesterMemberId,
+      }),
     onSuccess: () => {
       invalidateTeamRunActionQueries(queryClient, teamRunId)
     },
