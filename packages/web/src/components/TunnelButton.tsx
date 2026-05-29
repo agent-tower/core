@@ -1,25 +1,139 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Globe, Loader2, Copy, Check, X, Shield } from 'lucide-react'
+import { Globe, Loader2, Copy, Check, X, Shield, RefreshCw, AlertTriangle } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useI18n } from '@/lib/i18n'
-import { useTunnelStatus, useStartTunnel, useStopTunnel } from '@/hooks/use-tunnel'
+import { useTunnelStatus, useStartTunnel, useStopTunnel, useRegenerateTunnel, type TunnelStatus } from '@/hooks/use-tunnel'
+
+function toneForStatus(status: TunnelStatus | undefined) {
+  if (!status || status.status === 'stopped') {
+    return {
+      button: 'text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100',
+      dot: '',
+      label: 'Share via tunnel',
+      icon: 'idle' as const,
+    }
+  }
+
+  switch (status.status) {
+    case 'healthy':
+      return {
+        button: 'text-emerald-600 hover:bg-emerald-50',
+        dot: 'bg-emerald-500',
+        label: 'Tunnel healthy',
+        icon: 'ok' as const,
+      }
+    case 'checking':
+    case 'degraded':
+    case 'localUnhealthy':
+    case 'linkReplaced':
+      return {
+        button: 'text-amber-600 hover:bg-amber-50',
+        dot: 'bg-amber-500',
+        label: 'Tunnel needs attention',
+        icon: 'warn' as const,
+      }
+    case 'exited':
+    case 'error':
+      return {
+        button: 'text-red-600 hover:bg-red-50',
+        dot: 'bg-red-500',
+        label: 'Tunnel unavailable',
+        icon: 'error' as const,
+      }
+    case 'starting':
+      return {
+        button: 'text-amber-600 hover:bg-amber-50',
+        dot: 'bg-amber-500',
+        label: 'Tunnel starting',
+        icon: 'loading' as const,
+      }
+  }
+}
+
+function statusText(status: TunnelStatus | undefined): string {
+  if (!status || status.status === 'stopped') return 'Tunnel is off'
+
+  switch (status.status) {
+    case 'healthy':
+      return 'Tunnel healthy'
+    case 'checking':
+      return 'Checking tunnel health'
+    case 'degraded':
+      return 'Observing original link'
+    case 'localUnhealthy':
+      return 'Local service unavailable'
+    case 'exited':
+      return 'Tunnel process exited'
+    case 'error':
+      return 'Tunnel error'
+    case 'linkReplaced':
+      return 'New link generated'
+    case 'starting':
+      return 'Tunnel starting'
+  }
+}
+
+function statusDescription(status: TunnelStatus | undefined): string {
+  if (!status || status.status === 'stopped') return 'Start a temporary Quick Tunnel when you need to share this Agent Tower session.'
+
+  switch (status.status) {
+    case 'healthy':
+      return 'The local Agent Tower service and the current public URL are both reachable.'
+    case 'checking':
+      return 'The tunnel URL exists. Agent Tower is checking whether the original public URL is reachable.'
+    case 'degraded':
+      return 'The original public URL is currently unreachable. Agent Tower is watching for it to recover and will not generate a new link automatically.'
+    case 'localUnhealthy':
+      return 'The local Agent Tower target is not responding, so the tunnel cannot be considered healthy.'
+    case 'exited':
+      return 'The tunnel process has exited. The old Quick Tunnel link is unlikely to recover.'
+    case 'error':
+      return 'The tunnel reported an error. Check the diagnostics before generating a new link.'
+    case 'linkReplaced':
+      return 'A new Quick Tunnel link was generated. The old link and token are no longer valid.'
+    case 'starting':
+      return 'Agent Tower is asking Cloudflare Quick Tunnel for a temporary public URL.'
+  }
+}
+
+function relativeTime(value: string | null | undefined): string {
+  if (!value) return 'Never'
+  const then = new Date(value).getTime()
+  if (!Number.isFinite(then)) return value
+
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000))
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.round(hours / 24)}d ago`
+}
 
 export function TunnelButton() {
   const { t } = useI18n()
   const { data: status } = useTunnelStatus()
   const startTunnel = useStartTunnel()
   const stopTunnel = useStopTunnel()
+  const regenerateTunnel = useRegenerateTunnel()
   const [showPopover, setShowPopover] = useState(false)
   const [copied, setCopied] = useState<'url' | 'token' | null>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [popoverPos, setPopoverPos] = useState({ top: 0, right: 0 })
   const [showToken, setShowToken] = useState(false)
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false)
 
-  const isRunning = status?.running ?? false
-  const isLoading = startTunnel.isPending
+  const isActive = status?.status !== undefined && status.status !== 'stopped'
+  const isLoading = startTunnel.isPending || status?.status === 'starting'
+  const isRegenerating = regenerateTunnel.isPending
   const shareableUrl = status?.shareableUrl
   const token = status?.token
+  const tone = toneForStatus(status)
+  const currentStatusText = statusText(status)
+  const remoteError = status?.lastRemoteError
+  const localError = status?.lastLocalError
+  const failedReason = localError || remoteError || status?.lastError
 
   useEffect(() => {
     if (showPopover && buttonRef.current) {
@@ -32,14 +146,14 @@ export function TunnelButton() {
   }, [showPopover])
 
   const handleToggle = useCallback(() => {
-    if (isRunning) {
+    if (isActive) {
       setShowPopover(true)
     } else {
       startTunnel.mutate(undefined, {
         onSuccess: () => setShowPopover(true),
       })
     }
-  }, [isRunning, startTunnel])
+  }, [isActive, startTunnel])
 
   const handleCopyUrl = useCallback(() => {
     if (!shareableUrl) return
@@ -59,7 +173,17 @@ export function TunnelButton() {
     stopTunnel.mutate()
     setShowPopover(false)
     setShowToken(false)
+    setConfirmRegenerate(false)
   }, [stopTunnel])
+
+  const handleRegenerate = useCallback(() => {
+    regenerateTunnel.mutate(undefined, {
+      onSuccess: () => {
+        setConfirmRegenerate(false)
+        setShowPopover(true)
+      },
+    })
+  }, [regenerateTunnel])
 
   return (
     <div className="relative">
@@ -67,38 +191,45 @@ export function TunnelButton() {
         ref={buttonRef}
         onClick={handleToggle}
         disabled={isLoading}
-        className={`p-1.5 rounded-md transition-colors ${
-          isRunning
-            ? 'text-emerald-600 hover:bg-emerald-50'
-            : 'text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100'
-        }`}
-        title={isRunning ? t('Tunnel active') : t('Share via tunnel')}
+        className={`p-1.5 rounded-md transition-colors ${tone.button}`}
+        title={t(tone.label)}
       >
         {isLoading ? (
           <Loader2 size={16} className="animate-spin" />
+        ) : tone.icon === 'warn' ? (
+          <AlertTriangle size={16} />
         ) : (
           <Globe size={16} />
         )}
       </button>
 
-      {/* 运行中的小绿点 */}
-      {isRunning && !isLoading && (
-        <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-emerald-500 rounded-full" />
+      {isActive && !isLoading && (
+        <span className={`absolute top-0.5 right-0.5 w-2 h-2 ${tone.dot} rounded-full`} />
       )}
 
-      {/* Portal popover — 脱离 header 的 stacking context */}
-      {showPopover && isRunning && createPortal(
+      {showPopover && isActive && createPortal(
         <>
           <div className="fixed inset-0 z-[100]" onClick={() => setShowPopover(false)} />
           <div
-            className="fixed z-[101] w-80 bg-white rounded-lg shadow-lg border border-neutral-200 p-3"
+            className="fixed z-[101] w-96 max-w-[calc(100vw-1rem)] bg-white rounded-lg shadow-lg border border-neutral-200 p-3"
             style={{ top: popoverPos.top, right: popoverPos.right }}
           >
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-emerald-600 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
-                {t('Tunnel Active')}
-              </span>
+            <div className="flex items-start justify-between mb-2">
+              <div>
+                <span className={`text-xs font-medium flex items-center gap-1.5 ${
+                  status?.status === 'healthy'
+                    ? 'text-emerald-600'
+                    : status?.status === 'exited' || status?.status === 'error'
+                      ? 'text-red-600'
+                      : 'text-amber-600'
+                }`}>
+                  <span className={`w-1.5 h-1.5 ${tone.dot} rounded-full inline-block`} />
+                  {t(currentStatusText)}
+                </span>
+                <p className="mt-1 text-xs text-neutral-500 leading-relaxed">
+                  {t(statusDescription(status))}
+                </p>
+              </div>
               <button
                 onClick={() => setShowPopover(false)}
                 className="p-0.5 text-neutral-400 hover:text-neutral-600 rounded"
@@ -107,39 +238,65 @@ export function TunnelButton() {
               </button>
             </div>
 
-            {/* 安全提示 */}
             {token && (
-              <div className="flex items-center gap-1.5 mb-2 px-2 py-1 bg-emerald-50 rounded text-xs text-emerald-700">
+              <div className="flex items-center gap-1.5 mb-2 px-2 py-1 bg-neutral-50 rounded text-xs text-neutral-700">
                 <Shield size={12} />
                 <span>{t('Token protected')}</span>
               </div>
             )}
 
-            {/* QR 码（使用含 token 的分享链接） */}
             {shareableUrl && (
               <div className="flex justify-center py-3">
                 <QRCodeSVG value={shareableUrl} size={160} />
               </div>
             )}
 
-            {/* 分享链接（含 token） */}
             <div className="flex items-center gap-2">
               <input
                 readOnly
                 value={shareableUrl ?? status?.url ?? ''}
-                className="flex-1 px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-md text-neutral-700 select-all"
+                className="flex-1 min-w-0 px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-md text-neutral-700 select-all"
                 onFocus={e => e.target.select()}
               />
               <button
                 onClick={handleCopyUrl}
-                className="p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors"
+                disabled={!shareableUrl}
+                className="p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors disabled:opacity-40"
                 title={t('Copy shareable link')}
               >
                 {copied === 'url' ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
               </button>
             </div>
 
-            {/* Token 展开区域 */}
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-md border border-neutral-200 px-2 py-1.5">
+                <div className="text-neutral-500">{t('Last checked')}</div>
+                <div className="mt-0.5 text-neutral-800">{relativeTime(status?.lastCheckedAt)}</div>
+              </div>
+              <div className="rounded-md border border-neutral-200 px-2 py-1.5">
+                <div className="text-neutral-500">{t('Last healthy')}</div>
+                <div className="mt-0.5 text-neutral-800">{relativeTime(status?.lastHealthyAt)}</div>
+              </div>
+            </div>
+
+            {failedReason && (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                {failedReason}
+              </div>
+            )}
+
+            {status?.status === 'degraded' && (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                {t('Agent Tower is keeping the same URL and waiting for Cloudflare Quick Tunnel to recover.')}
+              </div>
+            )}
+
+            {status?.status === 'linkReplaced' && (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                {t('The previous tunnel link and token are no longer valid.')}
+              </div>
+            )}
+
             {token && (
               <div className="mt-2">
                 <button
@@ -150,7 +307,7 @@ export function TunnelButton() {
                 </button>
                 {showToken && (
                   <div className="flex items-center gap-2 mt-1">
-                    <code className="flex-1 px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-md text-neutral-600 break-all">
+                    <code className="flex-1 min-w-0 px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-md text-neutral-600 break-all">
                       {token}
                     </code>
                     <button
@@ -163,6 +320,38 @@ export function TunnelButton() {
                   </div>
                 )}
               </div>
+            )}
+
+            {confirmRegenerate && (
+              <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                <div>{t('Generating a new link will invalidate the current link. People using the old URL must receive the new one.')}</div>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    onClick={() => setConfirmRegenerate(false)}
+                    className="flex-1 px-2 py-1 rounded-md bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50"
+                  >
+                    {t('Cancel')}
+                  </button>
+                  <button
+                    onClick={handleRegenerate}
+                    disabled={isRegenerating}
+                    className="flex-1 px-2 py-1 rounded-md bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {isRegenerating ? t('Generating...') : t('Regenerate link')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!confirmRegenerate && (
+              <button
+                onClick={() => setConfirmRegenerate(true)}
+                disabled={isRegenerating || status?.canRegenerate === false}
+                className="mt-3 w-full px-3 py-1.5 text-xs text-amber-700 hover:bg-amber-50 rounded-md transition-colors disabled:opacity-40 flex items-center justify-center gap-1.5"
+              >
+                <RefreshCw size={13} />
+                {t('Regenerate link')}
+              </button>
             )}
 
             <button

@@ -115,6 +115,46 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Tunnel active': '隧道已启用',
     'Share via tunnel': '通过隧道分享',
     'Tunnel Active': '隧道已启用',
+    'Tunnel healthy': '隧道健康',
+    'Tunnel needs attention': '隧道需要注意',
+    'Tunnel unavailable': '隧道不可用',
+    'Tunnel starting': '隧道启动中',
+    'Tunnel is off': '隧道未开启',
+    'Checking tunnel health': '正在检查隧道健康',
+    'Observing original link': '正在观察原链接',
+    'Local service unavailable': '本地服务不可用',
+    'Tunnel process exited': '隧道进程已退出',
+    'Tunnel error': '隧道错误',
+    'New link generated': '新链接已生成',
+    'Start a temporary Quick Tunnel when you need to share this Agent Tower session.':
+      '需要分享当前 Agent Tower 会话时，可以启动一个临时 Quick Tunnel。',
+    'The local Agent Tower service and the current public URL are both reachable.':
+      '本地 Agent Tower 服务和当前公网链接都可访问。',
+    'The tunnel URL exists. Agent Tower is checking whether the original public URL is reachable.':
+      '隧道链接已生成，Agent Tower 正在检查原公网链接是否可访问。',
+    'The original public URL is currently unreachable. Agent Tower is watching for it to recover and will not generate a new link automatically.':
+      '原公网链接当前不可访问。Agent Tower 正在观察它是否恢复，不会自动生成新链接。',
+    'The local Agent Tower target is not responding, so the tunnel cannot be considered healthy.':
+      '本地 Agent Tower 目标没有响应，因此隧道不能视为健康。',
+    'The tunnel process has exited. The old Quick Tunnel link is unlikely to recover.':
+      '隧道进程已退出，旧 Quick Tunnel 链接大概率无法恢复。',
+    'The tunnel reported an error. Check the diagnostics before generating a new link.':
+      '隧道报告了错误。生成新链接前请先查看诊断信息。',
+    'A new Quick Tunnel link was generated. The old link and token are no longer valid.':
+      '已生成新的 Quick Tunnel 链接。旧链接和 token 已失效。',
+    'Agent Tower is asking Cloudflare Quick Tunnel for a temporary public URL.':
+      'Agent Tower 正在向 Cloudflare Quick Tunnel 申请临时公网链接。',
+    'Last checked': '上次检查',
+    'Last healthy': '上次健康',
+    'Never': '从未',
+    'Agent Tower is keeping the same URL and waiting for Cloudflare Quick Tunnel to recover.':
+      'Agent Tower 会保留同一个 URL，并等待 Cloudflare Quick Tunnel 自行恢复。',
+    'The previous tunnel link and token are no longer valid.':
+      '之前的隧道链接和 token 已不再有效。',
+    'Generating a new link will invalidate the current link. People using the old URL must receive the new one.':
+      '生成新链接会使当前链接失效。正在使用旧 URL 的人需要收到新链接。',
+    'Regenerate link': '重新生成链接',
+    'Generating...': '生成中...',
     'Token protected': '受 Token 保护',
     'Copy shareable link': '复制分享链接',
     'Hide token': '隐藏 Token',

@@ -22,6 +22,8 @@ vi.mock('./services/tunnel.service.js', () => ({
   TunnelService: {
     isRunning: vi.fn(() => false),
     validateToken: vi.fn(() => true),
+    validateHealthCheck: vi.fn(() => false),
+    getHealthResponse: vi.fn(() => ({ ok: true })),
     stop: vi.fn(),
   },
 }))

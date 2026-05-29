@@ -51,6 +51,8 @@ export async function tunnelAuthHook(
   const url = request.url;
   if (url.startsWith('/assets/') || url === '/vite.svg' || url === '/favicon.ico') return;
 
+  if (url.startsWith('/api/tunnel/health')) return;
+
   const sessionToken = request.cookies[TUNNEL_SESSION_COOKIE_NAME];
   if (sessionToken && TunnelService.validateToken(sessionToken)) {
     return;

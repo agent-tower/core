@@ -16,6 +16,14 @@ export async function tunnelRoutes(app: FastifyInstance) {
     };
   });
 
+  app.get<{ Querystring: { check?: string; generation?: string } }>('/tunnel/health', async (request, reply) => {
+    if (!TunnelService.validateHealthCheck(request.query.check, request.query.generation)) {
+      return reply.code(404).send({ error: 'Not Found' });
+    }
+
+    return TunnelService.getHealthResponse();
+  });
+
   // 前端启动时用 query token 换取 session cookie（主要覆盖 dev + Vite 首页）
   app.post('/tunnel/bootstrap', async () => ({ ok: true }));
 
@@ -30,6 +38,20 @@ export async function tunnelRoutes(app: FastifyInstance) {
       return { url, token, shareableUrl: `${url}?token=${token}` };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start tunnel';
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  app.post<{ Body: { port?: number } }>('/tunnel/regenerate', async (request, reply) => {
+    try {
+      const port = request.body?.port
+        ?? (typeof app.server.address() === 'object' && app.server.address()
+          ? (app.server.address() as { port: number }).port
+          : 0);
+      const { url, token } = await TunnelService.regenerate(port);
+      return { url, token, shareableUrl: `${url}?token=${token}` };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to regenerate tunnel';
       return reply.code(500).send({ error: message });
     }
   });
