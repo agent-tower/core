@@ -238,6 +238,26 @@ async function createFixture(options: {
   return { project, task, workspace, teamRun, members };
 }
 
+async function createMemberPreset(options: {
+  name?: string;
+  triggerPolicy?: 'MENTION_ONLY' | 'USER_MESSAGES';
+} = {}) {
+  const name = options.name ?? 'Leader';
+  return prisma.memberPreset.create({
+    data: {
+      name,
+      aliases: stringifyJson([name.toLowerCase()]),
+      providerId: `provider-${name.toLowerCase()}`,
+      rolePrompt: `${name} role`,
+      capabilities: stringifyJson(capabilities),
+      workspacePolicy: 'shared',
+      triggerPolicy: options.triggerPolicy ?? 'USER_MESSAGES',
+      sessionPolicy: 'new_per_request',
+      avatar: null,
+    },
+  });
+}
+
 async function createWorkRequest(options: {
   teamRunId: string;
   targetMemberId: string;
@@ -347,6 +367,9 @@ describe('TeamReconcilerService', () => {
     await prisma.roomMessage.deleteMany();
     await prisma.teamMember.deleteMany();
     await prisma.teamRun.deleteMany();
+    await prisma.teamTemplateMember.deleteMany();
+    await prisma.teamTemplate.deleteMany();
+    await prisma.memberPreset.deleteMany();
     await prisma.session.deleteMany();
     await prisma.workspace.deleteMany();
     await prisma.task.deleteMany();
@@ -689,24 +712,30 @@ describe('TeamReconcilerService', () => {
         senderId: members[0]!.id,
         senderInvocationId: invocation.id,
       });
-      const createdRequest = await prisma.workRequest.findFirst({
-        where: {
-          teamRunId: teamRun.id,
-          triggerMessageId: message.id,
-          targetMemberId: members[1]!.id,
-        },
+      let createdRequestId = '';
+      await vi.waitFor(async () => {
+        const createdRequest = await prisma.workRequest.findFirst({
+          where: {
+            teamRunId: teamRun.id,
+            triggerMessageId: message.id,
+            targetMemberId: members[1]!.id,
+          },
+        });
+        expect(createdRequest).toMatchObject({
+          requesterType: 'agent',
+          requesterMemberId: members[0]!.id,
+          status: 'STARTED',
+        });
+        createdRequestId = createdRequest!.id;
       });
-      expect(createdRequest).toMatchObject({
-        requesterType: 'agent',
-        requesterMemberId: members[0]!.id,
-        status: 'STARTED',
-      });
-      await expect(prisma.agentInvocation.findFirst({
-        where: { workRequestId: createdRequest!.id },
-      })).resolves.toMatchObject({
-        memberId: members[1]!.id,
-        sessionId: null,
-        status: 'FAILED',
+      await vi.waitFor(async () => {
+        await expect(prisma.agentInvocation.findFirst({
+          where: { workRequestId: createdRequestId },
+        })).resolves.toMatchObject({
+          memberId: members[1]!.id,
+          sessionId: null,
+          status: 'FAILED',
+        });
       });
     } finally {
       if (previousTeamRunId === undefined) {
@@ -804,24 +833,30 @@ describe('TeamReconcilerService', () => {
         senderId: members[0]!.id,
         senderInvocationId: invocation.id,
       });
-      const createdRequest = await prisma.workRequest.findFirst({
-        where: {
-          teamRunId: teamRun.id,
-          triggerMessageId: message.id,
-          targetMemberId: members[1]!.id,
-        },
+      let createdRequestId = '';
+      await vi.waitFor(async () => {
+        const createdRequest = await prisma.workRequest.findFirst({
+          where: {
+            teamRunId: teamRun.id,
+            triggerMessageId: message.id,
+            targetMemberId: members[1]!.id,
+          },
+        });
+        expect(createdRequest).toMatchObject({
+          requesterType: 'agent',
+          requesterMemberId: members[0]!.id,
+          status: 'STARTED',
+        });
+        createdRequestId = createdRequest!.id;
       });
-      expect(createdRequest).toMatchObject({
-        requesterType: 'agent',
-        requesterMemberId: members[0]!.id,
-        status: 'STARTED',
-      });
-      await expect(prisma.agentInvocation.findFirst({
-        where: { workRequestId: createdRequest!.id },
-      })).resolves.toMatchObject({
-        memberId: members[1]!.id,
-        sessionId: null,
-        status: 'FAILED',
+      await vi.waitFor(async () => {
+        await expect(prisma.agentInvocation.findFirst({
+          where: { workRequestId: createdRequestId },
+        })).resolves.toMatchObject({
+          memberId: members[1]!.id,
+          sessionId: null,
+          status: 'FAILED',
+        });
       });
     } finally {
       if (previousTeamRunId === undefined) {
@@ -1140,6 +1175,508 @@ describe('TeamReconcilerService', () => {
         expect(startedTeamRunIds).toEqual([teamRun.id]);
       });
     } finally {
+      await app.close();
+    }
+  });
+
+  it('creates an initial Team Room message without WorkRequests for unmentioned MENTION_ONLY members', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Initial message project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Build CSV import',
+        description: 'Parse uploaded files and show validation errors.',
+        projectId: project.id,
+      },
+    });
+    const implementerPreset = await createMemberPreset({ name: 'Implementer', triggerPolicy: 'MENTION_ONLY' });
+    const reviewerPreset = await createMemberPreset({ name: 'Reviewer', triggerPolicy: 'MENTION_ONLY' });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [implementerPreset.id, reviewerPreset.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const teamRun = response.json() as {
+        id: string;
+        members: Array<{ id: string; name: string }>;
+        messages: Array<{ id: string; content: string; senderType: string; kind: string; mentions: unknown[]; workRequestIds: string[] }>;
+        workRequests: Array<{ id: string; targetMemberId: string; instruction: string; status: string }>;
+      };
+      const initialContent = 'Build CSV import\n\nParse uploaded files and show validation errors.';
+      expect(teamRun.messages).toHaveLength(1);
+      expect(teamRun.messages[0]).toMatchObject({
+        senderType: 'user',
+        kind: 'chat',
+        content: initialContent,
+        mentions: [],
+        workRequestIds: [],
+      });
+      expect(teamRun.workRequests).toEqual([]);
+
+      const messagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+      });
+      expect(messagesResponse.statusCode).toBe(200);
+      const messages = messagesResponse.json() as Array<{ id: string; content: string; mentions: unknown[]; workRequestIds: string[] }>;
+      expect(messages).toEqual([
+        expect.objectContaining({
+          id: teamRun.messages[0]!.id,
+          content: initialContent,
+          mentions: [],
+          workRequestIds: [],
+        }),
+      ]);
+
+      const workRequestsResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/work-requests`,
+      });
+      expect(workRequestsResponse.statusCode).toBe(200);
+      const workRequests = workRequestsResponse.json() as Array<{
+        id: string;
+        targetMemberId: string;
+        instruction: string;
+      }>;
+      expect(workRequests).toEqual([]);
+      await expect(prisma.roomMessage.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(1);
+      await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+      expect(routeScheduler.startNextSessions).not.toHaveBeenCalled();
+      await expect(prisma.agentInvocation.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('creates USER_MESSAGES WorkRequests from a title-only initial message and auto-starts it', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Title-only project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Investigate slow dashboard',
+        projectId: project.id,
+      },
+    });
+    const preset = await createMemberPreset({ name: 'Leader', triggerPolicy: 'USER_MESSAGES' });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [preset.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const teamRun = response.json() as {
+        id: string;
+        messages: Array<{ content: string; workRequestIds: string[] }>;
+        workRequests: Array<{ id: string; instruction: string; status: string }>;
+      };
+      expect(teamRun.messages).toHaveLength(1);
+      expect(teamRun.messages[0]).toMatchObject({
+        content: 'Investigate slow dashboard',
+        workRequestIds: [teamRun.workRequests[0]!.id],
+      });
+      expect(teamRun.workRequests[0]).toMatchObject({
+        instruction: 'Investigate slow dashboard',
+        status: 'QUEUED',
+      });
+
+      await vi.waitFor(() => {
+        expect(routeScheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('creates an initial WorkRequest only for a mentioned MENTION_ONLY member', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Mentioned initial message project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Investigate import failures',
+        description: 'Please @Reviewer check the error handling.',
+        projectId: project.id,
+      },
+    });
+    const implementerPreset = await createMemberPreset({ name: 'Implementer', triggerPolicy: 'MENTION_ONLY' });
+    const reviewerPreset = await createMemberPreset({ name: 'Reviewer', triggerPolicy: 'MENTION_ONLY' });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [implementerPreset.id, reviewerPreset.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const teamRun = response.json() as {
+        id: string;
+        members: Array<{ id: string; name: string }>;
+        messages: Array<{ content: string; mentions: Array<{ memberId: string; label?: string }>; workRequestIds: string[] }>;
+        workRequests: Array<{ id: string; targetMemberId: string; instruction: string; status: string }>;
+      };
+      const reviewer = teamRun.members.find((member) => member.name === 'Reviewer');
+      const implementer = teamRun.members.find((member) => member.name === 'Implementer');
+      const initialContent = 'Investigate import failures\n\nPlease @Reviewer check the error handling.';
+
+      expect(reviewer).toBeDefined();
+      expect(implementer).toBeDefined();
+      expect(teamRun.messages).toHaveLength(1);
+      expect(teamRun.messages[0]).toMatchObject({
+        content: initialContent,
+        mentions: [{ memberId: reviewer!.id, label: 'Reviewer' }],
+      });
+      expect(teamRun.workRequests).toEqual([
+        expect.objectContaining({
+          id: teamRun.messages[0]!.workRequestIds[0],
+          targetMemberId: reviewer!.id,
+          instruction: initialContent,
+          status: 'QUEUED',
+        }),
+      ]);
+      expect(teamRun.workRequests[0]!.targetMemberId).not.toBe(implementer!.id);
+
+      await vi.waitFor(() => {
+        expect(routeScheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+      });
+      await expect(prisma.agentInvocation.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('matches initial @mention tokens exactly instead of matching name prefixes', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Mention prefix project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Route QA review',
+        description: 'Please @QA-Lead verify the release notes.',
+        projectId: project.id,
+      },
+    });
+    const qaPreset = await createMemberPreset({ name: 'QA', triggerPolicy: 'MENTION_ONLY' });
+    const qaLeadPreset = await createMemberPreset({ name: 'QA-Lead', triggerPolicy: 'MENTION_ONLY' });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [qaPreset.id, qaLeadPreset.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const teamRun = response.json() as {
+        id: string;
+        members: Array<{ id: string; name: string }>;
+        messages: Array<{ mentions: Array<{ memberId: string; label?: string }>; workRequestIds: string[] }>;
+        workRequests: Array<{ id: string; targetMemberId: string }>;
+      };
+      const qa = teamRun.members.find((member) => member.name === 'QA');
+      const qaLead = teamRun.members.find((member) => member.name === 'QA-Lead');
+
+      expect(qa).toBeDefined();
+      expect(qaLead).toBeDefined();
+      expect(teamRun.messages[0]!.mentions).toEqual([{ memberId: qaLead!.id, label: 'QA-Lead' }]);
+      expect(teamRun.workRequests).toEqual([
+        expect.objectContaining({
+          id: teamRun.messages[0]!.workRequestIds[0],
+          targetMemberId: qaLead!.id,
+        }),
+      ]);
+      expect(teamRun.workRequests[0]!.targetMemberId).not.toBe(qa!.id);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not create initial WorkRequests for ambiguous @mention aliases', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Ambiguous mention project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Review ambiguous owner',
+        description: 'Please @reviewer check this.',
+        projectId: project.id,
+      },
+    });
+    const firstPreset = await createMemberPreset({ name: 'Frontend Reviewer', triggerPolicy: 'MENTION_ONLY' });
+    const secondPreset = await createMemberPreset({ name: 'Backend Reviewer', triggerPolicy: 'MENTION_ONLY' });
+    await prisma.memberPreset.updateMany({
+      where: { id: { in: [firstPreset.id, secondPreset.id] } },
+      data: { aliases: stringifyJson(['reviewer']) },
+    });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [firstPreset.id, secondPreset.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const teamRun = response.json() as {
+        id: string;
+        messages: Array<{ mentions: unknown[]; workRequestIds: string[] }>;
+        workRequests: unknown[];
+      };
+      expect(teamRun.messages[0]).toMatchObject({
+        mentions: [],
+        workRequestIds: [],
+      });
+      expect(teamRun.workRequests).toEqual([]);
+      await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+      expect(routeScheduler.startNextSessions).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not fall back to USER_MESSAGES when initial @mention aliases are ambiguous', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Mixed ambiguous mention project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Route ambiguous review',
+        description: 'Please @reviewer decide who owns this.',
+        projectId: project.id,
+      },
+    });
+    const firstPreset = await createMemberPreset({ name: 'Frontend Reviewer', triggerPolicy: 'MENTION_ONLY' });
+    const secondPreset = await createMemberPreset({ name: 'Backend Reviewer', triggerPolicy: 'MENTION_ONLY' });
+    const observerPreset = await createMemberPreset({ name: 'Observer', triggerPolicy: 'USER_MESSAGES' });
+    await prisma.memberPreset.updateMany({
+      where: { id: { in: [firstPreset.id, secondPreset.id] } },
+      data: { aliases: stringifyJson(['reviewer']) },
+    });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [firstPreset.id, secondPreset.id, observerPreset.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const teamRun = response.json() as {
+        id: string;
+        messages: Array<{ mentions: unknown[]; workRequestIds: string[] }>;
+        workRequests: unknown[];
+      };
+      expect(teamRun.messages[0]).toMatchObject({
+        mentions: [],
+        workRequestIds: [],
+      });
+      expect(teamRun.workRequests).toEqual([]);
+      await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+      expect(routeScheduler.startNextSessions).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects creating a TeamRun for a blank-title task before writing TeamRun data', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Blank title project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: '   ',
+        projectId: project.id,
+      },
+    });
+    const preset = await createMemberPreset({ name: 'Leader', triggerPolicy: 'USER_MESSAGES' });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [preset.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ code: 'VALIDATION_ERROR' });
+      expect(routeScheduler.startNextSessions).not.toHaveBeenCalled();
+      await expect(prisma.teamRun.count({ where: { taskId: task.id } })).resolves.toBe(0);
+      await expect(prisma.roomMessage.count()).resolves.toBe(0);
+      await expect(prisma.workRequest.count()).resolves.toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rolls back TeamRun creation when initial WorkRequest creation fails and allows retry', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Atomic TeamRun project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Start atomically',
+        projectId: project.id,
+      },
+    });
+    const preset = await createMemberPreset({ name: 'Implementer', triggerPolicy: 'USER_MESSAGES' });
+    const routeScheduler = createRouteSchedulerMock();
+    const originalTransaction = prisma.$transaction.bind(prisma);
+    const transactionSpy = vi.spyOn(prisma, '$transaction');
+    transactionSpy.mockImplementationOnce(async (arg: any, ...rest: any[]) => {
+      if (typeof arg !== 'function') {
+        return originalTransaction(arg, ...rest);
+      }
+
+      return originalTransaction(async (tx: any) => {
+        const failingTx = new Proxy(tx, {
+          get(target, property, receiver) {
+            if (property !== 'workRequest') {
+              return Reflect.get(target, property, receiver);
+            }
+
+            const delegate = Reflect.get(target, property, receiver);
+            return new Proxy(delegate, {
+              get(delegateTarget, delegateProperty, delegateReceiver) {
+                if (delegateProperty === 'create') {
+                  return async () => {
+                    throw new Error('injected initial WorkRequest failure');
+                  };
+                }
+                return Reflect.get(delegateTarget, delegateProperty, delegateReceiver);
+              },
+            });
+          },
+        });
+
+        return arg(failingTx);
+      }, ...rest);
+    });
+    const app = Fastify({ logger: false });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const failedResponse = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [preset.id],
+        },
+      });
+
+      expect(failedResponse.statusCode).toBe(500);
+      expect(routeScheduler.startNextSessions).not.toHaveBeenCalled();
+      await expect(prisma.teamRun.count({ where: { taskId: task.id } })).resolves.toBe(0);
+      await expect(prisma.teamMember.count()).resolves.toBe(0);
+      await expect(prisma.roomMessage.count()).resolves.toBe(0);
+      await expect(prisma.workRequest.count()).resolves.toBe(0);
+
+      const retryResponse = await app.inject({
+        method: 'POST',
+        url: `/api/tasks/${task.id}/team-runs`,
+        payload: {
+          mode: 'AUTO',
+          memberPresetIds: [preset.id],
+        },
+      });
+
+      expect(retryResponse.statusCode).toBe(201);
+      const teamRun = retryResponse.json() as {
+        id: string;
+        messages: Array<{ workRequestIds: string[] }>;
+        workRequests: Array<{ id: string; status: string }>;
+      };
+      expect(teamRun.messages[0]!.workRequestIds).toEqual([teamRun.workRequests[0]!.id]);
+      expect(teamRun.workRequests[0]).toMatchObject({ status: 'QUEUED' });
+      await vi.waitFor(() => {
+        expect(routeScheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+      });
+    } finally {
+      consoleErrorSpy.mockRestore();
       await app.close();
     }
   });

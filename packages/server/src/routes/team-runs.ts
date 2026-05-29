@@ -234,7 +234,10 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
   app.post<{ Params: { taskId: string } }>('/tasks/:taskId/team-runs', async (request, reply) => {
     try {
       const body = createTeamRunSchema.parse(request.body);
-      const teamRun = await service.createTeamRun(request.params.taskId, body);
+      const teamRun = await service.createTeamRunWithInitialRoomMessage(request.params.taskId, body);
+      if (teamRun.mode === 'AUTO' && (teamRun.workRequests?.length ?? 0) > 0) {
+        startNextSessionsInBackground(app, scheduler, teamRun.id);
+      }
       reply.code(201);
       return teamRun;
     } catch (error) {

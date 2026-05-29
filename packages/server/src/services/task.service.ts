@@ -40,6 +40,14 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   [TaskStatus.CANCELLED]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW, TaskStatus.DONE],
 };
 
+function normalizeTaskTitle(title: string): string {
+  const normalized = title.trim();
+  if (normalized.length === 0) {
+    throw new ValidationError('Task title is required');
+  }
+  return normalized;
+}
+
 export class TaskService {
   constructor(
     private readonly eventBus: EventBus,
@@ -126,6 +134,8 @@ export class TaskService {
    * - 自动计算 position（同状态下最大 position + 1）
    */
   async create(projectId: string, input: CreateTaskInput) {
+    const title = normalizeTaskTitle(input.title);
+
     // 校验项目存在
     const project = await prisma.project.findUnique({
       where: { id: projectId },
@@ -143,7 +153,7 @@ export class TaskService {
 
     return prisma.task.create({
       data: {
-        title: input.title,
+        title,
         description: input.description,
         priority: input.priority ?? 0,
         position: (maxPosition._max.position ?? 0) + 1,
@@ -156,6 +166,10 @@ export class TaskService {
    * 更新任务基本信息
    */
   async update(id: string, input: UpdateTaskInput) {
+    const normalizedInput = {
+      ...input,
+      ...(input.title !== undefined ? { title: normalizeTaskTitle(input.title) } : {}),
+    };
     const task = await prisma.task.findUnique({
       where: { id },
       include: { project: true },
@@ -167,7 +181,7 @@ export class TaskService {
 
     return prisma.task.update({
       where: { id },
-      data: input,
+      data: normalizedInput,
     });
   }
 

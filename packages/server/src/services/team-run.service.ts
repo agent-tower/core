@@ -200,6 +200,116 @@ function isUniqueConstraintError(error: unknown): boolean {
     && (error as { code?: string }).code === 'P2002';
 }
 
+function buildInitialTaskRoomMessageContent(task: { title: string; description?: string | null }): string {
+  const title = task.title.trim();
+  if (title.length === 0) {
+    throw new ValidationError('Task title is required to create a TeamRun');
+  }
+
+  const description = task.description?.trim() ?? '';
+  return [title, description].filter(Boolean).join('\n\n');
+}
+
+function extractMentionTokens(content: string): string[] {
+  const tokens: string[] = [];
+  const tokenPattern = /(^|[^\p{L}\p{N}_-])@([^\s@]+)/gu;
+  const trailingPunctuation = /[.,!?;:，。！？；：、)\]}>"'”’）】》]+$/u;
+
+  for (const match of content.matchAll(tokenPattern)) {
+    const token = (match[2] ?? '').replace(trailingPunctuation, '');
+    if (token.length > 0) {
+      tokens.push(token);
+    }
+  }
+
+  return tokens;
+}
+
+function deriveStructuredMentionsFromContent(
+  content: string,
+  members: Array<Pick<PrismaTeamMember, 'id' | 'name' | 'aliases'>>
+): { mentions: StructuredMention[]; tokenCount: number } {
+  const matchesByToken = new Map<string, Array<{ memberId: string; label: string }>>();
+
+  for (const member of members) {
+    const labels = Array.from(new Set([
+      member.name,
+      ...parseJsonField<string[]>(member.aliases, []),
+    ].map((label) => label.trim()).filter(Boolean)));
+
+    for (const label of labels) {
+      const matches = matchesByToken.get(label) ?? [];
+      if (!matches.some((match) => match.memberId === member.id)) {
+        matches.push({ memberId: member.id, label });
+      }
+      matchesByToken.set(label, matches);
+    }
+  }
+
+  const mentions: StructuredMention[] = [];
+  const mentionedMemberIds = new Set<string>();
+  const tokens = extractMentionTokens(content);
+  for (const token of tokens) {
+    const matches = matchesByToken.get(token) ?? [];
+    if (matches.length !== 1 || mentionedMemberIds.has(matches[0]!.memberId)) {
+      continue;
+    }
+
+    const match = matches[0]!;
+    mentions.push({ memberId: match.memberId, label: match.label });
+    mentionedMemberIds.add(match.memberId);
+  }
+
+  return { mentions, tokenCount: tokens.length };
+}
+
+function assertMentionsReferenceMembers(mentions: StructuredMention[], memberIds: Set<string>): void {
+  for (const mention of mentions) {
+    if (!memberIds.has(mention.memberId)) {
+      throw new NotFoundError('TeamMember', mention.memberId);
+    }
+  }
+}
+
+function resolveRoomMessageTargetRequests({
+  mentions,
+  members,
+  senderType,
+  requesterMemberId,
+  allowUserMessageFallback = true,
+}: {
+  mentions: StructuredMention[];
+  members: Array<Pick<PrismaTeamMember, 'id' | 'triggerPolicy'>>;
+  senderType: RoomMessageSenderType;
+  requesterMemberId: string | null;
+  allowUserMessageFallback?: boolean;
+}): Array<{ targetMemberId: string; ifBusy: IfBusyPolicy; cancelQueued: boolean }> {
+  if (mentions.length > 0) {
+    return mentions.map((mention) => ({
+      targetMemberId: mention.memberId,
+      ifBusy: mention.ifBusy ?? 'queue',
+      cancelQueued: mention.cancelQueued ?? false,
+    }));
+  }
+
+  if (!allowUserMessageFallback) {
+    return [];
+  }
+
+  if (senderType !== 'user' && senderType !== 'agent') {
+    return [];
+  }
+
+  return members
+    .filter((member) => member.triggerPolicy === 'USER_MESSAGES')
+    .filter((member) => member.id !== requesterMemberId)
+    .map((member) => ({
+      targetMemberId: member.id,
+      ifBusy: 'queue' as const,
+      cancelQueued: false,
+    }));
+}
+
 export class TeamRunService {
   async listMemberPresets(): Promise<MemberPreset[]> {
     const presets = await prisma.memberPreset.findMany({
@@ -357,6 +467,7 @@ export class TeamRunService {
     if (!task) {
       throw new NotFoundError('Task', taskId);
     }
+    buildInitialTaskRoomMessageContent(task);
 
     const existing = await prisma.teamRun.findUnique({ where: { taskId } });
     if (existing) {
@@ -414,6 +525,137 @@ export class TeamRunService {
     });
 
     return teamRun;
+  }
+
+  async createTeamRunWithInitialRoomMessage(taskId: string, input: CreateTeamRunInput): Promise<TeamRun> {
+    const snapshots = applyStableInstanceNames(await this.buildTeamMemberSnapshots(input));
+    if (snapshots.length === 0) {
+      throw new ValidationError('TeamRun must include at least one member');
+    }
+
+    let teamRunId = '';
+    let projectId = '';
+    let createdTeamRun: PrismaTeamRunWithRelations | null = null;
+
+    try {
+      createdTeamRun = await prisma.$transaction(async (tx) => {
+        const task = await tx.task.findUnique({ where: { id: taskId } });
+        if (!task) {
+          throw new NotFoundError('Task', taskId);
+        }
+        projectId = task.projectId;
+        const initialContent = buildInitialTaskRoomMessageContent(task);
+
+        const existing = await tx.teamRun.findUnique({ where: { taskId } });
+        if (existing) {
+          throw toConflict(`Task already has a TeamRun: ${taskId}`);
+        }
+
+        const teamRun = await tx.teamRun.create({
+          data: {
+            taskId,
+            mode: input.mode,
+          },
+        });
+        teamRunId = teamRun.id;
+
+        const members: PrismaTeamMember[] = [];
+        for (const snapshot of snapshots) {
+          const member = await tx.teamMember.create({
+            data: {
+              teamRunId: teamRun.id,
+              presetId: snapshot.presetId,
+              name: snapshot.name,
+              aliases: stringifyJson(snapshot.aliases),
+              providerId: snapshot.providerId,
+              rolePrompt: snapshot.rolePrompt,
+              capabilities: stringifyJson(snapshot.capabilities),
+              workspacePolicy: snapshot.workspacePolicy,
+              triggerPolicy: snapshot.triggerPolicy,
+              sessionPolicy: snapshot.sessionPolicy,
+              avatar: snapshot.avatar,
+            },
+          });
+          members.push(member);
+        }
+
+        const initialMentionParse = deriveStructuredMentionsFromContent(initialContent, members);
+        const message = await tx.roomMessage.create({
+          data: {
+            teamRunId: teamRun.id,
+            senderType: 'user',
+            senderId: null,
+            senderInvocationId: null,
+            kind: 'chat',
+            content: initialContent,
+            mentions: stringifyJson(initialMentionParse.mentions),
+            artifactRefs: stringifyJson([]),
+            attachmentIds: stringifyJson([]),
+            workRequestIds: stringifyJson([]),
+          },
+        });
+
+        const workRequestStatus: WorkRequestStatus = input.mode === 'CONFIRM'
+          ? 'PENDING_APPROVAL'
+          : 'QUEUED';
+        const targetRequests = resolveRoomMessageTargetRequests({
+          mentions: initialMentionParse.mentions,
+          members,
+          senderType: 'user',
+          requesterMemberId: null,
+          allowUserMessageFallback: initialMentionParse.tokenCount === 0,
+        });
+        const workRequestIds: string[] = [];
+        for (const targetRequest of targetRequests) {
+          const workRequest = await tx.workRequest.create({
+            data: {
+              teamRunId: teamRun.id,
+              requesterMemberId: null,
+              requesterType: 'user',
+              targetMemberId: targetRequest.targetMemberId,
+              triggerMessageId: message.id,
+              instruction: initialContent,
+              ifBusy: targetRequest.ifBusy,
+              cancelQueued: targetRequest.cancelQueued,
+              status: workRequestStatus,
+            },
+          });
+          workRequestIds.push(workRequest.id);
+        }
+
+        if (workRequestIds.length > 0) {
+          await tx.roomMessage.update({
+            where: { id: message.id },
+            data: { workRequestIds: stringifyJson(workRequestIds) },
+          });
+        }
+
+        const created = await tx.teamRun.findUnique({
+          where: { id: teamRun.id },
+          include: this.teamRunInclude(),
+        });
+        if (!created) {
+          throw new NotFoundError('TeamRun', teamRun.id);
+        }
+        return created;
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw toConflict(`Task already has a TeamRun: ${taskId}`);
+      }
+      throw error;
+    }
+
+    const serialized = this.serializeTeamRun(createdTeamRun);
+    await emitTeamRunInvalidated({
+      teamRunId,
+      taskId,
+      projectId,
+      scopes: ['team-run', 'team-members', 'room-messages', 'work-requests', 'task'],
+      reason: 'team-run-created',
+    });
+
+    return serialized;
   }
 
   async getTaskTeamRun(taskId: string): Promise<TeamRun> {
@@ -507,12 +749,7 @@ export class TeamRunService {
     await prisma.$transaction(async (tx) => {
       const members = await tx.teamMember.findMany({ where: { teamRunId } });
       const memberIds = new Set(members.map((member) => member.id));
-
-      for (const mention of mentions) {
-        if (!memberIds.has(mention.memberId)) {
-          throw new NotFoundError('TeamMember', mention.memberId);
-        }
-      }
+      assertMentionsReferenceMembers(mentions, memberIds);
 
       const requesterMemberId = senderType === 'agent'
         && input.senderId != null
@@ -556,22 +793,12 @@ export class TeamRunService {
       });
       messageId = message.id;
 
-      const targetRequests = mentions.length > 0
-        ? mentions.map((mention) => ({
-          targetMemberId: mention.memberId,
-          ifBusy: mention.ifBusy ?? 'queue',
-          cancelQueued: mention.cancelQueued ?? false,
-        }))
-        : senderType === 'user' || senderType === 'agent'
-          ? members
-            .filter((member) => member.triggerPolicy === 'USER_MESSAGES')
-            .filter((member) => member.id !== requesterMemberId)
-            .map((member) => ({
-              targetMemberId: member.id,
-              ifBusy: 'queue' as const,
-              cancelQueued: false,
-            }))
-          : [];
+      const targetRequests = resolveRoomMessageTargetRequests({
+        mentions,
+        members,
+        senderType,
+        requesterMemberId,
+      });
 
       const workRequestIds: string[] = [];
       for (const targetRequest of targetRequests) {

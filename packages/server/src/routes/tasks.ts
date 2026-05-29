@@ -6,13 +6,13 @@ import { ServiceError } from '../errors.js';
 import { getEventBus, getSessionManager } from '../core/container.js';
 
 const createTaskSchema = z.object({
-  title: z.string().min(1, 'title is required'),
+  title: z.string().trim().min(1, 'title is required'),
   description: z.string().optional(),
   priority: z.number().int().min(0).default(0),
 });
 
 const updateTaskSchema = z.object({
-  title: z.string().min(1, 'title cannot be empty').optional(),
+  title: z.string().trim().min(1, 'title cannot be empty').optional(),
   description: z.string().optional(),
   priority: z.number().int().min(0).optional(),
 });
