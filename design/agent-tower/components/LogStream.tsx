@@ -95,7 +95,7 @@ const ToolBlock: React.FC<{ title: string; content: string; type: LogType }> = (
 
 // 4. Main Agent Text Component
 const AgentText: React.FC<{ content: string }> = ({ content }) => (
-  <div className="text-sm text-neutral-800 leading-7 mb-4 whitespace-pre-wrap animate-in fade-in duration-500">
+  <div className="text-sm text-neutral-900 leading-6 mb-4 whitespace-pre-wrap animate-in fade-in duration-500">
     {content}
   </div>
 );

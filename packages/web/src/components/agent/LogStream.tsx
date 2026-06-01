@@ -200,7 +200,7 @@ const ToolBlock = memo(({ title, content, type }: { title: string; content: stri
   const summary = firstLine !== title ? firstLine : ''
 
   return (
-    <div className="my-0.5">
+    <div className="my-2">
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="group flex items-center gap-1.5 py-1 text-xs w-full text-left transition-colors"
@@ -253,7 +253,7 @@ const ToolGroup = memo(({ label, logs }: { label: string; logs: LogEntry[] }) =>
   const failCount = logs.filter(l => l.title?.endsWith('✗')).length
 
   return (
-    <div className="my-0.5">
+    <div className="my-2">
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="group flex items-center gap-1.5 py-1 text-xs w-full text-left transition-colors"
@@ -341,7 +341,7 @@ ToolGroupItem.displayName = 'ToolGroupItem'
 
 // 4. Agent 主文本 — 纯文本无图标
 const AgentText = memo(({ content, compact }: { content: string; compact?: boolean }) => (
-  <div className={`text-neutral-800 whitespace-pre-wrap min-w-0 ${compact ? 'text-[13px] leading-6' : 'text-sm leading-7'}`}>
+  <div className={`text-neutral-900 whitespace-pre-wrap min-w-0 ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
     {content}
   </div>
 ))
@@ -349,8 +349,8 @@ AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
 const AssistantMessage = memo(({ content, compact }: { content: string; compact?: boolean }) => (
-  <div className={`text-neutral-800 min-w-0 ${compact ? 'text-[13px] leading-6' : 'text-sm leading-7'}`}>
-    <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>{content}</Streamdown>
+  <div className={`text-neutral-900 min-w-0 ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
+    <Streamdown className="space-y-2"  urlTransform={attachmentUrlTransform} components={streamdownComponents}>{content}</Streamdown>
   </div>
 ))
 AssistantMessage.displayName = 'AssistantMessage'
