@@ -57,18 +57,8 @@ function shouldSkipProjectedLog(log: LogEntry): boolean {
 }
 
 function requiresUserAction(log: LogEntry): boolean {
-  const status = getToolStatus(log)
-  if (status === 'pending_approval' || status === 'denied') return true
-
-  const text = `${log.title ?? ''} ${log.content}`.toLowerCase()
-  return text.includes('approval')
-    || text.includes('approve')
-    || text.includes('permission')
-    || text.includes('confirm')
-    || text.includes('input required')
-    || text.includes('requires input')
-    || text.includes('待审批')
-    || text.includes('确认')
+  const status = log.tool?.status
+  return status === 'pending_approval' || status === 'denied'
 }
 
 function isMainlineLog(log: LogEntry): boolean {

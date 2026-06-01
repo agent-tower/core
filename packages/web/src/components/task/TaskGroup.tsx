@@ -135,21 +135,27 @@ function DraggableTaskCard({
         </div>
 
         <div className="flex-1 min-w-0">
-          <div className="mb-0.5">
-            <span className={`font-medium mr-1 ${project?.color || 'text-neutral-500'}`}>
+          <div className="mb-0.5 flex min-w-0 items-center">
+            <span
+              className={`mr-1 max-w-[45%] shrink-0 truncate font-medium ${project?.color || 'text-neutral-500'}`}
+              title={project?.name}
+            >
               {project?.name}
             </span>
-            <span className="text-neutral-400">/</span>
-            <span className={`ml-1 ${isSelected ? 'text-neutral-900' : 'text-neutral-700'}`}>
+            <span className="shrink-0 text-neutral-400">/</span>
+            <span
+              className={`ml-1 min-w-0 flex-1 truncate ${isSelected ? 'text-neutral-900' : 'text-neutral-700'}`}
+              title={task.title}
+            >
               {task.title}
             </span>
             {task.projectArchivedAt && (
-              <span className="ml-1.5 inline-flex items-center rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500">
+              <span className="ml-1.5 inline-flex shrink-0 items-center rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500">
                 {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
               </span>
             )}
             {isAgentActive && (
-              <span className="relative inline-flex h-2 w-2 ml-1.5 align-middle">
+              <span className="relative ml-1.5 inline-flex h-2 w-2 shrink-0 align-middle">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
               </span>

@@ -251,7 +251,9 @@ export function TaskList({
         <DragOverlay dropAnimation={null}>
           {activeDragTask ? (
             <div className="bg-white shadow-lg rounded-md border border-neutral-200 px-4 py-2 text-sm max-w-[280px] opacity-90">
-              <span className="text-neutral-700 font-medium">{activeDragTask.title}</span>
+              <span className="block truncate font-medium text-neutral-700" title={activeDragTask.title}>
+                {activeDragTask.title}
+              </span>
             </div>
           ) : null}
         </DragOverlay>
