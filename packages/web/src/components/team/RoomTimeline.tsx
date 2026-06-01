@@ -43,6 +43,7 @@ import {
 } from './room-mentions'
 import { ACTIVE_ROOM_INVOCATION_STATUSES, buildRoomTimelineItems } from './room-timeline-items'
 import { ActiveWorkList } from './ActiveWorkList'
+import { streamdownComponents } from '@/lib/streamdown-components'
 import 'streamdown/styles.css'
 
 interface RoomTimelineProps {
@@ -96,19 +97,6 @@ const attachmentUrlTransform: UrlTransform = (url) => {
   }
   return url
 }
-
-const MarkdownImage = ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => (
-  <a href={src} target="_blank" rel="noopener noreferrer" className="inline-block">
-    <img
-      src={src}
-      alt={alt}
-      {...props}
-      className="max-w-[300px] max-h-[200px] object-contain rounded-lg border border-neutral-200 cursor-pointer hover:opacity-90 transition-opacity"
-    />
-  </a>
-)
-
-const streamdownComponents = { img: MarkdownImage }
 
 function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`

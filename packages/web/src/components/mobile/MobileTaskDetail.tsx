@@ -36,6 +36,7 @@ import { useSkillMentionMenu } from '@/components/task/useSkillMentionMenu'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { useI18n } from '@/lib/i18n'
+import { streamdownComponents } from '@/lib/streamdown-components'
 import 'streamdown/styles.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -51,20 +52,6 @@ const attachmentUrlTransform: UrlTransform = (url) => {
   }
   return url
 }
-
-/** 自定义 img 渲染：限制图片尺寸，点击可查看原图 */
-const MarkdownImage = ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => (
-  <a href={src} target="_blank" rel="noopener noreferrer" className="inline-block">
-    <img
-      src={src}
-      alt={alt}
-      {...props}
-      className="max-w-[300px] max-h-[200px] object-contain rounded-lg border border-neutral-200 cursor-pointer active:opacity-90 transition-opacity"
-    />
-  </a>
-)
-
-const streamdownComponents = { img: MarkdownImage }
 
 interface MobileTaskDetailProps {
   task: UITaskDetailData

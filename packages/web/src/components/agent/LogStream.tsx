@@ -3,6 +3,7 @@ import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
+import { streamdownComponents } from '@/lib/streamdown-components'
 import 'streamdown/styles.css'
 
 interface LogStreamProps {
@@ -97,20 +98,6 @@ const attachmentUrlTransform: UrlTransform = (url) => {
   // 4. 相对路径保持原样
   return url
 }
-
-/** 自定义 img 渲染：限制图片尺寸，点击可查看原图 */
-const MarkdownImage = ({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) => (
-  <a href={src} target="_blank" rel="noopener noreferrer" className="inline-block">
-    <img
-      src={src}
-      alt={alt}
-      {...props}
-      className="max-w-[300px] max-h-[200px] object-contain rounded-lg border border-neutral-200 cursor-pointer hover:opacity-90 transition-opacity"
-    />
-  </a>
-)
-
-const streamdownComponents = { img: MarkdownImage }
 
 // ============ Components ============
 
