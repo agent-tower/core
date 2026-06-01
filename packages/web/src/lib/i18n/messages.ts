@@ -128,10 +128,10 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'New link generated': '新链接已生成',
     'Start a temporary Quick Tunnel when you need to share this Agent Tower session.':
       '需要分享当前 Agent Tower 会话时，可以启动一个临时 Quick Tunnel。',
-    'The local Agent Tower service and the current public URL are both reachable.':
-      '本地 Agent Tower 服务和当前公网链接都可访问。',
-    'The tunnel URL exists. Agent Tower is checking whether the original public URL is reachable.':
-      '隧道链接已生成，Agent Tower 正在检查原公网链接是否可访问。',
+    'The Cloudflare tunnel is running and the local Agent Tower health check passed.':
+      'Cloudflare 隧道正在运行，且本地 Agent Tower 健康检查已通过。',
+    'The Cloudflare tunnel is running. Agent Tower is waiting for the first local health check.':
+      'Cloudflare 隧道正在运行，Agent Tower 正在等待首次本地健康检查。',
     'The original public URL is currently unreachable. Agent Tower is watching for it to recover and will not generate a new link automatically.':
       '原公网链接当前不可访问。Agent Tower 正在观察它是否恢复，不会自动生成新链接。',
     'The local Agent Tower target is not responding, so the tunnel cannot be considered healthy.':

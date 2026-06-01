@@ -42,18 +42,21 @@ describe('TunnelService health state', () => {
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
     TunnelService.__resetForTests();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it('marks the tunnel healthy only after local and remote health checks pass', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  it('marks the tunnel healthy when cloudflared is running and local health passes', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
       const parsed = new URL(url);
+      expect(parsed.hostname).toBe('localhost');
       return jsonResponse({
         ok: true,
         generation: Number(parsed.searchParams.get('generation')),
       });
-    }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
 
     await TunnelService.start(18080);
     await TunnelService.checkNow();
@@ -61,41 +64,60 @@ describe('TunnelService health state', () => {
     const status = TunnelService.getStatus();
     expect(status.status).toBe('healthy');
     expect(status.running).toBe(true);
+    expect(status.lastCheckedAt).not.toBeNull();
     expect(status.lastHealthyAt).not.toBeNull();
+    expect(status.lastHealthyAt).toBe(status.lastCheckedAt);
+    expect(status.lastRemoteError).toBeNull();
     expect(status.consecutiveRemoteFailures).toBe(0);
+    expect(Tunnel.quick).toHaveBeenCalledWith('http://localhost:18080');
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('http://localhost:18080/api/tunnel/health'),
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('127.0.0.1:18080'),
+      expect.anything(),
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('trycloudflare.com'),
+      expect.anything(),
+    );
   });
 
-  it('enters degraded when remote health keeps failing but does not restart the tunnel', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  it('keeps the tunnel healthy without probing the public URL', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
       const parsed = new URL(url);
-      if (parsed.hostname === '127.0.0.1') {
-        return jsonResponse({
-          ok: true,
-          generation: Number(parsed.searchParams.get('generation')),
-        });
-      }
-      throw new Error('remote unavailable');
-    }));
+      expect(parsed.hostname).toBe('localhost');
+      return jsonResponse({
+        ok: true,
+        generation: Number(parsed.searchParams.get('generation')),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
 
     await TunnelService.start(18080);
     await TunnelService.checkNow();
     await TunnelService.checkNow();
 
     const status = TunnelService.getStatus();
-    expect(status.status).toBe('degraded');
+    expect(status.status).toBe('healthy');
     expect(status.running).toBe(true);
-    expect(status.lastRemoteError).toBe('remote unavailable');
-    expect(status.consecutiveRemoteFailures).toBeGreaterThanOrEqual(2);
+    expect(status.lastRemoteError).toBeNull();
+    expect(status.consecutiveRemoteFailures).toBe(0);
     expect(fakeTunnels).toHaveLength(1);
     expect(fakeTunnels[0]?.stopped).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('trycloudflare.com'),
+      expect.anything(),
+    );
   });
 
-  it('moves from degraded back to healthy when the original remote URL recovers', async () => {
-    let remoteHealthy = false;
+  it('moves from localUnhealthy back to healthy when local health recovers', async () => {
+    let localHealthy = false;
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       const parsed = new URL(url);
-      if (parsed.hostname !== '127.0.0.1' && !remoteHealthy) {
-        throw new Error('remote unavailable');
+      if (!localHealthy) {
+        throw new Error('local unavailable');
       }
       return jsonResponse({
         ok: true,
@@ -105,19 +127,78 @@ describe('TunnelService health state', () => {
 
     await TunnelService.start(18080);
     await TunnelService.checkNow();
-    await TunnelService.checkNow();
-    expect(TunnelService.getStatus().status).toBe('degraded');
+    expect(TunnelService.getStatus().status).toBe('localUnhealthy');
 
-    remoteHealthy = true;
+    localHealthy = true;
     await TunnelService.checkNow();
 
     const status = TunnelService.getStatus();
     expect(status.status).toBe('healthy');
+    expect(status.consecutiveLocalFailures).toBe(0);
     expect(status.consecutiveRemoteFailures).toBe(0);
     expect(fakeTunnels).toHaveLength(1);
   });
 
-  it('regenerates only when explicitly requested and rotates token generation', async () => {
+  it('updates checked and healthy timestamps on each successful health check', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T08:00:00.000Z'));
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const parsed = new URL(url);
+      return jsonResponse({
+        ok: true,
+        generation: Number(parsed.searchParams.get('generation')),
+      });
+    }));
+
+    await TunnelService.start(18080);
+    await TunnelService.checkNow();
+
+    const firstStatus = TunnelService.getStatus();
+    expect(firstStatus.status).toBe('healthy');
+    expect(firstStatus.lastCheckedAt).toBe('2026-06-01T08:00:00.000Z');
+    expect(firstStatus.lastHealthyAt).toBe('2026-06-01T08:00:00.000Z');
+
+    vi.setSystemTime(new Date('2026-06-01T08:00:10.000Z'));
+    await TunnelService.checkNow();
+
+    const secondStatus = TunnelService.getStatus();
+    expect(secondStatus.status).toBe('healthy');
+    expect(secondStatus.lastCheckedAt).toBe('2026-06-01T08:00:10.000Z');
+    expect(secondStatus.lastHealthyAt).toBe('2026-06-01T08:00:10.000Z');
+  });
+
+  it('updates lastCheckedAt while preserving lastHealthyAt when local health fails', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T08:00:00.000Z'));
+    let localHealthy = true;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (!localHealthy) {
+        throw new Error('local unavailable');
+      }
+
+      const parsed = new URL(url);
+      return jsonResponse({
+        ok: true,
+        generation: Number(parsed.searchParams.get('generation')),
+      });
+    }));
+
+    await TunnelService.start(18080);
+    await TunnelService.checkNow();
+    expect(TunnelService.getStatus().lastHealthyAt).toBe('2026-06-01T08:00:00.000Z');
+
+    localHealthy = false;
+    vi.setSystemTime(new Date('2026-06-01T08:00:10.000Z'));
+    await TunnelService.checkNow();
+
+    const status = TunnelService.getStatus();
+    expect(status.status).toBe('localUnhealthy');
+    expect(status.lastCheckedAt).toBe('2026-06-01T08:00:10.000Z');
+    expect(status.lastHealthyAt).toBe('2026-06-01T08:00:00.000Z');
+    expect(status.lastLocalError).toBe('local unavailable');
+  });
+
+  it('regenerates explicitly while reusing the existing target port', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       const parsed = new URL(url);
       return jsonResponse({
@@ -130,7 +211,7 @@ describe('TunnelService health state', () => {
     await TunnelService.checkNow();
 
     nextUrl = 'https://second.trycloudflare.com';
-    const second = await TunnelService.regenerate(18080);
+    const second = await TunnelService.regenerate(443);
     await TunnelService.checkNow();
 
     const status = TunnelService.getStatus();
@@ -138,6 +219,10 @@ describe('TunnelService health state', () => {
     expect(second.url).toBe('https://second.trycloudflare.com');
     expect(second.token).not.toBe(first.token);
     expect(status.generation).toBe(2);
+    expect(status.targetPort).toBe(18080);
+    expect(Tunnel.quick).toHaveBeenNthCalledWith(1, 'http://localhost:18080');
+    expect(Tunnel.quick).toHaveBeenNthCalledWith(2, 'http://localhost:18080');
+    expect(Tunnel.quick).not.toHaveBeenCalledWith('http://localhost:443');
     expect(fakeTunnels).toHaveLength(2);
     expect(fakeTunnels[0]?.stopped).toBe(true);
   });
@@ -156,7 +241,39 @@ describe('TunnelService health state', () => {
     const status = TunnelService.getStatus();
     expect(status.status).toBe('error');
     expect(status.running).toBe(false);
+    expect(status.targetPort).toBeNull();
     expect(status.lastError).toBe('startup failed');
     expect(status.canRegenerate).toBe(true);
+  });
+
+  it('uses the requested port for regenerate after a startup failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const parsed = new URL(url);
+      return jsonResponse({
+        ok: true,
+        generation: Number(parsed.searchParams.get('generation')),
+      });
+    }));
+    vi.mocked(Tunnel.quick).mockImplementationOnce(() => {
+      const tunnel = new FakeTunnel();
+      fakeTunnels.push(tunnel);
+      queueMicrotask(() => tunnel.emit('error', new Error('startup failed')));
+      return tunnel as unknown as CloudflaredTunnel;
+    });
+
+    await expect(TunnelService.start(443)).rejects.toThrow('startup failed');
+    expect(TunnelService.getStatus().targetPort).toBeNull();
+    vi.mocked(Tunnel.quick).mockClear();
+
+    nextUrl = 'https://second.trycloudflare.com';
+    await TunnelService.regenerate(18080);
+    await TunnelService.checkNow();
+
+    const status = TunnelService.getStatus();
+    expect(status.status).toBe('healthy');
+    expect(status.targetPort).toBe(18080);
+    expect(Tunnel.quick).toHaveBeenCalledWith('http://localhost:18080');
+    expect(Tunnel.quick).not.toHaveBeenCalledWith('http://localhost:443');
+    expect(fakeTunnels).toHaveLength(2);
   });
 });

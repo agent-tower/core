@@ -36,6 +36,7 @@ interface TunnelState {
   tunnel: Tunnel | null;
   startedAt: string | null;
   targetPort: number | null;
+  targetOrigin: string | null;
   token: string | null;
   generation: number;
   healthSecret: string | null;
@@ -59,7 +60,6 @@ type HealthCheckResult = {
 
 const HEALTH_CHECK_INTERVAL_MS = 10000;
 const HEALTH_CHECK_TIMEOUT_MS = 5000;
-const REMOTE_DEGRADED_FAILURE_THRESHOLD = 2;
 const LOCAL_HEALTH_PATH = '/api/tunnel/health';
 const LINK_REPLACED_STATUS_TTL_MS = 4000;
 
@@ -69,6 +69,7 @@ const state: TunnelState = {
   tunnel: null,
   startedAt: null,
   targetPort: null,
+  targetOrigin: null,
   token: null,
   generation: 0,
   healthSecret: null,
@@ -108,6 +109,7 @@ function resetRuntimeState(nextStatus: TunnelHealthStatus): void {
   state.tunnel = null;
   state.startedAt = null;
   state.targetPort = null;
+  state.targetOrigin = null;
   state.token = null;
   state.healthSecret = null;
   state.healthCheckInFlight = false;
@@ -143,10 +145,14 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Re
   }
 }
 
-async function checkLocalTarget(port: number, secret: string, generation: number): Promise<HealthCheckResult> {
+function buildTargetOrigin(port: number): string {
+  return `http://localhost:${port}`;
+}
+
+async function checkLocalTarget(targetOrigin: string, secret: string, generation: number): Promise<HealthCheckResult> {
   try {
     const response = await fetchWithTimeout(
-      buildHealthUrl(`http://127.0.0.1:${port}`, secret, generation),
+      buildHealthUrl(targetOrigin, secret, generation),
       { method: 'GET' },
     );
     if (!response.ok) {
@@ -164,28 +170,7 @@ async function checkLocalTarget(port: number, secret: string, generation: number
   }
 }
 
-async function checkRemoteUrl(url: string, secret: string, generation: number): Promise<HealthCheckResult> {
-  try {
-    const response = await fetchWithTimeout(
-      buildHealthUrl(url, secret, generation),
-      { method: 'GET' },
-    );
-    if (!response.ok) {
-      return { ok: false, error: `remote health returned ${response.status}` };
-    }
-
-    const body = await response.json().catch(() => null) as { ok?: unknown; generation?: unknown } | null;
-    if (!body?.ok || body.generation !== generation) {
-      return { ok: false, error: 'remote health response did not match current tunnel' };
-    }
-
-    return { ok: true, error: null };
-  } catch (err) {
-    return { ok: false, error: sanitizeError(err) };
-  }
-}
-
-function setHealthStatus(local: HealthCheckResult, remote: HealthCheckResult): void {
+function setHealthStatus(local: HealthCheckResult, checkedAt: string): void {
   if (!state.tunnel) return;
 
   if (!local.ok) {
@@ -193,15 +178,8 @@ function setHealthStatus(local: HealthCheckResult, remote: HealthCheckResult): v
     return;
   }
 
-  if (!remote.ok) {
-    state.status = state.consecutiveRemoteFailures >= REMOTE_DEGRADED_FAILURE_THRESHOLD
-      ? 'degraded'
-      : 'checking';
-    return;
-  }
-
   state.status = 'healthy';
-  state.lastHealthyAt = state.lastCheckedAt;
+  state.lastHealthyAt = checkedAt;
 }
 
 async function runHealthCheck(): Promise<void> {
@@ -213,27 +191,20 @@ async function runHealthCheck(): Promise<void> {
 
   state.healthCheckInFlight = true;
   state.healthCheckPromise = (async () => {
-    state.lastCheckedAt = nowIso();
-
     try {
       const generation = state.generation;
-      const port = state.targetPort;
+      const targetOrigin = state.targetOrigin;
       const secret = state.healthSecret;
-      const url = state.url;
-      if (!port || !secret || !url) return;
+      if (!targetOrigin || !secret) return;
 
-      const local = await checkLocalTarget(port, secret, generation);
+      const local = await checkLocalTarget(targetOrigin, secret, generation);
+      const checkedAt = nowIso();
+      state.lastCheckedAt = checkedAt;
       state.lastLocalError = local.error;
       state.consecutiveLocalFailures = local.ok ? 0 : state.consecutiveLocalFailures + 1;
-
-      let remote: HealthCheckResult = { ok: false, error: 'remote health skipped while local target is unhealthy' };
-      if (local.ok) {
-        remote = await checkRemoteUrl(url, secret, generation);
-      }
-
-      state.lastRemoteError = remote.error;
-      state.consecutiveRemoteFailures = remote.ok ? 0 : state.consecutiveRemoteFailures + 1;
-      setHealthStatus(local, remote);
+      state.lastRemoteError = null;
+      state.consecutiveRemoteFailures = 0;
+      setHealthStatus(local, checkedAt);
     } finally {
       state.healthCheckInFlight = false;
       state.healthCheckPromise = null;
@@ -263,15 +234,13 @@ function attachTunnelEvents(tunnel: Tunnel): void {
     state.token = null;
     state.healthSecret = null;
     state.targetPort = null;
+    state.targetOrigin = null;
     state.lastExitAt = nowIso();
   });
 
   tunnel.on('error', (err) => {
     if (state.tunnel !== tunnel) return;
     state.lastError = sanitizeError(err);
-    if (state.status === 'healthy' || state.status === 'checking') {
-      state.status = 'degraded';
-    }
   });
 }
 
@@ -280,12 +249,14 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
     return { url: state.url, token: state.token };
   }
 
+  const targetOrigin = buildTargetOrigin(port);
   state.status = 'starting';
   state.lastError = null;
   state.lastExitAt = null;
   state.targetPort = port;
+  state.targetOrigin = targetOrigin;
 
-  const tunnel = Tunnel.quick(`http://localhost:${port}`);
+  const tunnel = Tunnel.quick(targetOrigin);
 
   let url: string;
   try {
@@ -314,6 +285,8 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
     state.startedAt = null;
     state.token = null;
     state.healthSecret = null;
+    state.targetPort = null;
+    state.targetOrigin = null;
     state.lastError = sanitizeError(err);
     throw err;
   }
@@ -344,8 +317,9 @@ export const TunnelService = {
   },
 
   async regenerate(port: number): Promise<{ url: string; token: string }> {
+    const nextPort = state.targetPort ?? port;
     this.stop();
-    const result = await startTunnel(port, 'linkReplaced');
+    const result = await startTunnel(nextPort, 'linkReplaced');
     const timer = setTimeout(() => {
       if (state.status === 'linkReplaced') {
         state.status = 'checking';

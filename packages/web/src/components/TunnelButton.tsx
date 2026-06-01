@@ -17,13 +17,13 @@ function toneForStatus(status: TunnelStatus | undefined) {
 
   switch (status.status) {
     case 'healthy':
+    case 'checking':
       return {
         button: 'text-emerald-600 hover:bg-emerald-50',
         dot: 'bg-emerald-500',
-        label: 'Tunnel healthy',
+        label: status.status === 'healthy' ? 'Tunnel healthy' : 'Checking tunnel health',
         icon: 'ok' as const,
       }
-    case 'checking':
     case 'degraded':
     case 'localUnhealthy':
     case 'linkReplaced':
@@ -79,9 +79,9 @@ function statusDescription(status: TunnelStatus | undefined): string {
 
   switch (status.status) {
     case 'healthy':
-      return 'The local Agent Tower service and the current public URL are both reachable.'
+      return 'The Cloudflare tunnel is running and the local Agent Tower health check passed.'
     case 'checking':
-      return 'The tunnel URL exists. Agent Tower is checking whether the original public URL is reachable.'
+      return 'The Cloudflare tunnel is running. Agent Tower is waiting for the first local health check.'
     case 'degraded':
       return 'The original public URL is currently unreachable. Agent Tower is watching for it to recover and will not generate a new link automatically.'
     case 'localUnhealthy':
@@ -217,7 +217,7 @@ export function TunnelButton() {
             <div className="flex items-start justify-between mb-2">
               <div>
                 <span className={`text-xs font-medium flex items-center gap-1.5 ${
-                  status?.status === 'healthy'
+                  status?.status === 'healthy' || status?.status === 'checking'
                     ? 'text-emerald-600'
                     : status?.status === 'exited' || status?.status === 'error'
                       ? 'text-red-600'
