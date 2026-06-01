@@ -1,6 +1,6 @@
 {
   "name": "@agent-tower/server",
-  "version": "0.4.16-beta.6",
+  "version": "0.4.16-beta.7",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

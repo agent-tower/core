@@ -272,8 +272,7 @@ ToolBlock.displayName = 'ToolBlock'
 // 3b. Tool Calls — 非主线事件折叠组
 const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
   const { t } = useI18n()
-  const failCount = logs.filter(isToolFailure).length + logs.filter(log => log.type === LogType.Error).length
-  const [isOpen, setIsOpen] = useState(failCount > 0)
+  const [isOpen, setIsOpen] = useState(false)
 
   // 提取文件名摘要
   const summaries = logs.map((log) => {
@@ -283,7 +282,6 @@ const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
   })
 
   const detailCount = logs.length
-  const titleClass = failCount > 0 ? 'font-medium text-red-500 shrink-0' : 'font-medium text-neutral-500 shrink-0'
 
   return (
     <div className="my-2">
@@ -294,14 +292,11 @@ const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
         <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>
           <ChevronRight size={11} strokeWidth={2} className="text-neutral-400" />
         </span>
-        <span className={titleClass}>{t('工具调用')}</span>
+        <span className="font-medium text-neutral-500 shrink-0">{t('工具调用')}</span>
         <span className="shrink-0 inline-flex items-center gap-1">
           <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-neutral-100 text-neutral-400 text-[10px] font-medium leading-none tabular-nums">
             {detailCount}
           </span>
-          {failCount > 0 && (
-            <span className="text-red-500 text-[10px]">{t('失败 {count}', { count: failCount })}</span>
-          )}
         </span>
         {!isOpen && (
           <span className="truncate text-neutral-300 font-mono">
