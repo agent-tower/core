@@ -22,6 +22,12 @@ export interface LogEntry {
   title?: string
   isCollapsed?: boolean
   children?: LogEntry[]
+  tool?: {
+    action?: ActionType
+    name?: string
+    id?: string
+    status?: ToolStatus
+  }
   tokenUsage?: {
     totalTokens: number
     modelContextWindow?: number
@@ -171,6 +177,12 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
         title: getToolTitle(entry),
         content: entry.content,
         isCollapsed: entry.metadata?.status === 'success',
+        tool: {
+          action: entry.metadata?.action,
+          name: entry.metadata?.toolName,
+          id: entry.metadata?.toolId,
+          status: entry.metadata?.status,
+        },
       }
 
     case 'error_message':

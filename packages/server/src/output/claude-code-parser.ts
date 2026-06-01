@@ -47,6 +47,8 @@ interface ClaudeCodeMessage {
       name?: string
       input?: unknown
       tool_use_id?: string
+      content?: unknown
+      is_error?: boolean
       // 图片相关字段
       source?: {
         type: 'base64' | 'url' | 'file'
@@ -523,8 +525,14 @@ export class ClaudeCodeParser {
    * 跳过 — 用户消息已由 session.service.ts 在收到请求时主动推送，
    * 这里如果再处理 Claude Code 回显的 user message 会导致重复
    */
-  private handleUserMessage(_msg: ClaudeCodeMessage): void {
-    // noop: 避免与 session.service.ts 的 createUserMessage 重复
+  private handleUserMessage(msg: ClaudeCodeMessage): void {
+    // 用户文本已由 session.service.ts 主动写入 MsgStore，这里只消费
+    // --replay-user-messages 回放的 tool_result block，用来关闭对应工具状态。
+    for (const block of msg.message?.content ?? []) {
+      if (block.type === 'tool_result' && block.tool_use_id) {
+        this.updateToolResultStatus(block.tool_use_id, block.is_error)
+      }
+    }
   }
 
   /**
@@ -532,12 +540,7 @@ export class ClaudeCodeParser {
    */
   private handleResultMessage(msg: ClaudeCodeMessage): void {
     if (msg.subtype === 'tool_result' && msg.tool_use_id) {
-      const index = this.toolEntryMap.get(msg.tool_use_id)
-      if (index !== undefined) {
-        const status: ToolStatus = msg.tool_result?.is_error ? 'failed' : 'success'
-        const patch = updateToolStatus(index, status)
-        this.msgStore.pushPatch(patch)
-      }
+      this.updateToolResultStatus(msg.tool_use_id, msg.tool_result?.is_error)
     }
 
     // 最终错误结果（如 API 重试全部失败后）
@@ -617,6 +620,15 @@ export class ClaudeCodeParser {
     }
   }
 
+  private updateToolResultStatus(toolUseId: string, isError?: boolean): void {
+    const index = this.toolEntryMap.get(toolUseId)
+    if (index === undefined) return
+
+    const status: ToolStatus = isError ? 'failed' : 'success'
+    const patch = updateToolStatus(index, status)
+    this.msgStore.pushPatch(patch)
+  }
+
   /**
    * 处理错误消息
    */
@@ -653,6 +665,7 @@ export class ClaudeCodeParser {
         const index = event.index
         const block = event.content_block
         if (index == null || !block) break
+        if (block.type !== 'text' && block.type !== 'thinking') break
 
         const kind = block.type === 'thinking' ? 'thinking' : 'text'
         const initial = kind === 'thinking' ? (block.thinking || '') : (block.text || '')

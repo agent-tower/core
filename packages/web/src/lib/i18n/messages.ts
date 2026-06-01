@@ -208,6 +208,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Invocation details': '调用详情',
     'Back to room': '返回群聊',
     'Pending approval': '待审批',
+    'Tool Calls': '工具调用',
     'No pending approvals': '暂无待审批项',
     'Requester': '发起者',
     'User': '用户',
@@ -299,6 +300,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '处理中...': 'Processing...',
     '确认': 'Confirm',
     '取消': 'Cancel',
+    '工具调用': 'Tool Calls',
+    '失败 {count}': 'Failed {count}',
     '通用设置': 'General Settings',
     '显示语言': 'Display Language',
     '选择界面语言。设置会保存到本地 Agent Tower 数据库，并在重新打开后继续生效。':

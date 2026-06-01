@@ -273,6 +273,199 @@ describe('Claude Code Parser - provider compatibility', () => {
     expect(entries[0].entryType).toBe('tool_use')
     expect(entries[0].metadata?.status).toBe('success')
   })
+
+  it('should update tool status from replayed user tool_result blocks', () => {
+    const store = new MsgStore()
+    const parser = new ClaudeCodeParser(store)
+
+    feedLine(parser, {
+      type: 'assistant',
+      message: {
+        id: 'msg-1',
+        role: 'assistant',
+        stop_reason: null,
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_read',
+            name: 'Read',
+            input: { file_path: '/tmp/demo.ts' },
+          },
+        ],
+      },
+    })
+
+    feedLine(parser, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_read',
+            content: 'file content',
+            is_error: false,
+          },
+        ],
+      },
+    })
+
+    const entries = getEntries(store)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].entryType).toBe('tool_use')
+    expect(entries[0].metadata?.status).toBe('success')
+  })
+
+  it('should ignore streaming tool_use start until assistant tool summary arrives', () => {
+    const store = new MsgStore()
+    const parser = new ClaudeCodeParser(store)
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: { id: 'msg-1', role: 'assistant' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'tool_use',
+          id: 'toolu_bash',
+          name: 'Bash',
+          input: {},
+        },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"command":"ls"}' },
+      },
+    })
+
+    expect(getAssistantEntries(store)).toHaveLength(0)
+
+    feedLine(parser, {
+      type: 'assistant',
+      message: {
+        id: 'msg-1',
+        role: 'assistant',
+        stop_reason: null,
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_bash',
+            name: 'Bash',
+            input: { command: 'ls' },
+          },
+        ],
+      },
+    })
+
+    const entries = getEntries(store)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].entryType).toBe('tool_use')
+    expect(entries[0].content).toBe('Running: ls')
+    expect(entries[0].metadata?.toolName).toBe('Bash')
+    expect(entries[0].metadata?.toolId).toBe('toolu_bash')
+  })
+
+  it('should update an initially empty streaming text block from deltas', () => {
+    const store = new MsgStore()
+    const parser = new ClaudeCodeParser(store)
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: { id: 'msg-1', role: 'assistant' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: '我来' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: '分析' },
+      },
+    })
+
+    const entries = getAssistantEntries(store)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].content).toBe('我来分析')
+  })
+
+  it('should update an initially empty streaming thinking block from deltas', () => {
+    const store = new MsgStore()
+    const parser = new ClaudeCodeParser(store)
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: { id: 'msg-1', role: 'assistant' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: '' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '先分析' },
+      },
+    })
+
+    feedLine(parser, {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '上下文' },
+      },
+    })
+
+    const entries = getEntries(store)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].entryType).toBe('thinking')
+    expect(entries[0].content).toBe('先分析上下文')
+  })
 })
 
 describe('Claude Code Token - contextWindow 提取', () => {

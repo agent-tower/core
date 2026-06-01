@@ -1,8 +1,9 @@
 import { useState, useMemo, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
-import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
+import { type LogEntry, LogType, type ToolStatus } from '@agent-tower/shared/log-adapter'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
+import { useI18n } from '@/lib/i18n'
 import { streamdownComponents } from '@/lib/streamdown-components'
 import 'streamdown/styles.css'
 
@@ -18,33 +19,85 @@ export interface LogStreamHandle {
 
 // ============ Grouping Logic ============
 
-/** Extract the base tool label without status suffixes like ✓ ✗ */
-function toolBaseLabel(title: string): string {
-  return title.replace(/\s*[✓✗]$/, '').replace(/\s*\(.*\)$/, '').trim()
-}
-
 type RenderItem =
   | { kind: 'single'; log: LogEntry; key: string }
-  | { kind: 'group'; label: string; logs: LogEntry[]; key: string }
+  | { kind: 'execution-group'; logs: LogEntry[]; key: string }
 
-/** Group consecutive Tool entries with the same base label into collapsed groups */
-function groupConsecutiveTools(logs: LogEntry[]): RenderItem[] {
+function getToolStatus(log: LogEntry): ToolStatus | undefined {
+  if (log.tool?.status) return log.tool.status
+  if (log.title?.endsWith('✓')) return 'success'
+  if (log.title?.endsWith('✗')) return 'failed'
+  if (log.title?.includes('待审批')) return 'pending_approval'
+  return undefined
+}
+
+function isToolSuccess(log: LogEntry): boolean {
+  return getToolStatus(log) === 'success'
+}
+
+function isToolFailure(log: LogEntry): boolean {
+  const status = getToolStatus(log)
+  return status === 'failed' || status === 'timed_out'
+}
+
+function isThinkingLog(log: LogEntry): boolean {
+  return log.title === 'Thinking' || log.content.startsWith('Thinking:')
+}
+
+function isExistingToolGroup(log: LogEntry): boolean {
+  return log.type === LogType.Tool && Boolean(log.children?.length)
+}
+
+function isEmptyNonCursorLog(log: LogEntry): boolean {
+  return log.type !== LogType.Cursor && !log.children?.length && log.content.trim() === ''
+}
+
+function shouldSkipProjectedLog(log: LogEntry): boolean {
+  return Boolean(log.tokenUsage) || isEmptyNonCursorLog(log)
+}
+
+function requiresUserAction(log: LogEntry): boolean {
+  const status = getToolStatus(log)
+  if (status === 'pending_approval' || status === 'denied') return true
+
+  const text = `${log.title ?? ''} ${log.content}`.toLowerCase()
+  return text.includes('approval')
+    || text.includes('approve')
+    || text.includes('permission')
+    || text.includes('confirm')
+    || text.includes('input required')
+    || text.includes('requires input')
+    || text.includes('待审批')
+    || text.includes('确认')
+}
+
+function isMainlineLog(log: LogEntry): boolean {
+  if (log.type === LogType.Cursor) return true
+  if (log.type === LogType.User || log.type === LogType.Assistant || isThinkingLog(log)) return true
+  if (log.type === LogType.Info && log.tokenUsage) return false
+  return requiresUserAction(log)
+}
+
+function isExecutionDetailLog(log: LogEntry): boolean {
+  return !isMainlineLog(log) && !isExistingToolGroup(log)
+}
+
+/** Group consecutive non-mainline logs into execution-detail segments */
+function groupExecutionDetails(logs: LogEntry[]): RenderItem[] {
+  const visibleLogs = logs.filter((log) => !shouldSkipProjectedLog(log))
   const items: RenderItem[] = []
   let i = 0
 
-  while (i < logs.length) {
-    const log = logs[i]
+  while (i < visibleLogs.length) {
+    const log = visibleLogs[i]
 
-    // Only group Tool type entries
-    if (log.type === LogType.Tool && log.title) {
-      const baseLabel = toolBaseLabel(log.title)
+    if (isExecutionDetailLog(log)) {
       const group: LogEntry[] = [log]
       let j = i + 1
 
-      // Collect consecutive tools with the same base label
-      while (j < logs.length) {
-        const next = logs[j]
-        if (next.type === LogType.Tool && next.title && toolBaseLabel(next.title) === baseLabel) {
+      while (j < visibleLogs.length) {
+        const next = visibleLogs[j]
+        if (isExecutionDetailLog(next)) {
           group.push(next)
           j++
         } else {
@@ -52,15 +105,7 @@ function groupConsecutiveTools(logs: LogEntry[]): RenderItem[] {
         }
       }
 
-      if (group.length >= 2) {
-        // 2+ consecutive same-type tools → collapse into a group
-        items.push({ kind: 'group', label: baseLabel, logs: group, key: group[0].id })
-      } else {
-        // 1-2 items, render individually
-        for (const g of group) {
-          items.push({ kind: 'single', log: g, key: g.id })
-        }
-      }
+      items.push({ kind: 'execution-group', logs: group, key: group[0].id })
       i = j
     } else {
       items.push({ kind: 'single', log, key: log.id })
@@ -224,9 +269,11 @@ const ToolBlock = memo(({ title, content, type }: { title: string; content: stri
 })
 ToolBlock.displayName = 'ToolBlock'
 
-// 3b. Tool Group — 紧凑的折叠分组
-const ToolGroup = memo(({ label, logs }: { label: string; logs: LogEntry[] }) => {
-  const [isOpen, setIsOpen] = useState(false)
+// 3b. Tool Calls — 非主线事件折叠组
+const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
+  const { t } = useI18n()
+  const failCount = logs.filter(isToolFailure).length + logs.filter(log => log.type === LogType.Error).length
+  const [isOpen, setIsOpen] = useState(failCount > 0)
 
   // 提取文件名摘要
   const summaries = logs.map((log) => {
@@ -235,9 +282,8 @@ const ToolGroup = memo(({ label, logs }: { label: string; logs: LogEntry[] }) =>
     return pathMatch ? pathMatch[1] : firstLine.slice(0, 40)
   })
 
-  // 统计成功/失败
-  const successCount = logs.filter(l => l.title?.endsWith('✓')).length
-  const failCount = logs.filter(l => l.title?.endsWith('✗')).length
+  const detailCount = logs.length
+  const titleClass = failCount > 0 ? 'font-medium text-red-500 shrink-0' : 'font-medium text-neutral-500 shrink-0'
 
   return (
     <div className="my-2">
@@ -248,16 +294,13 @@ const ToolGroup = memo(({ label, logs }: { label: string; logs: LogEntry[] }) =>
         <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>
           <ChevronRight size={11} strokeWidth={2} className="text-neutral-400" />
         </span>
-        <span className="font-medium text-neutral-500 shrink-0">{label}</span>
+        <span className={titleClass}>{t('工具调用')}</span>
         <span className="shrink-0 inline-flex items-center gap-1">
           <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-neutral-100 text-neutral-400 text-[10px] font-medium leading-none tabular-nums">
-            {logs.length}
+            {detailCount}
           </span>
-          {successCount > 0 && (
-            <span className="text-emerald-400 text-[10px]">{successCount}✓</span>
-          )}
           {failCount > 0 && (
-            <span className="text-red-400 text-[10px]">{failCount}✗</span>
+            <span className="text-red-500 text-[10px]">{t('失败 {count}', { count: failCount })}</span>
           )}
         </span>
         {!isOpen && (
@@ -280,15 +323,15 @@ const ToolGroup = memo(({ label, logs }: { label: string; logs: LogEntry[] }) =>
     </div>
   )
 })
-ToolGroup.displayName = 'ToolGroup'
+ExecutionDetailsGroup.displayName = 'ExecutionDetailsGroup'
 
 /** Single item inside a ToolGroup — expandable for full content */
 const ToolGroupItem = memo(({ log, firstLine }: { log: LogEntry; firstLine: string }) => {
   const [isDetailOpen, setIsDetailOpen] = useState(false)
   const hasMultiLineContent = log.content.includes('\n')
 
-  const isSuccess = log.title?.endsWith('✓')
-  const isFailed = log.title?.endsWith('✗')
+  const isSuccess = isToolSuccess(log)
+  const isFailed = isToolFailure(log) || log.type === LogType.Error
 
   return (
     <div>
@@ -358,14 +401,18 @@ ErrorMessage.displayName = 'ErrorMessage'
 // ============ RenderItem renderer ============
 
 function renderItem(item: RenderItem, compact?: boolean): React.ReactNode {
-  if (item.kind === 'group') {
-    return <ToolGroup label={item.label} logs={item.logs} />
+  if (item.kind === 'execution-group') {
+    return <ExecutionDetailsGroup logs={item.logs} />
   }
 
   const log = item.log
 
+  if (log.type === LogType.Tool && log.children?.length) {
+    return <ExecutionDetailsGroup logs={log.children} />
+  }
+
   // 跳过空内容的条目，避免空 div 占据间距
-  if (!log.content && log.type !== LogType.Cursor) return null
+  if (shouldSkipProjectedLog(log)) return null
 
   // 先识别 Thinking 类型（通过 title 或 content 前缀）
   if (log.title === 'Thinking' || log.content.startsWith('Thinking:')) {
@@ -407,7 +454,7 @@ function renderItem(item: RenderItem, compact?: boolean): React.ReactNode {
 
 export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
   function LogStream({ logs, scrollElementRef }, ref) {
-    const items = useMemo(() => groupConsecutiveTools(logs), [logs])
+    const items = useMemo(() => groupExecutionDetails(logs), [logs])
 
     // 暴露 scrollToBottom 给父组件（仅在传入 scrollElementRef 时有效）
     useImperativeHandle(ref, () => ({
@@ -422,11 +469,10 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
 
     return (
       <div className="w-full mx-auto pb-4 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-        {items.map((item) => (
-          <div key={item.key}>
-            {renderItem(item)}
-          </div>
-        ))}
+        {items.map((item) => {
+          const node = renderItem(item)
+          return node ? <div key={item.key}>{node}</div> : null
+        })}
       </div>
     )
   },
