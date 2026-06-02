@@ -69,7 +69,7 @@ describe('TunnelService health state', () => {
     expect(status.lastHealthyAt).toBe(status.lastCheckedAt);
     expect(status.lastRemoteError).toBeNull();
     expect(status.consecutiveRemoteFailures).toBe(0);
-    expect(Tunnel.quick).toHaveBeenCalledWith('http://localhost:18080');
+    expect(Tunnel.quick).toHaveBeenCalledWith('http://localhost:18080', { '--no-autoupdate': true });
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('http://localhost:18080/api/tunnel/health'),
       expect.objectContaining({ method: 'GET' }),
@@ -220,8 +220,8 @@ describe('TunnelService health state', () => {
     expect(second.token).not.toBe(first.token);
     expect(status.generation).toBe(2);
     expect(status.targetPort).toBe(18080);
-    expect(Tunnel.quick).toHaveBeenNthCalledWith(1, 'http://localhost:18080');
-    expect(Tunnel.quick).toHaveBeenNthCalledWith(2, 'http://localhost:18080');
+    expect(Tunnel.quick).toHaveBeenNthCalledWith(1, 'http://localhost:18080', { '--no-autoupdate': true });
+    expect(Tunnel.quick).toHaveBeenNthCalledWith(2, 'http://localhost:18080', { '--no-autoupdate': true });
     expect(Tunnel.quick).not.toHaveBeenCalledWith('http://localhost:443');
     expect(fakeTunnels).toHaveLength(2);
     expect(fakeTunnels[0]?.stopped).toBe(true);
@@ -272,8 +272,31 @@ describe('TunnelService health state', () => {
     const status = TunnelService.getStatus();
     expect(status.status).toBe('healthy');
     expect(status.targetPort).toBe(18080);
-    expect(Tunnel.quick).toHaveBeenCalledWith('http://localhost:18080');
+    expect(Tunnel.quick).toHaveBeenCalledWith('http://localhost:18080', { '--no-autoupdate': true });
     expect(Tunnel.quick).not.toHaveBeenCalledWith('http://localhost:443');
     expect(fakeTunnels).toHaveLength(2);
+  });
+
+  it('keeps cloudflared diagnostics when startup exits before a URL is emitted', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    vi.mocked(Tunnel.quick).mockImplementationOnce(() => {
+      const tunnel = new FakeTunnel();
+      fakeTunnels.push(tunnel);
+      queueMicrotask(() => {
+        tunnel.emit('stderr', 'cloudflared: unsupported architecture\n');
+        tunnel.emit('exit', 1, null);
+      });
+      return tunnel as unknown as CloudflaredTunnel;
+    });
+
+    await expect(TunnelService.start(18080)).rejects.toThrow('cloudflared exited with code 1');
+
+    const status = TunnelService.getStatus();
+    expect(status.status).toBe('error');
+    expect(status.running).toBe(false);
+    expect(status.lastError).toBe('cloudflared exited with code 1');
+    expect(status.lastExitCode).toBe(1);
+    expect(status.lastExitSignal).toBeNull();
+    expect(status.lastProcessOutput).toContain('cloudflared: unsupported architecture');
   });
 });

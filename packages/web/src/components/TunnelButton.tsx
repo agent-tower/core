@@ -111,6 +111,31 @@ function relativeTime(value: string | null | undefined): string {
   return `${Math.round(hours / 24)}d ago`
 }
 
+function present(value: string | null | undefined): string | null {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
+}
+
+export function getTunnelAlertDiagnostics(status: TunnelStatus | undefined): string {
+  if (!status) return ''
+
+  const diagnostics = [
+    present(status.lastLocalError),
+    present(status.lastRemoteError),
+    present(status.lastError),
+  ].filter((value): value is string => value !== null)
+
+  const processOutput = present(status.lastProcessOutput)
+  const shouldShowProcessOutput = Boolean(processOutput)
+    && (status.status === 'error' || status.status === 'exited' || Boolean(present(status.lastError)))
+
+  if (processOutput && shouldShowProcessOutput) {
+    diagnostics.push(processOutput)
+  }
+
+  return diagnostics.join('\n')
+}
+
 export function TunnelButton() {
   const { t } = useI18n()
   const { data: status } = useTunnelStatus()
@@ -131,9 +156,7 @@ export function TunnelButton() {
   const token = status?.token
   const tone = toneForStatus(status)
   const currentStatusText = statusText(status)
-  const remoteError = status?.lastRemoteError
-  const localError = status?.lastLocalError
-  const failedReason = localError || remoteError || status?.lastError
+  const diagnostics = getTunnelAlertDiagnostics(status)
 
   useEffect(() => {
     if (showPopover && buttonRef.current) {
@@ -251,22 +274,28 @@ export function TunnelButton() {
               </div>
             )}
 
-            <div className="flex items-center gap-2">
-              <input
-                readOnly
-                value={shareableUrl ?? status?.url ?? ''}
-                className="flex-1 min-w-0 px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-md text-neutral-700 select-all"
-                onFocus={e => e.target.select()}
-              />
-              <button
-                onClick={handleCopyUrl}
-                disabled={!shareableUrl}
-                className="p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors disabled:opacity-40"
-                title={t('Copy shareable link')}
-              >
-                {copied === 'url' ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-              </button>
-            </div>
+            {shareableUrl || status?.url ? (
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={shareableUrl ?? status?.url ?? ''}
+                  className="flex-1 min-w-0 px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-md text-neutral-700 select-all"
+                  onFocus={e => e.target.select()}
+                />
+                <button
+                  onClick={handleCopyUrl}
+                  disabled={!shareableUrl}
+                  className="p-1.5 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors disabled:opacity-40"
+                  title={t('Copy shareable link')}
+                >
+                  {copied === 'url' ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                </button>
+              </div>
+            ) : (
+              <div className="rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-xs text-neutral-500">
+                {t('No tunnel link available')}
+              </div>
+            )}
 
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-md border border-neutral-200 px-2 py-1.5">
@@ -279,9 +308,9 @@ export function TunnelButton() {
               </div>
             </div>
 
-            {failedReason && (
-              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
-                {failedReason}
+            {diagnostics && (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800 whitespace-pre-wrap break-words max-h-28 overflow-auto">
+                {diagnostics}
               </div>
             )}
 

@@ -41,6 +41,8 @@ execSync('pnpm --filter web build', { cwd: root, stdio: 'inherit' });
 // ── Assemble publish directory ───────────────────────────────────
 console.log('\nAssembling publish package...');
 mkdirSync(publishDir, { recursive: true });
+const serverPkg = JSON.parse(readFileSync(resolve(serverDir, 'package.json'), 'utf-8'));
+const sharedPkg = JSON.parse(readFileSync(resolve(sharedDir, 'package.json'), 'utf-8'));
 
 // 1. 复制 server 编译产物
 cpSync(resolve(serverDir, 'dist'), resolve(publishDir, 'dist'), { recursive: true });
@@ -111,10 +113,35 @@ const enginesFullDest = resolve(prismaDest, 'node_modules/@prisma');
 mkdirSync(enginesFullDest, { recursive: true });
 cpSync(enginesFullSrc, enginesFullDest, { recursive: true, dereference: true });
 
-// 6. 生成发布用 package.json
-const serverPkg = JSON.parse(readFileSync(resolve(serverDir, 'package.json'), 'utf-8'));
-const sharedPkg = JSON.parse(readFileSync(resolve(sharedDir, 'package.json'), 'utf-8'));
+// 8. 将 cloudflared 预打包（包含安装期下载的二进制，避免生产环境找不到或重新下载）
+const cloudflaredVersion = serverPkg.dependencies.cloudflared.replace(/^[~^]/, '');
+const cloudflaredPnpmDir = resolve(root, `node_modules/.pnpm/cloudflared@${cloudflaredVersion}/node_modules/cloudflared`);
+const cloudflaredDest = resolve(publishDir, 'node_modules/cloudflared');
+mkdirSync(cloudflaredDest, { recursive: true });
+cpSync(cloudflaredPnpmDir, cloudflaredDest, {
+  recursive: true,
+  dereference: true,
+  filter: (src) => {
+    const rel = src.slice(cloudflaredPnpmDir.length);
+    return !rel.includes('node_modules');
+  },
+});
+const cloudflaredBin = resolve(cloudflaredDest, process.platform === 'win32' ? 'bin/cloudflared.exe' : 'bin/cloudflared');
+if (!existsSync(cloudflaredBin)) {
+  throw new Error(`cloudflared binary was not copied: ${cloudflaredBin}`);
+}
+chmodSync(cloudflaredBin, 0o755);
+const cloudflaredPkgPath = resolve(cloudflaredDest, 'package.json');
+const cloudflaredPkg = JSON.parse(readFileSync(cloudflaredPkgPath, 'utf-8'));
+cloudflaredPkg.files = [...new Set([...(cloudflaredPkg.files ?? []), 'bin'])];
+if (cloudflaredPkg.scripts) {
+  delete cloudflaredPkg.scripts.postinstall;
+}
+writeFileSync(cloudflaredPkgPath, JSON.stringify(cloudflaredPkg, null, 2) + '\n');
+rmSync(resolve(cloudflaredDest, 'scripts/postinstall.mjs'), { force: true });
+console.log(`Bundled cloudflared@${cloudflaredVersion} with binary`);
 
+// 9. 生成发布用 package.json
 const deps = { ...serverPkg.dependencies };
 // 替换 workspace 协议为真实版本
 deps['@agent-tower/shared'] = sharedPkg.version;
@@ -123,7 +150,7 @@ deps['prisma'] = serverPkg.devDependencies.prisma;
 // node-pty 保留在 dependencies 中（bundledDependencies 要求包必须同时在 dependencies 中声明）
 // bundled 的预编译版本会优先使用，npm 不会再触发远程安装/node-gyp
 
-// 8. 将 @shitiandmw/node-pty 预打包（含多平台 prebuilds，避免用户需要 Python/node-gyp/MSVC）
+// 10. 将 @shitiandmw/node-pty 预打包（含多平台 prebuilds，避免用户需要 Python/node-gyp/MSVC）
 const nodePtyVersion = serverPkg.dependencies['@shitiandmw/node-pty'];
 const nodePtyPnpmDir = resolve(root, `node_modules/.pnpm/@shitiandmw+node-pty@${nodePtyVersion}/node_modules/@shitiandmw/node-pty`);
 const nodePtyDest = resolve(publishDir, 'node_modules/@shitiandmw/node-pty');
@@ -176,6 +203,7 @@ const publishPkg = {
     'node_modules/@agent-tower/',
     'node_modules/@prisma/',
     'node_modules/@shitiandmw/',
+    'node_modules/cloudflared/',
     'node_modules/prisma/',
   ],
   scripts: {
@@ -185,7 +213,7 @@ const publishPkg = {
   optionalDependencies: {
     fsevents: '~2.3.3',
   },
-  bundledDependencies: ['@agent-tower/shared', '@prisma/client', '@shitiandmw/node-pty', 'prisma'],
+  bundledDependencies: ['@agent-tower/shared', '@prisma/client', '@shitiandmw/node-pty', 'cloudflared', 'prisma'],
   engines: {
     node: '>=18.0.0',
   },

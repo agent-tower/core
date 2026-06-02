@@ -157,6 +157,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Generating...': '生成中...',
     'Token protected': '受 Token 保护',
     'Copy shareable link': '复制分享链接',
+    'No tunnel link available': '暂无可用隧道链接',
     'Hide token': '隐藏 Token',
     'Show token': '显示 Token',
     'Copy token': '复制 Token',

@@ -24,7 +24,10 @@ export interface TunnelStatus {
   lastRemoteError: string | null;
   lastLocalError: string | null;
   lastExitAt: string | null;
+  lastExitCode: number | null;
+  lastExitSignal: string | null;
   lastError: string | null;
+  lastProcessOutput: string | null;
   consecutiveRemoteFailures: number;
   consecutiveLocalFailures: number;
   canRegenerate: boolean;
@@ -48,9 +51,12 @@ interface TunnelState {
   lastRemoteError: string | null;
   lastLocalError: string | null;
   lastExitAt: string | null;
+  lastExitCode: number | null;
+  lastExitSignal: string | null;
   consecutiveRemoteFailures: number;
   consecutiveLocalFailures: number;
   lastError: string | null;
+  lastProcessOutput: string | null;
 }
 
 type HealthCheckResult = {
@@ -62,6 +68,11 @@ const HEALTH_CHECK_INTERVAL_MS = 10000;
 const HEALTH_CHECK_TIMEOUT_MS = 5000;
 const LOCAL_HEALTH_PATH = '/api/tunnel/health';
 const LINK_REPLACED_STATUS_TTL_MS = 4000;
+const TUNNEL_STARTUP_TIMEOUT_MS = 30000;
+const TUNNEL_OUTPUT_MAX_CHARS = 4000;
+const TUNNEL_QUICK_OPTIONS = {
+  '--no-autoupdate': true,
+} as const;
 
 const state: TunnelState = {
   url: null,
@@ -81,9 +92,12 @@ const state: TunnelState = {
   lastRemoteError: null,
   lastLocalError: null,
   lastExitAt: null,
+  lastExitCode: null,
+  lastExitSignal: null,
   consecutiveRemoteFailures: 0,
   consecutiveLocalFailures: 0,
   lastError: null,
+  lastProcessOutput: null,
 };
 
 function nowIso(): string {
@@ -94,6 +108,36 @@ function sanitizeError(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return 'Unknown error';
+}
+
+function sanitizeProcessOutput(output: string): string {
+  return output
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .join('\n')
+    .trim();
+}
+
+function appendProcessOutput(source: 'stdout' | 'stderr', output: string): void {
+  const sanitized = sanitizeProcessOutput(output);
+  if (!sanitized) return;
+
+  const nextOutput = `${state.lastProcessOutput ? `${state.lastProcessOutput}\n` : ''}[${source}] ${sanitized}`;
+  state.lastProcessOutput = nextOutput.length > TUNNEL_OUTPUT_MAX_CHARS
+    ? nextOutput.slice(nextOutput.length - TUNNEL_OUTPUT_MAX_CHARS)
+    : nextOutput;
+}
+
+function formatExitDetails(code: number | null | undefined, signal: NodeJS.Signals | null | undefined): string {
+  if (typeof code === 'number') return `code ${code}`;
+  if (signal) return `signal ${signal}`;
+  return 'unknown exit status';
+}
+
+function buildExitErrorMessage(code: number | null | undefined, signal: NodeJS.Signals | null | undefined): string {
+  return `cloudflared exited with ${formatExitDetails(code, signal)}`;
 }
 
 function clearHealthTimer(): void {
@@ -119,7 +163,10 @@ function resetRuntimeState(nextStatus: TunnelHealthStatus): void {
   state.lastRemoteError = null;
   state.lastLocalError = null;
   state.lastExitAt = null;
+  state.lastExitCode = null;
+  state.lastExitSignal = null;
   state.lastError = null;
+  state.lastProcessOutput = null;
   state.consecutiveRemoteFailures = 0;
   state.consecutiveLocalFailures = 0;
 }
@@ -223,8 +270,11 @@ function startHealthChecks(): void {
   state.healthTimer.unref?.();
 }
 
-function attachTunnelEvents(tunnel: Tunnel): void {
-  tunnel.on('exit', () => {
+function attachTunnelDiagnostics(tunnel: Tunnel): void {
+  tunnel.on('stdout', (output) => appendProcessOutput('stdout', output));
+  tunnel.on('stderr', (output) => appendProcessOutput('stderr', output));
+
+  tunnel.on('exit', (code, signal) => {
     if (state.tunnel !== tunnel) return;
     clearHealthTimer();
     state.status = 'exited';
@@ -236,6 +286,9 @@ function attachTunnelEvents(tunnel: Tunnel): void {
     state.targetPort = null;
     state.targetOrigin = null;
     state.lastExitAt = nowIso();
+    state.lastExitCode = code ?? null;
+    state.lastExitSignal = signal ?? null;
+    state.lastError = buildExitErrorMessage(code, signal);
   });
 
   tunnel.on('error', (err) => {
@@ -253,35 +306,56 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
   state.status = 'starting';
   state.lastError = null;
   state.lastExitAt = null;
+  state.lastExitCode = null;
+  state.lastExitSignal = null;
+  state.lastProcessOutput = null;
   state.targetPort = port;
   state.targetOrigin = targetOrigin;
 
-  const tunnel = Tunnel.quick(targetOrigin);
+  const tunnel = Tunnel.quick(targetOrigin, TUNNEL_QUICK_OPTIONS);
+  state.tunnel = tunnel;
+  attachTunnelDiagnostics(tunnel);
 
   let url: string;
   try {
     url = await new Promise<string>((resolve, reject) => {
+      let settled = false;
       const timeout = setTimeout(() => {
+        settle(reject, new Error('Tunnel startup timed out (30s)'));
+        state.tunnel = null;
         tunnel.stop();
-        reject(new Error('Tunnel startup timed out (30s)'));
-      }, 30000);
+      }, TUNNEL_STARTUP_TIMEOUT_MS);
 
-      tunnel.once('url', (nextUrl) => {
+      const cleanup = () => {
         clearTimeout(timeout);
-        resolve(nextUrl);
-      });
+        tunnel.off('url', onUrl);
+        tunnel.off('error', onError);
+        tunnel.off('exit', onExit);
+      };
 
-      tunnel.once('error', (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
+      const settle = <T>(done: (value: T) => void, value: T) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        done(value);
+      };
+
+      const onUrl = (nextUrl: string) => settle(resolve, nextUrl);
+      const onError = (err: Error) => settle(reject, err);
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        settle(reject, new Error(buildExitErrorMessage(code, signal)));
+      };
+
+      tunnel.once('url', onUrl);
+      tunnel.once('error', onError);
+      tunnel.once('exit', onExit);
     });
   } catch (err) {
+    state.tunnel = null;
     tunnel.stop();
     clearHealthTimer();
     state.status = 'error';
     state.url = null;
-    state.tunnel = null;
     state.startedAt = null;
     state.token = null;
     state.healthSecret = null;
@@ -304,8 +378,6 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
   state.lastLocalError = null;
   state.consecutiveRemoteFailures = 0;
   state.consecutiveLocalFailures = 0;
-
-  attachTunnelEvents(tunnel);
   startHealthChecks();
 
   return { url, token: state.token };
@@ -348,7 +420,10 @@ export const TunnelService = {
       lastRemoteError: state.lastRemoteError,
       lastLocalError: state.lastLocalError,
       lastExitAt: state.lastExitAt,
+      lastExitCode: state.lastExitCode,
+      lastExitSignal: state.lastExitSignal,
       lastError: state.lastError,
+      lastProcessOutput: state.lastProcessOutput,
       consecutiveRemoteFailures: state.consecutiveRemoteFailures,
       consecutiveLocalFailures: state.consecutiveLocalFailures,
       canRegenerate: state.status !== 'starting',
@@ -398,6 +473,9 @@ export const TunnelService = {
     resetRuntimeState('stopped');
     state.generation = 0;
     state.lastExitAt = null;
+    state.lastExitCode = null;
+    state.lastExitSignal = null;
     state.lastError = null;
+    state.lastProcessOutput = null;
   },
 };

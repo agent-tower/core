@@ -25,7 +25,10 @@ export interface TunnelStatus {
   lastRemoteError: string | null
   lastLocalError: string | null
   lastExitAt: string | null
+  lastExitCode: number | null
+  lastExitSignal: string | null
   lastError: string | null
+  lastProcessOutput: string | null
   consecutiveRemoteFailures: number
   consecutiveLocalFailures: number
   canRegenerate: boolean
