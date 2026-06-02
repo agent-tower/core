@@ -637,7 +637,7 @@ function RoomChatMessage({
   const workRequestCount = message.workRequestIds?.length ?? 0
   const headerAddon = (
     <>
-      {isUser && workRequestCount > 0 && mentions.length === 0 && (
+      {!isSystem && workRequestCount > 0 && mentions.length === 0 && (
         <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-600">
           {t('Work requests')}: {workRequestCount}
         </span>
@@ -673,14 +673,6 @@ function RoomChatMessage({
         tone={isSystem ? 'system' : undefined}
         onOpenImage={onOpenImage}
       />
-
-      {!isUser && !isSystem && workRequestCount > 0 && mentions.length === 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
-            {t('Work requests')}: {workRequestCount}
-          </span>
-        </div>
-      )}
     </RoomMessageRow>
   )
 }
