@@ -56,6 +56,14 @@ function errorEntry(id: string, content: string): LogEntry {
   }
 }
 
+function infoEntry(id: string, content: string): LogEntry {
+  return {
+    id,
+    type: LogType.Info,
+    content,
+  }
+}
+
 describe('LogStream tool grouping', () => {
   let container: HTMLDivElement
   let root: Root
@@ -137,6 +145,21 @@ describe('LogStream tool grouping', () => {
     // tools before and after the error should be in separate groups
     expect(getToolGroupButtons(container)).toHaveLength(2)
     expect(container.textContent).toContain('Error: something went wrong')
+  })
+
+  it('renders info error text as normal log text, not inside a 工具调用 group', async () => {
+    const logs: LogEntry[] = [
+      infoEntry('info-1', 'System initialized with model: Auto'),
+      infoEntry('info-2', 'Error: provider request failed'),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} />)
+    })
+
+    expect(getToolGroupButtons(container)).toHaveLength(0)
+    expect(container.textContent).toContain('System initialized with model: Auto')
+    expect(container.textContent).toContain('Error: provider request failed')
   })
 
   it('still lifts tools with explicit pending approval status out of the execution group', async () => {

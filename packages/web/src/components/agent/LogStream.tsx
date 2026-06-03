@@ -70,7 +70,9 @@ function isMainlineLog(log: LogEntry): boolean {
 }
 
 function isExecutionDetailLog(log: LogEntry): boolean {
-  return !isMainlineLog(log) && !isExistingToolGroup(log)
+  if (isExistingToolGroup(log)) return false
+  if (log.type !== LogType.Tool && log.type !== LogType.Action) return false
+  return !isMainlineLog(log)
 }
 
 /** Group consecutive non-mainline logs into execution-detail segments */
