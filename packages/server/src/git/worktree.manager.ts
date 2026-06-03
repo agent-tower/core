@@ -68,6 +68,20 @@ export interface WorktreeRemoveResult {
   managed: boolean;
 }
 
+export interface BranchDeleteOptions {
+  /** Branches that must never be deleted, such as the project main/base branch. */
+  protectedBranches?: Array<string | null | undefined>;
+}
+
+export interface BranchDeleteResult {
+  /** Outcome of the delete attempt. */
+  status: 'deleted' | 'empty' | 'protected' | 'missing' | 'checked_out' | 'failed';
+  /** Normalized branch name that was evaluated. */
+  branchName: string;
+  /** Optional detail for checked_out/failed outcomes. */
+  reason?: string;
+}
+
 // ─── WorktreeManager ──────────────────────────────────────────────────────────
 
 export class WorktreeManager {
@@ -153,6 +167,65 @@ export class WorktreeManager {
   }
 
   // ── Write Operations ────────────────────────────────────────────────────────
+
+  /**
+   * Delete a local branch when it is safe to discard.
+   *
+   * This intentionally skips protected base branches, missing branches, and
+   * branches currently checked out in the main repo or any registered worktree.
+   */
+  async deleteBranchIfSafe(
+    branchName: string | null | undefined,
+    options: BranchDeleteOptions = {},
+  ): Promise<BranchDeleteResult> {
+    const normalizedBranch = branchName?.trim() ?? '';
+    if (!normalizedBranch) {
+      return { status: 'empty', branchName: normalizedBranch };
+    }
+
+    const protectedBranches = new Set(
+      ['main', 'master', ...(options.protectedBranches ?? [])]
+        .map((branch) => branch?.trim())
+        .filter((branch): branch is string => Boolean(branch))
+    );
+    if (protectedBranches.has(normalizedBranch)) {
+      return { status: 'protected', branchName: normalizedBranch };
+    }
+
+    const exists = await this.checkBranchExists(normalizedBranch);
+    if (!exists) {
+      return { status: 'missing', branchName: normalizedBranch };
+    }
+
+    const currentBranch = await this.getCurrentBranch();
+    if (currentBranch === normalizedBranch) {
+      return {
+        status: 'checked_out',
+        branchName: normalizedBranch,
+        reason: 'branch is checked out in the main repository',
+      };
+    }
+
+    const checkedOutWorktree = await this.findWorktreeForBranch(normalizedBranch);
+    if (checkedOutWorktree) {
+      return {
+        status: 'checked_out',
+        branchName: normalizedBranch,
+        reason: `branch is checked out at ${checkedOutWorktree.path}`,
+      };
+    }
+
+    try {
+      await execGit(this.repoPath, ['branch', '-D', normalizedBranch]);
+      return { status: 'deleted', branchName: normalizedBranch };
+    } catch (err) {
+      return {
+        status: 'failed',
+        branchName: normalizedBranch,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
 
   /**
    * Create a new worktree with a new branch.
@@ -620,6 +693,25 @@ export class WorktreeManager {
     const exists = await this.checkBranchExists(branchName);
     if (!exists) {
       throw new BranchNotFoundError(branchName);
+    }
+  }
+
+  private async getCurrentBranch(): Promise<string | null> {
+    try {
+      const output = await execGit(this.repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+      const current = output.trim();
+      return current && current !== 'HEAD' ? current : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async findWorktreeForBranch(branchName: string): Promise<WorktreeInfo | null> {
+    try {
+      const worktrees = await this.listWorktrees();
+      return worktrees.find((worktree) => worktree.branch === branchName) ?? null;
+    } catch {
+      return null;
     }
   }
 

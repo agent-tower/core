@@ -134,3 +134,64 @@ describe('WorktreeManager.remove', () => {
     expect(fs.existsSync(path.join(unmanagedPath, 'keep.txt'))).toBe(true);
   });
 });
+
+describe('WorktreeManager.deleteBranchIfSafe', () => {
+  let tempDir: string;
+  let repoPath: string;
+  let manager: WorktreeManager;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-worktree-manager-'));
+    repoPath = path.join(tempDir, 'repo');
+    initRepo(repoPath);
+    manager = new WorktreeManager(repoPath);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('deletes an existing local task branch', async () => {
+    git(repoPath, ['branch', 'at/delete-me']);
+
+    const result = await manager.deleteBranchIfSafe('at/delete-me');
+
+    expect(result).toMatchObject({
+      status: 'deleted',
+      branchName: 'at/delete-me',
+    });
+    await expect(manager.checkBranchExists('at/delete-me')).resolves.toBe(false);
+  });
+
+  it('skips empty, protected, and missing branches', async () => {
+    await expect(manager.deleteBranchIfSafe('')).resolves.toMatchObject({
+      status: 'empty',
+      branchName: '',
+    });
+    await expect(manager.deleteBranchIfSafe('main')).resolves.toMatchObject({
+      status: 'protected',
+      branchName: 'main',
+    });
+    await expect(manager.deleteBranchIfSafe('develop', { protectedBranches: ['develop'] })).resolves.toMatchObject({
+      status: 'protected',
+      branchName: 'develop',
+    });
+    await expect(manager.deleteBranchIfSafe('at/missing')).resolves.toMatchObject({
+      status: 'missing',
+      branchName: 'at/missing',
+    });
+  });
+
+  it('skips branches that are currently checked out in a worktree', async () => {
+    const worktreePath = await manager.create('at/checked-out');
+
+    const result = await manager.deleteBranchIfSafe('at/checked-out');
+
+    expect(result).toMatchObject({
+      status: 'checked_out',
+      branchName: 'at/checked-out',
+    });
+    expect(result.reason).toContain(worktreePath);
+    await expect(manager.checkBranchExists('at/checked-out')).resolves.toBe(true);
+  });
+});

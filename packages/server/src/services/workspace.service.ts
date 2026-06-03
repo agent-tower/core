@@ -1088,13 +1088,18 @@ export class WorkspaceService {
           }
         }
 
-        // Task 已 DONE，branch 不再需要，删除
-        if (workspace.branchName) {
-          try {
-            await execGit(workspace.task.project.repoPath, ['branch', '-D', workspace.branchName]);
-          } catch {
-            // branch 可能已不存在，忽略
-          }
+        // Task 已 DONE，branch 不再需要，删除。安全 helper 会跳过 base/main/master/current/missing。
+        const branchDeleteResult = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
+          protectedBranches: [workspace.task.project.mainBranch, workspace.baseBranch],
+        });
+        if (branchDeleteResult.status === 'failed') {
+          console.warn(
+            `[WorkspaceService] cleanup: failed to delete branch ${branchDeleteResult.branchName} for workspace ${workspace.id}: ${branchDeleteResult.reason}`,
+          );
+        } else if (branchDeleteResult.status === 'checked_out') {
+          console.warn(
+            `[WorkspaceService] cleanup: skipped checked-out branch ${branchDeleteResult.branchName} for workspace ${workspace.id}: ${branchDeleteResult.reason}`,
+          );
         }
 
         await prisma.workspace.delete({ where: { id: workspace.id } });

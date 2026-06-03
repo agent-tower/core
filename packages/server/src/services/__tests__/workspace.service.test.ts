@@ -15,6 +15,7 @@ const {
   createWorktreeMock,
   ensureWorktreeExistsMock,
   removeWorktreeMock,
+  deleteBranchIfSafeMock,
   mergeWorktreeMock,
   mergeIntoWorktreeMock,
   execGitMock,
@@ -22,6 +23,7 @@ const {
   createWorktreeMock: vi.fn(),
   ensureWorktreeExistsMock: vi.fn(),
   removeWorktreeMock: vi.fn(),
+  deleteBranchIfSafeMock: vi.fn(),
   mergeWorktreeMock: vi.fn(),
   mergeIntoWorktreeMock: vi.fn(),
   execGitMock: vi.fn(),
@@ -33,6 +35,7 @@ vi.mock('../../git/worktree.manager.js', () => ({
       create: createWorktreeMock,
       ensureWorktreeExists: ensureWorktreeExistsMock,
       remove: removeWorktreeMock,
+      deleteBranchIfSafe: deleteBranchIfSafeMock,
       getDiff: vi.fn(),
       rebase: vi.fn(),
       getGitOperationStatus: vi.fn(),
@@ -164,6 +167,10 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
       status: 'removed',
       path: worktreePath,
       managed: true,
+    }));
+    deleteBranchIfSafeMock.mockImplementation(async (branchName: string) => ({
+      status: 'deleted',
+      branchName,
     }));
     mergeWorktreeMock.mockResolvedValue({ sha: 'root-merge-sha', taskBranch: 'team-main' });
     mergeIntoWorktreeMock.mockResolvedValue({
@@ -667,7 +674,9 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
 
     expect(cleaned).toBe(1);
     expect(removeWorktreeMock).toHaveBeenCalledWith(workspace.worktreePath);
-    expect(execGitMock).toHaveBeenCalledWith(project.repoPath, ['branch', '-D', workspace.branchName]);
+    expect(deleteBranchIfSafeMock).toHaveBeenCalledWith(workspace.branchName, {
+      protectedBranches: [project.mainBranch, workspace.baseBranch],
+    });
     await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toBeNull();
   });
 
@@ -704,7 +713,9 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
 
     expect(cleaned).toBe(1);
     expect(removeWorktreeMock).toHaveBeenCalledWith(workspace.worktreePath);
-    expect(execGitMock).toHaveBeenCalledWith(project.repoPath, ['branch', '-D', workspace.branchName]);
+    expect(deleteBranchIfSafeMock).toHaveBeenCalledWith(workspace.branchName, {
+      protectedBranches: [project.mainBranch, workspace.baseBranch],
+    });
     await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toBeNull();
   });
 
@@ -760,7 +771,7 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     const cleaned = await service.cleanup();
 
     expect(cleaned).toBe(0);
-    expect(execGitMock).not.toHaveBeenCalledWith(project.repoPath, ['branch', '-D', workspace.branchName]);
+    expect(deleteBranchIfSafeMock).not.toHaveBeenCalledWith(workspace.branchName, expect.anything());
     await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({
       id: workspace.id,
     });

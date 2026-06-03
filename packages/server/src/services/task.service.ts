@@ -273,8 +273,9 @@ export class TaskService {
    *
    * 1. 停止所有 RUNNING/PENDING 状态的 Session
    * 2. 清理所有关联 Workspace 的 git worktree
-   * 3. 级联删除数据库记录
-   * 4. 通过 EventBus 通知前端实时删除
+   * 3. 清理所有关联 Workspace 的本地任务分支
+   * 4. 级联删除数据库记录
+   * 5. 通过 EventBus 通知前端实时删除
    */
   async delete(id: string) {
     const task = await prisma.task.findUnique({
@@ -306,9 +307,9 @@ export class TaskService {
     }
 
     // 2. 清理所有 Workspace 的 worktree
+    const worktreeManager = new WorktreeManager(task.project.repoPath);
     for (const workspace of task.workspaces) {
       try {
-        const worktreeManager = new WorktreeManager(task.project.repoPath);
         await worktreeManager.remove(workspace.worktreePath);
       } catch (err) {
         console.warn(
@@ -318,10 +319,29 @@ export class TaskService {
       }
     }
 
-    // 3. 级联删除数据库记录
+    // 3. 清理所有 Workspace 的本地任务分支。分支清理失败不阻断任务删除。
+    for (const workspace of task.workspaces) {
+      const result = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
+        protectedBranches: [task.project.mainBranch, workspace.baseBranch],
+      });
+
+      if (result.status === 'failed') {
+        console.warn(
+          `[TaskService] Failed to delete branch ${result.branchName} for workspace ${workspace.id} during task delete:`,
+          result.reason
+        );
+      } else if (result.status === 'checked_out') {
+        console.warn(
+          `[TaskService] Skipped deleting checked-out branch ${result.branchName} for workspace ${workspace.id} during task delete:`,
+          result.reason
+        );
+      }
+    }
+
+    // 4. 级联删除数据库记录
     await prisma.task.delete({ where: { id } });
 
-    // 4. 通知前端
+    // 5. 通知前端
     this.eventBus.emit('task:deleted', {
       taskId: id,
       projectId: task.projectId,
