@@ -47,6 +47,15 @@ function getToolGroupButtons(container: HTMLElement) {
   ))
 }
 
+function errorEntry(id: string, content: string): LogEntry {
+  return {
+    id,
+    type: LogType.Error,
+    title: 'Error',
+    content,
+  }
+}
+
 describe('LogStream tool grouping', () => {
   let container: HTMLDivElement
   let root: Root
@@ -84,6 +93,50 @@ describe('LogStream tool grouping', () => {
     expect(groupButtons[0].textContent).toContain('3')
     expect(groupButtons[0].textContent).toContain('MCP tool call: agent-tower/list_room')
     expect(groupButtons[0].textContent).toContain('MCP tool call: agent-tower/post_room')
+  })
+
+  it('renders a single error log as error block, not inside a 工具调用 group', async () => {
+    const logs: LogEntry[] = [
+      errorEntry('err-1', 'Session terminated unexpectedly'),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} />)
+    })
+
+    expect(getToolGroupButtons(container)).toHaveLength(0)
+    expect(container.textContent).toContain('Session terminated unexpectedly')
+  })
+
+  it('renders multiple consecutive error logs as error blocks, not grouped under 工具调用', async () => {
+    const logs: LogEntry[] = [
+      errorEntry('err-1', 'Error: connection refused'),
+      errorEntry('err-2', 'Error: timeout exceeded'),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} />)
+    })
+
+    expect(getToolGroupButtons(container)).toHaveLength(0)
+    expect(container.textContent).toContain('Error: connection refused')
+    expect(container.textContent).toContain('Error: timeout exceeded')
+  })
+
+  it('keeps error logs separate from adjacent tool logs in grouping', async () => {
+    const logs: LogEntry[] = [
+      successTool('tool-1', 'MCP tool call: agent-tower/list_room_messages'),
+      errorEntry('err-1', 'Error: something went wrong'),
+      successTool('tool-2', 'MCP tool call: agent-tower/post_room_message'),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} />)
+    })
+
+    // tools before and after the error should be in separate groups
+    expect(getToolGroupButtons(container)).toHaveLength(2)
+    expect(container.textContent).toContain('Error: something went wrong')
   })
 
   it('still lifts tools with explicit pending approval status out of the execution group', async () => {

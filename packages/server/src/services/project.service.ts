@@ -256,7 +256,7 @@ export class ProjectService {
    */
   async findAll(params: PaginationParams = {}): Promise<PaginatedResult<any>> {
     const page = Math.max(1, params.page || 1);
-    const limit = Math.min(100, Math.max(1, params.limit || 20));
+    const limit = Math.min(1000, Math.max(1, params.limit || 20));
     const skip = (page - 1) * limit;
     const where = params.includeArchived ? undefined : { archivedAt: null };
 

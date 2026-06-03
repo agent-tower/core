@@ -64,6 +64,7 @@ function requiresUserAction(log: LogEntry): boolean {
 function isMainlineLog(log: LogEntry): boolean {
   if (log.type === LogType.Cursor) return true
   if (log.type === LogType.User || log.type === LogType.Assistant || isThinkingLog(log)) return true
+  if (log.type === LogType.Error) return true
   if (log.type === LogType.Info && log.tokenUsage) return false
   return requiresUserAction(log)
 }

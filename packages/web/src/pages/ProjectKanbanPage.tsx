@@ -57,6 +57,8 @@ const HEADER_TITLE = (
 const MIN_SIDEBAR_WIDTH = 260
 const MAX_SIDEBAR_WIDTH = 600
 const DEFAULT_SIDEBAR_WIDTH = 400
+const PROJECT_LIST_LIMIT = 100
+const TASK_LIST_LIMIT = 1000
 
 /** 分页响应类型 */
 interface PaginatedResponse<T> {
@@ -102,7 +104,7 @@ export function ProjectKanbanPage() {
   const { data: providersData, isLoading: isProvidersLoading } = useProviders()
 
   // === API 数据 ===
-  const { data: projectsData, isLoading: isProjectsLoading } = useProjects()
+  const { data: projectsData, isLoading: isProjectsLoading } = useProjects({ limit: PROJECT_LIST_LIMIT })
   const projects = useMemo(() => projectsData?.data ?? [], [projectsData?.data])
   const uiProjects = useMemo(() => projects.map(adaptProject), [projects])
   const effectiveFilterProjectId = filterProjectId && projects.some(project => project.id === filterProjectId)
@@ -112,6 +114,7 @@ export function ProjectKanbanPage() {
   // 当选中了某个项目时，直接用 useTasks 获取该项目的任务
   const { data: filteredTasksData, isLoading: isFilteredTasksLoading } = useTasks(
     effectiveFilterProjectId ?? '',
+    { limit: TASK_LIST_LIMIT },
   )
 
   // 当未选中项目时（All Projects），为每个项目获取任务
@@ -119,11 +122,11 @@ export function ProjectKanbanPage() {
     queries: effectiveFilterProjectId
       ? [] // 已选中项目时不需要这些查询
       : projects.map(p => ({
-          queryKey: queryKeys.tasks.list(p.id),
+          queryKey: queryKeys.tasks.list(p.id, { limit: TASK_LIST_LIMIT }),
           queryFn: () =>
             apiClient.get<PaginatedResponse<Task>>(
               `/projects/${p.id}/tasks`,
-              { params: { limit: '500' } },
+              { params: { limit: String(TASK_LIST_LIMIT) } },
             ),
         })),
   })
