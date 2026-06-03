@@ -13,6 +13,7 @@ import {
   Clock3,
   ExternalLink,
   FileText,
+  LockKeyhole,
   Paperclip,
   Users,
   X,
@@ -75,6 +76,7 @@ function createPendingRoomMessage(teamRunId: string, input: PostRoomMessageInput
     senderId: input.senderId ?? null,
     senderInvocationId: input.senderInvocationId ?? null,
     kind: input.kind ?? ((input.mentions?.length ?? 0) > 0 ? 'work_request' : 'chat'),
+    visibility: 'PUBLIC',
     content: input.content,
     mentions: input.mentions ?? [],
     workRequestIds: [],
@@ -164,6 +166,11 @@ function memberMatchesQuery(member: TeamMember, query: string) {
 
 function getMentionLabel(mention: StructuredMention, memberById: Map<string, TeamMember>) {
   return mention.label ?? memberById.get(mention.memberId)?.name ?? mention.memberId
+}
+
+function getPrivateRecipientLabels(message: RoomMessage, memberById: Map<string, TeamMember>) {
+  return (message.recipientMemberIds ?? [])
+    .map((memberId) => memberById.get(memberId)?.name ?? memberId)
 }
 
 function getDisplayContent(message: RoomMessage, memberById: Map<string, TeamMember>) {
@@ -620,12 +627,14 @@ function RoomChatMessage({
   message,
   senderName,
   senderMember,
+  memberById,
   displayContent,
   onOpenImage,
 }: {
   message: RoomMessage
   senderName: string
   senderMember?: TeamMember | null
+  memberById: Map<string, TeamMember>
   displayContent: string
   onOpenImage: (attachments: Attachment[], index: number) => void
 }) {
@@ -635,8 +644,19 @@ function RoomChatMessage({
   const pendingStatus = isPendingRoomMessage(message) ? message.pendingStatus : null
   const mentions = message.mentions ?? []
   const workRequestCount = message.workRequestIds?.length ?? 0
+  const isPrivate = message.visibility === 'PRIVATE'
+  const recipientLabels = isPrivate ? getPrivateRecipientLabels(message, memberById) : []
   const headerAddon = (
     <>
+      {isPrivate && (
+        <span
+          className="ml-0.5 inline-flex max-w-[18rem] shrink items-center gap-1 rounded-full bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sky-700"
+          title={recipientLabels.join(', ')}
+        >
+          <LockKeyhole size={10} />
+          <span className="truncate">{t('Private')}{recipientLabels.length > 0 ? `: ${recipientLabels.join(', ')}` : ''}</span>
+        </span>
+      )}
       {!isSystem && workRequestCount > 0 && mentions.length === 0 && (
         <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-600">
           {t('Work requests')}: {workRequestCount}
@@ -1095,6 +1115,7 @@ export function RoomTimeline({
                     message={message}
                     senderName={senderName}
                     senderMember={senderMember}
+                    memberById={memberById}
                     displayContent={displayContent}
                     onOpenImage={(images, index) => setLightboxState({ images, index })}
                   />

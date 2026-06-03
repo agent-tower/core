@@ -100,6 +100,12 @@ export type RoomMessageKind =
   | 'decision'
   | 'system'
 
+/** 房间消息可见性 */
+export type RoomMessageVisibility = 'PUBLIC' | 'PRIVATE'
+
+/** 私聊消息参与者角色 */
+export type RoomMessageParticipantRole = 'sender' | 'recipient'
+
 /** 工作请求发起者类型 */
 export type WorkRequestRequesterType = 'user' | 'agent' | 'system'
 
@@ -381,11 +387,25 @@ export interface RoomMessage {
   senderId?: string | null
   senderInvocationId?: string | null
   kind: RoomMessageKind
+  visibility: RoomMessageVisibility
   content: string
   mentions: StructuredMention[]
+  recipientMemberIds?: string[] | null
+  participantMemberIds?: string[] | null
+  participants?: RoomMessageParticipant[]
   workRequestIds?: string[] | null
   artifactRefs?: string[] | null
   attachmentIds?: string[] | null
+  createdAt?: string
+}
+
+/** 私聊消息参与者 */
+export interface RoomMessageParticipant {
+  id: string
+  teamRunId: string
+  roomMessageId: string
+  memberId: string
+  role: RoomMessageParticipantRole
   createdAt?: string
 }
 

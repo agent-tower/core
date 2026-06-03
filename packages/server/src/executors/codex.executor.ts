@@ -67,13 +67,20 @@ const AGENT_TOWER_MCP_ENV_KEYS = [
   'AGENT_TOWER_MEMBER_ID',
 ] as const;
 
+const AGENT_TOWER_MCP_SERVER_NAMES = [
+  'agent-tower',
+  'agent-tower-dev',
+] as const;
+
 export function buildAgentTowerMcpEnvConfigOverrides(env: ExecutorSpawnConfig['env']): string[] {
   const args: string[] = [];
 
-  for (const key of AGENT_TOWER_MCP_ENV_KEYS) {
-    const value = env.get(key);
-    if (value) {
-      args.push('-c', `mcp_servers.agent-tower.env.${key}=${toTomlLiteral(value)}`);
+  for (const serverName of AGENT_TOWER_MCP_SERVER_NAMES) {
+    for (const key of AGENT_TOWER_MCP_ENV_KEYS) {
+      const value = env.get(key);
+      if (value) {
+        args.push('-c', `mcp_servers.${serverName}.env.${key}=${toTomlLiteral(value)}`);
+      }
     }
   }
 

@@ -119,6 +119,7 @@ model TeamMember {
   avatar          String?
   status          String   @default("IDLE")
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
+  roomMessageParticipants RoomMessageParticipant[]
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -133,15 +134,34 @@ model RoomMessage {
   senderId           String?
   senderInvocationId String?
   kind               String
+  visibility         String   @default("PUBLIC")
   content            String
   mentions           String // JSON StructuredMention[]
   workRequestIds     String? // JSON string[]
   artifactRefs       String? // JSON string[]
   attachmentIds      String? // JSON string[]
+  participants       RoomMessageParticipant[]
   createdAt          DateTime @default(now())
 
   @@index([teamRunId])
+  @@index([teamRunId, visibility])
   @@index([senderInvocationId])
+}
+
+model RoomMessageParticipant {
+  id            String      @id @default(uuid())
+  teamRunId     String
+  roomMessageId String
+  roomMessage   RoomMessage @relation(fields: [roomMessageId], references: [id], onDelete: Cascade)
+  memberId      String
+  member        TeamMember  @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  role          String
+  createdAt     DateTime    @default(now())
+
+  @@unique([roomMessageId, memberId])
+  @@index([teamRunId, memberId])
+  @@index([roomMessageId])
+  @@index([memberId])
 }
 
 model WorkRequest {

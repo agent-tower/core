@@ -5,7 +5,10 @@ import type {
   MemberPreset,
   RoomMessage,
   RoomMessageKind,
+  RoomMessageParticipant,
+  RoomMessageParticipantRole,
   RoomMessageSenderType,
+  RoomMessageVisibility,
   StructuredMention,
   TeamMember,
   TeamMemberCapabilities,
@@ -27,6 +30,7 @@ import type {
   AgentInvocation as PrismaAgentInvocation,
   MemberPreset as PrismaMemberPreset,
   RoomMessage as PrismaRoomMessage,
+  RoomMessageParticipant as PrismaRoomMessageParticipant,
   TeamMember as PrismaTeamMember,
   TeamRun as PrismaTeamRun,
   TeamTemplate as PrismaTeamTemplate,
@@ -101,6 +105,27 @@ export interface CreateRoomMessageInput {
   kind?: RoomMessageKind;
 }
 
+export interface CreatePrivateRoomMessageInput {
+  content: string;
+  recipientMemberIds: string[];
+  attachmentIds?: string[];
+  artifactRefs?: string[];
+  senderType?: RoomMessageSenderType;
+  senderId?: string | null;
+  senderInvocationId?: string | null;
+  ifBusy?: IfBusyPolicy;
+  cancelQueued?: boolean;
+}
+
+export interface TeamRunVisibilityOptions {
+  viewerMemberId?: string | null;
+}
+
+export interface TeamRunAgentInvocationIdentity {
+  invocationId: string;
+  memberId: string;
+}
+
 export interface WorkRequestQueueItem extends WorkRequest {
   triggerMessage: {
     id: string;
@@ -144,9 +169,13 @@ type PrismaTeamTemplateWithMembers = PrismaTeamTemplate & {
   members?: PrismaTeamTemplateMember[];
 };
 
+type PrismaRoomMessageWithParticipants = PrismaRoomMessage & {
+  participants?: PrismaRoomMessageParticipant[];
+};
+
 type PrismaTeamRunWithRelations = PrismaTeamRun & {
   members?: PrismaTeamMember[];
-  messages?: PrismaRoomMessage[];
+  messages?: PrismaRoomMessageWithParticipants[];
   workRequests?: PrismaWorkRequest[];
   invocations?: PrismaAgentInvocation[];
 };
@@ -299,6 +328,60 @@ function assertMentionsReferenceMembers(mentions: StructuredMention[], memberIds
       throw new NotFoundError('TeamMember', mention.memberId);
     }
   }
+}
+
+function uniqueMemberIds(memberIds: string[]): string[] {
+  return Array.from(new Set(memberIds.map((memberId) => memberId.trim()).filter(Boolean)));
+}
+
+function buildRoomMessageVisibilityWhere(
+  teamRunId: string,
+  viewerMemberId?: string | null
+) {
+  if (!viewerMemberId) {
+    return { teamRunId };
+  }
+
+  return {
+    teamRunId,
+    OR: [
+      { visibility: 'PUBLIC' },
+      {
+        participants: {
+          some: {
+            memberId: viewerMemberId,
+          },
+        },
+      },
+    ],
+  };
+}
+
+function isRoomMessageVisibleToViewer(
+  message: PrismaRoomMessageWithParticipants,
+  viewerMemberId?: string | null
+): boolean {
+  if (!viewerMemberId) return true;
+  if (message.visibility !== 'PRIVATE') return true;
+  return (message.participants ?? []).some((participant) => participant.memberId === viewerMemberId);
+}
+
+function getVisibleWorkRequestIds(
+  messages: PrismaRoomMessageWithParticipants[],
+  viewerMemberId?: string | null
+): Set<string> | null {
+  if (!viewerMemberId) return null;
+
+  const visibleWorkRequestIds = new Set<string>();
+  for (const message of messages) {
+    if (!isRoomMessageVisibleToViewer(message, viewerMemberId)) {
+      continue;
+    }
+    for (const workRequestId of parseJsonField<string[]>(message.workRequestIds, [])) {
+      visibleWorkRequestIds.add(workRequestId);
+    }
+  }
+  return visibleWorkRequestIds;
 }
 
 function resolveRoomMessageTargetRequests({
@@ -692,7 +775,7 @@ export class TeamRunService {
     return serialized;
   }
 
-  async getTaskTeamRun(taskId: string): Promise<TeamRun> {
+  async getTaskTeamRun(taskId: string, options: TeamRunVisibilityOptions = {}): Promise<TeamRun> {
     const teamRun = await prisma.teamRun.findUnique({
       where: { taskId },
       include: this.teamRunInclude(),
@@ -700,10 +783,10 @@ export class TeamRunService {
     if (!teamRun) {
       throw new NotFoundError('TeamRun for task', taskId);
     }
-    return this.serializeTeamRun(teamRun);
+    return this.serializeTeamRun(teamRun, options);
   }
 
-  async getTeamRunById(id: string): Promise<TeamRun> {
+  async getTeamRunById(id: string, options: TeamRunVisibilityOptions = {}): Promise<TeamRun> {
     const teamRun = await prisma.teamRun.findUnique({
       where: { id },
       include: this.teamRunInclude(),
@@ -711,12 +794,12 @@ export class TeamRunService {
     if (!teamRun) {
       throw new NotFoundError('TeamRun', id);
     }
-    return this.serializeTeamRun(teamRun);
+    return this.serializeTeamRun(teamRun, options);
   }
 
-  async listTeamMembers(teamRunId: string): Promise<TeamMember[]> {
+  async listTeamMembers(teamRunId: string, options: TeamRunVisibilityOptions = {}): Promise<TeamMember[]> {
     await this.assertTeamRunExists(teamRunId);
-    const [members, invocations, workRequests] = await Promise.all([
+    const [members, invocations, workRequests, messages] = await Promise.all([
       prisma.teamMember.findMany({
         where: { teamRunId },
         orderBy: { createdAt: 'asc' },
@@ -733,27 +816,52 @@ export class TeamRunService {
           status: { in: OPEN_WORK_REQUEST_STATUSES },
         },
       }),
+      options.viewerMemberId
+        ? prisma.roomMessage.findMany({
+          where: { teamRunId },
+          include: { participants: true },
+        })
+        : Promise.resolve([]),
     ]);
-    const memberStatuses = this.deriveTeamMemberStatuses(members, invocations, workRequests);
+    const visibleWorkRequestIds = getVisibleWorkRequestIds(messages, options.viewerMemberId);
+    const visibleWorkRequests = visibleWorkRequestIds
+      ? workRequests.filter((request) => visibleWorkRequestIds.has(request.id))
+      : workRequests;
+    const visibleInvocations = visibleWorkRequestIds
+      ? invocations.filter((invocation) => visibleWorkRequestIds.has(invocation.workRequestId))
+      : invocations;
+    const memberStatuses = this.deriveTeamMemberStatuses(members, visibleInvocations, visibleWorkRequests);
     return members.map((member) => this.serializeTeamMember(member, memberStatuses.get(member.id)));
   }
 
-  async listRoomMessages(teamRunId: string): Promise<RoomMessage[]> {
+  async listRoomMessages(teamRunId: string, options: TeamRunVisibilityOptions = {}): Promise<RoomMessage[]> {
     await this.assertTeamRunExists(teamRunId);
     const messages = await prisma.roomMessage.findMany({
-      where: { teamRunId },
+      where: buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
+      include: { participants: true },
       orderBy: { createdAt: 'asc' },
     });
     return messages.map((message) => this.serializeRoomMessage(message));
   }
 
-  async listWorkRequests(teamRunId: string): Promise<WorkRequest[]> {
+  async listWorkRequests(teamRunId: string, options: TeamRunVisibilityOptions = {}): Promise<WorkRequest[]> {
     await this.assertTeamRunExists(teamRunId);
     const workRequests = await prisma.workRequest.findMany({
       where: { teamRunId },
       orderBy: { createdAt: 'asc' },
     });
-    return workRequests.map((workRequest) => this.serializeWorkRequest(workRequest));
+    if (!options.viewerMemberId) {
+      return workRequests.map((workRequest) => this.serializeWorkRequest(workRequest));
+    }
+
+    const messages = await prisma.roomMessage.findMany({
+      where: buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
+      include: { participants: true },
+    });
+    const visibleWorkRequestIds = getVisibleWorkRequestIds(messages, options.viewerMemberId) ?? new Set<string>();
+    return workRequests
+      .filter((workRequest) => visibleWorkRequestIds.has(workRequest.id))
+      .map((workRequest) => this.serializeWorkRequest(workRequest));
   }
 
   async listQueuedWorkRequestsForMember(teamRunId: string, memberId: string): Promise<MemberWorkRequestQueue> {
@@ -773,7 +881,13 @@ export class TeamRunService {
     const targetMemberIds = Array.from(new Set(workRequests.map((workRequest) => workRequest.targetMemberId)));
     const [triggerMessages, targetMembers] = await Promise.all([
       triggerMessageIds.length > 0
-        ? prisma.roomMessage.findMany({ where: { id: { in: triggerMessageIds }, teamRunId } })
+        ? prisma.roomMessage.findMany({
+          where: {
+            id: { in: triggerMessageIds },
+            ...buildRoomMessageVisibilityWhere(teamRunId, memberId),
+          },
+          include: { participants: true },
+        })
         : [],
       targetMemberIds.length > 0
         ? prisma.teamMember.findMany({
@@ -785,12 +899,15 @@ export class TeamRunService {
     const triggerMessageById = new Map(triggerMessages.map((message) => [message.id, message]));
     const targetMemberById = new Map(targetMembers.map((targetMember) => [targetMember.id, targetMember]));
 
+    const visibleTriggerMessageIds = new Set(triggerMessages.map((message) => message.id));
+    const visibleWorkRequests = workRequests.filter((workRequest) => visibleTriggerMessageIds.has(workRequest.triggerMessageId));
+
     return {
       teamRunId,
       currentMemberId: memberId,
       queueManagementPolicy,
       canManageTeamRunQueue,
-      workRequests: workRequests.map((workRequest) => (
+      workRequests: visibleWorkRequests.map((workRequest) => (
         this.serializeWorkRequestQueueItem(
           workRequest,
           triggerMessageById.get(workRequest.triggerMessageId) ?? null,
@@ -800,13 +917,24 @@ export class TeamRunService {
     };
   }
 
-  async listAgentInvocations(teamRunId: string): Promise<AgentInvocation[]> {
+  async listAgentInvocations(teamRunId: string, options: TeamRunVisibilityOptions = {}): Promise<AgentInvocation[]> {
     await this.assertTeamRunExists(teamRunId);
     const invocations = await prisma.agentInvocation.findMany({
       where: { teamRunId },
       orderBy: { createdAt: 'asc' },
     });
-    return invocations.map((invocation) => this.serializeAgentInvocation(invocation));
+    if (!options.viewerMemberId) {
+      return invocations.map((invocation) => this.serializeAgentInvocation(invocation));
+    }
+
+    const messages = await prisma.roomMessage.findMany({
+      where: buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
+      include: { participants: true },
+    });
+    const visibleWorkRequestIds = getVisibleWorkRequestIds(messages, options.viewerMemberId) ?? new Set<string>();
+    return invocations
+      .filter((invocation) => visibleWorkRequestIds.has(invocation.workRequestId))
+      .map((invocation) => this.serializeAgentInvocation(invocation));
   }
 
   async createRoomMessage(teamRunId: string, input: CreateRoomMessageInput): Promise<RoomMessage> {
@@ -862,6 +990,7 @@ export class TeamRunService {
           senderId: input.senderId ?? null,
           senderInvocationId: input.senderInvocationId ?? null,
           kind,
+          visibility: 'PUBLIC',
           content: input.content,
           mentions: stringifyJson(mentions),
           artifactRefs: stringifyJson(input.artifactRefs ?? []),
@@ -905,6 +1034,155 @@ export class TeamRunService {
     });
 
     const message = await prisma.roomMessage.findUnique({ where: { id: messageId } });
+    if (!message) {
+      throw new NotFoundError('RoomMessage', messageId);
+    }
+    const serialized = this.serializeRoomMessage(message);
+    await emitTeamRunInvalidated({
+      teamRunId,
+      taskId: teamRun.taskId,
+      scopes: ['room-messages', 'work-requests', 'team-run'],
+      reason: 'room-message-created',
+    });
+
+    return serialized;
+  }
+
+  async createPrivateRoomMessage(teamRunId: string, input: CreatePrivateRoomMessageInput): Promise<RoomMessage> {
+    const teamRun = await prisma.teamRun.findUnique({ where: { id: teamRunId } });
+    if (!teamRun) {
+      throw new NotFoundError('TeamRun', teamRunId);
+    }
+
+    const recipientMemberIds = uniqueMemberIds(input.recipientMemberIds);
+    if (recipientMemberIds.length === 0) {
+      throw new ValidationError('At least one private message recipient is required');
+    }
+
+    const senderType = input.senderType ?? 'user';
+    const workRequestStatus: WorkRequestStatus = teamRun.mode === 'CONFIRM'
+      ? 'PENDING_APPROVAL'
+      : 'QUEUED';
+    const workRequestInstruction = await appendAttachmentMarkdownContext(input.content, input.attachmentIds);
+
+    let messageId = '';
+    await prisma.$transaction(async (tx) => {
+      const members = await tx.teamMember.findMany({ where: { teamRunId } });
+      const memberIds = new Set(members.map((member) => member.id));
+      for (const recipientMemberId of recipientMemberIds) {
+        if (!memberIds.has(recipientMemberId)) {
+          throw new NotFoundError('TeamMember', recipientMemberId);
+        }
+      }
+
+      const requesterMemberId = senderType === 'agent'
+        && input.senderId != null
+        && memberIds.has(input.senderId)
+        ? input.senderId
+        : null;
+      let normalizedSenderId = input.senderId ?? null;
+      let normalizedSenderInvocationId = input.senderInvocationId ?? null;
+      let senderParticipantMemberId: string | null = null;
+
+      if (senderType === 'agent') {
+        if (!input.senderId || !memberIds.has(input.senderId)) {
+          throw new ValidationError('Agent RoomMessage senderId must be a TeamMember in this TeamRun');
+        }
+        senderParticipantMemberId = input.senderId;
+
+        if (input.senderInvocationId) {
+          const invocation = await tx.agentInvocation.findFirst({
+            where: {
+              id: input.senderInvocationId,
+              teamRunId,
+              memberId: input.senderId,
+            },
+            select: { id: true },
+          });
+          if (!invocation) {
+            throw new ValidationError('Agent RoomMessage senderInvocationId must belong to the sender member in this TeamRun');
+          }
+        }
+      } else if (senderType === 'user') {
+        if (input.senderInvocationId) {
+          throw new ValidationError('Only agent private messages may include senderInvocationId');
+        }
+        if (input.senderId != null) {
+          if (!memberIds.has(input.senderId)) {
+            throw new ValidationError('Private message senderId must be a TeamMember in this TeamRun');
+          }
+          senderParticipantMemberId = input.senderId;
+        }
+        normalizedSenderInvocationId = null;
+      } else {
+        normalizedSenderId = null;
+        normalizedSenderInvocationId = null;
+      }
+
+      const message = await tx.roomMessage.create({
+        data: {
+          teamRunId,
+          senderType,
+          senderId: normalizedSenderId,
+          senderInvocationId: normalizedSenderInvocationId,
+          kind: 'work_request',
+          visibility: 'PRIVATE',
+          content: input.content,
+          mentions: stringifyJson([]),
+          artifactRefs: stringifyJson(input.artifactRefs ?? []),
+          attachmentIds: stringifyJson(input.attachmentIds ?? []),
+          workRequestIds: stringifyJson([]),
+        },
+      });
+      messageId = message.id;
+
+      const participantByMemberId = new Map<string, RoomMessageParticipantRole>();
+      if (senderParticipantMemberId && !recipientMemberIds.includes(senderParticipantMemberId)) {
+        participantByMemberId.set(senderParticipantMemberId, 'sender');
+      }
+      for (const recipientMemberId of recipientMemberIds) {
+        participantByMemberId.set(recipientMemberId, 'recipient');
+      }
+
+      if (participantByMemberId.size > 0) {
+        await tx.roomMessageParticipant.createMany({
+          data: Array.from(participantByMemberId.entries()).map(([memberId, role]) => ({
+            teamRunId,
+            roomMessageId: message.id,
+            memberId,
+            role,
+          })),
+        });
+      }
+
+      const workRequestIds: string[] = [];
+      for (const recipientMemberId of recipientMemberIds) {
+        const workRequest = await tx.workRequest.create({
+          data: {
+            teamRunId,
+            requesterMemberId,
+            requesterType: senderType as WorkRequestRequesterType,
+            targetMemberId: recipientMemberId,
+            triggerMessageId: message.id,
+            instruction: workRequestInstruction,
+            ifBusy: input.ifBusy ?? 'queue',
+            cancelQueued: input.cancelQueued ?? false,
+            status: workRequestStatus,
+          },
+        });
+        workRequestIds.push(workRequest.id);
+      }
+
+      await tx.roomMessage.update({
+        where: { id: message.id },
+        data: { workRequestIds: stringifyJson(workRequestIds) },
+      });
+    });
+
+    const message = await prisma.roomMessage.findUnique({
+      where: { id: messageId },
+      include: { participants: true },
+    });
     if (!message) {
       throw new NotFoundError('RoomMessage', messageId);
     }
@@ -1027,6 +1305,29 @@ export class TeamRunService {
     throw new NotFoundError('TeamMember', memberId);
   }
 
+  async resolveAgentInvocationIdentity(
+    teamRunId: string,
+    invocationId: string | null | undefined
+  ): Promise<TeamRunAgentInvocationIdentity | null> {
+    if (!invocationId) {
+      return null;
+    }
+
+    const invocation = await prisma.agentInvocation.findFirst({
+      where: { id: invocationId, teamRunId },
+      select: { id: true, memberId: true },
+    });
+
+    return invocation
+      ? { invocationId: invocation.id, memberId: invocation.memberId }
+      : null;
+  }
+
+  async resolveViewerMemberIdFromInvocation(teamRunId: string, invocationId: string | null | undefined): Promise<string | null> {
+    const identity = await this.resolveAgentInvocationIdentity(teamRunId, invocationId);
+    return identity?.memberId ?? null;
+  }
+
   private resolveQueueManagementPolicy(
     value: string | null | undefined
   ): TeamMemberQueueManagementPolicy {
@@ -1041,7 +1342,7 @@ export class TeamRunService {
   private teamRunInclude() {
     return {
       members: { orderBy: { createdAt: 'asc' as const } },
-      messages: { orderBy: { createdAt: 'asc' as const } },
+      messages: { orderBy: { createdAt: 'asc' as const }, include: { participants: true } },
       workRequests: { orderBy: { createdAt: 'asc' as const } },
       invocations: { orderBy: { createdAt: 'asc' as const } },
     };
@@ -1088,11 +1389,22 @@ export class TeamRunService {
     };
   }
 
-  private serializeTeamRun(teamRun: PrismaTeamRunWithRelations): TeamRun {
+  private serializeTeamRun(teamRun: PrismaTeamRunWithRelations, options: TeamRunVisibilityOptions = {}): TeamRun {
+    const visibleMessages = options.viewerMemberId
+      ? (teamRun.messages ?? []).filter((message) => isRoomMessageVisibleToViewer(message, options.viewerMemberId))
+      : teamRun.messages;
+    const visibleWorkRequestIds = getVisibleWorkRequestIds(visibleMessages ?? [], options.viewerMemberId);
+    const visibleWorkRequests = visibleWorkRequestIds
+      ? (teamRun.workRequests ?? []).filter((workRequest) => visibleWorkRequestIds.has(workRequest.id))
+      : teamRun.workRequests;
+    const visibleInvocations = visibleWorkRequestIds
+      ? (teamRun.invocations ?? []).filter((invocation) => visibleWorkRequestIds.has(invocation.workRequestId))
+      : teamRun.invocations;
+
     const memberStatuses = this.deriveTeamMemberStatuses(
       teamRun.members ?? [],
-      teamRun.invocations ?? [],
-      teamRun.workRequests ?? []
+      visibleInvocations ?? [],
+      visibleWorkRequests ?? []
     );
 
     return {
@@ -1102,9 +1414,9 @@ export class TeamRunService {
       createdAt: toIso(teamRun.createdAt),
       updatedAt: toIso(teamRun.updatedAt),
       members: teamRun.members?.map((member) => this.serializeTeamMember(member, memberStatuses.get(member.id))),
-      messages: teamRun.messages?.map((message) => this.serializeRoomMessage(message)),
-      workRequests: teamRun.workRequests?.map((workRequest) => this.serializeWorkRequest(workRequest)),
-      invocations: teamRun.invocations?.map((invocation) => this.serializeAgentInvocation(invocation)),
+      messages: visibleMessages?.map((message) => this.serializeRoomMessage(message)),
+      workRequests: visibleWorkRequests?.map((workRequest) => this.serializeWorkRequest(workRequest)),
+      invocations: visibleInvocations?.map((invocation) => this.serializeAgentInvocation(invocation)),
     };
   }
 
@@ -1156,16 +1468,34 @@ export class TeamRunService {
     };
   }
 
-  private serializeRoomMessage(message: PrismaRoomMessage): RoomMessage {
+  private serializeRoomMessage(message: PrismaRoomMessageWithParticipants): RoomMessage {
+    const participants = (message.participants ?? []).map((participant) => this.serializeRoomMessageParticipant(participant));
+    const recipientMemberIds = participants
+      .filter((participant) => participant.role === 'recipient')
+      .map((participant) => participant.memberId);
+    const participantMemberIds = participants.map((participant) => participant.memberId);
+
     return {
       ...message,
       senderType: message.senderType as RoomMessageSenderType,
       kind: message.kind as RoomMessageKind,
+      visibility: message.visibility as RoomMessageVisibility,
       mentions: parseJsonField<StructuredMention[]>(message.mentions, []),
+      recipientMemberIds,
+      participantMemberIds,
+      participants,
       workRequestIds: parseJsonField<string[] | null>(message.workRequestIds, null),
       artifactRefs: parseJsonField<string[] | null>(message.artifactRefs, null),
       attachmentIds: parseJsonField<string[] | null>(message.attachmentIds, null),
       createdAt: toIso(message.createdAt),
+    };
+  }
+
+  private serializeRoomMessageParticipant(participant: PrismaRoomMessageParticipant): RoomMessageParticipant {
+    return {
+      ...participant,
+      role: participant.role as RoomMessageParticipantRole,
+      createdAt: toIso(participant.createdAt),
     };
   }
 

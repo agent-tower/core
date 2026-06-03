@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ZodError, z } from 'zod';
-import { ServiceError } from '../errors.js';
+import { ServiceError, ValidationError } from '../errors.js';
 import { TeamRunService } from '../services/team-run.service.js';
 import { TeamSchedulerService } from '../services/team-scheduler.service.js';
 
@@ -87,6 +87,18 @@ const roomMessageSchema = z.object({
   kind: z.enum(['chat', 'work_request', 'work_started', 'artifact', 'review', 'decision', 'system']).optional(),
 });
 
+const privateRoomMessageSchema = z.object({
+  content: z.string().min(1),
+  recipientMemberIds: z.array(z.string().min(1)).min(1),
+  attachmentIds: z.array(z.string().min(1)).optional(),
+  artifactRefs: z.array(z.string().min(1)).optional(),
+  senderType: z.enum(['user', 'agent', 'system']).default('user'),
+  senderId: z.string().nullable().optional(),
+  senderInvocationId: z.string().nullable().optional(),
+  ifBusy: z.enum(['queue', 'cancel_current_and_start']).optional(),
+  cancelQueued: z.boolean().optional(),
+});
+
 const stopMemberWorkSchema = z.object({
   cancelQueued: z.boolean().optional(),
 });
@@ -141,9 +153,30 @@ function startNextSessionsInBackground(
   });
 }
 
+function getInvocationId(request: { headers: Record<string, unknown> }): string | null {
+  const header = request.headers['x-agent-tower-invocation-id'];
+  return typeof header === 'string' && header.length > 0 ? header : null;
+}
+
 export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteDependencies = {}) {
   const service = options.service ?? new TeamRunService();
   const scheduler = options.scheduler ?? new TeamSchedulerService();
+
+  async function resolveViewerMemberId(teamRunId: string, request: { headers: Record<string, unknown> }) {
+    const invocationId = getInvocationId(request);
+    if (!invocationId) {
+      return null;
+    }
+    const invocationIdentity = await service.resolveAgentInvocationIdentity(teamRunId, invocationId);
+    if (!invocationIdentity) {
+      throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
+    }
+    return invocationIdentity.memberId;
+  }
+
+  async function resolveAgentInvocationIdentity(teamRunId: string, request: { headers: Record<string, unknown> }) {
+    return service.resolveAgentInvocationIdentity(teamRunId, getInvocationId(request));
+  }
 
   app.get('/member-presets', async (_request, reply) => {
     try {
@@ -253,7 +286,11 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.get<{ Params: { taskId: string } }>('/tasks/:taskId/team-run', async (request, reply) => {
     try {
-      return await service.getTaskTeamRun(request.params.taskId);
+      const teamRun = await service.getTaskTeamRun(request.params.taskId);
+      const viewerMemberId = await resolveViewerMemberId(teamRun.id, request);
+      return viewerMemberId
+        ? await service.getTeamRunById(teamRun.id, { viewerMemberId })
+        : teamRun;
     } catch (error) {
       return handleError(error, reply);
     }
@@ -261,7 +298,8 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.get<{ Params: { id: string } }>('/team-runs/:id', async (request, reply) => {
     try {
-      return await service.getTeamRunById(request.params.id);
+      const viewerMemberId = await resolveViewerMemberId(request.params.id, request);
+      return await service.getTeamRunById(request.params.id, { viewerMemberId });
     } catch (error) {
       return handleError(error, reply);
     }
@@ -285,9 +323,55 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
     }
   });
 
+  app.post<{ Params: { id: string } }>('/team-runs/:id/private-messages', async (request, reply) => {
+    try {
+      const body = privateRoomMessageSchema.parse(request.body);
+      const invocationId = getInvocationId(request);
+      const invocationIdentity = await resolveAgentInvocationIdentity(request.params.id, request);
+      if (invocationId && !invocationIdentity) {
+        throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
+      }
+      if (!invocationIdentity && body.senderType === 'agent') {
+        throw new ValidationError('Agent private message sender requires a verified invocation');
+      }
+
+      const message = await service.createPrivateRoomMessage(request.params.id, {
+        content: body.content,
+        recipientMemberIds: body.recipientMemberIds,
+        attachmentIds: body.attachmentIds,
+        artifactRefs: body.artifactRefs,
+        ifBusy: body.ifBusy,
+        cancelQueued: body.cancelQueued,
+        ...(invocationIdentity
+          ? {
+            senderType: 'agent' as const,
+            senderId: invocationIdentity.memberId,
+            senderInvocationId: invocationIdentity.invocationId,
+          }
+          : {
+            senderType: body.senderType === 'system' ? 'system' : 'user',
+            senderId: body.senderType === 'system' ? null : body.senderId ?? null,
+            senderInvocationId: null,
+          }),
+      });
+      const workRequestIds = message.workRequestIds ?? [];
+      if (workRequestIds.length > 0) {
+        const teamRun = await service.getTeamRunById(request.params.id);
+        if (teamRun.mode === 'AUTO') {
+          startNextSessionsInBackground(app, scheduler, request.params.id);
+        }
+      }
+      reply.code(201);
+      return message;
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
   app.get<{ Params: { id: string } }>('/team-runs/:id/messages', async (request, reply) => {
     try {
-      return await service.listRoomMessages(request.params.id);
+      const viewerMemberId = await resolveViewerMemberId(request.params.id, request);
+      return await service.listRoomMessages(request.params.id, { viewerMemberId });
     } catch (error) {
       return handleError(error, reply);
     }
@@ -295,7 +379,8 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.get<{ Params: { id: string } }>('/team-runs/:id/members', async (request, reply) => {
     try {
-      return await service.listTeamMembers(request.params.id);
+      const viewerMemberId = await resolveViewerMemberId(request.params.id, request);
+      return await service.listTeamMembers(request.params.id, { viewerMemberId });
     } catch (error) {
       return handleError(error, reply);
     }
@@ -303,7 +388,8 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.get<{ Params: { id: string } }>('/team-runs/:id/work-requests', async (request, reply) => {
     try {
-      return await service.listWorkRequests(request.params.id);
+      const viewerMemberId = await resolveViewerMemberId(request.params.id, request);
+      return await service.listWorkRequests(request.params.id, { viewerMemberId });
     } catch (error) {
       return handleError(error, reply);
     }
@@ -311,6 +397,16 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.get<{ Params: { id: string; memberId: string } }>('/team-runs/:id/members/:memberId/work-requests', async (request, reply) => {
     try {
+      const invocationId = getInvocationId(request);
+      if (invocationId) {
+        const invocationIdentity = await resolveAgentInvocationIdentity(request.params.id, request);
+        if (!invocationIdentity) {
+          throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
+        }
+        if (invocationIdentity.memberId !== request.params.memberId) {
+          throw new ServiceError('Agent cannot read another TeamRun member work request queue', 'FORBIDDEN', 403);
+        }
+      }
       return await service.listQueuedWorkRequestsForMember(request.params.id, request.params.memberId);
     } catch (error) {
       return handleError(error, reply);
@@ -358,7 +454,8 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.get<{ Params: { id: string } }>('/team-runs/:id/invocations', async (request, reply) => {
     try {
-      return await service.listAgentInvocations(request.params.id);
+      const viewerMemberId = await resolveViewerMemberId(request.params.id, request);
+      return await service.listAgentInvocations(request.params.id, { viewerMemberId });
     } catch (error) {
       return handleError(error, reply);
     }

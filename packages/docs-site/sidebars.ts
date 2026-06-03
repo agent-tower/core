@@ -26,6 +26,7 @@ const sidebars: SidebarsConfig = {
         'guide/projects-and-tasks',
         'guide/workspaces',
         'guide/sessions',
+        'guide/team-mode',
         'guide/review-and-merge',
         'guide/mobile-access',
       ],

@@ -50,6 +50,7 @@ Project -> Task -> Workspace -> Session -> ExecutionProcess
 3. [核心工作流](./guide/workflow.md)
 4. [Agent Provider](./integrations/agent-providers.md)
 5. [MCP 集成](./integrations/mcp.md)
+6. [团队模式](./guide/team-mode.md)
 
 如果你在开发 Agent Tower 本身，请从 [源码开发](./getting-started/source-development.md) 和 [仓库结构](./reference/repository-layout.md) 开始。
 

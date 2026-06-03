@@ -4,7 +4,13 @@
  */
 
 export class AgentTowerClient {
+  private invocationIdOverride?: string;
+
   constructor(private baseUrl: string) {}
+
+  setInvocationId(invocationId: string | undefined): void {
+    this.invocationIdOverride = invocationId;
+  }
 
   private url(path: string): string {
     return `${this.baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
@@ -21,8 +27,9 @@ export class AgentTowerClient {
     if (body) {
       headers['Content-Type'] = 'application/json';
     }
-    if (process.env.AGENT_TOWER_INVOCATION_ID) {
-      headers['x-agent-tower-invocation-id'] = process.env.AGENT_TOWER_INVOCATION_ID;
+    const invocationId = this.invocationIdOverride ?? process.env.AGENT_TOWER_INVOCATION_ID;
+    if (invocationId) {
+      headers['x-agent-tower-invocation-id'] = invocationId;
     }
 
     const resp = await fetch(url, {
@@ -140,6 +147,20 @@ export class AgentTowerClient {
     senderInvocationId?: string | null;
   }) {
     return this.request<any>('POST', `/api/team-runs/${teamRunId}/messages`, input);
+  }
+
+  async createPrivateRoomMessage(teamRunId: string, input: {
+    content: string;
+    recipientMemberIds: string[];
+    attachmentIds?: string[];
+    artifactRefs?: string[];
+    ifBusy?: 'queue' | 'cancel_current_and_start';
+    cancelQueued?: boolean;
+    senderType?: 'user' | 'agent' | 'system';
+    senderId?: string | null;
+    senderInvocationId?: string | null;
+  }) {
+    return this.request<any>('POST', `/api/team-runs/${teamRunId}/private-messages`, input);
   }
 
   async listRoomMessages(teamRunId: string) {

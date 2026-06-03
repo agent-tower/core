@@ -7,6 +7,8 @@ description: 让外部 agent 直接操作 Agent Tower。
 
 Agent Tower 内置 MCP server，让外部 AI agent 可以直接读取任务板、启动 workspace session、查看 diff，以及继续与已有 session 交互。
 
+如果你要在 TeamRun 中使用 Team Room、私聊或 WorkRequest 控制工具，还需要确保每个 Agent CLI 都配置了 Agent Tower MCP server。具体见 [团队模式](../guide/team-mode.md)。
+
 ## 架构
 
 ```text
@@ -41,18 +43,23 @@ pnpm --filter @agent-tower/server dev
 
 ### 推荐方式
 
+生产和普通本地使用推荐指向默认后端地址 `http://127.0.0.1:12580`：
+
 ```json
 {
   "mcpServers": {
     "agent-tower": {
       "command": "agent-tower-mcp",
-      "args": []
+      "args": [],
+      "env": {
+        "AGENT_TOWER_URL": "http://127.0.0.1:12580"
+      }
     }
   }
 }
 ```
 
-### 指定后端地址
+### 自定义后端地址
 
 ```json
 {

@@ -7,6 +7,7 @@ function message(input: Partial<RoomMessage> & Pick<RoomMessage, 'id'>): RoomMes
     teamRunId: 'team-run-1',
     senderType: 'user',
     kind: 'chat',
+    visibility: 'PUBLIC',
     content: 'message',
     mentions: [],
     ...input,

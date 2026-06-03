@@ -187,6 +187,7 @@ async function createFixture(options: {
   memberCount?: number;
   teamRunMode?: 'AUTO' | 'CONFIRM';
   triggerPolicies?: Array<'MENTION_ONLY' | 'USER_MESSAGES'>;
+  memberCapabilities?: Array<Partial<typeof capabilities>>;
 } = {}) {
   const project = await prisma.project.create({
     data: {
@@ -226,7 +227,10 @@ async function createFixture(options: {
         aliases: stringifyJson([`member-${index + 1}`]),
         providerId: `provider-${index + 1}`,
         rolePrompt: `Role ${index + 1}`,
-        capabilities: stringifyJson(capabilities),
+        capabilities: stringifyJson({
+          ...capabilities,
+          ...(options.memberCapabilities?.[index] ?? {}),
+        }),
         workspacePolicy: 'shared',
         triggerPolicy: options.triggerPolicies?.[index] ?? 'MENTION_ONLY',
         sessionPolicy: 'new_per_request',
@@ -886,8 +890,7 @@ describe('TeamReconcilerService', () => {
   });
 
   it('lists TeamRun members through MCP without exposing role prompts', async () => {
-    const previousTeamRunId = process.env.AGENT_TOWER_TEAM_RUN_ID;
-    const previousMemberId = process.env.AGENT_TOWER_MEMBER_ID;
+    const previousEnv = captureTeamRunEnv();
     const { workspace, teamRun, members } = await createFixture({ memberCount: 2 });
     const runningRequest = await createWorkRequest({
       teamRunId: teamRun.id,
@@ -904,8 +907,12 @@ describe('TeamReconcilerService', () => {
     const app = Fastify({ logger: false });
 
     try {
-      process.env.AGENT_TOWER_TEAM_RUN_ID = teamRun.id;
-      process.env.AGENT_TOWER_MEMBER_ID = members[0]!.id;
+      setTeamRunEnv({
+        AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
+        AGENT_TOWER_MEMBER_ID: members[0]!.id,
+        AGENT_TOWER_INVOCATION_ID: undefined,
+        AGENT_TOWER_SESSION_ID: undefined,
+      });
 
       await app.register(teamRunRoutes, { prefix: '/api' });
       await app.listen({ port: 0, host: '127.0.0.1' });
@@ -962,16 +969,7 @@ describe('TeamReconcilerService', () => {
       expect(payload.members[0]).not.toHaveProperty('updatedAt');
       expect(payload.members[0]).not.toHaveProperty('presetId');
     } finally {
-      if (previousTeamRunId === undefined) {
-        delete process.env.AGENT_TOWER_TEAM_RUN_ID;
-      } else {
-        process.env.AGENT_TOWER_TEAM_RUN_ID = previousTeamRunId;
-      }
-      if (previousMemberId === undefined) {
-        delete process.env.AGENT_TOWER_MEMBER_ID;
-      } else {
-        process.env.AGENT_TOWER_MEMBER_ID = previousMemberId;
-      }
+      restoreTeamRunEnv(previousEnv);
       await app.close();
     }
   });
@@ -1071,6 +1069,551 @@ describe('TeamReconcilerService', () => {
 
       await expect(prisma.roomMessage.count()).resolves.toBe(0);
       expect(routeScheduler.stopMemberWork).not.toHaveBeenCalled();
+    } finally {
+      restoreTeamRunEnv(previousEnv);
+      await app.close();
+    }
+  });
+
+  it('forbids REST member queue impersonation from another agent invocation', async () => {
+    const { workspace, teamRun, members } = await createFixture({
+      memberCount: 3,
+      teamRunMode: 'CONFIRM',
+    });
+    const recipient = members[1]!;
+    const observer = members[2]!;
+    const observerRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: observer.id,
+      status: 'STARTED',
+    });
+    const observerInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: observerRequest.id,
+      memberId: observer.id,
+      workspaceId: workspace.id,
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api' });
+
+      const privateMessageResponse = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/${teamRun.id}/private-messages`,
+        payload: {
+          content: 'Hidden private queue preview',
+          recipientMemberIds: [recipient.id],
+        },
+      });
+      expect(privateMessageResponse.statusCode).toBe(201);
+
+      const hostQueueResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/members/${recipient.id}/work-requests`,
+      });
+      expect(hostQueueResponse.statusCode).toBe(200);
+      expect(hostQueueResponse.body).toContain('Hidden private queue preview');
+
+      const spoofedQueueResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/members/${recipient.id}/work-requests`,
+        headers: {
+          'x-agent-tower-invocation-id': observerInvocation.id,
+        },
+      });
+      expect(spoofedQueueResponse.statusCode).toBe(403);
+      expect(spoofedQueueResponse.json()).toMatchObject({ code: 'FORBIDDEN' });
+      expect(spoofedQueueResponse.body).not.toContain('Hidden private queue preview');
+
+      const ownQueueResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/members/${observer.id}/work-requests`,
+        headers: {
+          'x-agent-tower-invocation-id': observerInvocation.id,
+        },
+      });
+      expect(ownQueueResponse.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('derives REST private message agent sender from invocation header and rejects host agent spoofing', async () => {
+    const { workspace, teamRun, members } = await createFixture({
+      memberCount: 3,
+      teamRunMode: 'CONFIRM',
+    });
+    const actualSender = members[0]!;
+    const forgedSender = members[1]!;
+    const recipient = members[2]!;
+    const senderRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: actualSender.id,
+      status: 'STARTED',
+    });
+    const senderInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: senderRequest.id,
+      memberId: actualSender.id,
+      workspaceId: workspace.id,
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api' });
+
+      const forgedAgentResponse = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/${teamRun.id}/private-messages`,
+        headers: {
+          'x-agent-tower-invocation-id': senderInvocation.id,
+        },
+        payload: {
+          content: 'Forged sender should be ignored',
+          recipientMemberIds: [recipient.id],
+          senderType: 'agent',
+          senderId: forgedSender.id,
+          senderInvocationId: 'forged-invocation-id',
+        },
+      });
+      expect(forgedAgentResponse.statusCode).toBe(201);
+      const forgedAgentMessage = forgedAgentResponse.json() as {
+        id: string;
+        senderType: string;
+        senderId: string | null;
+        senderInvocationId: string | null;
+        workRequestIds: string[];
+      };
+      expect(forgedAgentMessage).toMatchObject({
+        senderType: 'agent',
+        senderId: actualSender.id,
+        senderInvocationId: senderInvocation.id,
+      });
+      await expect(prisma.roomMessage.findUnique({ where: { id: forgedAgentMessage.id } })).resolves.toMatchObject({
+        senderType: 'agent',
+        senderId: actualSender.id,
+        senderInvocationId: senderInvocation.id,
+      });
+      await expect(prisma.workRequest.findUnique({
+        where: { id: forgedAgentMessage.workRequestIds[0]! },
+      })).resolves.toMatchObject({
+        requesterType: 'agent',
+        requesterMemberId: actualSender.id,
+      });
+
+      const hostAgentSpoofResponse = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/${teamRun.id}/private-messages`,
+        payload: {
+          content: 'Host cannot spoof agent sender',
+          recipientMemberIds: [recipient.id],
+          senderType: 'agent',
+          senderId: actualSender.id,
+        },
+      });
+      expect(hostAgentSpoofResponse.statusCode).toBe(400);
+      expect(hostAgentSpoofResponse.json()).toMatchObject({ code: 'VALIDATION_ERROR' });
+      await expect(prisma.roomMessage.findMany({
+        where: { teamRunId: teamRun.id, content: 'Host cannot spoof agent sender' },
+      })).resolves.toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('preserves REST user private message senderId for member visibility without leaking to non-participants', async () => {
+    const { workspace, teamRun, members } = await createFixture({
+      memberCount: 3,
+      teamRunMode: 'CONFIRM',
+    });
+    const sender = members[0]!;
+    const recipient = members[1]!;
+    const observer = members[2]!;
+    const senderRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: sender.id,
+      status: 'STARTED',
+    });
+    const senderInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: senderRequest.id,
+      memberId: sender.id,
+      workspaceId: workspace.id,
+    });
+    const recipientRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: recipient.id,
+      status: 'STARTED',
+    });
+    const recipientInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: recipientRequest.id,
+      memberId: recipient.id,
+      workspaceId: workspace.id,
+    });
+    const observerRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: observer.id,
+      status: 'STARTED',
+    });
+    const observerInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: observerRequest.id,
+      memberId: observer.id,
+      workspaceId: workspace.id,
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/${teamRun.id}/private-messages`,
+        payload: {
+          content: 'Host user sent private message',
+          recipientMemberIds: [recipient.id],
+          senderType: 'user',
+          senderId: sender.id,
+        },
+      });
+      expect(response.statusCode).toBe(201);
+      const message = response.json() as {
+        id: string;
+        senderType: string;
+        senderId: string | null;
+        senderInvocationId: string | null;
+        participantMemberIds: string[];
+        recipientMemberIds: string[];
+        workRequestIds: string[];
+      };
+      expect(message).toMatchObject({
+        senderType: 'user',
+        senderId: sender.id,
+        senderInvocationId: null,
+        recipientMemberIds: [recipient.id],
+      });
+      expect(new Set(message.participantMemberIds)).toEqual(new Set([sender.id, recipient.id]));
+
+      const hostMessagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+      });
+      expect(hostMessagesResponse.statusCode).toBe(200);
+      expect(hostMessagesResponse.body).toContain('Host user sent private message');
+
+      const senderMessagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+        headers: {
+          'x-agent-tower-invocation-id': senderInvocation.id,
+        },
+      });
+      expect(senderMessagesResponse.statusCode).toBe(200);
+      expect(senderMessagesResponse.body).toContain('Host user sent private message');
+
+      const recipientMessagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+        headers: {
+          'x-agent-tower-invocation-id': recipientInvocation.id,
+        },
+      });
+      expect(recipientMessagesResponse.statusCode).toBe(200);
+      expect(recipientMessagesResponse.body).toContain('Host user sent private message');
+
+      const observerMessagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+        headers: {
+          'x-agent-tower-invocation-id': observerInvocation.id,
+        },
+      });
+      expect(observerMessagesResponse.statusCode).toBe(200);
+      expect(observerMessagesResponse.body).not.toContain('Host user sent private message');
+
+      const observerQueueResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/members/${observer.id}/work-requests`,
+        headers: {
+          'x-agent-tower-invocation-id': observerInvocation.id,
+        },
+      });
+      expect(observerQueueResponse.statusCode).toBe(200);
+      expect(observerQueueResponse.body).not.toContain('Host user sent private message');
+
+      await expect(prisma.workRequest.findUnique({
+        where: { id: message.workRequestIds[0]! },
+      })).resolves.toMatchObject({
+        requesterType: 'user',
+        requesterMemberId: null,
+        targetMemberId: recipient.id,
+        instruction: 'Host user sent private message',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('normalizes REST system private message senderId without granting sender visibility', async () => {
+    const { workspace, teamRun, members } = await createFixture({
+      memberCount: 3,
+      teamRunMode: 'CONFIRM',
+    });
+    const sender = members[0]!;
+    const recipient = members[1]!;
+    const observer = members[2]!;
+    const senderRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: sender.id,
+      status: 'STARTED',
+    });
+    const senderInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: senderRequest.id,
+      memberId: sender.id,
+      workspaceId: workspace.id,
+    });
+    const recipientRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: recipient.id,
+      status: 'STARTED',
+    });
+    const recipientInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: recipientRequest.id,
+      memberId: recipient.id,
+      workspaceId: workspace.id,
+    });
+    const observerRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: observer.id,
+      status: 'STARTED',
+    });
+    const observerInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: observerRequest.id,
+      memberId: observer.id,
+      workspaceId: workspace.id,
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/${teamRun.id}/private-messages`,
+        payload: {
+          content: 'System sent private message',
+          recipientMemberIds: [recipient.id],
+          senderType: 'system',
+          senderId: sender.id,
+          senderInvocationId: senderInvocation.id,
+        },
+      });
+      expect(response.statusCode).toBe(201);
+      const message = response.json() as {
+        id: string;
+        senderType: string;
+        senderId: string | null;
+        senderInvocationId: string | null;
+        participantMemberIds: string[];
+        recipientMemberIds: string[];
+        workRequestIds: string[];
+      };
+      expect(message).toMatchObject({
+        senderType: 'system',
+        senderId: null,
+        senderInvocationId: null,
+        recipientMemberIds: [recipient.id],
+      });
+      expect(message.participantMemberIds).toEqual([recipient.id]);
+
+      await expect(prisma.roomMessage.findUnique({
+        where: { id: message.id },
+        include: { participants: true },
+      })).resolves.toMatchObject({
+        senderType: 'system',
+        senderId: null,
+        senderInvocationId: null,
+        participants: [
+          expect.objectContaining({
+            memberId: recipient.id,
+            role: 'recipient',
+          }),
+        ],
+      });
+
+      const hostMessagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+      });
+      expect(hostMessagesResponse.statusCode).toBe(200);
+      expect(hostMessagesResponse.body).toContain('System sent private message');
+
+      const senderMessagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+        headers: {
+          'x-agent-tower-invocation-id': senderInvocation.id,
+        },
+      });
+      expect(senderMessagesResponse.statusCode).toBe(200);
+      expect(senderMessagesResponse.body).not.toContain('System sent private message');
+
+      const recipientMessagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+        headers: {
+          'x-agent-tower-invocation-id': recipientInvocation.id,
+        },
+      });
+      expect(recipientMessagesResponse.statusCode).toBe(200);
+      expect(recipientMessagesResponse.body).toContain('System sent private message');
+
+      const observerMessagesResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+        headers: {
+          'x-agent-tower-invocation-id': observerInvocation.id,
+        },
+      });
+      expect(observerMessagesResponse.statusCode).toBe(200);
+      expect(observerMessagesResponse.body).not.toContain('System sent private message');
+
+      await expect(prisma.workRequest.findUnique({
+        where: { id: message.workRequestIds[0]! },
+      })).resolves.toMatchObject({
+        requesterType: 'system',
+        requesterMemberId: null,
+        targetMemberId: recipient.id,
+        instruction: 'System sent private message',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('enforces MCP Team Room capabilities for listing and private messages', async () => {
+    const previousEnv = captureTeamRunEnv();
+    const noRead = await createFixture({
+      memberCount: 2,
+      memberCapabilities: [{ readRoom: false }],
+    });
+    const noPost = await createFixture({
+      memberCount: 2,
+      memberCapabilities: [{ postRoomMessage: false }],
+    });
+    const noMention = await createFixture({
+      memberCount: 2,
+      memberCapabilities: [{ mentionMembers: false }],
+    });
+    const noReadRequest = await createWorkRequest({
+      teamRunId: noRead.teamRun.id,
+      targetMemberId: noRead.members[0]!.id,
+      status: 'STARTED',
+    });
+    const noReadInvocation = await createRunningInvocation({
+      teamRunId: noRead.teamRun.id,
+      workRequestId: noReadRequest.id,
+      memberId: noRead.members[0]!.id,
+      workspaceId: noRead.workspace.id,
+    });
+    const noPostRequest = await createWorkRequest({
+      teamRunId: noPost.teamRun.id,
+      targetMemberId: noPost.members[0]!.id,
+      status: 'STARTED',
+    });
+    const noPostInvocation = await createRunningInvocation({
+      teamRunId: noPost.teamRun.id,
+      workRequestId: noPostRequest.id,
+      memberId: noPost.members[0]!.id,
+      workspaceId: noPost.workspace.id,
+    });
+    const noMentionRequest = await createWorkRequest({
+      teamRunId: noMention.teamRun.id,
+      targetMemberId: noMention.members[0]!.id,
+      status: 'STARTED',
+    });
+    const noMentionInvocation = await createRunningInvocation({
+      teamRunId: noMention.teamRun.id,
+      workRequestId: noMentionRequest.id,
+      memberId: noMention.members[0]!.id,
+      workspaceId: noMention.workspace.id,
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api' });
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const address = app.server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to start test server');
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      async function callToolForCurrentMember(fixture: {
+        teamRun: { id: string };
+        members: Array<{ id: string }>;
+      }, invocationId: string, toolCall: { name: string; arguments: Record<string, unknown> }) {
+        setTeamRunEnv({
+          AGENT_TOWER_TEAM_RUN_ID: fixture.teamRun.id,
+          AGENT_TOWER_MEMBER_ID: fixture.members[0]!.id,
+          AGENT_TOWER_INVOCATION_ID: invocationId,
+          AGENT_TOWER_SESSION_ID: undefined,
+        });
+        const server = await createMcpServer(baseUrl);
+        const client = new Client({ name: `${toolCall.name}-capability-test-client`, version: '0.1.0' });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await server.connect(serverTransport);
+        await client.connect(clientTransport);
+        try {
+          return await client.callTool(toolCall);
+        } finally {
+          await client.close();
+          await server.close();
+        }
+      }
+
+      const listResult = await callToolForCurrentMember(noRead, noReadInvocation.id, {
+        name: 'list_room_messages',
+        arguments: {},
+      });
+      expect(listResult.isError).toBe(true);
+      expect(getMcpToolText(listResult)).toContain('readRoom');
+
+      const noPostResult = await callToolForCurrentMember(noPost, noPostInvocation.id, {
+        name: 'post_private_message',
+        arguments: {
+          recipient_member_ids: [noPost.members[1]!.id],
+          content: 'Cannot post without postRoomMessage',
+        },
+      });
+      expect(noPostResult.isError).toBe(true);
+      expect(getMcpToolText(noPostResult)).toContain('postRoomMessage');
+
+      const noMentionResult = await callToolForCurrentMember(noMention, noMentionInvocation.id, {
+        name: 'post_private_message',
+        arguments: {
+          recipient_member_ids: [noMention.members[1]!.id],
+          content: 'Cannot trigger private work without mentionMembers',
+        },
+      });
+      expect(noMentionResult.isError).toBe(true);
+      expect(getMcpToolText(noMentionResult)).toContain('mentionMembers');
+
+      await expect(prisma.roomMessage.count({
+        where: {
+          content: {
+            in: [
+              'Cannot post without postRoomMessage',
+              'Cannot trigger private work without mentionMembers',
+            ],
+          },
+        },
+      })).resolves.toBe(0);
     } finally {
       restoreTeamRunEnv(previousEnv);
       await app.close();

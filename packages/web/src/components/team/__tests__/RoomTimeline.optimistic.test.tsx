@@ -106,6 +106,7 @@ function createRoomMessage(content: string): RoomMessage {
     teamRunId: teamRun.id,
     senderType: 'user',
     kind: 'chat',
+    visibility: 'PUBLIC',
     content,
     mentions: [],
     workRequestIds: [],

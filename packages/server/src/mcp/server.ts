@@ -3,6 +3,7 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import type { TeamMemberCapabilities } from '@agent-tower/shared';
 import { AgentTowerClient } from './http-client.js';
 import { fetchContext, type McpContext } from './context.js';
 import { registerProjectTools } from './tools/projects.js';
@@ -28,6 +29,17 @@ const PostRoomMessageInput = z.object({
   artifactRefs: z.array(z.string().min(1)).optional().describe('Artifact references to associate with the message.'),
   kind: z.enum(['chat', 'work_request', 'artifact', 'review', 'decision', 'system']).optional()
     .describe('Optional room message kind.'),
+});
+
+const PostPrivateMessageInput = z.object({
+  team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
+  recipient_member_ids: z.array(z.string().min(1)).min(1).describe('TeamMember IDs that can see and respond to this private message.'),
+  content: z.string().min(1).describe('Private message content. Recipients receive WorkRequests like normal room mentions.'),
+  attachmentIds: z.array(z.string().min(1)).optional().describe('Attachment IDs to associate with the private message.'),
+  artifactRefs: z.array(z.string().min(1)).optional().describe('Artifact references to associate with the private message.'),
+  ifBusy: z.enum(['queue', 'cancel_current_and_start']).optional()
+    .describe("How to handle each recipient if busy: 'queue' or 'cancel_current_and_start'."),
+  cancelQueued: z.boolean().optional().describe('Whether to cancel queued requests for each recipient.'),
 });
 
 const ListRoomMessagesInput = z.object({
@@ -58,6 +70,7 @@ const StopMemberWorkInput = z.object({
 });
 
 const TEAM_RUN_MISMATCH_ERROR = 'team_run_id does not match the current TeamRun session.';
+type TeamMemberCapabilityName = keyof TeamMemberCapabilities;
 
 function resolveBoundTeamRunId(context?: McpContext | null): string | undefined {
   return process.env.AGENT_TOWER_TEAM_RUN_ID ?? context?.teamRunId;
@@ -127,6 +140,27 @@ function requireCurrentTeamMemberId(context: McpContext | null, teamRunId: strin
   return memberId;
 }
 
+async function requireCurrentMemberCapabilities(
+  client: AgentTowerClient,
+  context: McpContext | null,
+  teamRunId: string,
+  requiredCapabilities: TeamMemberCapabilityName[]
+): Promise<string> {
+  const memberId = requireCurrentTeamMemberId(context, teamRunId);
+  const members = await client.listTeamMembers(teamRunId);
+  const member = members.find((item) => item.id === memberId);
+  if (!member) {
+    throw new Error('Current TeamRun member was not found.');
+  }
+
+  const missing = requiredCapabilities.filter((capability) => member.capabilities?.[capability] !== true);
+  if (missing.length > 0) {
+    throw new Error(`Current TeamRun member lacks required capabilities: ${missing.join(', ')}`);
+  }
+
+  return memberId;
+}
+
 function formatTeamMembersForAgent(teamRunId: string, members: any[]) {
   const currentMemberId = process.env.AGENT_TOWER_TEAM_RUN_ID === teamRunId
     ? process.env.AGENT_TOWER_MEMBER_ID || null
@@ -181,12 +215,47 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
   );
 
   server.tool(
+    'post_private_message',
+    'Post a TeamRun private message to selected members. Creates WorkRequests for recipients and is visible only to the sender/recipients in MCP; human host views can see all private messages.',
+    PostPrivateMessageInput.shape,
+    async (params) => {
+      try {
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        const { invocationId, memberId } = resolveTeamRunAgentIdentity(context, teamRunId);
+        if (!invocationId || !memberId) {
+          throw new Error('Current TeamRun agent identity is required to post a private message.');
+        }
+        await requireCurrentMemberCapabilities(client, context, teamRunId, ['postRoomMessage', 'mentionMembers']);
+        const message = await client.createPrivateRoomMessage(teamRunId, {
+          content: params.content,
+          recipientMemberIds: params.recipient_member_ids,
+          attachmentIds: params.attachmentIds,
+          artifactRefs: params.artifactRefs,
+          ifBusy: params.ifBusy,
+          cancelQueued: params.cancelQueued,
+          senderType: 'agent',
+          senderId: memberId,
+          senderInvocationId: invocationId,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(message, null, 2) }] };
+      } catch (e: any) {
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
     'list_room_messages',
-    'List TeamRun room messages. Uses the current TeamRun session env when available.',
+    'List TeamRun room messages visible to the current TeamRun member. Human/API host views may see all private messages; MCP agent sessions cannot impersonate another viewer.',
     ListRoomMessagesInput.shape,
     async (params) => {
       try {
         const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        const { invocationId, memberId } = resolveTeamRunAgentIdentity(context, teamRunId);
+        if (!invocationId || !memberId) {
+          throw new Error('Current TeamRun agent identity is required to list room messages.');
+        }
+        await requireCurrentMemberCapabilities(client, context, teamRunId, ['readRoom']);
         const messages = await client.listRoomMessages(teamRunId);
         const limited = params.limit ? messages.slice(-params.limit) : messages;
         return { content: [{ type: 'text', text: JSON.stringify(limited, null, 2) }] };
@@ -300,6 +369,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
 export async function createMcpServer(baseUrl: string): Promise<McpServer> {
   const client = new AgentTowerClient(baseUrl);
   const context = await fetchContext(client);
+  client.setInvocationId(process.env.AGENT_TOWER_INVOCATION_ID ?? context?.invocationId);
 
   const server = new McpServer({
     name: 'agent-tower',

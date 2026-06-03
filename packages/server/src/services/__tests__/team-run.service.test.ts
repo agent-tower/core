@@ -95,6 +95,7 @@ describe('TeamRunService', () => {
     service = new TeamRunService();
     await prisma.agentInvocation.deleteMany();
     await prisma.workRequest.deleteMany();
+    await prisma.roomMessageParticipant.deleteMany();
     await prisma.roomMessage.deleteMany();
     await prisma.teamMember.deleteMany();
     await prisma.teamRun.deleteMany();
@@ -368,6 +369,205 @@ describe('TeamRunService', () => {
       cancelQueued: true,
       status: 'PENDING_APPROVAL',
     });
+  });
+
+  it('creates private RoomMessages with participants and WorkRequests for recipients', async () => {
+    const senderPreset = await service.createMemberPreset(presetInput('Sender'));
+    const recipientPreset = await service.createMemberPreset(presetInput('Recipient'));
+    const observerPreset = await service.createMemberPreset(presetInput('Observer'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [senderPreset.id, recipientPreset.id, observerPreset.id],
+    });
+    const sender = teamRun.members?.find((member) => member.name === 'Sender');
+    const recipient = teamRun.members?.find((member) => member.name === 'Recipient');
+    const observer = teamRun.members?.find((member) => member.name === 'Observer');
+    expect(sender).toBeDefined();
+    expect(recipient).toBeDefined();
+    expect(observer).toBeDefined();
+
+    const message = await service.createPrivateRoomMessage(teamRun.id, {
+      content: 'Private strategy',
+      recipientMemberIds: [recipient!.id],
+      senderType: 'agent',
+      senderId: sender!.id,
+    });
+    const requests = await service.listWorkRequests(teamRun.id);
+
+    expect(message).toMatchObject({
+      senderType: 'agent',
+      senderId: sender!.id,
+      visibility: 'PRIVATE',
+      mentions: [],
+      recipientMemberIds: [recipient!.id],
+      workRequestIds: [requests[0]?.id],
+    });
+    expect(new Set(message.participantMemberIds)).toEqual(new Set([sender!.id, recipient!.id]));
+    expect(message.participants?.map((participant) => [participant.memberId, participant.role])).toEqual(
+      expect.arrayContaining([
+        [sender!.id, 'sender'],
+        [recipient!.id, 'recipient'],
+      ])
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      requesterType: 'agent',
+      requesterMemberId: sender!.id,
+      targetMemberId: recipient!.id,
+      triggerMessageId: message.id,
+      instruction: 'Private strategy',
+      status: 'QUEUED',
+    });
+
+    await expect(service.listRoomMessages(teamRun.id)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: message.id })])
+    );
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: sender!.id })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: message.id })])
+    );
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: recipient!.id })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: message.id })])
+    );
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: observer!.id })).resolves.toEqual([]);
+  });
+
+  it('records user private message senderId as a sender participant when provided', async () => {
+    const senderPreset = await service.createMemberPreset(presetInput('HostSender'));
+    const recipientPreset = await service.createMemberPreset(presetInput('Recipient'));
+    const observerPreset = await service.createMemberPreset(presetInput('Observer'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [senderPreset.id, recipientPreset.id, observerPreset.id],
+    });
+    const sender = teamRun.members?.find((member) => member.name === 'HostSender');
+    const recipient = teamRun.members?.find((member) => member.name === 'Recipient');
+    const observer = teamRun.members?.find((member) => member.name === 'Observer');
+    expect(sender).toBeDefined();
+    expect(recipient).toBeDefined();
+    expect(observer).toBeDefined();
+
+    const message = await service.createPrivateRoomMessage(teamRun.id, {
+      content: 'Host sent private note',
+      recipientMemberIds: [recipient!.id],
+      senderType: 'user',
+      senderId: sender!.id,
+    });
+
+    expect(message).toMatchObject({
+      senderType: 'user',
+      senderId: sender!.id,
+      visibility: 'PRIVATE',
+      recipientMemberIds: [recipient!.id],
+    });
+    expect(new Set(message.participantMemberIds)).toEqual(new Set([sender!.id, recipient!.id]));
+    expect(message.participants?.map((participant) => [participant.memberId, participant.role])).toEqual(
+      expect.arrayContaining([
+        [sender!.id, 'sender'],
+        [recipient!.id, 'recipient'],
+      ])
+    );
+
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: sender!.id })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: message.id })])
+    );
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: recipient!.id })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: message.id })])
+    );
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: observer!.id })).resolves.toEqual([]);
+  });
+
+  it('normalizes system private message senderId without granting sender visibility', async () => {
+    const senderPreset = await service.createMemberPreset(presetInput('HostSender'));
+    const recipientPreset = await service.createMemberPreset(presetInput('Recipient'));
+    const observerPreset = await service.createMemberPreset(presetInput('Observer'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [senderPreset.id, recipientPreset.id, observerPreset.id],
+    });
+    const sender = teamRun.members?.find((member) => member.name === 'HostSender');
+    const recipient = teamRun.members?.find((member) => member.name === 'Recipient');
+    const observer = teamRun.members?.find((member) => member.name === 'Observer');
+    expect(sender).toBeDefined();
+    expect(recipient).toBeDefined();
+    expect(observer).toBeDefined();
+
+    const message = await service.createPrivateRoomMessage(teamRun.id, {
+      content: 'System sent private note',
+      recipientMemberIds: [recipient!.id],
+      senderType: 'system',
+      senderId: sender!.id,
+      senderInvocationId: 'forged-system-invocation',
+    });
+
+    expect(message).toMatchObject({
+      senderType: 'system',
+      senderId: null,
+      senderInvocationId: null,
+      visibility: 'PRIVATE',
+      recipientMemberIds: [recipient!.id],
+    });
+    expect(message.participantMemberIds).toEqual([recipient!.id]);
+    expect(message.participants?.map((participant) => [participant.memberId, participant.role])).toEqual([
+      [recipient!.id, 'recipient'],
+    ]);
+
+    await expect(service.listRoomMessages(teamRun.id)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: message.id })])
+    );
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: sender!.id })).resolves.toEqual([]);
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: recipient!.id })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: message.id })])
+    );
+    await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: observer!.id })).resolves.toEqual([]);
+  });
+
+  it('filters TeamRun detail and member queues for private RoomMessage visibility', async () => {
+    const managerPreset = await service.createMemberPreset({
+      ...presetInput('Manager'),
+      queueManagementPolicy: 'team_pending',
+    });
+    const senderPreset = await service.createMemberPreset(presetInput('Sender'));
+    const recipientPreset = await service.createMemberPreset(presetInput('Recipient'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [managerPreset.id, senderPreset.id, recipientPreset.id],
+    });
+    const manager = teamRun.members?.find((member) => member.name === 'Manager');
+    const sender = teamRun.members?.find((member) => member.name === 'Sender');
+    const recipient = teamRun.members?.find((member) => member.name === 'Recipient');
+    expect(manager).toBeDefined();
+    expect(sender).toBeDefined();
+    expect(recipient).toBeDefined();
+
+    const privateMessage = await service.createPrivateRoomMessage(teamRun.id, {
+      content: 'Secret work',
+      recipientMemberIds: [recipient!.id],
+      senderType: 'agent',
+      senderId: sender!.id,
+    });
+
+    const hostDetail = await service.getTeamRunById(teamRun.id);
+    expect(hostDetail.messages?.map((message) => message.id)).toContain(privateMessage.id);
+    expect(hostDetail.workRequests?.map((request) => request.id)).toEqual(privateMessage.workRequestIds);
+
+    const managerDetail = await service.getTeamRunById(teamRun.id, { viewerMemberId: manager!.id });
+    expect(managerDetail.messages ?? []).toEqual([]);
+    expect(managerDetail.workRequests ?? []).toEqual([]);
+
+    const recipientDetail = await service.getTeamRunById(teamRun.id, { viewerMemberId: recipient!.id });
+    expect(recipientDetail.messages?.map((message) => message.id)).toEqual([privateMessage.id]);
+    expect(recipientDetail.workRequests?.map((request) => request.id)).toEqual(privateMessage.workRequestIds);
+
+    const managerQueue = await service.listQueuedWorkRequestsForMember(teamRun.id, manager!.id);
+    expect(managerQueue.canManageTeamRunQueue).toBe(true);
+    expect(managerQueue.workRequests).toEqual([]);
+
+    const recipientQueue = await service.listQueuedWorkRequestsForMember(teamRun.id, recipient!.id);
+    expect(recipientQueue.workRequests.map((request) => request.id)).toEqual(privateMessage.workRequestIds);
   });
 
   it('derives TeamMember status from active invocations and open WorkRequests', async () => {
