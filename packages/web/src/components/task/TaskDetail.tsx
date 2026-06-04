@@ -1027,6 +1027,11 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                     </button>
                   )}
                 </div>
+                {todos.length > 0 && (
+                  <div className="px-6 pt-2 pb-1 bg-white flex-shrink-0 border-t border-neutral-100">
+                    <TodoPanel todos={todos} />
+                  </div>
+                )}
               </>
             ) : (
               <RoomTimeline

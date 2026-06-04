@@ -651,6 +651,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                     </button>
                   )}
                 </div>
+                {todos.length > 0 && (
+                  <div className="px-3 pt-1.5 pb-0.5 bg-white shrink-0 border-t border-neutral-100">
+                    <TodoPanel todos={todos} compact />
+                  </div>
+                )}
               </div>
             ) : (
               <RoomTimeline
