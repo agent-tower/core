@@ -874,11 +874,15 @@ export class CursorAgentParser {
       const patch = addNormalizedEntry(index, entry);
       this.msgStore.pushPatch(patch);
     } else if (subtype?.toLowerCase() === 'completed' && call_id) {
-      // 工具调用完成 - 更新状态
       const existingIndex = this.callIndexMap.get(call_id);
       if (existingIndex !== undefined) {
         const patch = updateToolStatus(existingIndex, 'success' as ToolStatus);
         this.msgStore.pushPatch(patch);
+
+        const resultText = this.extractToolResultText(tool_call);
+        if (resultText) {
+          this.appendToolResultContent(existingIndex, resultText);
+        }
       }
     }
   }
@@ -898,6 +902,47 @@ export class CursorAgentParser {
       })),
       todoOperation: 'write',
     };
+  }
+
+  /**
+   * 从 completed tool_call 中提取结果文本
+   */
+  private extractToolResultText(toolCall: CursorToolCall): string | undefined {
+    const info = getToolCallInner(toolCall);
+    if (!info?.inner?.result) return undefined;
+
+    const result = info.inner.result;
+    if (typeof result === 'string') return result;
+    if (typeof result === 'object' && result !== null) {
+      const r = result as Record<string, unknown>;
+      if (typeof r.output === 'string') return r.output;
+      if (typeof r.stdout === 'string') return r.stdout;
+      if (typeof r.text === 'string') return r.text;
+      if (typeof r.content === 'string') return r.content;
+      try { return JSON.stringify(result, null, 2); } catch { return undefined; }
+    }
+    return undefined;
+  }
+
+  /**
+   * 将工具结果追加到对应 entry 的 content 中
+   */
+  private appendToolResultContent(entryIndex: number, resultContent: string): void {
+    const trimmed = resultContent.trim();
+    if (!trimmed) return;
+
+    const snapshot = this.msgStore.getSnapshot();
+    const entry = snapshot.entries[entryIndex];
+    if (!entry) return;
+
+    const MAX_RESULT_LENGTH = 20_000;
+    const truncated = trimmed.length > MAX_RESULT_LENGTH
+      ? trimmed.slice(0, MAX_RESULT_LENGTH) + `\n... (truncated, ${trimmed.length} chars total)`
+      : trimmed;
+
+    const newContent = entry.content + '\n\n' + truncated;
+    const patch = updateEntryContent(entryIndex, newContent);
+    this.msgStore.pushPatch(patch);
   }
 
   /**

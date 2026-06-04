@@ -531,6 +531,15 @@ export class ClaudeCodeParser {
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         this.updateToolResultStatus(block.tool_use_id, block.is_error)
+        const resultText = typeof block.content === 'string'
+          ? block.content
+          : Array.isArray(block.content)
+            ? (block.content as Array<{ type?: string; text?: string }>)
+                .filter(c => c.type === 'text' && c.text)
+                .map(c => c.text)
+                .join('\n')
+            : undefined
+        this.appendToolResultContent(block.tool_use_id, resultText)
       }
     }
   }
@@ -541,6 +550,7 @@ export class ClaudeCodeParser {
   private handleResultMessage(msg: ClaudeCodeMessage): void {
     if (msg.subtype === 'tool_result' && msg.tool_use_id) {
       this.updateToolResultStatus(msg.tool_use_id, msg.tool_result?.is_error)
+      this.appendToolResultContent(msg.tool_use_id, msg.tool_result?.content)
     }
 
     // 最终错误结果（如 API 重试全部失败后）
@@ -626,6 +636,32 @@ export class ClaudeCodeParser {
 
     const status: ToolStatus = isError ? 'failed' : 'success'
     const patch = updateToolStatus(index, status)
+    this.msgStore.pushPatch(patch)
+  }
+
+  /**
+   * 将 tool_result.content 追加到对应 tool_use entry 的 content 中，
+   * 使前端能够展示命令执行结果等工具输出。
+   */
+  private appendToolResultContent(toolUseId: string, resultContent?: string): void {
+    if (!resultContent) return
+    const index = this.toolEntryMap.get(toolUseId)
+    if (index === undefined) return
+
+    const snapshot = this.msgStore.getSnapshot()
+    const entry = snapshot.entries[index]
+    if (!entry) return
+
+    const trimmed = resultContent.trim()
+    if (!trimmed) return
+
+    const MAX_RESULT_LENGTH = 20_000
+    const truncated = trimmed.length > MAX_RESULT_LENGTH
+      ? trimmed.slice(0, MAX_RESULT_LENGTH) + `\n... (truncated, ${trimmed.length} chars total)`
+      : trimmed
+
+    const newContent = entry.content + '\n\n' + truncated
+    const patch = updateEntryContent(index, newContent)
     this.msgStore.pushPatch(patch)
   }
 

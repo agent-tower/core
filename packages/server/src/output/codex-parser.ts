@@ -283,11 +283,14 @@ export class CodexParser {
     } else if (item.type === 'mcp_tool_call') {
       this.upsertMcpToolEntry(item, this.getMcpToolStatus(item));
     } else if (item.type === 'command_execution') {
-      // 命令执行完成
       if (this.currentToolUseId === item.id && this.currentToolIndex !== null) {
         const status = item.exit_code === 0 ? 'success' : 'failed';
         const patch = updateToolStatus(this.currentToolIndex, status);
         this.msgStore.pushPatch(patch);
+
+        if (item.aggregated_output) {
+          this.appendToolResultContent(this.currentToolIndex, stripAnsiSequences(item.aggregated_output));
+        }
 
         this.currentToolUseId = null;
         this.currentToolIndex = null;
@@ -363,6 +366,27 @@ export class CodexParser {
     if (rawStatus === 'timed_out' || rawStatus === 'timeout') return 'timed_out';
 
     return 'created';
+  }
+
+  /**
+   * 将工具结果追加到对应 entry 的 content 中
+   */
+  private appendToolResultContent(entryIndex: number, resultContent: string): void {
+    const trimmed = resultContent.trim();
+    if (!trimmed) return;
+
+    const snapshot = this.msgStore.getSnapshot();
+    const entry = snapshot.entries[entryIndex];
+    if (!entry) return;
+
+    const MAX_RESULT_LENGTH = 20_000;
+    const truncated = trimmed.length > MAX_RESULT_LENGTH
+      ? trimmed.slice(0, MAX_RESULT_LENGTH) + `\n... (truncated, ${trimmed.length} chars total)`
+      : trimmed;
+
+    const newContent = entry.content + '\n\n' + truncated;
+    const patch = updateEntryContent(entryIndex, newContent);
+    this.msgStore.pushPatch(patch);
   }
 
   /**
