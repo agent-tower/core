@@ -45,6 +45,7 @@ describe('task routes', () => {
   });
 
   beforeEach(async () => {
+    await prisma.taskCleanupJob.deleteMany();
     await prisma.task.deleteMany();
     await prisma.project.deleteMany();
   });
@@ -79,6 +80,44 @@ describe('task routes', () => {
         details: [expect.objectContaining({ field: 'title' })],
       });
       await expect(prisma.task.count({ where: { projectId: project.id } })).resolves.toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('filters deleted tasks from project task lists', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task route list project',
+        repoPath: testDir,
+      },
+    });
+    await prisma.task.create({
+      data: {
+        title: 'Visible task',
+        projectId: project.id,
+      },
+    });
+    await prisma.task.create({
+      data: {
+        title: 'Hidden task',
+        projectId: project.id,
+        deletedAt: new Date(),
+      },
+    });
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/projects/${project.id}/tasks`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        total: 1,
+        data: [expect.objectContaining({ title: 'Visible task' })],
+      });
     } finally {
       await app.close();
     }

@@ -69,6 +69,10 @@ export async function sessionRoutes(app: FastifyInstance) {
         reply.code(404);
         return { error: 'Workspace not found', code: 'NOT_FOUND' };
       }
+      if (workspace.task.deletedAt) {
+        reply.code(404);
+        return { error: 'Task not found', code: 'NOT_FOUND' };
+      }
 
       const projectError = buildProjectReadOnlyError(workspace.task.project);
       if (projectError) {
@@ -129,6 +133,10 @@ export async function sessionRoutes(app: FastifyInstance) {
         reply.code(404);
         return { error: 'Session not found' };
       }
+      if (existing.workspace.task.deletedAt) {
+        reply.code(404);
+        return { error: 'Task not found', code: 'NOT_FOUND' };
+      }
 
       const projectError = buildProjectReadOnlyError(existing.workspace.task.project);
       if (projectError) {
@@ -171,6 +179,10 @@ export async function sessionRoutes(app: FastifyInstance) {
         if (!existing) {
           reply.code(404);
           return { error: 'Session not found' };
+        }
+        if (existing.workspace.task.deletedAt) {
+          reply.code(404);
+          return { error: 'Task not found', code: 'NOT_FOUND' };
         }
 
         const projectError = buildProjectReadOnlyError(existing.workspace.task.project);

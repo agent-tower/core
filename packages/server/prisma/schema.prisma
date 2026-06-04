@@ -42,11 +42,34 @@ model Task {
   project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workspaces  Workspace[]
   teamRun     TeamRun?
+  deletedAt   DateTime?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   @@index([projectId])
   @@index([status])
+  @@index([deletedAt])
+}
+
+// 后台任务删除资源清理
+// TaskCleanupJobStatus: PENDING, RUNNING, COMPLETED, FAILED
+model TaskCleanupJob {
+  id           String    @id @default(uuid())
+  taskId       String
+  projectId    String
+  payload      String    // JSON cleanup snapshot: project/workspaces/sessions
+  status       String    @default("PENDING")
+  attempts     Int       @default(0)
+  lastError    String?
+  nextRetryAt  DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([taskId])
+  @@index([status, nextRetryAt])
+  @@index([projectId])
 }
 
 model MemberPreset {

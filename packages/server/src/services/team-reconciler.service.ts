@@ -8,6 +8,7 @@ import type { EventBus } from '../core/event-bus.js';
 import { TaskStatus } from '../types/index.js';
 import { prisma } from '../utils/index.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
+import { isTaskDeleted } from './deleted-task-guard.js';
 
 const DEFAULT_REMINDER_DELAYS_MS = [60_000, 120_000, 240_000];
 const DEFAULT_MAX_ROOM_REPLY_REMINDERS = 3;
@@ -82,7 +83,11 @@ export class TeamReconcilerService {
   async handleSessionStopped(sessionId: string): Promise<boolean> {
     const invocation = await prisma.agentInvocation.findFirst({
       where: { sessionId },
-      select: { id: true, teamRunId: true },
+      select: {
+        id: true,
+        teamRunId: true,
+        teamRun: { select: { task: { select: { deletedAt: true } } } },
+      },
     });
     if (!invocation) {
       return false;
@@ -97,6 +102,11 @@ export class TeamReconcilerService {
     });
     await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
     this.clearReminderTimer(invocation.id);
+    if (isTaskDeleted(invocation.teamRun.task)) {
+      const scheduler = await this.getScheduler();
+      scheduler.releaseInvocationLocks(invocation.id);
+      return true;
+    }
     await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
     return true;
   }
@@ -104,8 +114,15 @@ export class TeamReconcilerService {
   async reconcileInvocation(invocationId: string): Promise<void> {
     const invocation = await prisma.agentInvocation.findUnique({
       where: { id: invocationId },
+      include: { teamRun: { select: { task: { select: { deletedAt: true } } } } },
     });
     if (!invocation) {
+      return;
+    }
+    if (isTaskDeleted(invocation.teamRun.task)) {
+      const scheduler = await this.getScheduler();
+      scheduler.releaseInvocationLocks(invocation.id);
+      this.clearReminderTimer(invocation.id);
       return;
     }
 
@@ -201,6 +218,10 @@ export class TeamReconcilerService {
     }
 
     await this.releaseTerminalInvocationLocks(teamRun.invocations);
+
+    if (teamRun.task.deletedAt) {
+      return false;
+    }
 
     if (teamRun.task.status !== TaskStatus.IN_PROGRESS) {
       return false;

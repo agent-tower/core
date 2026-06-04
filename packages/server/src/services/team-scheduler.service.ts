@@ -28,6 +28,7 @@ import { WorkspaceService } from './workspace.service.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
+import { ensureTaskNotDeleted, isTaskDeleted } from './deleted-task-guard.js';
 
 export interface SchedulePlan {
   workRequestId: string;
@@ -58,6 +59,7 @@ type SchedulerTeamRun = {
   mainWorkspaceId: string | null;
   task: {
     projectId: string;
+    deletedAt: Date | null;
     workspaces: PrismaWorkspace[];
   };
 };
@@ -78,7 +80,7 @@ type SessionStarter = {
   ): Promise<{ id: string }>;
   start(id: string): Promise<unknown>;
   startFollowUp?(id: string, resumeFromSessionId: string): Promise<unknown>;
-  stop?(id: string): Promise<unknown>;
+  stop?(id: string, options?: { skipTeamRunReconcile?: boolean }): Promise<unknown>;
 };
 
 type TeamRunReviewAdvancer = {
@@ -753,6 +755,13 @@ export class TeamSchedulerService {
     if (!teamRun) {
       throw new NotFoundError('TeamRun', teamRunId);
     }
+    if (isTaskDeleted(teamRun.task)) {
+      return {
+        teamRun,
+        memberById: new Map(),
+        workRequests: [],
+      };
+    }
 
     const [members, workRequests] = await Promise.all([
       prisma.teamMember.findMany({
@@ -829,6 +838,15 @@ export class TeamSchedulerService {
     nextStatus: WorkRequestStatus
   ): Promise<WorkRequest> {
     const updated = await prisma.$transaction(async (tx) => {
+      const current = await tx.workRequest.findUnique({
+        where: { id: workRequestId },
+        include: { teamRun: { include: { task: true } } },
+      });
+      if (!current) {
+        return null;
+      }
+      ensureTaskNotDeleted(current.teamRun.task);
+
       const claimed = allowedStatuses.length === 1
         ? await tx.workRequest.updateMany({
           where: { id: workRequestId, status: allowedStatuses[0] },

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import type { Task, TaskStatus } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
@@ -12,6 +12,11 @@ interface PaginatedResponse<T> {
   page: number
   limit: number
 }
+
+type TasksListSnapshot = Array<[
+  readonly unknown[],
+  PaginatedResponse<Task> | undefined,
+]>
 
 // ============ 请求参数类型 ============
 
@@ -37,6 +42,48 @@ interface UpdateTaskInput {
 interface UpdateTaskStatusInput {
   id: string
   status: TaskStatus
+}
+
+export function removeTaskFromListCaches(
+  queryClient: QueryClient,
+  taskId: string,
+  projectId?: string,
+): TasksListSnapshot {
+  const predicate = (query: { queryKey: QueryKey }) => isTaskListQueryKey(query.queryKey, projectId)
+  const snapshots = queryClient.getQueriesData<PaginatedResponse<Task>>({ predicate })
+
+  queryClient.setQueriesData<PaginatedResponse<Task>>({ predicate }, (current) => {
+    if (!current || !Array.isArray(current.data)) return current
+    const nextData = current.data.filter((task) => task.id !== taskId)
+    if (nextData.length === current.data.length) return current
+    return {
+      ...current,
+      data: nextData,
+      total: Math.max(0, current.total - (current.data.length - nextData.length)),
+    }
+  })
+
+  queryClient.removeQueries({
+    queryKey: queryKeys.tasks.detail(taskId),
+    exact: true,
+  })
+
+  return snapshots
+}
+
+export function isTaskListQueryKey(queryKey: QueryKey, projectId?: string): boolean {
+  if (!Array.isArray(queryKey)) return false
+  if (queryKey[0] !== 'tasks' || queryKey[1] !== 'list') return false
+  return projectId ? queryKey[2] === projectId : true
+}
+
+function restoreTaskListCaches(
+  queryClient: QueryClient,
+  snapshots: TasksListSnapshot,
+) {
+  for (const [queryKey, data] of snapshots) {
+    queryClient.setQueryData(queryKey, data)
+  }
 }
 
 // ============ Query Hooks ============
@@ -144,8 +191,19 @@ export function useDeleteTask() {
 
   return useMutation({
     mutationFn: (id: string) => apiClient.delete<void>(`/tasks/${id}`),
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all })
+      const snapshots = removeTaskFromListCaches(queryClient, id)
+      return { snapshots }
+    },
+    onError: (_error, _id, context) => {
+      if (context?.snapshots) {
+        restoreTaskListCaches(queryClient, context.snapshots)
+      }
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
     },
   })
 }

@@ -10,6 +10,7 @@ import { initializeSocket, closeSocket } from './socket/index.js';
 import { WorkspaceService } from './services/workspace.service.js';
 import { HibernationScheduler } from './services/hibernation-scheduler.js';
 import { TunnelService } from './services/tunnel.service.js';
+import { getTaskCleanupService } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 
 let hibernationScheduler: HibernationScheduler | null = null;
@@ -73,11 +74,15 @@ export async function buildApp() {
     // 启动空闲 workspace 自动休眠调度器
     hibernationScheduler = new HibernationScheduler();
     hibernationScheduler.start();
+
+    // 启动任务删除后台资源清理 worker
+    getTaskCleanupService().start();
   });
 
   // 服务器关闭时清理 Socket.IO、Tunnel 和 HibernationScheduler
   app.addHook('onClose', async () => {
     hibernationScheduler?.stop();
+    getTaskCleanupService().stop();
     TunnelService.stop();
     await closeSocket();
   });

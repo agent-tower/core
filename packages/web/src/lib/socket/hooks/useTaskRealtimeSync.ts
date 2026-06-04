@@ -7,6 +7,7 @@ import {
   type TaskDeletedPayload,
 } from '@agent-tower/shared/socket'
 import { queryKeys } from '@/hooks/query-keys'
+import { isTaskListQueryKey, removeTaskFromListCaches } from '@/hooks/use-tasks'
 
 /**
  * 实时同步 Task 状态的 Hook
@@ -30,10 +31,10 @@ export function useTaskRealtimeSync() {
     // --- Event handlers ---
     const handleTaskUpdated = async (payload: TaskUpdatedPayload) => {
       await queryClient.cancelQueries({
-        queryKey: queryKeys.tasks.list(payload.projectId),
+        predicate: (query) => isTaskListQueryKey(query.queryKey, payload.projectId),
       })
       queryClient.invalidateQueries({
-        queryKey: queryKeys.tasks.list(payload.projectId),
+        predicate: (query) => isTaskListQueryKey(query.queryKey, payload.projectId),
       })
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.detail(payload.taskId),
@@ -41,12 +42,11 @@ export function useTaskRealtimeSync() {
     }
 
     const handleTaskDeleted = (payload: TaskDeletedPayload) => {
+      removeTaskFromListCaches(queryClient, payload.taskId, payload.projectId)
       queryClient.invalidateQueries({
-        queryKey: queryKeys.tasks.list(payload.projectId),
+        predicate: (query) => isTaskListQueryKey(query.queryKey, payload.projectId),
       })
-      queryClient.removeQueries({
-        queryKey: queryKeys.tasks.detail(payload.taskId),
-      })
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
     }
 
     socket.on('connect', handleReconnect)

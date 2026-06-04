@@ -7,8 +7,9 @@ import {
 } from '../errors.js';
 import type { EventBus } from '../core/event-bus.js';
 import type { SessionManager } from './session-manager.js';
-import { WorktreeManager } from '../git/worktree.manager.js';
+import type { TaskCleanupService, TaskCleanupSnapshot } from './task-cleanup.service.js';
 import { ensureProjectIsMutable } from './project-guards.js';
+import { defaultTeamLockService } from './team-lock.service.js';
 
 interface CreateTaskInput {
   title: string;
@@ -39,6 +40,8 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   [TaskStatus.DONE]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW, TaskStatus.CANCELLED],
   [TaskStatus.CANCELLED]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW, TaskStatus.DONE],
 };
+const CANCELLABLE_DELETE_WORK_REQUEST_STATUSES = ['PENDING_APPROVAL', 'QUEUED', 'STARTED'];
+const CANCELLABLE_DELETE_INVOCATION_STATUSES = ['QUEUED', 'RUNNING', 'SESSION_ENDED', 'WAITING_ROOM_REPLY'];
 
 function normalizeTaskTitle(title: string): string {
   const normalized = title.trim();
@@ -51,7 +54,8 @@ function normalizeTaskTitle(title: string): string {
 export class TaskService {
   constructor(
     private readonly eventBus: EventBus,
-    private readonly sessionManager: SessionManager
+    private readonly sessionManager: SessionManager,
+    private readonly cleanupService?: Pick<TaskCleanupService, 'trigger'>
   ) {}
 
   /**
@@ -70,7 +74,7 @@ export class TaskService {
     const limit = Math.min(1000, Math.max(1, params.limit || 200));
     const skip = (page - 1) * limit;
 
-    const where: any = { projectId };
+    const where: any = { projectId, deletedAt: null };
     if (params.status) {
       where.status = params.status;
     }
@@ -116,8 +120,8 @@ export class TaskService {
    * 获取任务详情
    */
   async findById(id: string) {
-    const task = await prisma.task.findUnique({
-      where: { id },
+    const task = await prisma.task.findFirst({
+      where: { id, deletedAt: null },
       include: { workspaces: { include: { sessions: { where: { purpose: { not: SessionPurpose.COMMIT_MSG } } } } } },
     });
 
@@ -147,7 +151,7 @@ export class TaskService {
 
     // 自动计算 position
     const maxPosition = await prisma.task.aggregate({
-      where: { projectId, status: TaskStatus.TODO },
+      where: { projectId, status: TaskStatus.TODO, deletedAt: null },
       _max: { position: true },
     });
 
@@ -170,8 +174,8 @@ export class TaskService {
       ...input,
       ...(input.title !== undefined ? { title: normalizeTaskTitle(input.title) } : {}),
     };
-    const task = await prisma.task.findUnique({
-      where: { id },
+    const task = await prisma.task.findFirst({
+      where: { id, deletedAt: null },
       include: { project: true },
     });
     if (!task) {
@@ -190,8 +194,8 @@ export class TaskService {
    * 更新后通过 EventBus 发射 task:updated 事件，通知前端实时更新
    */
   async updateStatus(id: string, status: TaskStatus) {
-    const task = await prisma.task.findUnique({
-      where: { id },
+    const task = await prisma.task.findFirst({
+      where: { id, deletedAt: null },
       include: { project: true },
     });
     if (!task) {
@@ -214,7 +218,7 @@ export class TaskService {
 
     // 切换状态时自动计算新列的 position
     const maxPosition = await prisma.task.aggregate({
-      where: { projectId: task.projectId, status },
+      where: { projectId: task.projectId, status, deletedAt: null },
       _max: { position: true },
     });
 
@@ -237,8 +241,8 @@ export class TaskService {
    * 如果同时传了 status，会进行状态流转并通知前端
    */
   async updatePosition(id: string, position: number, status?: TaskStatus) {
-    const task = await prisma.task.findUnique({
-      where: { id },
+    const task = await prisma.task.findFirst({
+      where: { id, deletedAt: null },
       include: { project: true },
     });
     if (!task) {
@@ -269,83 +273,145 @@ export class TaskService {
   }
 
   /**
-   * 删除任务（增强版）
+   * 快速删除任务
    *
-   * 1. 停止所有 RUNNING/PENDING 状态的 Session
-   * 2. 清理所有关联 Workspace 的 git worktree
-   * 3. 清理所有关联 Workspace 的本地任务分支
-   * 4. 级联删除数据库记录
-   * 5. 通过 EventBus 通知前端实时删除
+   * 1. 原子标记 Task 为 deletedAt，使普通列表立即隐藏
+   * 2. 保存后台清理快照
+   * 3. 通过 EventBus 通知前端实时删除
+   * 4. 后台 worker 再停止 Session、删除 worktree/branch，并最终硬删除 Task
    */
   async delete(id: string) {
-    const task = await prisma.task.findUnique({
+    const deletedAt = new Date();
+    const taskForGuard = await prisma.task.findUnique({
       where: { id },
-      include: {
-        project: true,
-        workspaces: {
-          include: { sessions: true },
-        },
-      },
+      include: { project: true },
     });
-    if (!task) {
+    if (!taskForGuard || taskForGuard.deletedAt) {
       throw new NotFoundError('Task', id);
     }
-    ensureProjectIsMutable(task.project, 'delete tasks');
+    ensureProjectIsMutable(taskForGuard.project, 'delete tasks');
 
-    // 1. 停止所有活跃 Session
-    for (const workspace of task.workspaces) {
-      const activeSessions = workspace.sessions.filter(
-        (s) => s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING
-      );
-      for (const session of activeSessions) {
-        try {
-          await this.sessionManager.stop(session.id);
-        } catch (err) {
-          console.warn(`[TaskService] Failed to stop session ${session.id} during task delete:`, err);
-        }
-      }
-    }
-
-    // 2. 清理所有 Workspace 的 worktree
-    const worktreeManager = new WorktreeManager(task.project.repoPath);
-    for (const workspace of task.workspaces) {
-      try {
-        await worktreeManager.remove(workspace.worktreePath);
-      } catch (err) {
-        console.warn(
-          `[TaskService] Failed to remove worktree for workspace ${workspace.id} during task delete:`,
-          err instanceof Error ? err.message : err
-        );
-      }
-    }
-
-    // 3. 清理所有 Workspace 的本地任务分支。分支清理失败不阻断任务删除。
-    for (const workspace of task.workspaces) {
-      const result = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
-        protectedBranches: [task.project.mainBranch, workspace.baseBranch],
+    const marked = await prisma.task.updateMany({
+      where: {
+        id,
+        deletedAt: null,
+        project: { archivedAt: null },
+      },
+      data: { deletedAt },
+    });
+    if (marked.count === 0) {
+      const current = await prisma.task.findUnique({
+        where: { id },
+        include: { project: true },
       });
-
-      if (result.status === 'failed') {
-        console.warn(
-          `[TaskService] Failed to delete branch ${result.branchName} for workspace ${workspace.id} during task delete:`,
-          result.reason
-        );
-      } else if (result.status === 'checked_out') {
-        console.warn(
-          `[TaskService] Skipped deleting checked-out branch ${result.branchName} for workspace ${workspace.id} during task delete:`,
-          result.reason
-        );
+      if (!current || current.deletedAt) {
+        throw new NotFoundError('Task', id);
       }
+      ensureProjectIsMutable(current.project, 'delete tasks');
+      throw new NotFoundError('Task', id);
     }
 
-    // 4. 级联删除数据库记录
-    await prisma.task.delete({ where: { id } });
+    let deleteResult: { projectId: string; cancelledInvocationIds: string[] };
+    let cleanupJobCreated = false;
+    try {
+      const taskForCleanup = await prisma.task.findUnique({
+        where: { id },
+        include: {
+          project: true,
+          teamRun: {
+            include: {
+              invocations: {
+                where: { status: { in: CANCELLABLE_DELETE_INVOCATION_STATUSES } },
+                select: { id: true },
+              },
+            },
+          },
+          workspaces: {
+            include: { sessions: true },
+          },
+        },
+      });
+      if (!taskForCleanup) {
+        throw new NotFoundError('Task', id);
+      }
+      ensureProjectIsMutable(taskForCleanup.project, 'delete tasks');
 
-    // 5. 通知前端
+      const snapshot: TaskCleanupSnapshot = {
+        taskId: taskForCleanup.id,
+        projectId: taskForCleanup.projectId,
+        project: {
+          repoPath: taskForCleanup.project.repoPath,
+          mainBranch: taskForCleanup.project.mainBranch,
+        },
+        workspaces: taskForCleanup.workspaces.map((workspace) => ({
+          id: workspace.id,
+          worktreePath: workspace.worktreePath,
+          branchName: workspace.branchName,
+          baseBranch: workspace.baseBranch,
+          sessions: workspace.sessions
+            .filter((session) => session.status === SessionStatus.PENDING || session.status === SessionStatus.RUNNING)
+            .map((session) => ({ id: session.id })),
+        })),
+      };
+      const teamRunId = taskForCleanup.teamRun?.id;
+      const cancelledInvocationIds = taskForCleanup.teamRun?.invocations.map((invocation) => invocation.id) ?? [];
+
+      await prisma.$transaction(async (tx) => {
+        await tx.taskCleanupJob.create({
+          data: {
+            taskId: taskForCleanup.id,
+            projectId: taskForCleanup.projectId,
+            payload: JSON.stringify(snapshot),
+          },
+        });
+
+        if (teamRunId) {
+          await tx.workRequest.updateMany({
+            where: {
+              teamRunId,
+              status: { in: CANCELLABLE_DELETE_WORK_REQUEST_STATUSES },
+            },
+            data: { status: 'CANCELLED' },
+          });
+          await tx.agentInvocation.updateMany({
+            where: {
+              teamRunId,
+              status: { in: CANCELLABLE_DELETE_INVOCATION_STATUSES },
+            },
+            data: {
+              status: 'CANCELLED',
+              nextRoomReplyReminderAt: null,
+            },
+          });
+        }
+      });
+      cleanupJobCreated = true;
+
+      deleteResult = {
+        projectId: taskForCleanup.projectId,
+        cancelledInvocationIds,
+      };
+    } catch (error) {
+      if (!cleanupJobCreated) {
+        await prisma.task.updateMany({
+          where: { id, deletedAt },
+          data: { deletedAt: null },
+        }).catch(() => {
+          // If rollback fails, leave the task hidden rather than masking the original error.
+        });
+      }
+      throw error;
+    }
+
+    for (const invocationId of deleteResult.cancelledInvocationIds) {
+      defaultTeamLockService.releaseByOwner(invocationId);
+    }
+
     this.eventBus.emit('task:deleted', {
       taskId: id,
-      projectId: task.projectId,
+      projectId: deleteResult.projectId,
     });
+    this.cleanupService?.trigger();
 
     return true;
   }
@@ -363,7 +429,7 @@ export class TaskService {
 
     const counts = await prisma.task.groupBy({
       by: ['status'],
-      where: { projectId },
+      where: { projectId, deletedAt: null },
       _count: { id: true },
     });
 
@@ -410,8 +476,8 @@ export class TaskService {
    * 4. 通知前端 — 用户可重新派发 Agent（会创建新 Worktree）
    */
   async retry(id: string) {
-    const task = await prisma.task.findUnique({
-      where: { id },
+    const task = await prisma.task.findFirst({
+      where: { id, deletedAt: null },
       include: {
         project: true,
         workspaces: {

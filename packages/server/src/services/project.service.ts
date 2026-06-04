@@ -285,7 +285,7 @@ export class ProjectService {
   async findById(id: string) {
     const project = await prisma.project.findUnique({
       where: { id },
-      include: { tasks: true },
+      include: { tasks: { where: { deletedAt: null } } },
     });
 
     if (!project) {

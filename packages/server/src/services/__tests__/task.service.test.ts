@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import type { SessionManager } from '../session-manager.js';
+import type { TaskCleanupSnapshot } from '../task-cleanup.service.js';
+import { AgentType } from '../../types/index.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-task-service-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -14,9 +16,11 @@ process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
 const {
   removeWorktreeMock,
   deleteBranchIfSafeMock,
+  pruneWorktreesMock,
 } = vi.hoisted(() => ({
   removeWorktreeMock: vi.fn(),
   deleteBranchIfSafeMock: vi.fn(),
+  pruneWorktreesMock: vi.fn(),
 }));
 
 vi.mock('../../git/worktree.manager.js', () => ({
@@ -24,6 +28,7 @@ vi.mock('../../git/worktree.manager.js', () => ({
     return {
       remove: removeWorktreeMock,
       deleteBranchIfSafe: deleteBranchIfSafeMock,
+      prune: pruneWorktreesMock,
     };
   }),
 }));
@@ -34,6 +39,9 @@ const serverRoot = path.resolve(__dirname, '../../..');
 const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let TaskService: typeof import('../task.service.js').TaskService;
+let TaskCleanupService: typeof import('../task-cleanup.service.js').TaskCleanupService;
+let WorkspaceService: typeof import('../workspace.service.js').WorkspaceService;
+let SessionManagerClass: typeof import('../session-manager.js').SessionManager;
 let EventBus: typeof import('../../core/event-bus.js').EventBus;
 let prisma: PrismaClient;
 
@@ -50,9 +58,15 @@ describe('TaskService', () => {
     );
 
     const serviceModule = await import('../task.service.js');
+    const cleanupModule = await import('../task-cleanup.service.js');
+    const workspaceModule = await import('../workspace.service.js');
+    const sessionManagerModule = await import('../session-manager.js');
     const eventBusModule = await import('../../core/event-bus.js');
     const utilsModule = await import('../../utils/index.js');
     TaskService = serviceModule.TaskService;
+    TaskCleanupService = cleanupModule.TaskCleanupService;
+    WorkspaceService = workspaceModule.WorkspaceService;
+    SessionManagerClass = sessionManagerModule.SessionManager;
     EventBus = eventBusModule.EventBus;
     prisma = utilsModule.prisma;
   });
@@ -68,7 +82,9 @@ describe('TaskService', () => {
       status: 'deleted',
       branchName,
     }));
+    pruneWorktreesMock.mockResolvedValue(undefined);
 
+    await prisma.taskCleanupJob.deleteMany();
     await prisma.agentInvocation.deleteMany();
     await prisma.workRequest.deleteMany();
     await prisma.roomMessage.deleteMany();
@@ -115,9 +131,17 @@ describe('TaskService', () => {
     expect(task.title).toBe('Ship TeamRun startup');
   });
 
-  it('deletes all associated worktrees and local branches before deleting task records', async () => {
+  it('marks a task deleted and enqueues a cleanup job without waiting for resource cleanup', async () => {
     const stopSessionMock = vi.fn();
-    const service = new TaskService(new EventBus(), { stop: stopSessionMock } as unknown as SessionManager);
+    const cleanupTriggerMock = vi.fn();
+    const eventBus = new EventBus();
+    const deletedEvents: Array<{ taskId: string; projectId: string }> = [];
+    eventBus.on('task:deleted', (payload) => deletedEvents.push(payload));
+    const service = new TaskService(
+      eventBus,
+      { stop: stopSessionMock } as unknown as SessionManager,
+      { trigger: cleanupTriggerMock },
+    );
     const project = await prisma.project.create({
       data: {
         name: 'Task delete project',
@@ -165,50 +189,337 @@ describe('TaskService', () => {
         status: 'COMPLETED',
       },
     });
-    deleteBranchIfSafeMock.mockImplementation(async (branchName: string) => {
-      await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
-        id: task.id,
-      });
-      return {
-        status: 'deleted',
-        branchName,
-      };
+    const teamRun = await prisma.teamRun.create({
+      data: {
+        taskId: task.id,
+        mode: 'AUTO',
+      },
+    });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        presetId: null,
+        name: 'Member',
+        aliases: '[]',
+        providerId: 'provider-1',
+        rolePrompt: 'Role',
+        capabilities: '{}',
+        workspacePolicy: 'shared',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
+        queueManagementPolicy: 'own_only',
+        avatar: null,
+      },
+    });
+    const pendingRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'pending-message',
+        instruction: 'please approve',
+        status: 'PENDING_APPROVAL',
+      },
+    });
+    const queuedRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'queued-message',
+        instruction: 'please run',
+        status: 'QUEUED',
+      },
+    });
+    const runningRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'running-message',
+        instruction: 'running',
+        status: 'STARTED',
+      },
+    });
+    const runningInvocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: runningRequest.id,
+        memberId: member.id,
+        workspaceId: mainWorkspace.id,
+        sessionId: runningSession.id,
+        status: 'RUNNING',
+        nextRoomReplyReminderAt: new Date(),
+      },
     });
 
     await expect(service.delete(task.id)).resolves.toBe(true);
 
-    expect(stopSessionMock).toHaveBeenCalledTimes(1);
-    expect(stopSessionMock).toHaveBeenCalledWith(runningSession.id);
-    expect(removeWorktreeMock).toHaveBeenCalledTimes(2);
-    expect(removeWorktreeMock).toHaveBeenCalledWith(mainWorkspace.worktreePath);
-    expect(removeWorktreeMock).toHaveBeenCalledWith(memberWorkspace.worktreePath);
-    expect(deleteBranchIfSafeMock).toHaveBeenCalledTimes(2);
-    expect(deleteBranchIfSafeMock).toHaveBeenCalledWith(mainWorkspace.branchName, {
-      protectedBranches: [project.mainBranch, mainWorkspace.baseBranch],
+    expect(stopSessionMock).not.toHaveBeenCalled();
+    expect(removeWorktreeMock).not.toHaveBeenCalled();
+    expect(deleteBranchIfSafeMock).not.toHaveBeenCalled();
+    expect(cleanupTriggerMock).toHaveBeenCalledTimes(1);
+    expect(deletedEvents).toEqual([{ taskId: task.id, projectId: project.id }]);
+
+    const deletedTask = await prisma.task.findUnique({ where: { id: task.id } });
+    expect(deletedTask?.deletedAt).toBeInstanceOf(Date);
+    await expect(prisma.workspace.count({ where: { taskId: task.id } })).resolves.toBe(2);
+    await expect(prisma.session.count({ where: { workspaceId: { in: [mainWorkspace.id, memberWorkspace.id] } } })).resolves.toBe(2);
+    await expect(prisma.workRequest.findMany({
+      where: { id: { in: [pendingRequest.id, queuedRequest.id, runningRequest.id] } },
+      orderBy: { id: 'asc' },
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: pendingRequest.id, status: 'CANCELLED' }),
+      expect.objectContaining({ id: queuedRequest.id, status: 'CANCELLED' }),
+      expect.objectContaining({ id: runningRequest.id, status: 'CANCELLED' }),
+    ]));
+    await expect(prisma.agentInvocation.findUnique({ where: { id: runningInvocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      nextRoomReplyReminderAt: null,
     });
-    expect(deleteBranchIfSafeMock).toHaveBeenCalledWith(memberWorkspace.branchName, {
-      protectedBranches: [project.mainBranch, memberWorkspace.baseBranch],
+
+    const cleanupJob = await prisma.taskCleanupJob.findFirstOrThrow({ where: { taskId: task.id } });
+    expect(cleanupJob).toMatchObject({
+      projectId: project.id,
+      status: 'PENDING',
+      attempts: 0,
     });
-    expect(removeWorktreeMock.mock.invocationCallOrder[0]).toBeLessThan(
-      deleteBranchIfSafeMock.mock.invocationCallOrder[0],
-    );
-    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toBeNull();
-    await expect(prisma.workspace.count({ where: { taskId: task.id } })).resolves.toBe(0);
-    await expect(prisma.session.count({ where: { workspaceId: { in: [mainWorkspace.id, memberWorkspace.id] } } })).resolves.toBe(0);
+    const payload = JSON.parse(cleanupJob.payload) as TaskCleanupSnapshot;
+    expect(payload).toMatchObject({
+      taskId: task.id,
+      projectId: project.id,
+      project: {
+        repoPath: project.repoPath,
+        mainBranch: project.mainBranch,
+      },
+      workspaces: [
+        {
+          id: mainWorkspace.id,
+          branchName: mainWorkspace.branchName,
+          worktreePath: mainWorkspace.worktreePath,
+          sessions: [{ id: runningSession.id }],
+        },
+        {
+          id: memberWorkspace.id,
+          branchName: memberWorkspace.branchName,
+          worktreePath: memberWorkspace.worktreePath,
+        },
+      ],
+    });
   });
 
-  it('continues deleting the task when branch deletion is skipped or fails', async () => {
+  it('marks deleted before reading the cleanup snapshot so new resource creation is rejected', async () => {
+    const service = new TaskService(
+      new EventBus(),
+      { stop: vi.fn() } as unknown as SessionManager,
+      { trigger: vi.fn() },
+    );
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task delete ordering project',
+        repoPath: testDir,
+        mainBranch: 'main',
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Delete ordering task',
+        projectId: project.id,
+      },
+    });
+    const existingWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'at/existing-before-delete',
+        baseBranch: 'main',
+        worktreePath: path.join(testDir, '.worktrees', 'at', 'existing-before-delete'),
+        status: 'ACTIVE',
+      },
+    });
+    const runningSession = await prisma.session.create({
+      data: {
+        workspaceId: existingWorkspace.id,
+        agentType: 'CODEX',
+        prompt: 'run',
+        status: 'RUNNING',
+      },
+    });
+    let releaseSnapshotRead!: () => void;
+    const releaseSnapshotReadPromise = new Promise<void>((resolve) => {
+      releaseSnapshotRead = resolve;
+    });
+    let snapshotReadStarted!: () => void;
+    const snapshotReadStartedPromise = new Promise<void>((resolve) => {
+      snapshotReadStarted = resolve;
+    });
+    let shouldDelaySnapshotRead = true;
+    prisma.$use(async (params, next) => {
+      const include = (params.args as { include?: { workspaces?: unknown } } | undefined)?.include;
+      const isSnapshotRead = params.model === 'Task'
+        && params.action === 'findUnique'
+        && Boolean(include?.workspaces);
+      if (shouldDelaySnapshotRead && isSnapshotRead) {
+        shouldDelaySnapshotRead = false;
+        snapshotReadStarted();
+        await releaseSnapshotReadPromise;
+      }
+      return next(params);
+    });
+
+    const deletePromise = service.delete(task.id);
+    await snapshotReadStartedPromise;
+    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+      deletedAt: expect.any(Date),
+    });
+    const workspaceService = new WorkspaceService();
+    await expect(workspaceService.create(task.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+    const sessionManager = new SessionManagerClass(new EventBus());
+    await expect(sessionManager.create(existingWorkspace.id, AgentType.CODEX, 'late session')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+    releaseSnapshotRead();
+
+    await expect(deletePromise).resolves.toBe(true);
+
+    const cleanupJob = await prisma.taskCleanupJob.findFirstOrThrow({ where: { taskId: task.id } });
+    const payload = JSON.parse(cleanupJob.payload) as TaskCleanupSnapshot;
+    expect(payload.workspaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: existingWorkspace.id,
+        branchName: existingWorkspace.branchName,
+        worktreePath: existingWorkspace.worktreePath,
+        sessions: [{ id: runningSession.id }],
+      }),
+    ]));
+  });
+
+  it('filters deleted tasks from lists and stats', async () => {
     const service = new TaskService(new EventBus(), { stop: vi.fn() } as unknown as SessionManager);
     const project = await prisma.project.create({
       data: {
-        name: 'Task delete warning project',
+        name: 'Task list project',
+        repoPath: testDir,
+      },
+    });
+    await prisma.task.create({
+      data: {
+        title: 'Visible task',
+        projectId: project.id,
+      },
+    });
+    await prisma.task.create({
+      data: {
+        title: 'Deleted task',
+        projectId: project.id,
+        status: 'DONE',
+        deletedAt: new Date(),
+      },
+    });
+
+    const list = await service.findByProjectId(project.id);
+    expect(list.total).toBe(1);
+    expect(list.data.map((task) => task.title)).toEqual(['Visible task']);
+
+    const stats = await service.getStatsByProjectId(project.id);
+    expect(stats.total).toBe(1);
+    expect(stats.done).toBe(0);
+    expect(stats.todo).toBe(1);
+  });
+
+  it('processes a cleanup job and hard-deletes task records after resources are cleaned', async () => {
+    const stopSessionMock = vi.fn();
+    const cleanupService = new TaskCleanupService({ stop: stopSessionMock } as unknown as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task cleanup project',
+        repoPath: testDir,
+        mainBranch: 'main',
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Cleanup task resources',
+        projectId: project.id,
+        deletedAt: new Date(),
+      },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'at/cleanup-branch',
+        baseBranch: 'main',
+        worktreePath: path.join(testDir, '.worktrees', 'at', 'cleanup-branch'),
+        status: 'ACTIVE',
+      },
+    });
+    const runningSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        prompt: 'run',
+        status: 'RUNNING',
+      },
+    });
+    const payload: TaskCleanupSnapshot = {
+      taskId: task.id,
+      projectId: project.id,
+      project: {
+        repoPath: project.repoPath,
+        mainBranch: project.mainBranch,
+      },
+      workspaces: [{
+        id: workspace.id,
+        worktreePath: workspace.worktreePath,
+        branchName: workspace.branchName,
+        baseBranch: workspace.baseBranch,
+        sessions: [{ id: runningSession.id }],
+      }],
+    };
+    await prisma.taskCleanupJob.create({
+      data: {
+        taskId: task.id,
+        projectId: project.id,
+        payload: JSON.stringify(payload),
+      },
+    });
+
+    await expect(cleanupService.processDueJobs()).resolves.toBe(1);
+
+    expect(stopSessionMock).toHaveBeenCalledWith(runningSession.id, { skipTeamRunReconcile: true });
+    expect(removeWorktreeMock).toHaveBeenCalledWith(workspace.worktreePath);
+    expect(deleteBranchIfSafeMock).toHaveBeenCalledWith(workspace.branchName, {
+      protectedBranches: [project.mainBranch, workspace.baseBranch],
+    });
+    expect(pruneWorktreesMock).toHaveBeenCalledTimes(1);
+    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toBeNull();
+    await expect(prisma.workspace.count({ where: { taskId: task.id } })).resolves.toBe(0);
+    await expect(prisma.taskCleanupJob.findFirst({ where: { taskId: task.id } })).resolves.toMatchObject({
+      status: 'COMPLETED',
+      attempts: 1,
+      lastError: null,
+    });
+  });
+
+  it('records cleanup failures and schedules retry', async () => {
+    const cleanupService = new TaskCleanupService({ stop: vi.fn() } as unknown as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task cleanup failure project',
         repoPath: testDir,
       },
     });
     const task = await prisma.task.create({
       data: {
-        title: 'Delete task with branch warning',
+        title: 'Cleanup failure',
         projectId: project.id,
+        deletedAt: new Date(),
       },
     });
     const workspace = await prisma.workspace.create({
@@ -220,23 +531,44 @@ describe('TaskService', () => {
         status: 'ACTIVE',
       },
     });
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const payload: TaskCleanupSnapshot = {
+      taskId: task.id,
+      projectId: project.id,
+      project: {
+        repoPath: project.repoPath,
+        mainBranch: project.mainBranch,
+      },
+      workspaces: [{
+        id: workspace.id,
+        worktreePath: workspace.worktreePath,
+        branchName: workspace.branchName,
+        baseBranch: workspace.baseBranch,
+        sessions: [],
+      }],
+    };
+    const job = await prisma.taskCleanupJob.create({
+      data: {
+        taskId: task.id,
+        projectId: project.id,
+        payload: JSON.stringify(payload),
+      },
+    });
     deleteBranchIfSafeMock.mockResolvedValueOnce({
       status: 'failed',
       branchName: workspace.branchName,
       reason: 'git branch failed',
     });
 
-    try {
-      await expect(service.delete(task.id)).resolves.toBe(true);
+    await expect(cleanupService.processDueJobs()).resolves.toBe(1);
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining(`Failed to delete branch ${workspace.branchName}`),
-        'git branch failed',
-      );
-      await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toBeNull();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+      id: task.id,
+    });
+    await expect(prisma.taskCleanupJob.findUnique({ where: { id: job.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      attempts: 1,
+      lastError: expect.stringContaining('git branch failed'),
+      nextRetryAt: expect.any(Date),
+    });
   });
 });

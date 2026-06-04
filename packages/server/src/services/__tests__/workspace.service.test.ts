@@ -352,6 +352,120 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(createWorktreeMock).not.toHaveBeenCalledWith(expect.stringContaining('member-'));
   });
 
+  it('cleans up a worktree when the task is deleted during workspace creation', async () => {
+    const { project, task } = await createTask('workspace create deleted race');
+    let createdPath = '';
+    createWorktreeMock.mockImplementationOnce(async (branchName: string) => {
+      createdPath = mockCreatedWorktreePath(branchName);
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { deletedAt: new Date() },
+      });
+      return createdPath;
+    });
+
+    await expect(service.create(task.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+
+    expect(removeWorktreeMock).toHaveBeenCalledWith(createdPath);
+    expect(deleteBranchIfSafeMock).toHaveBeenCalledWith(expect.stringMatching(/^at\//), {
+      protectedBranches: [project.mainBranch, 'main'],
+    });
+    await expect(prisma.workspace.count({ where: { taskId: task.id } })).resolves.toBe(0);
+  });
+
+  it('warns when deleted-task worktree compensation returns unsafe statuses', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { task } = await createTask('workspace compensation warning task');
+    let createdPath = '';
+    createWorktreeMock.mockImplementationOnce(async (branchName: string) => {
+      createdPath = mockCreatedWorktreePath(branchName);
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { deletedAt: new Date() },
+      });
+      return createdPath;
+    });
+    removeWorktreeMock.mockResolvedValueOnce({
+      status: 'unregistered',
+      path: createdPath,
+      managed: true,
+    });
+    deleteBranchIfSafeMock.mockImplementationOnce(async (branchName: string) => ({
+      status: 'checked_out',
+      branchName,
+      reason: 'branch is checked out at a raced worktree',
+    }));
+
+    await expect(service.create(task.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('unregistered or unsafe to remove'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('branch is checked out at a raced worktree'));
+    warnSpy.mockRestore();
+  });
+
+  it('does not reactivate a hibernated workspace for a deleted task', async () => {
+    const { task } = await createTask('deleted reactivate task');
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { deletedAt: new Date() },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'deleted-hibernated',
+        worktreePath: '',
+        status: 'HIBERNATED',
+        hibernatedAt: new Date(),
+      },
+    });
+
+    await expect(service.reactivate(workspace.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+
+    expect(ensureWorktreeExistsMock).not.toHaveBeenCalled();
+  });
+
+  it('cleans up a restored worktree when the task is deleted during reactivation', async () => {
+    const { task } = await createTask('reactivate deleted race');
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'reactivate-race',
+        worktreePath: '',
+        status: 'HIBERNATED',
+        hibernatedAt: new Date(),
+      },
+    });
+    let restoredPath = '';
+    ensureWorktreeExistsMock.mockImplementationOnce(async (branchName: string) => {
+      restoredPath = mockRestoredWorktreePath(branchName);
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { deletedAt: new Date() },
+      });
+      return restoredPath;
+    });
+
+    await expect(service.reactivate(workspace.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+
+    expect(removeWorktreeMock).toHaveBeenCalledWith(restoredPath);
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({
+      status: 'HIBERNATED',
+      worktreePath: '',
+    });
+  });
+
   it('merges a dedicated child into the TeamRun main workspace without marking the task DONE', async () => {
     const { task, teamRun, member } = await createTeamRunWithMember();
     await prisma.task.update({

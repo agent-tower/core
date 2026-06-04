@@ -336,6 +336,60 @@ describe('TeamSchedulerService', () => {
     });
   });
 
+  it('does not start queued work for a deleted task', async () => {
+    const { task, teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { deletedAt: new Date() },
+    });
+    const workspaceService = createWorkspaceServiceMock();
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.planNext(teamRun.id)).resolves.toEqual([]);
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    expect(workspaceService.create).not.toHaveBeenCalled();
+    expect(sessionManager.create).not.toHaveBeenCalled();
+    expect(lockService.listLocks()).toEqual([]);
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+    await expect(prisma.workspace.count({ where: { taskId: task.id } })).resolves.toBe(0);
+    await expect(prisma.session.count()).resolves.toBe(0);
+    await expect(prisma.agentInvocation.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+  });
+
+  it('rejects approving a WorkRequest for a deleted task', async () => {
+    const { task, teamRun, members } = await createTeamRunFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { deletedAt: new Date() },
+    });
+
+    await expect(service.approveWorkRequestAndStartNext(request.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'PENDING_APPROVAL',
+    });
+  });
+
   it('returns a clear error when approving a non-pending WorkRequest', async () => {
     const { teamRun, members } = await createTeamRunFixture();
     const request = await createWorkRequest({

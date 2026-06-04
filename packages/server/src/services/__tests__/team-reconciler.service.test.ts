@@ -610,6 +610,41 @@ describe('TeamReconcilerService', () => {
     expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
   });
 
+  it('does not start queued work when a stopped session belongs to a deleted task', async () => {
+    const { workspace, task, teamRun, members } = await createFixture({ taskStatus: TaskStatus.IN_PROGRESS });
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { deletedAt: new Date() },
+    });
+    expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
+
+    await expect(service.handleSessionStopped(invocation.sessionId!)).resolves.toBe(true);
+
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      nextRoomReplyReminderAt: null,
+    });
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
+    expect(lockService.listLocks()).toEqual([]);
+    expect(scheduler.startNextSessions).not.toHaveBeenCalled();
+    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+      status: TaskStatus.IN_PROGRESS,
+    });
+  });
+
   it.each([
     ['queued work request', async (teamRunId: string, memberId: string) => {
       await createWorkRequest({ teamRunId, targetMemberId: memberId, status: 'QUEUED' });
@@ -2473,6 +2508,45 @@ describe('TeamReconcilerService', () => {
     });
     expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
     expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+  });
+
+  it('SessionManager.stop can skip TeamRun reconciliation for cleanup', async () => {
+    const { workspace, teamRun, members } = await createFixture({ taskStatus: TaskStatus.IN_PROGRESS });
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        providerId: 'provider-1',
+        prompt: 'TeamRun work',
+        status: 'RUNNING',
+      },
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      sessionId: session.id,
+      status: 'RUNNING',
+    });
+    await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+    const manager = new SessionManager(new EventBus(), service);
+
+    await expect(manager.stop(session.id, { skipTeamRunReconcile: true })).resolves.toMatchObject({ id: session.id });
+
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'RUNNING',
+    });
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+    expect(scheduler.startNextSessions).not.toHaveBeenCalled();
   });
 
   it('SessionManager.stop leaves solo sessions without TeamRun reconciliation', async () => {

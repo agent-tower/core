@@ -250,8 +250,11 @@ export function ProjectKanbanPage() {
         // 刷新所有任务列表
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       },
+      onError: () => {
+        toast.error(t('删除任务失败'))
+      },
     })
-  }, [deleteTask, effectiveSelectedTaskId, queryClient])
+  }, [deleteTask, effectiveSelectedTaskId, queryClient, t])
 
   const handleTaskStatusChange = useCallback((taskId: string, newStatus: UITaskStatus) => {
     updateTaskStatus.mutate(

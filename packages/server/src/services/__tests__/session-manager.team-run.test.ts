@@ -310,4 +310,111 @@ describe('SessionManager TeamRun env injection', () => {
     });
     manager.destroyAll();
   });
+
+  it('kills a spawned process when the task is deleted during session start', async () => {
+    const { task, workspace } = await createWorkspace();
+    const pty = createPty();
+    spawnMock.mockImplementationOnce(async () => {
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { deletedAt: new Date() },
+      });
+      return { pid: 22345, pty };
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.PENDING,
+      },
+    });
+
+    await expect(manager.start(session.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+
+    expect(pty.kill).toHaveBeenCalled();
+    await expect(prisma.executionProcess.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.CANCELLED,
+    });
+  });
+
+  it('kills a spawned follow-up process when the task is deleted during follow-up start', async () => {
+    const { task, workspace } = await createWorkspace();
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'previous prompt',
+        status: SessionStatus.COMPLETED,
+        logSnapshot: JSON.stringify({ sessionId: 'agent-native-session-2', entries: [] }),
+      },
+    });
+    const nextSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'next prompt',
+        status: SessionStatus.PENDING,
+      },
+    });
+    const pty = createPty();
+    spawnFollowUpMock.mockImplementationOnce(async () => {
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { deletedAt: new Date() },
+      });
+      return { pid: 32345, pty };
+    });
+
+    await expect(manager.startFollowUp(nextSession.id, previousSession.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+
+    expect(spawnFollowUpMock).toHaveBeenCalledTimes(1);
+    expect(pty.kill).toHaveBeenCalled();
+    await expect(prisma.executionProcess.count({ where: { sessionId: nextSession.id } })).resolves.toBe(0);
+    await expect(prisma.session.findUnique({ where: { id: nextSession.id } })).resolves.toMatchObject({
+      status: SessionStatus.CANCELLED,
+    });
+  });
+
+  it('kills a spawned reply process when the task is deleted during sendMessage', async () => {
+    const { task, workspace } = await createWorkspace();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.COMPLETED,
+      },
+    });
+    const pty = createPty();
+    spawnMock.mockImplementationOnce(async () => {
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { deletedAt: new Date() },
+      });
+      return { pid: 42345, pty };
+    });
+
+    await expect(manager.sendMessage(session.id, 'continue')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+
+    expect(pty.kill).toHaveBeenCalled();
+    await expect(prisma.executionProcess.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.CANCELLED,
+    });
+  });
 });

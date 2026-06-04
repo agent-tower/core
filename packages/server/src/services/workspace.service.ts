@@ -15,6 +15,7 @@ import type { Prisma } from '@prisma/client';
 import type { EventBus } from '../core/event-bus.js';
 import type { GitOperationStatus } from '@agent-tower/shared';
 import { ensureProjectIsMutable } from './project-guards.js';
+import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 
 const DEFAULT_IDLE_THRESHOLD_HOURS = 24;
 const WORKSPACE_READY_RETRY_COUNT = 20;
@@ -120,10 +121,13 @@ export class WorkspaceService {
   // ── Queries ──────────────────────────────────────────────────────────────────
 
   async findById(id: string) {
-    return prisma.workspace.findUnique({
+    const workspace = await prisma.workspace.findUnique({
       where: { id },
       include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
+    if (!workspace) return null;
+    ensureTaskNotDeleted(workspace.task);
+    return workspace;
   }
 
   /**
@@ -134,6 +138,7 @@ export class WorkspaceService {
     if (!task) {
       throw new NotFoundError('Task', taskId);
     }
+    ensureTaskNotDeleted(task);
 
     return prisma.workspace.findMany({
       where: { taskId },
@@ -163,6 +168,7 @@ export class WorkspaceService {
     if (!task) {
       throw new NotFoundError('Task', taskId);
     }
+    ensureTaskNotDeleted(task);
     ensureProjectIsMutable(task.project, 'create workspaces');
 
     const worktreeManager = new WorktreeManager(task.project.repoPath);
@@ -222,14 +228,24 @@ export class WorkspaceService {
       // WorktreeManager.create 内部已做分支名合法性校验和重复检查
       const worktreePath = await worktreeManager.create(branch, startPoint ?? undefined);
 
+      const updateResult = await prisma.workspace.updateMany({
+        where: { id: workspace.id, task: { deletedAt: null } },
+        data: { branchName: branch, baseBranch, worktreePath },
+      });
+      if (updateResult.count === 0) {
+        await this.cleanupCreatedWorktree(worktreeManager, worktreePath, branch, [
+          task.project.mainBranch,
+          baseBranch,
+        ]);
+        throw new NotFoundError('Task', taskId);
+      }
+
       // worktree 创建后：复制文件 + 异步执行 setup 脚本（fire-and-forget）
       this.runCopyFiles(task.project.repoPath, worktreePath, task.project.copyFiles);
       this.fireSetupScript(workspace.id, taskId, worktreePath, task.project.setupScript);
 
-      // 更新数据库记录：填入真正的 branchName 和 worktreePath
-      const updated = await prisma.workspace.update({
+      const updated = await prisma.workspace.findUniqueOrThrow({
         where: { id: workspace.id },
-        data: { branchName: branch, baseBranch, worktreePath },
         include: { sessions: true, task: { include: { project: true } } },
       });
 
@@ -293,6 +309,7 @@ export class WorkspaceService {
     if (!teamRun) {
       throw new NotFoundError('TeamRun', teamRunId);
     }
+    ensureTaskNotDeleted(teamRun.task);
     ensureProjectIsMutable(teamRun.task.project, 'create workspaces');
 
     if (
@@ -349,6 +366,7 @@ export class WorkspaceService {
     if (!teamRun) {
       throw new NotFoundError('TeamRun', teamRunId);
     }
+    ensureTaskNotDeleted(teamRun.task);
 
     const member = await prisma.teamMember.findFirst({
       where: { id: memberId, teamRunId },
@@ -445,6 +463,7 @@ export class WorkspaceService {
   }
 
   private async ensureActiveWorkspaceWorktree(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
+    ensureTaskNotDeleted(workspace.task);
     if (!workspace.branchName) {
       workspace = await this.waitForWorkspaceReady(workspace);
     }
@@ -466,19 +485,28 @@ export class WorkspaceService {
   }
 
   private async restoreInactiveWorkspace(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
+    ensureTaskNotDeleted(workspace.task);
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     const worktreePath = await worktreeManager.ensureWorktreeExists(workspace.branchName);
 
-    this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
-    this.fireSetupScript(workspace.id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
-
-    return prisma.workspace.update({
-      where: { id: workspace.id },
+    const updateResult = await prisma.workspace.updateMany({
+      where: { id: workspace.id, task: { deletedAt: null } },
       data: {
         status: WorkspaceStatus.ACTIVE,
         worktreePath,
         hibernatedAt: null,
       },
+    });
+    if (updateResult.count === 0) {
+      await this.cleanupRestoredWorktree(worktreeManager, worktreePath);
+      throw new NotFoundError('Task', workspace.taskId);
+    }
+
+    this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
+    this.fireSetupScript(workspace.id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
+
+    return prisma.workspace.findUniqueOrThrow({
+      where: { id: workspace.id },
       include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
   }
@@ -957,6 +985,7 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
+    ensureTaskNotDeleted(workspace.task);
 
     if (workspace.status !== WorkspaceStatus.HIBERNATED) {
       throw new ServiceError(
@@ -969,21 +998,68 @@ export class WorkspaceService {
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     const worktreePath = await worktreeManager.ensureWorktreeExists(workspace.branchName);
 
-    this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
-    this.fireSetupScript(id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
-
-    const updated = await prisma.workspace.update({
-      where: { id },
+    const updateResult = await prisma.workspace.updateMany({
+      where: { id, task: { deletedAt: null } },
       data: {
         status: WorkspaceStatus.ACTIVE,
         worktreePath,
         hibernatedAt: null,
       },
+    });
+    if (updateResult.count === 0) {
+      await this.cleanupRestoredWorktree(worktreeManager, worktreePath);
+      throw new NotFoundError('Task', workspace.taskId);
+    }
+
+    this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
+    this.fireSetupScript(id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
+
+    const updated = await prisma.workspace.findUniqueOrThrow({
+      where: { id },
       include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
 
     console.log(`[WorkspaceService] Workspace ${id} reactivated at ${worktreePath}`);
     return updated;
+  }
+
+  private async cleanupCreatedWorktree(
+    worktreeManager: WorktreeManager,
+    worktreePath: string,
+    branchName: string,
+    protectedBranches: Array<string | null | undefined>,
+  ): Promise<void> {
+    await this.cleanupRestoredWorktree(worktreeManager, worktreePath);
+    try {
+      const result = await worktreeManager.deleteBranchIfSafe(branchName, { protectedBranches });
+      if (result.status === 'failed' || result.status === 'checked_out') {
+        console.warn(
+          `[WorkspaceService] failed to delete branch ${result.branchName} after deleted task race: ${result.reason ?? result.status}`,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[WorkspaceService] failed to delete branch ${branchName} after deleted task race: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  private async cleanupRestoredWorktree(
+    worktreeManager: WorktreeManager,
+    worktreePath: string,
+  ): Promise<void> {
+    try {
+      const result = await worktreeManager.remove(worktreePath);
+      if (result.status === 'unregistered') {
+        console.warn(
+          `[WorkspaceService] worktree ${result.path} is unregistered or unsafe to remove after deleted task race`,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[WorkspaceService] failed to remove worktree ${worktreePath} after deleted task race: ${error instanceof Error ? error.message : error}`,
+      );
+    }
   }
 
   /**

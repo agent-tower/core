@@ -16,11 +16,18 @@ import { execGit } from '../git/git-cli.js';
 import type { EventBus } from '../core/event-bus.js';
 import { getCommitMessageService } from '../core/container.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
+import { NotFoundError } from '../errors.js';
+import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 
 const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
 
+interface StopSessionOptions {
+  skipTeamRunReconcile?: boolean;
+}
+
 export class SessionManager {
   private pipelines = new Map<string, AgentPipeline>();
+  private pendingSpawns = new Map<string, SpawnedChild>();
   private cancelTokens = new Map<string, CancellationToken>();
   private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private snapshotFlushChains = new Map<string, Promise<void>>();
@@ -80,6 +87,15 @@ export class SessionManager {
   }
 
   async create(workspaceId: string, agentType: AgentType, prompt: string, variant: string = 'DEFAULT', providerId?: string) {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      include: { task: true },
+    });
+    if (!workspace) {
+      throw new NotFoundError('Workspace', workspaceId);
+    }
+    ensureTaskNotDeleted(workspace.task);
+
     return prisma.session.create({
       data: {
         workspaceId,
@@ -97,12 +113,13 @@ export class SessionManager {
 
     const session = await prisma.session.findUnique({
       where: { id },
-      include: { workspace: true },
+      include: { workspace: { include: { task: true } } },
     });
     if (!session) {
       console.log('[SessionManager] ❌ Session not found:', id);
       return null;
     }
+    ensureTaskNotDeleted(session.workspace.task);
 
     console.log('[SessionManager] Session details:', {
       id: session.id,
@@ -142,19 +159,9 @@ export class SessionManager {
       env,
     });
 
-    await prisma.executionProcess.create({
-      data: {
-        sessionId: id,
-        pid: spawnResult.pid,
-      },
-    });
-
-    await prisma.session.update({
-      where: { id },
-      data: { status: SessionStatus.RUNNING },
-    });
-
+    await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
     this.attachPipeline(id, agentType, workingDir, spawnResult);
+    this.pendingSpawns.delete(id);
     this.eventBus.emit('session:started', { sessionId: id });
     await this.checkTaskAutoRevert(id);
     return session;
@@ -166,12 +173,13 @@ export class SessionManager {
 
     const session = await prisma.session.findUnique({
       where: { id },
-      include: { workspace: true },
+      include: { workspace: { include: { task: true } } },
     });
     if (!session) {
       console.log('[SessionManager] ❌ Session not found:', id);
       return null;
     }
+    ensureTaskNotDeleted(session.workspace.task);
 
     const resumeFromSession = await prisma.session.findUnique({
       where: { id: resumeFromSessionId },
@@ -233,19 +241,9 @@ export class SessionManager {
       spawnResult = await executor.spawn(spawnConfig);
     }
 
-    await prisma.executionProcess.create({
-      data: {
-        sessionId: id,
-        pid: spawnResult.pid,
-      },
-    });
-
-    await prisma.session.update({
-      where: { id },
-      data: { status: SessionStatus.RUNNING },
-    });
-
+    await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
     this.attachPipeline(id, agentType, workingDir, spawnResult);
+    this.pendingSpawns.delete(id);
     this.eventBus.emit('session:started', { sessionId: id });
     await this.checkTaskAutoRevert(id);
     return session;
@@ -261,12 +259,13 @@ export class SessionManager {
 
     const session = await prisma.session.findUnique({
       where: { id },
-      include: { workspace: true },
+      include: { workspace: { include: { task: true } } },
     });
     if (!session) {
       console.log('[SessionManager] ❌ Session not found:', id);
       return null;
     }
+    ensureTaskNotDeleted(session.workspace.task);
 
     // 如果传入了新的 providerId，验证并切换
     if (providerId && providerId !== session.providerId) {
@@ -382,27 +381,32 @@ export class SessionManager {
       spawnResult = await executor.spawn(spawnConfig);
     }
 
-    await prisma.executionProcess.create({
-      data: {
-        sessionId: id,
-        pid: spawnResult.pid,
-      },
-    });
-
-    await prisma.session.update({
-      where: { id },
-      data: { status: SessionStatus.RUNNING },
-    });
-
+    await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
     this.attachPipeline(id, agentType, workingDir, spawnResult);
+    this.pendingSpawns.delete(id);
     this.eventBus.emit('session:started', { sessionId: id });
     await this.checkTaskAutoRevert(id);
     return session;
   }
 
-  async stop(id: string) {
+  async stop(id: string, options: StopSessionOptions = {}) {
     const session = await prisma.session.findUnique({ where: { id } });
     if (!session) return null;
+
+    const pendingSpawn = this.pendingSpawns.get(id);
+    if (pendingSpawn) {
+      this.pendingSpawns.delete(id);
+      try {
+        pendingSpawn.cancel?.cancel();
+      } catch {
+        // ignore cancellation failures for pending spawns
+      }
+      try {
+        pendingSpawn.pty.kill();
+      } catch {
+        // ignore kill errors for pending spawns
+      }
+    }
 
     const pipeline = this.pipelines.get(id);
     if (pipeline) {
@@ -435,7 +439,9 @@ export class SessionManager {
       });
     }
 
-    await this.teamReconciler.handleSessionStopped(id);
+    if (!options.skipTeamRunReconcile) {
+      await this.teamReconciler.handleSessionStopped(id);
+    }
     this.eventBus.emit('session:stopped', { sessionId: id });
     return session;
   }
@@ -500,6 +506,89 @@ export class SessionManager {
     if (spawnResult.cancel) {
       this.cancelTokens.set(sessionId, spawnResult.cancel);
     }
+  }
+
+  private async registerSpawnedSessionIfTaskLive(
+    sessionId: string,
+    spawnResult: SpawnedChild,
+  ): Promise<void> {
+    this.pendingSpawns.set(sessionId, spawnResult);
+    try {
+      await prisma.$transaction(async (tx) => {
+        const updateResult = await tx.session.updateMany({
+          where: { id: sessionId, workspace: { task: { deletedAt: null } } },
+          data: { status: SessionStatus.RUNNING },
+        });
+        if (updateResult.count === 0) {
+          const session = await tx.session.findUnique({
+            where: { id: sessionId },
+            include: { workspace: { include: { task: true } } },
+          });
+          if (!session) {
+            throw new NotFoundError('Session', sessionId);
+          }
+          ensureTaskNotDeleted(session.workspace.task);
+          throw new NotFoundError('Session', sessionId);
+        }
+
+        await tx.executionProcess.create({
+          data: {
+            sessionId,
+            pid: spawnResult.pid,
+          },
+        });
+      });
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        include: { workspace: { include: { task: true } } },
+      });
+      if (!session) {
+        throw new NotFoundError('Session', sessionId);
+      }
+      ensureTaskNotDeleted(session.workspace.task);
+      if (this.pendingSpawns.get(sessionId) !== spawnResult) {
+        throw new NotFoundError('Task', session.workspace.task.id);
+      }
+    } catch (error) {
+      await this.cancelSpawnedSession(sessionId, spawnResult);
+      throw error;
+    }
+  }
+
+  private async cancelSpawnedSession(
+    sessionId: string,
+    spawnResult: SpawnedChild,
+  ): Promise<void> {
+    if (this.pendingSpawns.get(sessionId) === spawnResult) {
+      this.pendingSpawns.delete(sessionId);
+    }
+    const pipeline = this.pipelines.get(sessionId);
+    if (pipeline) {
+      pipeline.destroy();
+      this.pipelines.delete(sessionId);
+      this.cancelTokens.delete(sessionId);
+    }
+    try {
+      spawnResult.cancel?.cancel();
+    } catch {
+      // ignore cancellation failures while compensating a deleted task race
+    }
+    try {
+      spawnResult.pty.kill();
+    } catch {
+      // ignore kill failures while compensating a deleted task race
+    }
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: { status: SessionStatus.CANCELLED },
+    }).catch(() => {
+      // session may already have been removed by cleanup
+    });
+    await prisma.executionProcess.deleteMany({
+      where: { sessionId, pid: spawnResult.pid },
+    }).catch(() => {
+      // process row may not have been created yet
+    });
   }
 
   private createParser(agentType: AgentType, workingDir: string, msgStore: ReturnType<typeof sessionMsgStoreManager.getOrCreate>): OutputParser | null {
@@ -721,6 +810,7 @@ export class SessionManager {
       if (!session?.workspace?.task) return;
 
       const task = session.workspace.task;
+      if (task.deletedAt) return;
       // 只对 IN_PROGRESS 的 Task 做自动推进
       if (task.status !== TaskStatus.IN_PROGRESS) return;
 
@@ -788,6 +878,7 @@ export class SessionManager {
       if (session.purpose === SessionPurpose.COMMIT_MSG) return;
 
       const task = session.workspace.task;
+      if (task.deletedAt) return;
 
       // 如果任务已经是 IN_PROGRESS，无需更新
       if (task.status === TaskStatus.IN_PROGRESS) return;

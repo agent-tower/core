@@ -3,13 +3,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import type { CreateMemberPresetInput } from '../team-run.service.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-team-run-'));
 const dbPath = path.join(testDir, 'test.db');
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
+
+const { appendAttachmentMarkdownContextMock } = vi.hoisted(() => ({
+  appendAttachmentMarkdownContextMock: vi.fn(),
+}));
+
+vi.mock('../attachment-context.js', () => ({
+  appendAttachmentMarkdownContext: appendAttachmentMarkdownContextMock,
+}));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -92,6 +100,23 @@ describe('TeamRunService', () => {
   });
 
   beforeEach(async () => {
+    appendAttachmentMarkdownContextMock.mockImplementation(async (content: string, attachmentIds?: string[] | null) => {
+      const ids = Array.from(new Set((attachmentIds ?? []).map((id) => id.trim()).filter(Boolean)));
+      if (ids.length === 0) return content.trim();
+
+      const attachments = await prisma.attachment.findMany({ where: { id: { in: ids } } });
+      const attachmentById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+      const lines: string[] = [];
+      for (const id of ids) {
+        const attachment = attachmentById.get(id);
+        if (!attachment || content.includes(attachment.storagePath)) continue;
+        const prefix = attachment.mimeType.startsWith('image/') ? '!' : '';
+        lines.push(`${prefix}[${attachment.originalName}](${attachment.storagePath})`);
+      }
+
+      const attachmentContext = lines.length > 0 ? ['Attachments:', ...lines].join('\n') : '';
+      return [content.trim(), attachmentContext].filter(Boolean).join('\n\n');
+    });
     service = new TeamRunService();
     await prisma.agentInvocation.deleteMany();
     await prisma.workRequest.deleteMany();
@@ -338,6 +363,32 @@ describe('TeamRunService', () => {
       cancelQueued: false,
       status: 'QUEUED',
     });
+  });
+
+  it('rolls back RoomMessage and WorkRequest creation if the task is deleted before transaction writes', async () => {
+    const preset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+    appendAttachmentMarkdownContextMock.mockImplementationOnce(async (content: string) => {
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { deletedAt: new Date() },
+      });
+      return content;
+    });
+
+    await expect(service.createRoomMessage(teamRun.id, {
+      content: 'General user request after delete',
+    })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+
+    await expect(prisma.roomMessage.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+    await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
   });
 
   it('creates WorkRequests from RoomMessage mentions and writes workRequestIds back', async () => {

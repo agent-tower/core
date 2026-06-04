@@ -41,6 +41,7 @@ import { ServiceError, NotFoundError, ValidationError } from '../errors.js';
 import { prisma } from '../utils/index.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
+import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 
 export interface CreateMemberPresetInput {
   name: string;
@@ -582,6 +583,7 @@ export class TeamRunService {
     if (!task) {
       throw new NotFoundError('Task', taskId);
     }
+    ensureTaskNotDeleted(task);
     buildInitialTaskRoomMessageContent(task);
 
     const existing = await prisma.teamRun.findUnique({ where: { taskId } });
@@ -659,6 +661,7 @@ export class TeamRunService {
         if (!task) {
           throw new NotFoundError('Task', taskId);
         }
+        ensureTaskNotDeleted(task);
         projectId = task.projectId;
         const initialContent = buildInitialTaskRoomMessageContent(task);
 
@@ -938,10 +941,14 @@ export class TeamRunService {
   }
 
   async createRoomMessage(teamRunId: string, input: CreateRoomMessageInput): Promise<RoomMessage> {
-    const teamRun = await prisma.teamRun.findUnique({ where: { id: teamRunId } });
+    const teamRun = await prisma.teamRun.findUnique({
+      where: { id: teamRunId },
+      include: { task: true },
+    });
     if (!teamRun) {
       throw new NotFoundError('TeamRun', teamRunId);
     }
+    ensureTaskNotDeleted(teamRun.task);
 
     const mentions = input.mentions ?? [];
     const senderType = input.senderType ?? 'user';
@@ -953,6 +960,14 @@ export class TeamRunService {
 
     let messageId = '';
     await prisma.$transaction(async (tx) => {
+      const liveTeamRun = await tx.teamRun.findFirst({
+        where: { id: teamRunId, task: { deletedAt: null } },
+        select: { id: true },
+      });
+      if (!liveTeamRun) {
+        throw new NotFoundError('Task', teamRun.taskId);
+      }
+
       const members = await tx.teamMember.findMany({ where: { teamRunId } });
       const memberIds = new Set(members.map((member) => member.id));
       assertMentionsReferenceMembers(mentions, memberIds);
