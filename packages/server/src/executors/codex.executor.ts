@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { parse as parseToml } from 'smol-toml';
 import { AgentType } from '../types/index.js';
 import { which } from '../utils/index.js';
@@ -72,10 +73,79 @@ const AGENT_TOWER_MCP_SERVER_NAMES = [
   'agent-tower-dev',
 ] as const;
 
-export function buildAgentTowerMcpEnvConfigOverrides(env: ExecutorSpawnConfig['env']): string[] {
+function getCodexConfigDir(): string {
+  return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+}
+
+/**
+ * 读取 Codex config.toml 中实际声明的 mcp_servers 顶层 key。
+ * 文件不存在、读取失败或解析失败时返回空集合（不抛错）。
+ */
+export function getCodexDeclaredMcpServerNames(configPath?: string): Set<string> {
+  const filePath = configPath ?? path.join(getCodexConfigDir(), 'config.toml');
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = parseToml(content) as Record<string, unknown>;
+    const mcpServers = parsed.mcp_servers;
+    if (mcpServers && typeof mcpServers === 'object' && !Array.isArray(mcpServers)) {
+      return new Set(Object.keys(mcpServers));
+    }
+  } catch {
+    // config 不存在或解析失败 — 静默降级，不阻塞 Codex 启动
+  }
+  return new Set();
+}
+
+const CODEX_MCP_LIST_TIMEOUT_MS = 3000;
+
+/**
+ * 通过 `codex mcp list --json` 查询 Codex 运行时实际可见的 MCP server 名称。
+ * 传入 provider settings 展平后的 `-c` 参数，确保 settings 注入的 MCP 也在列表中。
+ * CLI 不存在、超时、exit 非 0、JSON 异常时返回 null 表示需要 fallback。
+ */
+export function queryCodexMcpServerNames(configOverrideArgs: string[] = []): Set<string> | null {
+  try {
+    const args = [...configOverrideArgs, 'mcp', 'list', '--json'];
+    const stdout = execFileSync('codex', args, {
+      timeout: CODEX_MCP_LIST_TIMEOUT_MS,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const parsed = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return null;
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object' || typeof item.name !== 'string') {
+        return null;
+      }
+    }
+    return new Set(parsed.map((s: { name: string }) => s.name));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 检测 Codex 已声明的 MCP server 名称。
+ * 主路径：`codex mcp list --json`（能反映 config + `-c` 注入的完整 MCP 视图）。
+ * Fallback：直接读取 config.toml（CLI 不可用时）。
+ */
+export function detectDeclaredMcpServers(
+  configOverrideArgs: string[] = [],
+  fallbackConfigPath?: string,
+): Set<string> {
+  const cliResult = queryCodexMcpServerNames(configOverrideArgs);
+  if (cliResult !== null) return cliResult;
+  return getCodexDeclaredMcpServerNames(fallbackConfigPath);
+}
+
+export function buildAgentTowerMcpEnvConfigOverrides(
+  env: ExecutorSpawnConfig['env'],
+  declaredMcpServers: Set<string>,
+): string[] {
   const args: string[] = [];
 
   for (const serverName of AGENT_TOWER_MCP_SERVER_NAMES) {
+    if (!declaredMcpServers.has(serverName)) continue;
     for (const key of AGENT_TOWER_MCP_ENV_KEYS) {
       const value = env.get(key);
       if (value) {
@@ -136,9 +206,9 @@ export class CodexExecutor extends BaseExecutor {
       return { type: 'NOT_FOUND', error: 'Codex CLI not installed' };
     }
 
-    // 检查配置文件是否存在
-    const configPath = path.join(os.homedir(), '.codex', 'config.toml');
-    const authPath = path.join(os.homedir(), '.codex', 'auth.json');
+    const codexDir = getCodexConfigDir();
+    const configPath = path.join(codexDir, 'config.toml');
+    const authPath = path.join(codexDir, 'auth.json');
 
     // 检查认证文件
     if (fs.existsSync(authPath)) {
@@ -177,7 +247,7 @@ export class CodexExecutor extends BaseExecutor {
    * 获取默认 MCP 配置路径
    */
   getDefaultMcpConfigPath(): string | null {
-    return path.join(os.homedir(), '.codex', 'config.toml');
+    return path.join(getCodexConfigDir(), 'config.toml');
   }
 
   /**
@@ -238,8 +308,13 @@ export class CodexExecutor extends BaseExecutor {
    */
   async spawn(config: ExecutorSpawnConfig): Promise<SpawnedChild> {
     const commandBuilder = this.buildCommandBuilder();
+    const configOverrideArgs = this.buildConfigOverrides();
+    const declaredMcpServers = detectDeclaredMcpServers(
+      configOverrideArgs,
+      this.getDefaultMcpConfigPath() ?? undefined,
+    );
 
-    commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env));
+    commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env, declaredMcpServers));
 
     // Codex 使用 exec 子命令进行非交互式执行
     commandBuilder.extendParams(['exec', '--json', '--skip-git-repo-check']);
@@ -272,8 +347,13 @@ export class CodexExecutor extends BaseExecutor {
     resetToMessageId?: string
   ): Promise<SpawnedChild> {
     const commandBuilder = this.buildCommandBuilder();
+    const configOverrideArgs = this.buildConfigOverrides();
+    const declaredMcpServers = detectDeclaredMcpServers(
+      configOverrideArgs,
+      this.getDefaultMcpConfigPath() ?? undefined,
+    );
 
-    commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env));
+    commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env, declaredMcpServers));
 
     // Codex 使用 exec resume 命令继续会话（支持 JSON 输出）
     const additionalArgs = ['exec', 'resume', '--json', '--skip-git-repo-check'];
