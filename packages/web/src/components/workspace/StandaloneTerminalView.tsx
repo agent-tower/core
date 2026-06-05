@@ -12,6 +12,8 @@ import { useStandaloneTerminal } from "@/lib/socket/hooks/useStandaloneTerminal"
 export interface StandaloneTerminalViewProps {
   /** Working directory for the terminal */
   cwd?: string
+  /** Whether this terminal's container is currently visible (not display:none) */
+  isVisible?: boolean
   /** Called when the terminal process exits */
   onExit?: (exitCode: number) => void
   /** Called when terminal is ready, exposes sendInput for external command injection */
@@ -50,7 +52,7 @@ const XTERM_THEME = {
 // ============================================================
 
 export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = React.memo(
-  function StandaloneTerminalView({ cwd, onExit, onReady }) {
+  function StandaloneTerminalView({ cwd, isVisible = true, onExit, onReady }) {
     const terminalRef = useRef<HTMLDivElement>(null)
     const xtermRef = useRef<XTerm | null>(null)
     const fitAddonRef = useRef<FitAddon | null>(null)
@@ -167,12 +169,49 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
       }
     }, [isAttached, sendInput, onReady])
 
+    // Proactive fit when visibility changes from hidden to visible.
+    // ResizeObserver alone is unreliable for display:none→block transitions.
+    useEffect(() => {
+      if (!isVisible) return
+
+      const fitAddon = fitAddonRef.current
+      const xterm = xtermRef.current
+      const el = terminalRef.current
+      if (!fitAddon || !xterm || !el) return
+
+      let cancelled = false
+      let rafId: number | undefined
+
+      const tryFit = (attempt: number) => {
+        if (cancelled) return
+        if (attempt >= 5) return
+
+        rafId = requestAnimationFrame(() => {
+          if (cancelled) return
+          if (el.clientWidth > 0 && el.clientHeight > 0) {
+            try {
+              fitAddon.fit()
+              resize(xterm.cols, xterm.rows)
+            } catch { /* ignore */ }
+          } else {
+            setTimeout(() => tryFit(attempt + 1), 30)
+          }
+        })
+      }
+
+      tryFit(0)
+
+      return () => {
+        cancelled = true
+        if (rafId != null) cancelAnimationFrame(rafId)
+      }
+    }, [isVisible, resize])
+
     // Auto-fit on container resize
     useEffect(() => {
       if (!terminalRef.current) return
 
       const observer = new ResizeObserver(() => {
-        // 使用 rAF 确保浏览器完成布局计算后再 fit
         requestAnimationFrame(() => {
           try {
             const fitAddon = fitAddonRef.current

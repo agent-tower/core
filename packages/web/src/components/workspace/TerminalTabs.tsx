@@ -18,6 +18,8 @@ interface TerminalTab {
 export interface TerminalTabsProps {
   /** Working directory for new terminals */
   cwd?: string
+  /** Whether this TerminalTabs container is currently visible */
+  isVisible?: boolean
   /** Quick commands from project config */
   quickCommands?: QuickCommand[]
 }
@@ -41,7 +43,7 @@ function nextTab(): TerminalTab {
 // ============================================================
 
 export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
-  function TerminalTabs({ cwd, quickCommands = [] }) {
+  function TerminalTabs({ cwd, isVisible = true, quickCommands = [] }) {
     const { t } = useI18n()
     // Start with one terminal tab by default
     const [tabs, setTabs] = useState<TerminalTab[]>(() => {
@@ -168,6 +170,7 @@ export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
               >
                 <StandaloneTerminalView
                   cwd={cwd}
+                  isVisible={isVisible && tab.id === activeTabId}
                   onExit={() => handleTerminalExit(tab.id)}
                   onReady={(api) => handleTerminalReady(tab.id, api)}
                 />

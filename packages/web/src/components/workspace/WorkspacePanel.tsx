@@ -174,15 +174,18 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
           )}
 
           {/* Terminal Tab — one TerminalTabs per workingDir, kept mounted */}
-          {terminalDirs.map(dir => (
-            <div
-              key={dir}
-              className="h-full absolute inset-0"
-              style={{ display: activeTab === "terminal" && workingDir === dir ? 'block' : 'none' }}
-            >
-              <TerminalTabs cwd={dir} quickCommands={quickCommands} />
-            </div>
-          ))}
+          {terminalDirs.map(dir => {
+            const visible = activeTab === "terminal" && workingDir === dir
+            return (
+              <div
+                key={dir}
+                className="h-full absolute inset-0"
+                style={{ display: visible ? 'block' : 'none' }}
+              >
+                <TerminalTabs cwd={dir} isVisible={visible} quickCommands={quickCommands} />
+              </div>
+            )
+          })}
 
           {/* Preview Tab */}
           {activeTab === "preview" && (
