@@ -46,6 +46,7 @@ import { CreateTeamRunDialog } from '@/components/team/CreateTeamRunDialog'
 import { ProviderSelector } from './ProviderSelector'
 import { SlashCommandPopover } from './SlashCommandPopover'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { ConflictBanner } from '@/components/workspace/ConflictBanner'
 import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsDialog'
 import { GitOperationsDialog, type ConflictDetails } from '@/components/workspace/GitOperationsDialog'
@@ -807,24 +808,6 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     el.style.height = `${Math.max(60, Math.min(scrollHeight, 300))}px`
   }, [])
 
-  // Build dynamic delete warning from workspace data
-  const deleteDescription = useMemo(() => {
-    const warnings: string[] = []
-
-    if (workspaces && workspaces.length > 0) {
-      const hasActive = workspaces.some(ws => ws.status === 'ACTIVE')
-      const hasRunning = workspaces.some(ws =>
-        ws.sessions?.some(s => s.status === SessionStatus.RUNNING || s.status === SessionStatus.PENDING)
-      )
-      const hasUnmerged = workspaces.some(ws => ws.status === 'ACTIVE')
-
-      if (hasRunning) warnings.push(t('正在运行的 Agent 将被停止'))
-      if (hasUnmerged) warnings.push(t('分支上未合并的变更将丢失'))
-      if (hasActive) warnings.push(t('关联的工作目录（worktree）将被清理'))
-    }
-
-    return warnings
-  }, [workspaces, t])
 
   // Early return for null task
   if (!task) {
@@ -1406,28 +1389,13 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       />
 
       {/* Delete Confirm Dialog */}
-      <ConfirmDialog
+      <DeleteTaskConfirmDialog
         isOpen={isDeleteConfirmOpen}
         onClose={() => setIsDeleteConfirmOpen(false)}
         onConfirm={handleDeleteTask}
-        title={t('删除任务')}
-        description={
-          <>
-            <p>{t('确认删除任务「{title}」？此操作不可撤销。', { title: task.title })}</p>
-            {deleteDescription.length > 0 && (
-              <ul className="mt-2 space-y-1">
-                {deleteDescription.map((w, i) => (
-                  <li key={i} className="flex items-start gap-1.5 text-amber-600">
-                    <span className="mt-1 shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" />
-                    <span>{w}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        }
-        confirmText={t('删除')}
-        variant="danger"
+        taskId={task.id}
+        taskTitle={task.title}
+        workspaces={workspaces}
         isLoading={isDeleting}
       />
     </div>

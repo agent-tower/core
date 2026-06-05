@@ -3,6 +3,7 @@ import { useProfiles, useDefaultProfiles, useUpdateVariant, useDeleteVariant } f
 import type { VariantConfig } from '@/hooks/use-profiles'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 
@@ -31,6 +32,7 @@ export function ProfileSettingsPage() {
   const [editJson, setEditJson] = useState('')
   const [editVariantName, setEditVariantName] = useState('')
   const [jsonError, setJsonError] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<{ agentType: string; variant: string } | null>(null)
 
   const openEdit = (agentType: string, variant: string, config: VariantConfig) => {
     setEditModal({ agentType, variant, config, isNew: false })
@@ -61,8 +63,15 @@ export function ProfileSettingsPage() {
   }
 
   const handleDelete = (agentType: string, variant: string) => {
-    if (!confirm(t('确定删除 {agentType} / {variant}？', { agentType, variant }))) return
-    deleteVariant.mutate({ agentType, variant })
+    setDeleteTarget({ agentType, variant })
+  }
+
+  const handleConfirmDelete = () => {
+    if (!deleteTarget) return
+    deleteVariant.mutate(
+      { agentType: deleteTarget.agentType, variant: deleteTarget.variant },
+      { onSettled: () => setDeleteTarget(null) }
+    )
   }
 
   const isBuiltIn = (agentType: string, variant: string): boolean => {
@@ -187,6 +196,20 @@ export function ProfileSettingsPage() {
           </div>
         </div>
       </Modal>
+
+      <ConfirmDialog
+        isOpen={deleteTarget !== null}
+        onClose={() => { if (!deleteVariant.isPending) setDeleteTarget(null) }}
+        onConfirm={handleConfirmDelete}
+        title={t('删除 Profile Variant')}
+        description={deleteTarget
+          ? t('确定删除 "{name}"？此操作不可撤销。', { name: `${AGENT_LABELS[deleteTarget.agentType] ?? deleteTarget.agentType} / ${deleteTarget.variant}` })
+          : ''}
+        confirmText={t('删除')}
+        cancelText={t('取消')}
+        variant="danger"
+        isLoading={deleteVariant.isPending}
+      />
     </div>
   )
 }

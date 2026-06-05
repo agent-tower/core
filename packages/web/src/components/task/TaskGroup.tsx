@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useRef, useEffect } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
 import { IconReview, IconRunning, IconPending, IconDone, IconCancelled } from '../agent/Icons'
+import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { useI18n } from '@/lib/i18n'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
@@ -67,6 +68,7 @@ function DraggableTaskCard({
   })
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -199,7 +201,7 @@ function DraggableTaskCard({
             <>
               {onTaskStatusChange && <div className="my-1 border-t border-neutral-100" />}
               <button
-                onClick={() => { onDeleteTask(task.id); setContextMenu(null) }}
+                onClick={() => { setIsDeleteConfirmOpen(true); setContextMenu(null) }}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-600 hover:bg-red-50 transition-colors"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
@@ -211,6 +213,17 @@ function DraggableTaskCard({
           )}
         </div>
       )}
+
+      <DeleteTaskConfirmDialog
+        isOpen={isDeleteConfirmOpen}
+        onClose={() => setIsDeleteConfirmOpen(false)}
+        onConfirm={() => {
+          onDeleteTask?.(task.id)
+          setIsDeleteConfirmOpen(false)
+        }}
+        taskId={task.id}
+        taskTitle={task.title}
+      />
     </>
   )
 }

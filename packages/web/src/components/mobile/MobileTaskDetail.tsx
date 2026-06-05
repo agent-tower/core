@@ -26,7 +26,7 @@ import { StartAgentDialog } from '@/components/task/StartAgentDialog'
 import { getSessionTokenUsage, SessionReadonlyMeta } from '@/components/task/SessionReadonlyMeta'
 import { ProviderSelector } from '@/components/task/ProviderSelector'
 import { SlashCommandPopover } from '@/components/task/SlashCommandPopover'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { DeleteTaskConfirmDialog } from '@/components/task/DeleteTaskConfirmDialog'
 import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher'
 import { resolveDefaultWorkspaceId } from '@/components/workspace/team-workspace-view'
 import type { UITaskDetailData } from '@/components/task/types'
@@ -287,25 +287,6 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   const selectedWorkspaceOpenId = selectedWorkspace?.worktreePath ? selectedWorkspace.id : undefined
 
-  // Build dynamic delete warning from workspace data
-  const deleteDescription = useMemo(() => {
-    const warnings: string[] = []
-
-    if (workspaces && workspaces.length > 0) {
-      const hasActive = workspaces.some(ws => ws.status === 'ACTIVE')
-      const hasRunning = workspaces.some(ws =>
-        ws.sessions?.some(s => s.status === SessionStatus.RUNNING || s.status === SessionStatus.PENDING)
-      )
-
-      if (hasRunning) warnings.push(t('正在运行的 Agent 将被停止'))
-      if (hasActive) {
-        warnings.push(t('分支上未合并的变更将丢失'))
-        warnings.push(t('关联的工作目录（worktree）将被清理'))
-      }
-    }
-
-    return warnings
-  }, [workspaces, t])
 
   // ============ Mutations ============
 
@@ -928,31 +909,16 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
       )}
 
       {/* Delete Confirm Dialog */}
-      <ConfirmDialog
+      <DeleteTaskConfirmDialog
         isOpen={isDeleteConfirmOpen}
         onClose={() => setIsDeleteConfirmOpen(false)}
         onConfirm={() => {
           onDeleteTask?.(task.id)
           setIsDeleteConfirmOpen(false)
         }}
-        title={t('删除任务')}
-        description={
-          <>
-            <p>{t('确认删除任务「{title}」？此操作不可撤销。', { title: task.title })}</p>
-            {deleteDescription.length > 0 && (
-              <ul className="mt-2 space-y-1">
-                {deleteDescription.map((w, i) => (
-                  <li key={i} className="flex items-start gap-1.5 text-amber-600">
-                    <span className="mt-1 shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" />
-                    <span>{w}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        }
-        confirmText={t('删除')}
-        variant="danger"
+        taskId={task.id}
+        taskTitle={task.title}
+        workspaces={workspaces}
         isLoading={isDeleting}
       />
     </div>

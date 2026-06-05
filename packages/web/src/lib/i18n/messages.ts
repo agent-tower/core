@@ -415,6 +415,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
       'Could not load models from the local machine ({error}). You can still enter one manually, or run',
     '查看 ID。': 'to inspect available IDs.',
     'JSON 格式错误': 'Invalid JSON format',
+    '删除 Profile Variant': 'Delete Profile Variant',
     '确定删除 {agentType} / {variant}？': 'Delete {agentType} / {variant}?',
     '新增': 'New',
     '内置': 'Built-in',
