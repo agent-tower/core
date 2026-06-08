@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { X, Languages, Cpu, Users, FolderGit2, Bell } from 'lucide-react'
+import { Settings, X, Languages, Cpu, Users, FolderGit2, Bell } from 'lucide-react'
 import { useUIStore, type SettingsTab } from '@/stores/ui-store'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
@@ -50,8 +50,11 @@ function TabContent({ tab }: { tab: SettingsTab }) {
 }
 
 function LoadingFallback() {
-  const { t } = useI18n()
-  return <div className="p-8 text-sm text-neutral-400">{t('加载中...')}</div>
+  return (
+    <div className="flex items-center justify-center py-20">
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+    </div>
+  )
 }
 
 export function SettingsDialog() {
@@ -108,51 +111,54 @@ export function SettingsDialog() {
   return (
     <div
       className={cn(
-        'fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 transition-opacity duration-200',
-        isOpen ? 'opacity-100' : 'opacity-0',
+        'fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 transition-opacity duration-200',
+        isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none',
       )}
     >
-      {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-white/80 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/20 backdrop-blur-sm"
         onClick={closeSettings}
       />
 
-      {/* Dialog */}
       <div
         ref={dialogRef}
         tabIndex={-1}
         className={cn(
-          'relative flex w-full max-w-5xl flex-col overflow-hidden bg-white rounded-xl shadow-2xl shadow-neutral-200/50 border border-neutral-100 transform transition-all duration-200 outline-none',
-          'h-[min(calc(100vh-2rem),720px)] sm:h-[min(calc(100vh-3rem),720px)]',
-          isOpen ? 'scale-100 translate-y-0' : 'scale-95 translate-y-2',
+          'relative flex w-full max-w-[1100px] flex-col overflow-hidden rounded-2xl bg-white shadow-xl ring-1 ring-neutral-950/5 transform transition-all duration-200 outline-none',
+          'h-[min(calc(100vh-1.5rem),840px)] sm:h-[min(calc(100vh-3rem),840px)]',
+          isOpen ? 'scale-100 translate-y-0' : 'scale-[0.97] translate-y-1',
         )}
       >
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between px-6 py-3 border-b border-neutral-100">
-          <h2 className="text-sm font-semibold text-neutral-900">{t('设置')}</h2>
+        <div className="flex shrink-0 items-center justify-between border-b border-neutral-100 bg-neutral-50/60 px-5 py-3 sm:px-6">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-neutral-900 text-white">
+              <Settings size={14} />
+            </div>
+            <h2 className="text-[15px] font-semibold text-neutral-900">{t('设置')}</h2>
+          </div>
           <button
             onClick={closeSettings}
-            className="p-1 text-neutral-400 hover:text-neutral-900 transition-colors rounded-md"
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
           >
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 
         {/* Mobile tab bar */}
-        <div className="sm:hidden flex shrink-0 border-b border-neutral-100 overflow-x-auto">
+        <div className="sm:hidden flex shrink-0 border-b border-neutral-100 bg-white overflow-x-auto scrollbar-none">
           {NAV_ITEMS.map(item => (
             <button
               key={item.id}
               onClick={() => setSettingsTab(item.id)}
               className={cn(
-                'flex items-center gap-1.5 px-3 py-2 text-xs whitespace-nowrap transition-colors border-b-2',
+                'flex items-center gap-1.5 px-4 py-2.5 text-xs whitespace-nowrap transition-colors border-b-2 -mb-px',
                 activeTab === item.id
                   ? 'border-neutral-900 text-neutral-900 font-medium'
-                  : 'border-transparent text-neutral-500',
+                  : 'border-transparent text-neutral-400 hover:text-neutral-600',
               )}
             >
-              <item.icon size={12} />
+              <item.icon size={13} />
               <span>{t(item.label)}</span>
             </button>
           ))}
@@ -161,26 +167,26 @@ export function SettingsDialog() {
         {/* Body: sidebar + content */}
         <div className="flex flex-1 min-h-0">
           {/* Sidebar nav (desktop) */}
-          <nav className="hidden sm:block w-44 shrink-0 border-r border-neutral-100 pt-2 px-2 overflow-y-auto">
+          <nav className="hidden sm:flex w-[180px] shrink-0 flex-col gap-0.5 border-r border-neutral-100 bg-neutral-50/40 p-3 overflow-y-auto scrollbar-app-thin">
             {NAV_ITEMS.map(item => (
               <button
                 key={item.id}
                 onClick={() => setSettingsTab(item.id)}
                 className={cn(
-                  'flex w-full items-center gap-2 px-3 py-1.5 rounded-md text-[13px] transition-colors',
+                  'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] transition-all',
                   activeTab === item.id
-                    ? 'bg-neutral-100 text-neutral-900 font-medium'
-                    : 'text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50',
+                    ? 'bg-white text-neutral-900 font-medium shadow-sm ring-1 ring-neutral-950/[0.04]'
+                    : 'text-neutral-500 hover:text-neutral-800 hover:bg-white/60',
                 )}
               >
-                <item.icon size={14} />
+                <item.icon size={15} className="shrink-0" />
                 <span>{t(item.label)}</span>
               </button>
             ))}
           </nav>
 
           {/* Content area */}
-          <div className="flex-1 min-w-0 overflow-y-auto">
+          <div className="flex-1 min-w-0 overflow-y-auto scrollbar-app-thin bg-white">
             <Suspense fallback={<LoadingFallback />}>
               <TabContent tab={activeTab} />
             </Suspense>

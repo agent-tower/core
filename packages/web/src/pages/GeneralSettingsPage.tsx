@@ -4,6 +4,7 @@ import { Select } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
 import { useAppSettings, useUpdateAppSettings, useCommitMessageDefaults } from '@/hooks/use-app-settings'
 import { useProviders } from '@/hooks/use-providers'
+import { SettingsPageContainer } from '@/components/settings/SettingsSection'
 import type { AppLocale } from '@agent-tower/shared'
 
 const LANGUAGE_OPTIONS: Array<{ value: AppLocale; label: string }> = [
@@ -12,6 +13,30 @@ const LANGUAGE_OPTIONS: Array<{ value: AppLocale; label: string }> = [
 ]
 
 const FOLLOW_TASK_VALUE = '__follow_task__'
+
+function SettingsRow({
+  label,
+  description,
+  children,
+  border = true,
+}: {
+  label: string
+  description?: string
+  children: React.ReactNode
+  border?: boolean
+}) {
+  return (
+    <div className={`flex flex-col gap-3 py-5 sm:flex-row sm:items-start sm:justify-between sm:gap-8 ${border ? 'border-b border-neutral-100' : ''}`}>
+      <div className="min-w-0 sm:max-w-[360px]">
+        <div className="text-[13px] font-medium text-neutral-900">{label}</div>
+        {description && (
+          <p className="mt-0.5 text-[12px] leading-relaxed text-neutral-500">{description}</p>
+        )}
+      </div>
+      <div className="w-full sm:w-[260px] shrink-0">{children}</div>
+    </div>
+  )
+}
 
 export function GeneralSettingsPage() {
   const { locale, setLocale, t } = useI18n()
@@ -24,7 +49,6 @@ export function GeneralSettingsPage() {
   const [promptText, setPromptText] = useState('')
   const [promptDirty, setPromptDirty] = useState(false)
 
-  // Sync from server: use saved prompt, or fall back to built-in default
   useEffect(() => {
     if (!appSettings || !defaults) return
     setSelectedProviderId(appSettings.commitMessageProviderId || FOLLOW_TASK_VALUE)
@@ -63,83 +87,76 @@ export function GeneralSettingsPage() {
   }, [promptText, updateSettings, t])
 
   return (
-    <div className="px-10 py-6 mx-auto w-full max-w-3xl space-y-8">
-      <section>
-        <h2 className="text-lg font-semibold text-neutral-900">{t('通用设置')}</h2>
-        <p className="mt-1 text-sm text-neutral-500">
-          {t('选择界面语言。设置会保存到本地 Agent Tower 数据库，并在重新打开后继续生效。')}
-        </p>
-      </section>
+    <SettingsPageContainer>
+      <div className="mb-1">
+        <h2 className="text-base font-semibold text-neutral-900">{t('通用设置')}</h2>
+      </div>
 
-      <section>
-        <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('显示语言')}</h3>
+      <SettingsRow
+        label={t('显示语言')}
+        description={t('界面语言会保存到本地数据库，重启后继续生效。')}
+      >
         <Select
           value={locale}
           onChange={(value) => setLocale(value as AppLocale)}
-          options={LANGUAGE_OPTIONS.map(option => ({
-            value: option.value,
-            label: option.label,
-          }))}
+          options={LANGUAGE_OPTIONS}
         />
-      </section>
+      </SettingsRow>
 
-      {/* Git Commit Message */}
-      <section className="border-t border-neutral-100 pt-6">
-        <h2 className="text-lg font-semibold text-neutral-900">{t('Git Commit Message')}</h2>
-        <p className="mt-1 text-sm text-neutral-500">
-          {t('配置自动生成 commit message 时使用的 Agent 渠道和提示词。')}
-        </p>
+      <div className="mt-8 mb-2">
+        <h3 className="text-[13px] font-semibold text-neutral-900 uppercase tracking-wide text-neutral-500">
+          {t('Git Commit Message')}
+        </h3>
+      </div>
 
-        <div className="mt-4 space-y-4">
-          <div>
-            <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('Agent 渠道')}</h3>
-            <p className="text-xs text-neutral-400 mb-1.5">
-              {t('"跟随任务"表示使用当前任务所用的 Agent 渠道。选择具体渠道可使用更经济的模型。')}
-            </p>
-            <Select
-              value={selectedProviderId}
-              onChange={handleProviderChange}
-              options={providerOptions}
-            />
-          </div>
+      <SettingsRow
+        label={t('Agent 渠道')}
+        description={t('"跟随任务"表示使用当前任务所用的 Agent 渠道。选择具体渠道可使用更经济的模型。')}
+      >
+        <Select
+          value={selectedProviderId}
+          onChange={handleProviderChange}
+          options={providerOptions}
+        />
+      </SettingsRow>
 
-          <div>
-            <h3 className="text-[13px] font-semibold text-neutral-900 mb-1">{t('提示词模板')}</h3>
-            <p className="text-xs text-neutral-400 mb-1.5">
-              {t('自定义生成 commit message 的提示词。留空则使用内置默认模板。')}
-            </p>
-            <textarea
-              value={promptText}
-              onChange={(e) => {
-                setPromptText(e.target.value)
-                setPromptDirty(true)
-              }}
-              rows={6}
-              className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:border-neutral-400 resize-y font-mono"
-            />
-            {promptDirty && (
-              <div className="flex items-center gap-2 mt-2">
-                <button
-                  onClick={handlePromptSave}
-                  disabled={updateSettings.isPending}
-                  className="px-3 py-1.5 text-xs font-medium text-white bg-neutral-900 rounded-md hover:bg-neutral-800 disabled:opacity-50 transition-colors"
-                >
-                  {updateSettings.isPending ? t('保存中...') : t('保存')}
-                </button>
-                <button
-                  onClick={() => {
-                    setPromptText(appSettings?.commitMessagePrompt || defaults?.prompt || '')
-                    setPromptDirty(false)
-                  }}
-                  className="px-3 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors"
-                >
-                  {t('取消')}
-                </button>
-              </div>
-            )}
-          </div>
+      <SettingsRow
+        label={t('提示词模板')}
+        description={t('自定义生成 commit message 的提示词。留空则使用内置默认模板。')}
+        border={false}
+      >
+        <div className="space-y-2">
+          <textarea
+            value={promptText}
+            onChange={(e) => {
+              setPromptText(e.target.value)
+              setPromptDirty(true)
+            }}
+            rows={5}
+            className="w-full rounded-lg border border-neutral-200 bg-neutral-50/50 px-3 py-2 text-sm font-mono leading-relaxed transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none resize-y"
+          />
+          {promptDirty && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handlePromptSave}
+                disabled={updateSettings.isPending}
+                className="rounded-lg bg-neutral-900 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-50"
+              >
+                {updateSettings.isPending ? t('保存中...') : t('保存')}
+              </button>
+              <button
+                onClick={() => {
+                  setPromptText(appSettings?.commitMessagePrompt || defaults?.prompt || '')
+                  setPromptDirty(false)
+                }}
+                className="rounded-lg px-3 py-1.5 text-xs text-neutral-500 transition-colors hover:text-neutral-900"
+              >
+                {t('取消')}
+              </button>
+            </div>
+          )}
         </div>
-      </section>
-    </div>
+      </SettingsRow>
+    </SettingsPageContainer>
   )
 }

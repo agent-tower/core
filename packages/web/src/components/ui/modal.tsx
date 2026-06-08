@@ -1,5 +1,6 @@
 import * as React from "react"
 import { useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -59,10 +60,10 @@ export const Modal: React.FC<ModalProps> = ({
 
   if (!isVisible && !isOpen) return null
 
-  return (
+  return createPortal(
     <div
       className={cn(
-        "fixed inset-0 z-50 flex items-center justify-center p-4 transition-opacity duration-200",
+        "fixed inset-0 z-[60] flex items-center justify-center p-4 transition-opacity duration-200",
         isOpen ? "opacity-100" : "opacity-0"
       )}
       onKeyDown={(e) => {
@@ -109,6 +110,7 @@ export const Modal: React.FC<ModalProps> = ({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
