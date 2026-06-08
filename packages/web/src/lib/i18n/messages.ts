@@ -126,6 +126,11 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Tunnel process exited': '隧道进程已退出',
     'Tunnel error': '隧道错误',
     'New link generated': '新链接已生成',
+    'Use Agent Tower on your phone': '在手机上使用 Agent Tower',
+    'After enabling the tunnel, you can scan a QR code with your phone to visit this Agent Tower instance, assign tasks, and check agent status.':
+      '开启隧道后，可以用手机扫码访问本机的 Agent Tower，用手机派任务、查看 Agent 状态。',
+    'Enable phone access': '开启手机访问',
+    'Starting tunnel...': '正在开启隧道...',
     'Start a temporary Quick Tunnel when you need to share this Agent Tower session.':
       '需要分享当前 Agent Tower 会话时，可以启动一个临时 Quick Tunnel。',
     'The Cloudflare tunnel is running and the local Agent Tower health check passed.':

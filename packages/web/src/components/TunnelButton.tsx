@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Globe, Loader2, Copy, Check, X, Shield, RefreshCw, AlertTriangle } from 'lucide-react'
+import { Smartphone, Loader2, Copy, Check, X, Shield, RefreshCw, AlertTriangle } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useI18n } from '@/lib/i18n'
 import { useTunnelStatus, useStartTunnel, useStopTunnel, useRegenerateTunnel, type TunnelStatus } from '@/hooks/use-tunnel'
@@ -10,7 +10,7 @@ function toneForStatus(status: TunnelStatus | undefined) {
     return {
       button: 'text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100',
       dot: '',
-      label: 'Share via tunnel',
+      label: 'Use Agent Tower on your phone',
       icon: 'idle' as const,
     }
   }
@@ -172,11 +172,15 @@ export function TunnelButton() {
     if (isActive) {
       setShowPopover(true)
     } else {
-      startTunnel.mutate(undefined, {
-        onSuccess: () => setShowPopover(true),
-      })
+      setShowPopover(true)
     }
-  }, [isActive, startTunnel])
+  }, [isActive])
+
+  const handleStart = useCallback(() => {
+    startTunnel.mutate(undefined, {
+      onSuccess: () => setShowPopover(true),
+    })
+  }, [startTunnel])
 
   const handleCopyUrl = useCallback(() => {
     if (!shareableUrl) return
@@ -222,12 +226,54 @@ export function TunnelButton() {
         ) : tone.icon === 'warn' ? (
           <AlertTriangle size={16} />
         ) : (
-          <Globe size={16} />
+          <Smartphone size={16} />
         )}
       </button>
 
       {isActive && !isLoading && (
         <span className={`absolute top-0.5 right-0.5 w-2 h-2 ${tone.dot} rounded-full`} />
+      )}
+
+      {showPopover && !isActive && createPortal(
+        <>
+          <div className="fixed inset-0 z-[100]" onClick={() => setShowPopover(false)} />
+          <div
+            className="fixed z-[101] w-80 max-w-[calc(100vw-1rem)] bg-white rounded-lg shadow-lg border border-neutral-200 p-3"
+            style={{ top: popoverPos.top, right: popoverPos.right }}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 flex size-7 items-center justify-center rounded-md bg-neutral-100 text-neutral-700">
+                  <Smartphone size={16} />
+                </span>
+                <div>
+                  <div className="text-sm font-medium text-neutral-900">
+                    {t('Use Agent Tower on your phone')}
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+                    {t('After enabling the tunnel, you can scan a QR code with your phone to visit this Agent Tower instance, assign tasks, and check agent status.')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowPopover(false)}
+                className="p-0.5 text-neutral-400 hover:text-neutral-600 rounded"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <button
+              onClick={handleStart}
+              disabled={isLoading}
+              className="mt-3 w-full px-3 py-2 text-xs font-medium text-white bg-neutral-900 hover:bg-neutral-800 rounded-md transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+            >
+              {isLoading && <Loader2 size={13} className="animate-spin" />}
+              {isLoading ? t('Starting tunnel...') : t('Enable phone access')}
+            </button>
+          </div>
+        </>,
+        document.body
       )}
 
       {showPopover && isActive && createPortal(
