@@ -980,7 +980,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                 </div>
                 <div className="relative flex-1 min-h-0">
                   <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
-                    <div ref={contentRef} className="w-full">
+                    <div ref={contentRef} className={`w-full ${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
                       {isLoadingSnapshot ? (
                         <div className="flex items-center justify-center py-12 gap-3 text-neutral-400">
                           <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1012,7 +1012,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                 </div>
                 {todos.length > 0 && (
                   <div className="px-6 pt-2 pb-1 bg-white flex-shrink-0 border-t border-neutral-100">
-                    <TodoPanel todos={todos} />
+                    <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+                      <TodoPanel todos={todos} />
+                    </div>
                   </div>
                 )}
               </>
@@ -1024,6 +1026,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                 readOnlyMessage={projectReadOnlyMessage}
                 onSendMessage={handlePostRoomMessage}
                 onViewInvocationSession={handleViewInvocationSession}
+                centered={!isWorkspaceOpen}
               />
             )
           ) : (
@@ -1031,7 +1034,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           {/* Scrollable Logs */}
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
-            <div ref={contentRef} className="w-full">
+            <div ref={contentRef} className={`w-full ${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
               {/* Task Description */}
               <div className="mb-4 pb-4 border-b border-neutral-100">
                 {task.description ? (
@@ -1142,25 +1145,31 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           {/* Todo Panel — fixed between logs and input */}
           {todos.length > 0 && (
             <div className="px-6 pt-2 pb-1 bg-white flex-shrink-0 border-t border-neutral-100">
-              <TodoPanel todos={todos} />
+              <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+                <TodoPanel todos={todos} />
+              </div>
             </div>
           )}
 
           {/* Input Area */}
           {isProjectReadOnly ? (
             <div className="p-6 pt-3 bg-white flex-shrink-0 w-full z-10 pb-6 border-t border-neutral-100">
-              <div className="bg-neutral-50 rounded-xl border border-neutral-200 px-4 py-3 text-sm text-neutral-500">
-                {projectReadOnlyMessage}
+              <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+                <div className="bg-neutral-50 rounded-xl border border-neutral-200 px-4 py-3 text-sm text-neutral-500">
+                  {projectReadOnlyMessage}
+                </div>
               </div>
             </div>
           ) : isReadOnlySession ? (
             <div className="p-6 pt-3 bg-white flex-shrink-0 w-full z-10 pb-6 border-t border-neutral-100">
-              <div className="flex items-center justify-between bg-neutral-50 rounded-xl border border-neutral-200 px-4 py-3">
-                <span className="text-sm text-neutral-500">{t('代码已合并，以上为历史沟通记录')}</span>
-                <Button size="sm" onClick={() => setIsStartDialogOpen(true)}>
-                  <Play size={14} className="mr-1.5" />
-                  {t('启动新 Agent')}
-                </Button>
+              <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+                <div className="flex items-center justify-between bg-neutral-50 rounded-xl border border-neutral-200 px-4 py-3">
+                  <span className="text-sm text-neutral-500">{t('代码已合并，以上为历史沟通记录')}</span>
+                  <Button size="sm" onClick={() => setIsStartDialogOpen(true)}>
+                    <Play size={14} className="mr-1.5" />
+                    {t('启动新 Agent')}
+                  </Button>
+                </div>
               </div>
             </div>
           ) : (
@@ -1170,6 +1179,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
+            <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
             <div
               ref={inputContainerRef}
               className={`relative bg-white rounded-xl border shadow-sm hover:shadow-md focus-within:shadow-md focus-within:border-neutral-300 transition-all duration-200 ${
@@ -1252,6 +1262,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                   )}
                 </div>
               </div>
+            </div>
             </div>
             <SlashCommandPopover
               open={slashCommandMenu.query !== null}
