@@ -943,7 +943,7 @@ export function ProviderSettingsPage() {
   const providers = providersData ?? []
 
   return (
-    <div className="px-10 py-6 mx-auto w-full max-w-4xl">
+    <div className="px-4 sm:px-10 py-6 mx-auto w-full max-w-4xl">
       <input
         ref={fileInputRef}
         type="file"
@@ -952,14 +952,14 @@ export function ProviderSettingsPage() {
         onChange={handleImportFileChange}
       />
 
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6">
         <div>
           <h2 className="text-lg font-semibold text-neutral-900">{t('Provider 配置')}</h2>
           <p className="text-sm text-neutral-500 mt-1">
             {t('管理 AI Agent 的连接配置和运行参数')}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={handleOpenImportFile} disabled={previewProviderImport.isPending || importProviderBackup.isPending}>
             <Upload size={14} />
             {t('导入备份')}

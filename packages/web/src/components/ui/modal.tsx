@@ -1,8 +1,9 @@
 import * as React from "react"
-import { useEffect, useCallback, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { acquireScrollLock, releaseScrollLock } from "@/lib/scroll-lock"
 
 export interface ModalProps {
   /** 控制 Modal 是否打开 */
@@ -28,48 +29,48 @@ export const Modal: React.FC<ModalProps> = ({
   className,
 }) => {
   const [isVisible, setIsVisible] = useState(false)
+  const lockedRef = useRef(false)
 
-  // 打开/关闭动画状态管理
   useEffect(() => {
     if (isOpen) {
       setIsVisible(true)
-      document.body.style.overflow = "hidden"
+      if (!lockedRef.current) {
+        acquireScrollLock()
+        lockedRef.current = true
+      }
     } else {
       const timer = setTimeout(() => setIsVisible(false), 200)
-      document.body.style.overflow = "unset"
+      if (lockedRef.current) {
+        releaseScrollLock()
+        lockedRef.current = false
+      }
       return () => clearTimeout(timer)
     }
   }, [isOpen])
 
-  // ESC 键关闭 — 使用全局事件监听 + useCallback 去重
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose()
-      }
-    },
-    [onClose]
-  )
-
   useEffect(() => {
-    if (isOpen) {
-      document.addEventListener("keydown", handleKeyDown)
-      return () => {
-        document.removeEventListener("keydown", handleKeyDown)
+    return () => {
+      if (lockedRef.current) {
+        releaseScrollLock()
+        lockedRef.current = false
       }
     }
-  }, [isOpen, handleKeyDown])
+  }, [])
 
-  // 未显示时不渲染 DOM
   if (!isVisible && !isOpen) return null
 
-  // isOpen 三元运算符控制动画状态
   return (
     <div
       className={cn(
         "fixed inset-0 z-50 flex items-center justify-center p-4 transition-opacity duration-200",
         isOpen ? "opacity-100" : "opacity-0"
       )}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation()
+          onClose()
+        }
+      }}
     >
       {/* Backdrop */}
       <div
@@ -77,10 +78,12 @@ export const Modal: React.FC<ModalProps> = ({
         onClick={onClose}
       />
 
-      {/* Content */}
+      {/* Content — tabIndex for keyboard event capture */}
       <div
+        ref={(el) => { if (el && isOpen) el.focus() }}
+        tabIndex={-1}
         className={cn(
-          "relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden bg-white rounded-xl shadow-2xl shadow-neutral-200/50 border border-neutral-100 transform transition-all duration-200",
+          "relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden bg-white rounded-xl shadow-2xl shadow-neutral-200/50 border border-neutral-100 transform transition-all duration-200 outline-none",
           isOpen ? "scale-100 translate-y-0" : "scale-95 translate-y-2",
           className
         )}

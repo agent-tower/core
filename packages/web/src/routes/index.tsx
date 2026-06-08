@@ -1,23 +1,32 @@
-import { lazy, Suspense } from 'react'
-import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
+import { lazy, Suspense, useEffect } from 'react'
+import { createBrowserRouter, RouterProvider, useNavigate, useParams } from 'react-router-dom'
 import { RootLayout } from '@/layouts/RootLayout'
-import { SettingsLayout } from '@/layouts/SettingsLayout'
 import { useI18n } from '@/lib/i18n'
+import { useUIStore, type SettingsTab } from '@/stores/ui-store'
 
 // Lazy load pages
 const ProjectKanbanPage = lazy(() => import('@/pages/ProjectKanbanPage').then(m => ({ default: m.ProjectKanbanPage })))
 const DemoPage = lazy(() => import('@/pages/DemoPage').then(m => ({ default: m.DemoPage })))
 const AgentDemoPage = lazy(() => import('@/pages/AgentDemoPage').then(m => ({ default: m.AgentDemoPage })))
-const GeneralSettingsPage = lazy(() => import('@/pages/GeneralSettingsPage').then(m => ({ default: m.GeneralSettingsPage })))
-const ProfileSettingsPage = lazy(() => import('@/pages/ProfileSettingsPage').then(m => ({ default: m.ProfileSettingsPage })))
-const ProviderSettingsPage = lazy(() => import('@/pages/ProviderSettingsPage').then(m => ({ default: m.ProviderSettingsPage })))
-const TeamSettingsPage = lazy(() => import('@/pages/TeamSettingsPage').then(m => ({ default: m.TeamSettingsPage })))
-const NotificationSettingsPage = lazy(() => import('@/pages/NotificationSettingsPage').then(m => ({ default: m.NotificationSettingsPage })))
-const ProjectSettingsPage = lazy(() => import('@/pages/ProjectSettingsPage').then(m => ({ default: m.ProjectSettingsPage })))
 
 function RouteLoadingFallback() {
   const { t } = useI18n()
   return <div className="p-8">{t('Loading...')}</div>
+}
+
+const VALID_SETTINGS_TABS = new Set<string>(['general', 'agents', 'team', 'projects', 'notifications', 'agents-legacy'])
+
+function SettingsRedirect() {
+  const navigate = useNavigate()
+  const { tab } = useParams<{ tab: string }>()
+
+  useEffect(() => {
+    const settingsTab = (tab && VALID_SETTINGS_TABS.has(tab) ? tab : 'general') as SettingsTab
+    useUIStore.getState().openSettings(settingsTab)
+    navigate('/', { replace: true })
+  }, [navigate, tab])
+
+  return null
 }
 
 const router = createBrowserRouter([
@@ -51,58 +60,11 @@ const router = createBrowserRouter([
       },
       {
         path: 'settings',
-        element: <SettingsLayout />,
-        children: [
-          { index: true, element: <Navigate to="general" replace /> },
-          {
-            path: 'general',
-            element: (
-              <Suspense fallback={<RouteLoadingFallback />}>
-                <GeneralSettingsPage />
-              </Suspense>
-            ),
-          },
-          {
-            path: 'agents',
-            element: (
-              <Suspense fallback={<RouteLoadingFallback />}>
-                <ProviderSettingsPage />
-              </Suspense>
-            ),
-          },
-          {
-            path: 'team',
-            element: (
-              <Suspense fallback={<RouteLoadingFallback />}>
-                <TeamSettingsPage />
-              </Suspense>
-            ),
-          },
-          {
-            path: 'agents-legacy',
-            element: (
-              <Suspense fallback={<RouteLoadingFallback />}>
-                <ProfileSettingsPage />
-              </Suspense>
-            ),
-          },
-          {
-            path: 'notifications',
-            element: (
-              <Suspense fallback={<RouteLoadingFallback />}>
-                <NotificationSettingsPage />
-              </Suspense>
-            ),
-          },
-          {
-            path: 'projects',
-            element: (
-              <Suspense fallback={<RouteLoadingFallback />}>
-                <ProjectSettingsPage />
-              </Suspense>
-            ),
-          },
-        ],
+        element: <SettingsRedirect />,
+      },
+      {
+        path: 'settings/:tab',
+        element: <SettingsRedirect />,
       },
     ],
   },

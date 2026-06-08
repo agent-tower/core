@@ -13,8 +13,8 @@ import { useStartSession } from '@/hooks/use-sessions'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
 import { Settings, Paperclip } from 'lucide-react'
-import { Link } from 'react-router-dom'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { useUIStore } from '@/stores/ui-store'
 import { MobileTaskDetail } from '@/components/mobile'
 import { TunnelButton } from '@/components/TunnelButton'
 import { Select } from '@/components/ui/select'
@@ -743,9 +743,9 @@ export function ProjectKanbanPage() {
             </div>
             <div className="flex items-center gap-1">
               <TunnelButton />
-              <Link to="/settings" className="p-1.5 text-neutral-400 active:text-neutral-900 rounded-md">
+              <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-neutral-400 active:text-neutral-900 rounded-md">
                 <Settings size={16} />
-              </Link>
+              </button>
             </div>
           </header>
 
@@ -793,9 +793,9 @@ export function ProjectKanbanPage() {
         </div>
         <div className="flex items-center gap-1">
           <TunnelButton />
-          <Link to="/settings" className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors">
+          <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors">
             <Settings size={16} />
-          </Link>
+          </button>
         </div>
       </header>
 
