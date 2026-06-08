@@ -221,4 +221,15 @@
   .pt-safe {
     padding-top: env(safe-area-inset-top, 0px);
   }
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }

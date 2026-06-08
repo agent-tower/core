@@ -1,9 +1,8 @@
 import { useEffect, useMemo } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, ChevronDown, ChevronUp, Loader2, Plus, Trash2 } from 'lucide-react'
+import { Check, Loader2, Plus, X, Zap, Shield } from 'lucide-react'
 import type { MemberPreset, TeamRunMode } from '@agent-tower/shared'
-import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
 import { useProviders } from '@/hooks/use-providers'
 import { useMemberPresets, useTeamTemplates } from '@/hooks/use-team-run'
@@ -20,55 +19,15 @@ interface TeamRunCreateFormProps {
   disabled?: boolean
 }
 
-interface QueryErrorNoticeProps {
-  title: string
-  error: unknown
-  isFetching: boolean
-  onRetry: () => void
-  disabled?: boolean
-}
-
-function getErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback
-}
-
-function countCapabilities(capabilities: MemberPreset['capabilities']) {
-  return Object.values(capabilities).filter(Boolean).length
-}
-
 function getInstanceLabel(name: string, index: number, ids: string[], id: string): string {
   const totalForId = ids.filter(item => item === id).length
   if (totalForId <= 1) return name
-
   const instanceNumber = ids.slice(0, index + 1).filter(item => item === id).length
   return `${name} #${instanceNumber}`
 }
 
-function QueryErrorNotice({ title, error, isFetching, onRetry, disabled }: QueryErrorNoticeProps) {
-  const { t } = useI18n()
-
-  return (
-    <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-medium">{title}</div>
-          <div className="mt-1 text-xs text-red-600">
-            {getErrorMessage(error, t('请稍后重试。'))}
-          </div>
-        </div>
-        <Button type="button" size="sm" variant="outline" onClick={onRetry} disabled={disabled || isFetching}>
-          {isFetching ? (
-            <>
-              <Loader2 size={14} className="animate-spin" />
-              {t('加载中...')}
-            </>
-          ) : (
-            t('重试')
-          )}
-        </Button>
-      </div>
-    </div>
-  )
+function countCapabilities(capabilities: MemberPreset['capabilities']) {
+  return Object.values(capabilities).filter(Boolean).length
 }
 
 export function TeamRunCreateForm({
@@ -84,7 +43,6 @@ export function TeamRunCreateForm({
   const { data: providersData } = useProviders()
   const {
     data: memberPresetsData,
-    error: memberPresetsError,
     isError: memberPresetsIsError,
     isFetching: memberPresetsIsFetching,
     isLoading: memberPresetsIsLoading,
@@ -92,7 +50,6 @@ export function TeamRunCreateForm({
   } = useMemberPresets()
   const {
     data: teamTemplatesData,
-    error: teamTemplatesError,
     isError: teamTemplatesIsError,
     isFetching: teamTemplatesIsFetching,
     isLoading: teamTemplatesIsLoading,
@@ -116,7 +73,6 @@ export function TeamRunCreateForm({
     return new Map((teamTemplatesData ?? []).map((template) => [template.id, template] as const))
   }, [teamTemplatesData])
 
-  const selectedTemplate = selectedTemplateId ? teamTemplateById.get(selectedTemplateId) ?? null : null
   const selectedMemberPresets = useMemo(
     () =>
       selectedMemberPresetIds
@@ -129,9 +85,7 @@ export function TeamRunCreateForm({
     if (memberPresetsData === undefined) return
     setSelectedMemberPresetIds((current) => {
       const next = current.filter((id) => memberPresetById.has(id))
-      if (next.length === current.length && next.every((id, index) => id === current[index])) {
-        return current
-      }
+      if (next.length === current.length && next.every((id, index) => id === current[index])) return current
       return next
     })
   }, [memberPresetsData, memberPresetById, setSelectedMemberPresetIds])
@@ -149,303 +103,225 @@ export function TeamRunCreateForm({
     setSelectedTemplateId((current) => (current === templateId ? null : templateId))
   }
 
-  const handleToggleMemberPreset = (presetId: string) => {
+  const handleAddMemberPreset = (presetId: string) => {
     if (disabled) return
     setSelectedMemberPresetIds((current) => [...current, presetId])
   }
 
   const handleRemoveSelectedPreset = (index: number) => {
     if (disabled) return
-    setSelectedMemberPresetIds((current) => current.filter((_, itemIndex) => itemIndex !== index))
-  }
-
-  const handleMoveSelectedPreset = (index: number, direction: -1 | 1) => {
-    if (disabled) return
-    setSelectedMemberPresetIds((current) => {
-      const nextIndex = index + direction
-      if (nextIndex < 0 || nextIndex >= current.length) return current
-
-      const next = [...current]
-      const [item] = next.splice(index, 1)
-      next.splice(nextIndex, 0, item)
-      return next
-    })
+    setSelectedMemberPresetIds((current) => current.filter((_, i) => i !== index))
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-sm font-medium text-neutral-900">{t('TeamRun 模式')}</div>
-          <div className="text-xs text-neutral-500">{t('默认使用自动模式，团队消息会直接排队执行。')}</div>
-        </div>
-        <div className="inline-flex rounded-md border border-neutral-200 bg-neutral-50 p-1">
-          <button
-            type="button"
-            onClick={() => !disabled && setMode('CONFIRM')}
-            disabled={disabled}
-            className={cn(
-              'rounded-md px-3 py-1.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-              mode === 'CONFIRM'
-                ? 'bg-white text-neutral-900 shadow-sm'
-                : 'text-neutral-500 hover:text-neutral-900',
-            )}
-          >
-            {t('确认模式')}
-          </button>
+    <div className="space-y-3">
+      {/* Mode selector */}
+      <div className="flex items-center gap-3">
+        <span className="text-[11px] text-neutral-500 shrink-0">{t('执行模式')}</span>
+        <div className="inline-flex rounded-md bg-white p-0.5 shadow-sm">
           <button
             type="button"
             onClick={() => !disabled && setMode('AUTO')}
             disabled={disabled}
             className={cn(
-              'rounded-md px-3 py-1.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+              'flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-all disabled:cursor-not-allowed disabled:opacity-50',
               mode === 'AUTO'
-                ? 'bg-white text-neutral-900 shadow-sm'
-                : 'text-neutral-500 hover:text-neutral-900',
+                ? 'bg-neutral-800 text-white shadow-sm font-medium'
+                : 'text-neutral-500 hover:text-neutral-700',
             )}
           >
+            <Zap size={11} />
             {t('自动模式')}
+          </button>
+          <button
+            type="button"
+            onClick={() => !disabled && setMode('CONFIRM')}
+            disabled={disabled}
+            className={cn(
+              'flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-all disabled:cursor-not-allowed disabled:opacity-50',
+              mode === 'CONFIRM'
+                ? 'bg-neutral-800 text-white shadow-sm font-medium'
+                : 'text-neutral-500 hover:text-neutral-700',
+            )}
+          >
+            <Shield size={11} />
+            {t('确认模式')}
           </button>
         </div>
       </div>
 
-      <div className="pr-1">
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
-          <div className="space-y-5">
-            <section className="space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold text-neutral-900">{t('团队模板')}</h3>
-                <p className="text-xs text-neutral-400">{t('模板成员会先加入，随后按顺序追加所选成员。')}</p>
-              </div>
+      {/* Two-column grid: Templates | Members */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {/* Template column */}
+        <section className="min-w-0">
+          <div className="text-[11px] font-medium text-neutral-500 mb-1.5">{t('团队模板')}</div>
+          {teamTemplatesIsError ? (
+            <div className="rounded-lg bg-red-50 px-3 py-2.5 text-xs text-red-600">
+              <span>{t('团队模板加载失败')}</span>
+              <button
+                type="button"
+                onClick={() => void refetchTeamTemplates()}
+                disabled={disabled || teamTemplatesIsFetching}
+                className="ml-2 underline hover:no-underline"
+              >
+                {t('重试')}
+              </button>
+            </div>
+          ) : teamTemplatesIsLoading ? (
+            <div className="flex items-center gap-2 py-3 text-xs text-neutral-400">
+              <Loader2 size={12} className="animate-spin" />
+              {t('加载中...')}
+            </div>
+          ) : (teamTemplatesData ?? []).length === 0 ? (
+            <div className="rounded-lg border border-dashed border-neutral-200 bg-white px-3 py-3 text-xs text-neutral-400">
+              {t('当前没有团队模板')}
+              <Link to="/settings/team" className="ml-1.5 text-blue-500 hover:underline">
+                {t('去创建')}
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {(teamTemplatesData ?? []).map((template) => {
+                const isSelected = template.id === selectedTemplateId
+                const memberCount = template.members?.length ?? 0
+                const memberPresetIds = template.members?.map((m) => m.memberPresetId) ?? []
+                const preview = template.members
+                  ?.slice(0, 3)
+                  .map((m, i) => getInstanceLabel(m.memberPreset?.name ?? m.memberPresetId, i, memberPresetIds, m.memberPresetId))
+                  .join(', ')
 
-              {teamTemplatesIsError ? (
-                <QueryErrorNotice
-                  title={t('团队模板加载失败')}
-                  error={teamTemplatesError}
-                  isFetching={teamTemplatesIsFetching}
-                  onRetry={() => void refetchTeamTemplates()}
-                  disabled={disabled}
-                />
-              ) : teamTemplatesIsLoading ? (
-                <div className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400">
-                  <Loader2 size={14} className="animate-spin" />
-                  {t('加载中...')}
-                </div>
-              ) : (teamTemplatesData ?? []).length === 0 ? (
-                <div className="rounded-lg border border-dashed border-neutral-200 bg-white px-4 py-4 text-sm text-neutral-400">
-                  <div>{t('当前没有团队模板')}</div>
-                  <Button asChild size="sm" variant="outline" className="mt-3">
-                    <Link to="/settings/team">{t('前往 /settings/team 创建')}</Link>
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {(teamTemplatesData ?? []).map((template) => {
-                    const isSelected = template.id === selectedTemplateId
-                    const memberCount = template.members?.length ?? 0
-                    const memberPresetIds = template.members?.map((member) => member.memberPresetId) ?? []
-                    const memberPreview = template.members
-                      ?.slice(0, 3)
-                      .map((member, index) => getInstanceLabel(
-                        member.memberPreset?.name ?? member.memberPresetId,
-                        index,
-                        memberPresetIds,
-                        member.memberPresetId,
-                      ))
-                      .join(' · ')
-
-                    return (
-                      <button
-                        key={template.id}
-                        type="button"
-                        onClick={() => handleToggleTemplate(template.id)}
-                        disabled={disabled}
-                        className={cn(
-                          'w-full rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-                          isSelected
-                            ? 'border-neutral-900 bg-neutral-50'
-                            : 'border-neutral-200 bg-white hover:border-neutral-300 hover:bg-neutral-50',
+                return (
+                  <button
+                    key={template.id}
+                    type="button"
+                    onClick={() => handleToggleTemplate(template.id)}
+                    disabled={disabled}
+                    className={cn(
+                      'w-full rounded-lg px-3 py-2 text-left transition-all disabled:cursor-not-allowed disabled:opacity-60',
+                      isSelected
+                        ? 'bg-blue-50 ring-1 ring-blue-200'
+                        : 'bg-white hover:bg-white/80',
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className={cn('text-xs truncate', isSelected ? 'font-medium text-blue-800' : 'text-neutral-800')}>
+                            {template.name}
+                          </span>
+                          <span className="text-[10px] text-neutral-400 shrink-0">{memberCount}{t('人')}</span>
+                        </div>
+                        {preview && (
+                          <div className="mt-0.5 text-[10px] text-neutral-400 truncate">{preview}</div>
                         )}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-neutral-900">{template.name}</div>
-                            <div className="mt-1 truncate text-xs text-neutral-500">
-                              {t('{count} 个成员', { count: memberCount })}
-                            </div>
-                            {memberPreview && (
-                              <div className="mt-2 truncate text-[11px] text-neutral-400">{memberPreview}</div>
-                            )}
-                          </div>
-                          {isSelected && <Check size={14} className="mt-0.5 shrink-0 text-neutral-900" />}
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
-            </section>
-
-            <section className="space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold text-neutral-900">{t('成员预设')}</h3>
-                <p className="text-xs text-neutral-400">{t('选择顺序即保存顺序。')}</p>
-              </div>
-
-              {memberPresetsIsError ? (
-                <QueryErrorNotice
-                  title={t('成员预设加载失败')}
-                  error={memberPresetsError}
-                  isFetching={memberPresetsIsFetching}
-                  onRetry={() => void refetchMemberPresets()}
-                  disabled={disabled}
-                />
-              ) : memberPresetsIsLoading ? (
-                <div className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-400">
-                  <Loader2 size={14} className="animate-spin" />
-                  {t('加载中...')}
-                </div>
-              ) : (memberPresetsData ?? []).length === 0 ? (
-                <div className="rounded-lg border border-dashed border-neutral-200 bg-white px-4 py-4 text-sm text-neutral-400">
-                  <div>{t('当前没有成员预设')}</div>
-                  <Button asChild size="sm" variant="outline" className="mt-3">
-                    <Link to="/settings/team">{t('前往 /settings/team 创建')}</Link>
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {(memberPresetsData ?? []).map((preset) => {
-                    const selectedCount = selectedMemberPresetIds.filter((id) => id === preset.id).length
-                    const providerLabel = providerLabelById.get(preset.providerId) ?? preset.providerId
-                    const capabilityCount = countCapabilities(preset.capabilities)
-
-                    return (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        onClick={() => handleToggleMemberPreset(preset.id)}
-                        disabled={disabled}
-                        className={cn(
-                          'flex w-full items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
-                          disabled && 'cursor-not-allowed opacity-60',
-                          selectedCount > 0
-                            ? 'border-neutral-900 bg-neutral-50'
-                            : 'border-neutral-200 bg-white hover:border-neutral-300 hover:bg-neutral-50',
-                        )}
-                      >
-                        <MemberAvatar
-                          name={preset.name}
-                          avatar={preset.avatar}
-                          className="mt-0.5 h-8 w-8 text-[11px]"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-medium text-neutral-900">{preset.name}</div>
-                          <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <span className="text-[11px] text-neutral-400">{capabilityCount}/10</span>
-                          {selectedCount > 0 && (
-                            <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-[11px] font-medium text-white">
-                              x{selectedCount}
-                            </span>
-                          )}
-                          <Plus size={15} className="text-neutral-500" />
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
-            </section>
-          </div>
-
-          <div className="space-y-5">
-            <section className="space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold text-neutral-900">{t('已选成员')}</h3>
-                <p className="text-xs text-neutral-400">{t('上移下移后即为保存顺序。')}</p>
-              </div>
-
-              {selectedMemberPresets.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-neutral-200 bg-white px-4 py-4 text-sm text-neutral-400">
-                  {t('尚未选择成员预设')}
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {selectedMemberPresets.map((preset, index) => {
-                    const providerLabel = providerLabelById.get(preset.providerId) ?? preset.providerId
-                    const displayName = getInstanceLabel(preset.name, index, selectedMemberPresetIds, preset.id)
-                    return (
-                      <div
-                        key={`${preset.id}-${index}`}
-                        className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-white px-3 py-2"
-                      >
-                        <div className="flex min-w-0 items-center gap-2">
-                          <MemberAvatar
-                            name={preset.name}
-                            avatar={preset.avatar}
-                            className="h-8 w-8 text-[11px]"
-                          />
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium text-neutral-900">{displayName}</div>
-                            <div className="truncate text-xs text-neutral-500">{providerLabel}</div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => handleMoveSelectedPreset(index, -1)}
-                            disabled={disabled || index === 0}
-                            title={t('上移')}
-                          >
-                            <ChevronUp size={14} />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => handleMoveSelectedPreset(index, 1)}
-                            disabled={disabled || index === selectedMemberPresets.length - 1}
-                            title={t('下移')}
-                          >
-                            <ChevronDown size={14} />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => handleRemoveSelectedPreset(index)}
-                            disabled={disabled}
-                            title={t('移除')}
-                          >
-                            <Trash2 size={14} />
-                          </Button>
-                        </div>
                       </div>
-                    )
-                  })}
-                </div>
-              )}
-            </section>
+                      {isSelected && <Check size={13} className="shrink-0 text-blue-600" />}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </section>
 
-            <section className="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-4">
-              <div className="text-xs font-medium text-neutral-700">{t('模板成员会先加入，随后按顺序追加所选成员。')}</div>
-              <div className="mt-2 text-xs text-neutral-500">
-                {selectedTemplate ? (
-                  <>
-                    <span className="font-medium text-neutral-700">{selectedTemplate.name}</span>
-                    <span className="mx-1">·</span>
-                    <span>{t('{count} 个成员', { count: selectedTemplate.members?.length ?? 0 })}</span>
-                  </>
-                ) : (
-                  <span>{t('请选择至少一个团队模板或成员预设。')}</span>
-                )}
-              </div>
-            </section>
+        {/* Members column */}
+        <section className="min-w-0">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-[11px] font-medium text-neutral-500">{t('追加成员')}</span>
+            {selectedMemberPresets.length > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[16px] h-4 rounded-full bg-blue-600 text-[9px] font-medium text-white px-1">
+                {selectedMemberPresets.length}
+              </span>
+            )}
           </div>
-        </div>
+
+          {/* Selected chips */}
+          {selectedMemberPresets.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-2">
+              {selectedMemberPresets.map((preset, index) => {
+                const displayName = getInstanceLabel(preset.name, index, selectedMemberPresetIds, preset.id)
+                return (
+                  <div
+                    key={`${preset.id}-${index}`}
+                    className="inline-flex items-center gap-1 pl-1 pr-0.5 py-0.5 rounded bg-blue-50 text-[10px] text-neutral-700"
+                  >
+                    <MemberAvatar name={preset.name} avatar={preset.avatar} className="h-3.5 w-3.5 text-[7px]" />
+                    <span className="max-w-[80px] truncate">{displayName}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveSelectedPreset(index)}
+                      disabled={disabled}
+                      className="p-0.5 text-neutral-400 hover:text-red-500 disabled:opacity-30 rounded"
+                    >
+                      <X size={9} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Member list */}
+          {memberPresetsIsError ? (
+            <div className="rounded-lg bg-red-50 px-3 py-2.5 text-xs text-red-600">
+              <span>{t('成员预设加载失败')}</span>
+              <button
+                type="button"
+                onClick={() => void refetchMemberPresets()}
+                disabled={disabled || memberPresetsIsFetching}
+                className="ml-2 underline hover:no-underline"
+              >
+                {t('重试')}
+              </button>
+            </div>
+          ) : memberPresetsIsLoading ? (
+            <div className="flex items-center gap-2 py-3 text-xs text-neutral-400">
+              <Loader2 size={12} className="animate-spin" />
+              {t('加载中...')}
+            </div>
+          ) : (memberPresetsData ?? []).length === 0 ? (
+            <div className="rounded-lg border border-dashed border-neutral-200 bg-white px-3 py-3 text-xs text-neutral-400">
+              {t('当前没有成员预设')}
+              <Link to="/settings/team" className="ml-1.5 text-blue-500 hover:underline">
+                {t('去创建')}
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-1 max-h-[200px] overflow-y-auto">
+              {(memberPresetsData ?? []).map((preset) => {
+                const selectedCount = selectedMemberPresetIds.filter((id) => id === preset.id).length
+                const providerLabel = providerLabelById.get(preset.providerId) ?? preset.providerId
+                const capCount = countCapabilities(preset.capabilities)
+
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => handleAddMemberPreset(preset.id)}
+                    disabled={disabled}
+                    className={cn(
+                      'flex items-center gap-2 w-full px-2 py-1.5 rounded-lg text-left transition-all',
+                      disabled && 'cursor-not-allowed opacity-60',
+                      'bg-white hover:bg-white/80',
+                    )}
+                  >
+                    <MemberAvatar name={preset.name} avatar={preset.avatar} className="h-6 w-6 text-[9px] shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs text-neutral-800 truncate">{preset.name}</div>
+                      <div className="text-[10px] text-neutral-400 truncate">{providerLabel} · {capCount}/10</div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {selectedCount > 0 && (
+                        <span className="text-[9px] text-blue-600 font-medium">×{selectedCount}</span>
+                      )}
+                      <Plus size={12} className="text-neutral-300" />
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </section>
       </div>
     </div>
   )

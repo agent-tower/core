@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo, lazy, Suspense } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import type { Task } from '@agent-tower/shared'
 import { TaskList } from '@/components/task'
@@ -8,43 +8,25 @@ import { UITaskStatus } from '@/components/task/types'
 import { toast } from 'sonner'
 import { adaptProject, adaptTaskForDetail, adaptTaskForList, mapTaskStatusToUI, mapUIStatusToTask } from '@/components/task/adapters'
 import { useProjects } from '@/hooks/use-projects'
-import { useTasks, useCreateTask, useDeleteTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
+import { useTasks, useDeleteTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
 import { useStartSession } from '@/hooks/use-sessions'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
-import { Settings, Paperclip } from 'lucide-react'
+import { Settings } from 'lucide-react'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useUIStore } from '@/stores/ui-store'
 import { MobileTaskDetail } from '@/components/mobile'
 import { TunnelButton } from '@/components/TunnelButton'
-import { Select } from '@/components/ui/select'
 import { useProviders } from '@/hooks/use-providers'
-import { useAttachments } from '@/hooks/use-attachments'
-import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { useI18n } from '@/lib/i18n'
 import type { TeamRunMode } from '@agent-tower/shared'
-import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
-import { cn } from '@/lib/utils'
 import { CreateProjectModal } from '@/components/project/CreateProjectModal'
 import { BrandLogo } from '@/components/BrandLogo'
+import { CreateTaskInput } from '@/components/task/CreateTaskInput'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
-
-const CREATE_STEP_LABEL: Record<CreateStep, string> = {
-  idle: 'Create & Start',
-  'creating-task': 'Creating Task...',
-  'creating-teamrun': 'Creating TeamRun...',
-  'creating-workspace': 'Creating Workspace...',
-  'creating-session': 'Creating Session...',
-  'starting-session': 'Starting Agent...',
-}
-
-// === bundle-dynamic-imports: Modal 组件懒加载 ===
-const Modal = lazy(() =>
-  import('@/components/ui/modal').then(m => ({ default: m.Modal }))
-)
 
 // === rendering-hoist-jsx: 静态顶部栏标题文字 ===
 const HEADER_TITLE = (
@@ -77,22 +59,7 @@ export function ProjectKanbanPage() {
 
   // Modal 状态
   const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false)
-  const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false)
-  const [newTaskTitle, setNewTaskTitle] = useState('')
-  const [newTaskDescription, setNewTaskDescription] = useState('')
-  const [newTaskProjectId, setNewTaskProjectId] = useState<string>('')
-  const [newTaskProviderId, setNewTaskProviderId] = useState<string>('')
-  const [newTaskMode, setNewTaskMode] = useState<CreateTaskMode>('SOLO')
-  const [newTaskTeamRunMode, setNewTaskTeamRunMode] = useState<TeamRunMode>('AUTO')
-  const [newTaskTeamTemplateId, setNewTaskTeamTemplateId] = useState<string | null>(null)
-  const [newTaskMemberPresetIds, setNewTaskMemberPresetIds] = useState<string[]>([])
-  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
-  const [newTaskTeamRunError, setNewTaskTeamRunError] = useState<string | null>(null)
   const [createStep, setCreateStep] = useState<CreateStep>('idle')
-
-  // Attachments for task creation
-  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, isUploading } = useAttachments()
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // === rerender-use-ref-transient-values: resize 过程中的 mouse position 使用 ref ===
   const isDraggingRef = useRef(false)
@@ -146,9 +113,18 @@ export function ProjectKanbanPage() {
     }
     return allTasks
   }, [effectiveFilterProjectId, filteredTasksData, allProjectTaskQueries])
-  const effectiveSelectedTaskId = selectedTaskId && rawTasks.some(task => task.id === selectedTaskId)
-    ? selectedTaskId
-    : null
+  const [pendingCreatedTaskId, setPendingCreatedTaskId] = useState<string | null>(null)
+  const effectiveSelectedTaskId = useMemo(() => {
+    if (selectedTaskId && rawTasks.some(task => task.id === selectedTaskId)) return selectedTaskId
+    if (pendingCreatedTaskId && selectedTaskId === pendingCreatedTaskId) return pendingCreatedTaskId
+    return null
+  }, [selectedTaskId, rawTasks, pendingCreatedTaskId])
+
+  useEffect(() => {
+    if (pendingCreatedTaskId && rawTasks.some(task => task.id === pendingCreatedTaskId)) {
+      setPendingCreatedTaskId(null)
+    }
+  }, [pendingCreatedTaskId, rawTasks])
 
   // 按活跃度排序 projects：根据最近创建的任务时间
   const sortedProjects = useMemo(() => {
@@ -235,7 +211,6 @@ export function ProjectKanbanPage() {
   }, [effectiveSelectedTaskId, rawTasks, projects])
 
   // === Mutations ===
-  const createTask = useCreateTask(newTaskProjectId)
   const createTaskTeamRun = useCreateTaskTeamRun()
   const deleteTask = useDeleteTask()
   const updateTaskStatus = useUpdateTaskStatus()
@@ -314,404 +289,184 @@ export function ProjectKanbanPage() {
       toast.error(t('没有可用项目，请先创建或恢复项目'))
       return
     }
-
-    // 从 localStorage 读取上次选择
-    const lastProjectId = localStorage.getItem('lastSelectedProjectId')
-    const lastProviderId = localStorage.getItem('lastSelectedProviderId')
-
-    // 优先使用上次选择，其次是当前筛选的项目，最后是第一个项目（已排序）
-    const projectId = (lastProjectId && activeProjects.find(p => p.id === lastProjectId))
-      ? lastProjectId
-      : ((effectiveFilterProjectId && activeProjects.find(project => project.id === effectiveFilterProjectId)?.id) ?? activeProjects[0]?.id ?? '')
-    setNewTaskProjectId(projectId)
-
-    // 优先使用上次选择的 provider，其次是第一个可用的 provider（已排序）
-    const available = sortedProviders?.find(p => p.availability.type !== 'NOT_FOUND')
-    const providerId = (lastProviderId && sortedProviders?.find(p => p.provider.id === lastProviderId && p.availability.type !== 'NOT_FOUND'))
-      ? lastProviderId
-      : (available?.provider.id ?? '')
-    setNewTaskProviderId(providerId)
-    setNewTaskMode('SOLO')
-    setNewTaskTeamRunMode('AUTO')
-    setNewTaskTeamTemplateId(null)
-    setNewTaskMemberPresetIds([])
-    setPendingTaskId(null)
-    setNewTaskTeamRunError(null)
-
-    setCreateStep('idle')
-    setIsCreateTaskOpen(true)
-  }, [activeProjects, effectiveFilterProjectId, sortedProviders, t])
+    setSelectedTaskId(null)
+  }, [activeProjects, t])
 
   const handleCloseProjectModal = useCallback(() => {
     setIsCreateProjectOpen(false)
   }, [])
 
-  const handleCloseTaskModal = useCallback(() => {
-    if (createStep !== 'idle') return
-    setIsCreateTaskOpen(false)
-    setNewTaskTitle('')
-    setNewTaskDescription('')
-    setNewTaskProjectId('')
-    setNewTaskProviderId('')
-    setNewTaskMode('SOLO')
-    setNewTaskTeamRunMode('AUTO')
-    setNewTaskTeamTemplateId(null)
-    setNewTaskMemberPresetIds([])
-    setPendingTaskId(null)
-    setNewTaskTeamRunError(null)
-    setCreateStep('idle')
-    clearAttachments()
-  }, [createStep, clearAttachments])
-
   const startSession = useStartSession()
 
-  const handleSubmitTask = useCallback(async () => {
-    const hasBaseTaskFields = Boolean(newTaskTitle.trim()) && Boolean(newTaskProjectId)
-    const isTeamRunRetry = newTaskMode === 'TEAM' && pendingTaskId !== null
+  const handleSubmitTask = useCallback(async (data: {
+    title: string
+    description: string
+    projectId: string
+    providerId: string
+    mode: CreateTaskMode
+    teamRunMode: TeamRunMode
+    teamTemplateId: string | null
+    memberPresetIds: string[]
+    attachmentLinks: string
+  }) => {
+    const { title, description, projectId, providerId, mode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks } = data
+    const fullDescription = [description, attachmentLinks].filter(Boolean).join('\n\n')
 
-    if (newTaskMode === 'TEAM' && !newTaskTeamTemplateId && newTaskMemberPresetIds.length === 0) {
-      setNewTaskTeamRunError(t('请选择至少一个团队模板或成员预设。'))
-      return
-    }
-    if (newTaskMode === 'TEAM') {
-      if (!isTeamRunRetry && !hasBaseTaskFields) return
-    } else if (!hasBaseTaskFields) {
-      return
-    }
+    let createdTask: Task | null = null
 
     try {
-      setNewTaskTeamRunError(null)
-      // 拼接附件 markdown 链接到 description 末尾
-      const attachmentLinks = buildMarkdownLinks()
-      const description = [newTaskDescription.trim(), attachmentLinks].filter(Boolean).join('\n\n')
+      setCreateStep('creating-task')
+      createdTask = await apiClient.post<Task>(`/projects/${projectId}/tasks`, {
+        title,
+        description: fullDescription || undefined,
+      })
 
-      let createdTaskId = pendingTaskId
-
-      if (!createdTaskId) {
-        // Step 1: 创建任务
-        setCreateStep('creating-task')
-        const task = await createTask.mutateAsync({
-          title: newTaskTitle.trim(),
-          description: description || undefined,
-        })
-        createdTaskId = task.id
-        setPendingTaskId(task.id)
-
-        // 保存本次选择到 localStorage
-        localStorage.setItem('lastSelectedProjectId', newTaskProjectId)
-        if (newTaskMode === 'SOLO' && newTaskProviderId) {
-          localStorage.setItem('lastSelectedProviderId', newTaskProviderId)
-
-          // 更新 provider 使用次数
-          const usageCountStr = localStorage.getItem('providerUsageCount')
-          const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
-          usageCount[newTaskProviderId] = (usageCount[newTaskProviderId] ?? 0) + 1
-          localStorage.setItem('providerUsageCount', JSON.stringify(usageCount))
-        }
+      localStorage.setItem('lastSelectedProjectId', projectId)
+      if (mode === 'SOLO' && providerId) {
+        localStorage.setItem('lastSelectedProviderId', providerId)
+        const usageCountStr = localStorage.getItem('providerUsageCount')
+        const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
+        usageCount[providerId] = (usageCount[providerId] ?? 0) + 1
+        localStorage.setItem('providerUsageCount', JSON.stringify(usageCount))
       }
 
-      if (newTaskMode === 'TEAM') {
-        const memberPresetIds = newTaskMemberPresetIds
+      if (mode === 'TEAM') {
         setCreateStep('creating-teamrun')
         await createTaskTeamRun.mutateAsync({
-          taskId: createdTaskId!,
-          mode: newTaskTeamRunMode,
-          ...(newTaskTeamTemplateId ? { teamTemplateId: newTaskTeamTemplateId } : {}),
+          taskId: createdTask.id,
+          mode: teamRunMode,
+          ...(teamTemplateId ? { teamTemplateId } : {}),
           ...(memberPresetIds.length > 0 ? { memberPresetIds } : {}),
         })
-        setPendingTaskId(null)
-      } else if (newTaskProviderId) {
-        const prompt = [newTaskTitle.trim(), description].filter(Boolean).join('\n\n')
+      } else if (providerId) {
+        const prompt = [title, fullDescription].filter(Boolean).join('\n\n')
 
-        // Step 2: 创建 workspace
         setCreateStep('creating-workspace')
-        const workspace = await apiClient.post<{ id: string }>(`/tasks/${createdTaskId!}/workspaces`, {})
+        const workspace = await apiClient.post<{ id: string }>(`/tasks/${createdTask.id}/workspaces`, {})
 
-        // Step 3: 创建 session (使用 providerId)
         setCreateStep('creating-session')
         const session = await apiClient.post<{ id: string }>(
           `/workspaces/${workspace.id}/sessions`,
-          { providerId: newTaskProviderId, prompt },
+          { providerId, prompt },
         )
 
-        // Step 4: 启动 session
         setCreateStep('starting-session')
         await startSession.mutateAsync(session.id)
 
-        await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(createdTaskId!) })
+        await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(createdTask.id) })
       }
 
-      // 选中新创建的任务
-      setSelectedTaskId(createdTaskId!)
+      if (effectiveFilterProjectId && projectId !== effectiveFilterProjectId) {
+        setFilterProjectId(null)
+      }
+      setPendingCreatedTaskId(createdTask.id)
+      setSelectedTaskId(createdTask.id)
       setCreateStep('idle')
-      setIsCreateTaskOpen(false)
-      setNewTaskTitle('')
-      setNewTaskDescription('')
-      setNewTaskProjectId('')
-      setNewTaskProviderId('')
-      setNewTaskMode('SOLO')
-      setNewTaskTeamRunMode('AUTO')
-      setNewTaskTeamTemplateId(null)
-      setNewTaskMemberPresetIds([])
-      setPendingTaskId(null)
-      setNewTaskTeamRunError(null)
-      clearAttachments()
+
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
     } catch (error) {
-      if (newTaskMode === 'TEAM') {
-        setNewTaskTeamRunError(error instanceof Error ? error.message : t('创建 TeamRun 失败'))
-      }
       setCreateStep('idle')
-    }
-  }, [newTaskTitle, newTaskDescription, newTaskProjectId, newTaskProviderId, newTaskMode, newTaskTeamRunMode, newTaskTeamTemplateId, newTaskMemberPresetIds, pendingTaskId, createTask, createTaskTeamRun, startSession, queryClient, buildMarkdownLinks, clearAttachments, t])
-
-  // ============ File Upload Handlers ============
-
-  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileList = e.target.files
-    if (fileList && fileList.length > 0) {
-      addFiles(Array.from(fileList))
-    }
-    e.target.value = ''
-  }, [addFiles])
-
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const items = e.clipboardData.items
-    const files: File[] = []
-    for (const item of items) {
-      if (item.kind === 'file') {
-        const file = item.getAsFile()
-        if (file) files.push(file)
+      if (createdTask && mode === 'TEAM') {
+        // TeamRun creation failed — clean up orphan task and treat as complete failure
+        try { await deleteTask.mutateAsync(createdTask.id) } catch { /* best-effort cleanup */ }
+        toast.error(t('TeamRun 创建失败，请检查团队配置后重试'))
+        throw error
+      } else if (createdTask) {
+        // SOLO partial success: task exists but agent start failed — navigate to detail
+        if (effectiveFilterProjectId && projectId !== effectiveFilterProjectId) {
+          setFilterProjectId(null)
+        }
+        setPendingCreatedTaskId(createdTask.id)
+        setSelectedTaskId(createdTask.id)
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
+        toast.error(t('任务已创建，但启动 Agent 失败，可在详情中重试'))
+      } else {
+        toast.error(error instanceof Error ? error.message : t('Failed to create task'))
+        throw error
       }
     }
-    if (files.length > 0) {
-      e.preventDefault()
-      addFiles(files)
-    }
-  }, [addFiles])
+  }, [createTaskTeamRun, startSession, deleteTask, queryClient, t, effectiveFilterProjectId])
 
-  const [isDragOver, setIsDragOver] = useState(false)
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragOver(true)
-  }, [])
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragOver(false)
-  }, [])
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragOver(false)
-    const fileList = e.dataTransfer.files
-    if (fileList.length > 0) {
-      addFiles(Array.from(fileList))
-    }
-  }, [addFiles])
 
   const isLoading = isProjectsLoading || isFilteredTasksLoading || isAllTasksLoading
-  const hasBaseTaskFields = Boolean(newTaskTitle.trim()) && Boolean(newTaskProjectId)
-  const hasRequiredTeamRunSelection = newTaskMode !== 'TEAM' || Boolean(newTaskTeamTemplateId) || newTaskMemberPresetIds.length > 0
-  const canSubmitCreateTask = createStep === 'idle'
-    && hasRequiredTeamRunSelection
-    && (newTaskMode === 'TEAM' ? (pendingTaskId !== null || hasBaseTaskFields) : hasBaseTaskFields)
-  const createTaskSubmitLabel = newTaskMode === 'TEAM'
-    ? t(createStep === 'idle' ? 'Create TeamRun' : CREATE_STEP_LABEL[createStep])
-    : t(CREATE_STEP_LABEL[createStep])
 
-  const createTaskModalAction = (
-    <>
-      <button
-        onClick={handleCloseTaskModal}
-        disabled={createStep !== 'idle'}
-        className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
-      >
-        {t('Cancel')}
-      </button>
-      <button
-        onClick={handleSubmitTask}
-        disabled={!canSubmitCreateTask}
-        className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-          canSubmitCreateTask
-            ? 'bg-neutral-900 text-white hover:bg-black'
-            : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
-        }`}
-      >
-        {createTaskSubmitLabel}
-      </button>
-    </>
+  const createTaskProjectOptions = useMemo(() =>
+    activeProjects.map(p => ({ id: p.id, name: p.name })),
+    [activeProjects],
   )
 
-  const createTaskModalBody = (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <div className="text-sm font-medium text-neutral-700">{t('Execution')}</div>
-        <div className="inline-flex rounded-md border border-neutral-200 bg-neutral-50 p-1">
-          <button
-            type="button"
-            onClick={() => {
-              if (createStep !== 'idle') return
-              setNewTaskMode('SOLO')
-              setNewTaskTeamRunError(null)
-            }}
-            disabled={createStep !== 'idle'}
-            className={cn(
-              'rounded-md px-3 py-1.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-              newTaskMode === 'SOLO'
-                ? 'bg-white text-neutral-900 shadow-sm'
-                : 'text-neutral-500 hover:text-neutral-900',
-            )}
-          >
-            {t('Solo Agent')}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (createStep !== 'idle') return
-              setNewTaskMode('TEAM')
-              setNewTaskTeamRunError(null)
-            }}
-            disabled={createStep !== 'idle'}
-            className={cn(
-              'rounded-md px-3 py-1.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-              newTaskMode === 'TEAM'
-                ? 'bg-white text-neutral-900 shadow-sm'
-                : 'text-neutral-500 hover:text-neutral-900',
-            )}
-          >
-            {t('TeamRun')}
-          </button>
-        </div>
-      </div>
-
-      <div className="flex gap-3">
-        <div className="flex-1 min-w-0">
-          <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Project')}</label>
-          <Select
-            value={newTaskProjectId}
-            onChange={setNewTaskProjectId}
-            options={activeProjects.map(p => ({ value: p.id, label: p.name }))}
-            placeholder={t('Select project...')}
-            disabled={createStep !== 'idle'}
-          />
-        </div>
-        {newTaskMode === 'SOLO' ? (
-          <div className="flex-1 min-w-0">
-            <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Agent')}</label>
-            <Select
-              value={newTaskProviderId}
-              onChange={setNewTaskProviderId}
-              options={sortedProviders.map(({ provider, availability }) => ({
-                value: provider.id,
-                label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''),
-                disabled: availability.type === 'NOT_FOUND',
-              }))}
-              placeholder={isProvidersLoading ? t('Loading...') : t('Select provider...')}
-              disabled={createStep !== 'idle'}
-            />
-          </div>
-        ) : (
-          <div className="flex-1 min-w-0" />
-        )}
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Task Title')}</label>
-        <input
-          type="text"
-          value={newTaskTitle}
-          onChange={e => setNewTaskTitle(e.target.value)}
-          placeholder={t('e.g., Implement login flow')}
-          className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors"
-          disabled={createStep !== 'idle'}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
-          }}
-        />
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-neutral-700 mb-1.5">{t('Description')}</label>
-        <div
-          className={`relative border rounded-lg transition-colors ${
-            isDragOver ? 'border-neutral-400 bg-neutral-50' : 'border-neutral-200'
-          }`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          <textarea
-            rows={3}
-            value={newTaskDescription}
-            onChange={e => setNewTaskDescription(e.target.value)}
-            onPaste={handlePaste}
-            placeholder={t('Optional description...')}
-            className="w-full px-3 py-2 text-sm focus:outline-none bg-transparent resize-none"
-            disabled={createStep !== 'idle'}
-            onKeyDown={e => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) handleSubmitTask()
-            }}
-          />
-          {isDragOver && (
-            <div className="absolute inset-0 flex items-center justify-center bg-neutral-50/90 pointer-events-none">
-              <p className="text-sm text-neutral-600">{t('Drop files here')}</p>
-            </div>
-          )}
-        </div>
-        <div className="mt-2 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={createStep !== 'idle' || isUploading}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Paperclip size={14} />
-            {t('Attach files')}
-          </button>
-          <span className="text-xs text-neutral-400">
-            {t('or paste/drag files')}
-          </span>
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          onChange={handleFileInputChange}
-          className="hidden"
-        />
-        <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
-      </div>
-
-      {newTaskMode === 'TEAM' && (
-        <div className="space-y-3 border-t border-neutral-100 pt-4">
-          <TeamRunCreateForm
-            mode={newTaskTeamRunMode}
-            setMode={setNewTaskTeamRunMode}
-            selectedTemplateId={newTaskTeamTemplateId}
-            setSelectedTemplateId={setNewTaskTeamTemplateId}
-            selectedMemberPresetIds={newTaskMemberPresetIds}
-            setSelectedMemberPresetIds={setNewTaskMemberPresetIds}
-            disabled={createStep !== 'idle'}
-          />
-          {newTaskTeamRunError && (
-            <p className="text-xs text-red-500">{newTaskTeamRunError}</p>
-          )}
-        </div>
-      )}
-
-      {createTask.isError && (
-        <p className="text-xs text-red-500">
-          {createTask.error instanceof Error ? createTask.error.message : t('Failed to create task')}
-        </p>
-      )}
-    </div>
+  const createTaskProviderOptions = useMemo(() =>
+    sortedProviders.map(({ provider, availability }) => ({
+      id: provider.id,
+      name: provider.name,
+      available: availability.type !== 'NOT_FOUND',
+    })),
+    [sortedProviders],
   )
+
+  const defaultProjectId = useMemo(() => {
+    if (effectiveFilterProjectId && activeProjects.find(p => p.id === effectiveFilterProjectId)) return effectiveFilterProjectId
+    const lastProjectId = localStorage.getItem('lastSelectedProjectId')
+    if (lastProjectId && activeProjects.find(p => p.id === lastProjectId)) return lastProjectId
+    return activeProjects[0]?.id ?? ''
+  }, [activeProjects, effectiveFilterProjectId])
+
+  const defaultProviderId = useMemo(() => {
+    const lastProviderId = localStorage.getItem('lastSelectedProviderId')
+    if (lastProviderId && sortedProviders.find(p => p.provider.id === lastProviderId && p.availability.type !== 'NOT_FOUND')) return lastProviderId
+    const available = sortedProviders.find(p => p.availability.type !== 'NOT_FOUND')
+    return available?.provider.id ?? ''
+  }, [sortedProviders])
 
   const isMobile = useIsMobile()
+  const [mobileCreateOpen, setMobileCreateOpen] = useState(false)
+
+  const handleMobileCreateTask = useCallback(() => {
+    if (activeProjects.length === 0) {
+      toast.error(t('没有可用项目，请先创建或恢复项目'))
+      return
+    }
+    setMobileCreateOpen(true)
+  }, [activeProjects, t])
+
+  const handleMobileSubmitTask = useCallback(async (data: Parameters<typeof handleSubmitTask>[0]) => {
+    await handleSubmitTask(data)
+    setMobileCreateOpen(false)
+  }, [handleSubmitTask])
 
   // === Mobile: 任务列表 → 点击任务 → 全屏详情页 ===
   if (isMobile) {
+    // Mobile create view — fullscreen create input
+    if (mobileCreateOpen) {
+      return (
+        <div className="flex flex-col h-dvh bg-white overflow-hidden text-sm">
+          <header className="h-12 border-b border-neutral-200 flex items-center px-4 shrink-0">
+            <button
+              onClick={() => setMobileCreateOpen(false)}
+              className="text-sm text-neutral-600 active:text-neutral-900"
+            >
+              {t('Cancel')}
+            </button>
+          </header>
+          <div className="flex-1 flex flex-col items-center justify-center px-4">
+            <h1 className="text-xl font-semibold text-neutral-900 mb-1.5 tracking-tight">{t('欢迎使用 Agent Tower')}</h1>
+            <p className="text-[13px] text-neutral-400 mb-6">{t('描述任务，选择 Agent 或团队，即刻开始')}</p>
+            <CreateTaskInput
+              projects={createTaskProjectOptions}
+              providers={createTaskProviderOptions}
+              isProvidersLoading={isProvidersLoading}
+              onSubmit={handleMobileSubmitTask}
+              defaultProjectId={defaultProjectId}
+              defaultProviderId={defaultProviderId}
+              createStep={createStep}
+            />
+          </div>
+        </div>
+      )
+    }
+
     // Mobile task detail — 选中任务时全屏展示
     if (effectiveSelectedTaskId && taskDetailData) {
       return (
@@ -761,23 +516,16 @@ export function ProjectKanbanPage() {
               setFilterProjectId={setFilterProjectId}
               width="100%"
               onCreateProject={handleCreateProject}
-              onCreateTask={handleCreateTask}
+              onCreateTask={handleMobileCreateTask}
               activeTaskIds={activeTaskIds}
               onTaskStatusChange={handleTaskStatusChange}
             />
           )}
         </div>
-        <Suspense fallback={null}>
-          <CreateProjectModal
-            isOpen={isCreateProjectOpen}
-            onClose={handleCloseProjectModal}
-          />
-          <Modal isOpen={isCreateTaskOpen} onClose={handleCloseTaskModal} title={t('Create New Task')}
-            className={newTaskMode === 'TEAM' ? 'max-w-5xl' : undefined}
-            action={createTaskModalAction}>
-            {createTaskModalBody}
-          </Modal>
-        </Suspense>
+        <CreateProjectModal
+          isOpen={isCreateProjectOpen}
+          onClose={handleCloseProjectModal}
+        />
       </>
     )
   }
@@ -833,34 +581,42 @@ export function ProjectKanbanPage() {
           title={t('Drag to resize')}
         />
 
-        {/* 右侧: TaskDetail */}
-        <TaskDetail
-          task={taskDetailData}
-          onDeleteTask={taskDetailData?.projectArchivedAt ? undefined : handleDeleteTask}
-          isDeleting={deleteTask.isPending}
-          onTaskStatusChange={taskDetailData?.projectArchivedAt ? undefined : handleTaskStatusChange}
-        />
+        {/* 右侧: TaskDetail or Create Panel */}
+        {effectiveSelectedTaskId && taskDetailData ? (
+          <TaskDetail
+            task={taskDetailData}
+            onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
+            isDeleting={deleteTask.isPending}
+            onTaskStatusChange={taskDetailData.projectArchivedAt ? undefined : handleTaskStatusChange}
+          />
+        ) : effectiveSelectedTaskId && !taskDetailData ? (
+          <div className="flex-1 flex items-center justify-center bg-white min-w-0">
+            <span className="text-sm text-neutral-400">{t('Loading...')}</span>
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center bg-white min-w-0 px-8">
+            <div className="w-full max-w-3xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
+              <h1 className="text-2xl font-semibold text-neutral-900 mb-1.5 tracking-tight">{t('欢迎使用 Agent Tower')}</h1>
+              <p className="text-[13px] text-neutral-400 mb-8">{t('描述任务，选择 Agent 或团队，即刻开始')}</p>
+              <CreateTaskInput
+                projects={createTaskProjectOptions}
+                providers={createTaskProviderOptions}
+                isProvidersLoading={isProvidersLoading}
+                onSubmit={handleSubmitTask}
+                defaultProjectId={defaultProjectId}
+                defaultProviderId={defaultProviderId}
+                createStep={createStep}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* === Modals (懒加载) === */}
-      <Suspense fallback={null}>
-        {/* 创建项目 Modal */}
-        <CreateProjectModal
-          isOpen={isCreateProjectOpen}
-          onClose={handleCloseProjectModal}
-        />
-
-        {/* 创建任务 Modal */}
-        <Modal
-          isOpen={isCreateTaskOpen}
-          onClose={handleCloseTaskModal}
-          title={t('Create New Task')}
-          className={newTaskMode === 'TEAM' ? 'max-w-5xl' : undefined}
-          action={createTaskModalAction}
-        >
-          {createTaskModalBody}
-        </Modal>
-      </Suspense>
+      {/* === Modals === */}
+      <CreateProjectModal
+        isOpen={isCreateProjectOpen}
+        onClose={handleCloseProjectModal}
+      />
     </div>
   )
 }
