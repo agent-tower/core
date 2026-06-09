@@ -18,6 +18,10 @@ import { getCommitMessageService } from '../core/container.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
 import { NotFoundError } from '../errors.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
+import {
+  getWorkspaceWorkingDir,
+  isMainDirectoryWorkspace,
+} from './workspace-kind.js';
 
 const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
 
@@ -127,7 +131,7 @@ export class SessionManager {
       variant: session.variant,
       promptLength: session.prompt.length,
       promptPreview: session.prompt.substring(0, 200),
-      workingDir: session.workspace.worktreePath,
+      workingDir: getWorkspaceWorkingDir(session.workspace),
     });
 
     const agentType = session.agentType as AgentType;
@@ -140,7 +144,7 @@ export class SessionManager {
 
     console.log('[SessionManager] ✅ Executor found, spawning process...');
 
-    const workingDir = session.workspace.worktreePath;
+    const workingDir = getWorkspaceWorkingDir(session.workspace);
     const env = ExecutionEnv.default(workingDir);
 
     // 如果有 provider，注入 provider 的环境变量
@@ -197,7 +201,7 @@ export class SessionManager {
       variant: session.variant,
       promptLength: session.prompt.length,
       promptPreview: session.prompt.substring(0, 200),
-      workingDir: session.workspace.worktreePath,
+      workingDir: getWorkspaceWorkingDir(session.workspace),
     });
 
     const agentType = session.agentType as AgentType;
@@ -208,7 +212,7 @@ export class SessionManager {
       throw new Error(`Executor not found for agent type: ${session.agentType}${session.providerId ? ` (provider: ${session.providerId})` : ''}`);
     }
 
-    const workingDir = session.workspace.worktreePath;
+    const workingDir = getWorkspaceWorkingDir(session.workspace);
     const env = ExecutionEnv.default(workingDir);
 
     if (session.providerId) {
@@ -351,7 +355,7 @@ export class SessionManager {
       throw new Error(`Executor not found for agent type: ${session.agentType}${effectiveProviderId ? ` (provider: ${effectiveProviderId})` : ''}`);
     }
 
-    const workingDir = session.workspace.worktreePath;
+    const workingDir = getWorkspaceWorkingDir(session.workspace);
     const env = ExecutionEnv.default(workingDir);
 
     // 如果有 provider，注入 provider 的环境变量
@@ -637,7 +641,8 @@ export class SessionManager {
         where: { id: sessionId },
         include: { workspace: true },
       });
-      if (!session?.workspace?.worktreePath) return;
+      if (!session?.workspace || isMainDirectoryWorkspace(session.workspace)) return;
+      if (!session.workspace.worktreePath) return;
 
       const worktreePath = session.workspace.worktreePath;
 

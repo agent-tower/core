@@ -49,6 +49,8 @@ export const StartWorkspaceSessionInput = z.object({
   task_id: z.string().describe('The ID of the task to start a workspace session for'),
   prompt: z.string().min(1).describe('The prompt/instruction for the AI agent'),
   provider_id: z.string().describe('The provider ID to use for the AI agent session. Use list_providers to get available provider IDs.'),
+  mode: z.enum(['worktree', 'main_directory']).optional()
+    .describe("Workspace mode. Defaults to 'worktree'. Use 'main_directory' to run in the project's main directory."),
 });
 
 export const GetWorkspaceDiffInput = z.object({

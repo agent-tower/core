@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { WorkspaceStatus, type TeamRun, type Workspace } from '@agent-tower/shared'
+import { WorkspaceKind, WorkspaceStatus, type TeamRun, type Workspace } from '@agent-tower/shared'
 import {
   buildWorkspaceViews,
   canRunWorkspaceGitOperations,
@@ -13,6 +13,8 @@ function workspace(input: Partial<Workspace> & Pick<Workspace, 'id' | 'branchNam
     taskId: input.taskId ?? 'task-1',
     branchName: input.branchName,
     worktreePath: input.worktreePath ?? `/tmp/${input.id}`,
+    workspaceKind: input.workspaceKind ?? WorkspaceKind.WORKTREE,
+    workingDir: input.workingDir ?? input.worktreePath ?? `/tmp/${input.id}`,
     status: input.status ?? WorkspaceStatus.ACTIVE,
     parentWorkspaceId: input.parentWorkspaceId ?? null,
     ownerMemberId: input.ownerMemberId ?? null,
@@ -121,6 +123,13 @@ describe('team workspace view helpers', () => {
       ownerMemberId: 'member-1',
     })
     const extraRootWorkspace = workspace({ id: 'extra-root', branchName: 'at/extra-root' })
+    const mainDirectoryWorkspace = workspace({
+      id: 'main-directory',
+      branchName: '',
+      worktreePath: '',
+      workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+      workingDir: '/tmp/project',
+    })
     const hibernatedMainWorkspace = workspace({
       id: 'main-ws',
       branchName: 'at/team/main',
@@ -132,5 +141,6 @@ describe('team workspace view helpers', () => {
     expect(canRunWorkspaceGitOperations(extraRootWorkspace, teamRun)).toBe(false)
     expect(canRunWorkspaceGitOperations(hibernatedMainWorkspace, teamRun)).toBe(false)
     expect(canRunWorkspaceGitOperations(extraRootWorkspace, null)).toBe(true)
+    expect(canRunWorkspaceGitOperations(mainDirectoryWorkspace, null)).toBe(false)
   })
 })

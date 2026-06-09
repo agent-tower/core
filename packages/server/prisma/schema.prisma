@@ -227,8 +227,9 @@ model AgentInvocation {
   @@index([status])
 }
 
-// 工作空间 (对应一个 git worktree)
+// 工作空间
 // WorkspaceStatus: ACTIVE, MERGED, ABANDONED, HIBERNATED
+// WorkspaceKind: WORKTREE, MAIN_DIRECTORY
 model Workspace {
   id            String    @id @default(uuid())
   taskId        String
@@ -242,6 +243,8 @@ model Workspace {
   branchName    String
   baseBranch    String?
   worktreePath  String
+  workspaceKind String    @default("WORKTREE")
+  workingDir    String    @default("")
   status        String    @default("ACTIVE")
   commitMessage String?   // AI 生成的 commit message（合并时使用）
   previewTarget String?   // Preview 代理目标（仅允许 loopback 地址）
@@ -254,6 +257,8 @@ model Workspace {
   @@index([parentWorkspaceId])
   @@index([ownerMemberId])
   @@index([taskId, parentWorkspaceId])
+  @@index([workspaceKind])
+  @@index([workingDir])
   @@unique([parentWorkspaceId, ownerMemberId])
 }
 

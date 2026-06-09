@@ -1,4 +1,4 @@
-import { WorkspaceStatus, type TeamRun, type Workspace } from '@agent-tower/shared'
+import { WorkspaceKind, WorkspaceStatus, type TeamRun, type Workspace } from '@agent-tower/shared'
 
 export type WorkspaceViewKind = 'main' | 'child' | 'root'
 
@@ -19,6 +19,19 @@ function shortId(value?: string | null) {
 function workspaceTime(value?: string) {
   const parsed = value ? Date.parse(value) : 0
   return Number.isNaN(parsed) ? 0 : parsed
+}
+
+export function isMainDirectoryWorkspace(workspace?: Workspace | null) {
+  return workspace?.workspaceKind === WorkspaceKind.MAIN_DIRECTORY
+}
+
+export function getWorkspaceBranchLabel(workspace?: Workspace | null) {
+  if (!workspace) return '—'
+  return isMainDirectoryWorkspace(workspace) ? 'Project directory' : workspace.branchName
+}
+
+export function getWorkspaceWorkingDir(workspace?: Workspace | null) {
+  return workspace?.workingDir || workspace?.worktreePath || undefined
 }
 
 export function buildWorkspaceViews(
@@ -42,7 +55,9 @@ export function buildWorkspaceViews(
       const isMain = Boolean(mainWorkspaceId && workspace.id === mainWorkspaceId)
       const kind: WorkspaceViewKind = isMain ? 'main' : workspace.parentWorkspaceId ? 'child' : 'root'
       const ownerName = owner?.name ?? (workspace.ownerMemberId ? `Member ${shortId(workspace.ownerMemberId)}` : undefined)
-      const displayName = isMain
+      const displayName = isMainDirectoryWorkspace(workspace)
+        ? 'Project directory'
+        : isMain
         ? 'Main workspace'
         : kind === 'child'
           ? ownerName ? `${ownerName} workspace` : 'Child workspace'
@@ -54,7 +69,7 @@ export function buildWorkspaceViews(
         roleLabel: isMain ? 'Main' : kind === 'child' ? 'Child' : 'Root',
         displayName,
         ownerName,
-        parentBranchName: parent?.branchName,
+        parentBranchName: parent ? getWorkspaceBranchLabel(parent) : undefined,
         isMain,
       }
     })
@@ -94,6 +109,7 @@ export function canRunWorkspaceGitOperations(
   teamRun?: TeamRun | null,
 ) {
   if (!workspace || workspace.status !== WorkspaceStatus.ACTIVE) return false
+  if (isMainDirectoryWorkspace(workspace)) return false
   if (!teamRun) return true
   if (workspace.parentWorkspaceId) return true
   return Boolean(teamRun.mainWorkspaceId && workspace.id === teamRun.mainWorkspaceId)

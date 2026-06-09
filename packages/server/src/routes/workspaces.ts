@@ -5,6 +5,8 @@ import { WorkspaceService } from '../services/workspace.service.js';
 import { ServiceError, NotFoundError } from '../errors.js';
 import { GitError, MergeConflictError, RebaseInProgressError } from '../git/worktree.manager.js';
 import { parseSessionTokenUsage } from './sessions.js';
+import { WorkspaceKind } from '../types/index.js';
+import { getWorkspaceWorkingDir } from '../services/workspace-kind.js';
 
 /**
  * Parse tokenUsage on all sessions nested inside workspace(s).
@@ -43,6 +45,7 @@ function resolveEditorCommand(editorType?: string | null): string {
 
 const createWorkspaceSchema = z.object({
   branchName: z.string().min(1).optional(),
+  workspaceKind: z.nativeEnum(WorkspaceKind).optional(),
 });
 
 /**
@@ -115,7 +118,10 @@ export async function workspaceRoutes(app: FastifyInstance) {
       const body = createWorkspaceSchema.parse(request.body || {});
       const workspace = await workspaceService.create(
         request.params.taskId,
-        body.branchName
+        {
+          branchName: body.branchName,
+          workspaceKind: body.workspaceKind,
+        }
       );
       reply.code(201);
       return parseWorkspaceSessions(workspace);
@@ -212,13 +218,14 @@ export async function workspaceRoutes(app: FastifyInstance) {
         return errorResponse('Workspace not found', 'NOT_FOUND');
       }
 
-      if (!workspace.worktreePath) {
+      const workingDir = getWorkspaceWorkingDir(workspace);
+      if (!workingDir) {
         reply.code(400);
-        return errorResponse('Workspace has no worktree path', 'NO_WORKTREE_PATH');
+        return errorResponse('Workspace has no working directory', 'NO_WORKING_DIR');
       }
 
       const command = resolveEditorCommand(body.editorType);
-      spawn(command, [workspace.worktreePath], {
+      spawn(command, [workingDir], {
         detached: true,
         shell: process.platform === 'win32',
         stdio: 'ignore',

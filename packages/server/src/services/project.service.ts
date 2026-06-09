@@ -9,6 +9,7 @@ import {
   TaskStatus,
   SessionStatus,
   WorkspaceStatus,
+  WorkspaceKind,
 } from '../types/index.js';
 
 interface CreateProjectInput {
@@ -446,6 +447,7 @@ export class ProjectService {
       const uniqueWorktreePaths = Array.from(
         new Set(
           allWorkspaces
+            .filter((workspace) => workspace.workspaceKind === WorkspaceKind.WORKTREE)
             .map((workspace) => workspace.worktreePath)
             .filter((value): value is string => Boolean(value))
         )
@@ -461,7 +463,7 @@ export class ProjectService {
       if (allWorkspaces.length > 0) {
         await prisma.workspace.updateMany({
           where: { id: { in: allWorkspaces.map((workspace) => workspace.id) } },
-          data: { worktreePath: '' },
+          data: { worktreePath: '', workingDir: '' },
         });
       }
     }

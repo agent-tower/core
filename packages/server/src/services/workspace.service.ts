@@ -1,5 +1,5 @@
 import { prisma } from '../utils/index.js';
-import { WorkspaceStatus, TaskStatus, SessionStatus, SessionPurpose } from '../types/index.js';
+import { WorkspaceKind, WorkspaceStatus, TaskStatus, SessionStatus, SessionPurpose } from '../types/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
 import { execGit, MergeConflictError } from '../git/git-cli.js';
 import { NotFoundError, ServiceError } from '../errors.js';
@@ -16,6 +16,11 @@ import type { EventBus } from '../core/event-bus.js';
 import type { GitOperationStatus } from '@agent-tower/shared';
 import { ensureProjectIsMutable } from './project-guards.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
+import {
+  getWorkspaceWorkingDir,
+  isMainDirectoryWorkspace,
+  isWorktreeWorkspace,
+} from './workspace-kind.js';
 
 const DEFAULT_IDLE_THRESHOLD_HOURS = 24;
 const WORKSPACE_READY_RETRY_COUNT = 20;
@@ -35,6 +40,7 @@ export interface CreateWorkspaceOptions {
   parentWorkspaceId?: string | null;
   ownerMemberId?: string | null;
   reuseInactive?: boolean;
+  workspaceKind?: WorkspaceKind;
 }
 
 export interface MergeWorkspaceOptions {
@@ -54,7 +60,9 @@ type MergeWorkspaceRecord = Prisma.WorkspaceGetPayload<{
   include: { task: { include: { project: true; teamRun: true } } };
 }>;
 
-function normalizeCreateOptions(input?: string | CreateWorkspaceOptions): Required<CreateWorkspaceOptions> {
+type NormalizedCreateWorkspaceOptions = Required<CreateWorkspaceOptions>;
+
+function normalizeCreateOptions(input?: string | CreateWorkspaceOptions): NormalizedCreateWorkspaceOptions {
   if (typeof input === 'string') {
     return {
       branchName: input,
@@ -63,6 +71,7 @@ function normalizeCreateOptions(input?: string | CreateWorkspaceOptions): Requir
       parentWorkspaceId: null,
       ownerMemberId: null,
       reuseInactive: true,
+      workspaceKind: WorkspaceKind.WORKTREE,
     };
   }
 
@@ -73,6 +82,7 @@ function normalizeCreateOptions(input?: string | CreateWorkspaceOptions): Requir
     parentWorkspaceId: input?.parentWorkspaceId ?? null,
     ownerMemberId: input?.ownerMemberId ?? null,
     reuseInactive: input?.reuseInactive ?? true,
+    workspaceKind: input?.workspaceKind ?? WorkspaceKind.WORKTREE,
   };
 }
 
@@ -83,7 +93,7 @@ function isUniqueConstraintError(error: unknown): boolean {
     && (error as { code?: string }).code === 'P2002';
 }
 
-function branchFromOptions(workspaceId: string, options: Required<CreateWorkspaceOptions>): string {
+function branchFromOptions(workspaceId: string, options: NormalizedCreateWorkspaceOptions): string {
   if (options.branchName) {
     return options.branchName;
   }
@@ -101,6 +111,19 @@ function teamRunBranchPrefix(teamRunId: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function mainDirectoryGitStatus(): GitOperationStatus {
+  return {
+    operation: 'idle',
+    conflictedFiles: [],
+    conflictOp: null,
+    ahead: 0,
+    behind: 0,
+    hasUncommittedChanges: false,
+    uncommittedCount: 0,
+    untrackedCount: 0,
+  };
 }
 
 export class WorkspaceService {
@@ -162,7 +185,7 @@ export class WorkspaceService {
     const options = normalizeCreateOptions(branchNameOrOptions);
     const task = await prisma.task.findUnique({
       where: { id: taskId },
-      include: { project: true },
+      include: { project: true, teamRun: { select: { id: true } } },
     });
 
     if (!task) {
@@ -170,6 +193,10 @@ export class WorkspaceService {
     }
     ensureTaskNotDeleted(task);
     ensureProjectIsMutable(task.project, 'create workspaces');
+
+    if (options.workspaceKind === WorkspaceKind.MAIN_DIRECTORY) {
+      return this.createMainDirectoryWorkspace(taskId, task, options);
+    }
 
     const worktreeManager = new WorktreeManager(task.project.repoPath);
 
@@ -180,6 +207,7 @@ export class WorkspaceService {
           taskId,
           parentWorkspaceId: options.parentWorkspaceId,
           ownerMemberId: options.ownerMemberId,
+          workspaceKind: WorkspaceKind.WORKTREE,
           status: { in: [WorkspaceStatus.MERGED, WorkspaceStatus.HIBERNATED] },
         },
         orderBy: { updatedAt: 'desc' },
@@ -201,6 +229,8 @@ export class WorkspaceService {
         ownerMemberId: options.ownerMemberId,
         branchName: '', // 占位，稍后更新
         worktreePath: '', // 占位，稍后更新
+        workspaceKind: WorkspaceKind.WORKTREE,
+        workingDir: '',
         status: WorkspaceStatus.ACTIVE,
       },
     });
@@ -230,7 +260,13 @@ export class WorkspaceService {
 
       const updateResult = await prisma.workspace.updateMany({
         where: { id: workspace.id, task: { deletedAt: null } },
-        data: { branchName: branch, baseBranch, worktreePath },
+        data: {
+          branchName: branch,
+          baseBranch,
+          worktreePath,
+          workingDir: worktreePath,
+          workspaceKind: WorkspaceKind.WORKTREE,
+        },
       });
       if (updateResult.count === 0) {
         await this.cleanupCreatedWorktree(worktreeManager, worktreePath, branch, [
@@ -257,6 +293,56 @@ export class WorkspaceService {
       });
       throw err;
     }
+  }
+
+  private async createMainDirectoryWorkspace(
+    taskId: string,
+    task: Prisma.TaskGetPayload<{ include: { project: true; teamRun: { select: { id: true } } } }>,
+    options: NormalizedCreateWorkspaceOptions,
+  ): Promise<WorkspaceWithVisibleSessions> {
+    if (task.teamRun) {
+      throw new ServiceError(
+        'Main-directory workspaces are not available for TeamRun tasks',
+        'MAIN_DIRECTORY_TEAM_RUN_UNSUPPORTED',
+        400,
+      );
+    }
+
+    if (
+      options.branchName
+      || options.branchNamePrefix
+      || options.startPoint
+      || options.parentWorkspaceId
+      || options.ownerMemberId
+    ) {
+      throw new ServiceError(
+        'Main-directory workspaces cannot use branch, parent, owner, or startPoint options',
+        'MAIN_DIRECTORY_WORKSPACE_OPTIONS_UNSUPPORTED',
+        400,
+      );
+    }
+
+    const currentBranch = await execGit(task.project.repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
+      .then((value) => {
+        const branch = value.trim();
+        return branch && branch !== 'HEAD' ? branch : null;
+      })
+      .catch(() => null);
+
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId,
+        branchName: '',
+        baseBranch: currentBranch ?? task.project.mainBranch,
+        worktreePath: '',
+        workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+        workingDir: task.project.repoPath,
+        status: WorkspaceStatus.ACTIVE,
+      },
+      include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
+    });
+
+    return workspace;
   }
 
   async getOrCreateMainWorkspace(teamRunId: string) {
@@ -317,6 +403,7 @@ export class WorkspaceService {
       && teamRun.mainWorkspace.taskId === teamRun.taskId
       && teamRun.mainWorkspace.parentWorkspaceId == null
       && teamRun.mainWorkspace.ownerMemberId == null
+      && isWorktreeWorkspace(teamRun.mainWorkspace)
       && teamRun.mainWorkspace.status === WorkspaceStatus.ACTIVE
     ) {
       return this.ensureActiveWorkspaceWorktree(teamRun.mainWorkspace);
@@ -327,6 +414,7 @@ export class WorkspaceService {
         taskId: teamRun.taskId,
         parentWorkspaceId: null,
         ownerMemberId: null,
+        workspaceKind: WorkspaceKind.WORKTREE,
         status: WorkspaceStatus.ACTIVE,
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -411,12 +499,15 @@ export class WorkspaceService {
       where: {
         parentWorkspaceId: mainWorkspaceId,
         ownerMemberId: memberId,
+        workspaceKind: WorkspaceKind.WORKTREE,
       },
       include: { task: { include: { project: true } } },
     });
   }
 
   private async activateDedicatedWorkspace(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
+    this.assertWorktreeWorkspace(workspace);
+
     if (!workspace.branchName) {
       workspace = await this.waitForWorkspaceReady(workspace);
     }
@@ -464,6 +555,8 @@ export class WorkspaceService {
 
   private async ensureActiveWorkspaceWorktree(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
     ensureTaskNotDeleted(workspace.task);
+    this.assertWorktreeWorkspace(workspace);
+
     if (!workspace.branchName) {
       workspace = await this.waitForWorkspaceReady(workspace);
     }
@@ -486,6 +579,8 @@ export class WorkspaceService {
 
   private async restoreInactiveWorkspace(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
     ensureTaskNotDeleted(workspace.task);
+    this.assertWorktreeWorkspace(workspace);
+
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     const worktreePath = await worktreeManager.ensureWorktreeExists(workspace.branchName);
 
@@ -494,6 +589,7 @@ export class WorkspaceService {
       data: {
         status: WorkspaceStatus.ACTIVE,
         worktreePath,
+        workingDir: worktreePath,
         hibernatedAt: null,
       },
     });
@@ -547,15 +643,17 @@ export class WorkspaceService {
       }
     }
 
-    // 清理 worktree
-    try {
-      const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-      await worktreeManager.remove(workspace.worktreePath);
-    } catch (err) {
-      // worktree 清理失败时记录警告但不阻断删除
-      console.warn(
-        `[WorkspaceService] Failed to remove worktree for workspace ${id}: ${err instanceof Error ? err.message : err}`
-      );
+    if (isWorktreeWorkspace(workspace) && workspace.worktreePath) {
+      // 清理 worktree
+      try {
+        const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
+        await worktreeManager.remove(workspace.worktreePath);
+      } catch (err) {
+        // worktree 清理失败时记录警告但不阻断删除
+        console.warn(
+          `[WorkspaceService] Failed to remove worktree for workspace ${id}: ${err instanceof Error ? err.message : err}`
+        );
+      }
     }
 
     // 删除数据库记录（级联删除 sessions）
@@ -574,7 +672,8 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
-    ensureProjectIsMutable(workspace.task.project, 'rebase workspaces');
+    ensureProjectIsMutable(workspace.task.project, 'read workspace diff');
+    this.assertWorktreeWorkspace(workspace);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     return worktreeManager.getDiff(
@@ -600,6 +699,7 @@ export class WorkspaceService {
       throw new NotFoundError('Workspace', id);
     }
     ensureProjectIsMutable(workspace.task.project, 'abort workspace git operations');
+    this.assertWorktreeWorkspace(workspace);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     await worktreeManager.rebase(
@@ -619,6 +719,9 @@ export class WorkspaceService {
 
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
+    }
+    if (isMainDirectoryWorkspace(workspace)) {
+      return mainDirectoryGitStatus();
     }
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
@@ -640,6 +743,7 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
+    this.assertWorktreeWorkspace(workspace);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
     await worktreeManager.abortOperation(workspace.worktreePath);
@@ -662,6 +766,7 @@ export class WorkspaceService {
       throw new NotFoundError('Workspace', id);
     }
     ensureProjectIsMutable(workspace.task.project, 'merge workspaces');
+    this.assertWorktreeWorkspace(workspace);
 
     return this.withProjectMergeLock(
       workspace.task.projectId,
@@ -687,6 +792,8 @@ export class WorkspaceService {
   }
 
   private async mergeChildIntoParent(workspace: MergeWorkspaceRecord, commitMessage?: string): Promise<string> {
+    this.assertWorktreeWorkspace(workspace);
+
     const parentWorkspace = await prisma.workspace.findUnique({
       where: { id: workspace.parentWorkspaceId ?? '' },
       include: { task: { include: { project: true } } },
@@ -708,6 +815,7 @@ export class WorkspaceService {
         409
       );
     }
+    this.assertWorktreeWorkspace(parentWorkspace);
 
     await this.assertNoActiveWriteSessions(parentWorkspace.id);
 
@@ -740,6 +848,8 @@ export class WorkspaceService {
   }
 
   private async mergeRootWorkspaceToMain(workspace: MergeWorkspaceRecord, commitMessage?: string): Promise<string> {
+    this.assertWorktreeWorkspace(workspace);
+
     await this.assertTeamRunFinalMergeAllowed(workspace);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
@@ -918,6 +1028,7 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundError('Workspace', id);
     }
+    this.assertWorktreeWorkspace(workspace);
 
     if (workspace.status !== WorkspaceStatus.ACTIVE) {
       throw new ServiceError(
@@ -960,6 +1071,7 @@ export class WorkspaceService {
       data: {
         status: WorkspaceStatus.HIBERNATED,
         worktreePath: '',
+        workingDir: '',
         hibernatedAt: new Date(),
       },
     });
@@ -986,6 +1098,7 @@ export class WorkspaceService {
       throw new NotFoundError('Workspace', id);
     }
     ensureTaskNotDeleted(workspace.task);
+    this.assertWorktreeWorkspace(workspace);
 
     if (workspace.status !== WorkspaceStatus.HIBERNATED) {
       throw new ServiceError(
@@ -1003,6 +1116,7 @@ export class WorkspaceService {
       data: {
         status: WorkspaceStatus.ACTIVE,
         worktreePath,
+        workingDir: worktreePath,
         hibernatedAt: null,
       },
     });
@@ -1077,6 +1191,7 @@ export class WorkspaceService {
     const candidates = await prisma.workspace.findMany({
       where: {
         status: WorkspaceStatus.ACTIVE,
+        workspaceKind: WorkspaceKind.WORKTREE,
         worktreePath: { not: '' },
         task: {
           status: { notIn: [TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW] },
@@ -1151,6 +1266,12 @@ export class WorkspaceService {
 
     for (const workspace of workspaces) {
       try {
+        if (isMainDirectoryWorkspace(workspace)) {
+          await prisma.workspace.delete({ where: { id: workspace.id } });
+          cleaned++;
+          continue;
+        }
+
         const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
 
         // 清理残留 worktree（如果还存在）
@@ -1192,6 +1313,15 @@ export class WorkspaceService {
   }
 
   // ── Startup Prune ────────────────────────────────────────────────────────────
+
+  private assertWorktreeWorkspace(workspace: { workspaceKind?: string | null }): void {
+    if (isWorktreeWorkspace(workspace)) return;
+    throw new ServiceError(
+      'Workspace git lifecycle operations are unavailable for main-directory workspaces',
+      'WORKSPACE_GIT_UNAVAILABLE',
+      400,
+    );
+  }
 
   /**
    * 复制项目配置的文件到 worktree

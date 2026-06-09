@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { PrismaClient } from '@prisma/client';
 import type { SessionManager } from '../session-manager.js';
 import type { TaskCleanupSnapshot } from '../task-cleanup.service.js';
-import { AgentType } from '../../types/index.js';
+import { AgentType, WorkspaceKind } from '../../types/index.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-task-service-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -477,6 +477,8 @@ describe('TaskService', () => {
       workspaces: [{
         id: workspace.id,
         worktreePath: workspace.worktreePath,
+        workingDir: workspace.worktreePath,
+        workspaceKind: workspace.workspaceKind,
         branchName: workspace.branchName,
         baseBranch: workspace.baseBranch,
         sessions: [{ id: runningSession.id }],
@@ -505,6 +507,69 @@ describe('TaskService', () => {
       attempts: 1,
       lastError: null,
     });
+  });
+
+  it('processes main-directory cleanup jobs without deleting worktrees or branches', async () => {
+    const stopSessionMock = vi.fn();
+    const cleanupService = new TaskCleanupService({ stop: stopSessionMock } as unknown as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Main directory cleanup project',
+        repoPath: testDir,
+        mainBranch: 'main',
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Cleanup main directory resources',
+        projectId: project.id,
+        deletedAt: new Date(),
+      },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: '',
+        baseBranch: 'main',
+        worktreePath: '',
+        workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+        workingDir: project.repoPath,
+        status: 'ACTIVE',
+      },
+    });
+    const payload: TaskCleanupSnapshot = {
+      taskId: task.id,
+      projectId: project.id,
+      project: {
+        repoPath: project.repoPath,
+        mainBranch: project.mainBranch,
+      },
+      workspaces: [{
+        id: workspace.id,
+        worktreePath: workspace.worktreePath,
+        workingDir: workspace.workingDir,
+        workspaceKind: workspace.workspaceKind,
+        branchName: workspace.branchName,
+        baseBranch: workspace.baseBranch,
+        sessions: [],
+      }],
+    };
+    await prisma.taskCleanupJob.create({
+      data: {
+        taskId: task.id,
+        projectId: project.id,
+        payload: JSON.stringify(payload),
+      },
+    });
+
+    await expect(cleanupService.processDueJobs()).resolves.toBe(1);
+
+    expect(stopSessionMock).not.toHaveBeenCalled();
+    expect(removeWorktreeMock).not.toHaveBeenCalled();
+    expect(deleteBranchIfSafeMock).not.toHaveBeenCalled();
+    expect(pruneWorktreesMock).not.toHaveBeenCalled();
+    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toBeNull();
+    await expect(prisma.workspace.count({ where: { taskId: task.id } })).resolves.toBe(0);
   });
 
   it('records cleanup failures and schedules retry', async () => {
@@ -541,6 +606,8 @@ describe('TaskService', () => {
       workspaces: [{
         id: workspace.id,
         worktreePath: workspace.worktreePath,
+        workingDir: workspace.worktreePath,
+        workspaceKind: workspace.workspaceKind,
         branchName: workspace.branchName,
         baseBranch: workspace.baseBranch,
         sessions: [],

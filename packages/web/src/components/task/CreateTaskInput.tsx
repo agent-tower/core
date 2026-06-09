@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { ArrowUp, FolderOpen, Bot, Paperclip, Users, Loader2, ChevronDown, Check } from 'lucide-react'
-import type { TeamRunMode } from '@agent-tower/shared'
+import { ArrowUp, FolderOpen, Bot, Paperclip, Users, Loader2, ChevronDown, Check, GitBranch } from 'lucide-react'
+import { WorkspaceKind, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useAttachments } from '@/hooks/use-attachments'
@@ -9,6 +9,7 @@ import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
+type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 
 interface ProjectOption {
   id: string
@@ -32,6 +33,7 @@ export interface CreateTaskInputProps {
     projectId: string
     providerId: string
     mode: CreateTaskMode
+    workspaceMode: WorkspaceMode
     teamRunMode: TeamRunMode
     teamTemplateId: string | null
     memberPresetIds: string[]
@@ -65,6 +67,7 @@ export function CreateTaskInput({
   const [projectId, setProjectId] = useState(defaultProjectId)
   const [providerId, setProviderId] = useState(defaultProviderId)
   const [mode, setMode] = useState<CreateTaskMode>('SOLO')
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(WorkspaceKind.WORKTREE)
   const [teamRunMode, setTeamRunMode] = useState<TeamRunMode>('AUTO')
   const [teamTemplateId, setTeamTemplateId] = useState<string | null>(null)
   const [memberPresetIds, setMemberPresetIds] = useState<string[]>([])
@@ -72,9 +75,11 @@ export function CreateTaskInput({
 
   const [showProjectMenu, setShowProjectMenu] = useState(false)
   const [showProviderMenu, setShowProviderMenu] = useState(false)
+  const [showWorkspaceModeMenu, setShowWorkspaceModeMenu] = useState(false)
 
   const projectMenuRef = useRef<HTMLDivElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
+  const workspaceModeMenuRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -105,8 +110,20 @@ export function CreateTaskInput({
     return () => document.removeEventListener('mousedown', handler)
   }, [showProviderMenu])
 
+  useEffect(() => {
+    if (!showWorkspaceModeMenu) return
+    const handler = (e: MouseEvent) => {
+      if (workspaceModeMenuRef.current && !workspaceModeMenuRef.current.contains(e.target as Node)) {
+        setShowWorkspaceModeMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showWorkspaceModeMenu])
+
   const selectedProject = useMemo(() => projects.find(p => p.id === projectId), [projects, projectId])
   const selectedProvider = useMemo(() => providers.find(p => p.id === providerId), [providers, providerId])
+  const selectedWorkspaceModeLabel = workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? t('本地模式') : t('工作树模式')
 
   const isSubmitting = createStep !== 'idle'
   const hasTeamMembers = !!teamTemplateId || memberPresetIds.length > 0
@@ -122,6 +139,7 @@ export function CreateTaskInput({
         projectId,
         providerId,
         mode,
+        workspaceMode: mode === 'SOLO' ? workspaceMode : WorkspaceKind.WORKTREE,
         teamRunMode,
         teamTemplateId,
         memberPresetIds,
@@ -132,7 +150,7 @@ export function CreateTaskInput({
     } catch {
       // Complete failure — preserve input for retry
     }
-  }, [canSubmit, title, projectId, providerId, mode, teamRunMode, teamTemplateId, memberPresetIds, onSubmit, buildMarkdownLinks, clearAttachments])
+  }, [canSubmit, title, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, onSubmit, buildMarkdownLinks, clearAttachments])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
@@ -364,6 +382,51 @@ export function CreateTaskInput({
           </div>
         )}
 
+        {/* Workspace mode selector (Solo mode only) */}
+        {mode === 'SOLO' && (
+          <div className="relative" ref={workspaceModeMenuRef}>
+            <button
+              type="button"
+              onClick={() => { if (!isSubmitting) setShowWorkspaceModeMenu(v => !v) }}
+              disabled={isSubmitting}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                'hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed',
+                'text-neutral-700',
+              )}
+            >
+              <GitBranch size={14} />
+              <span className="max-w-[96px] truncate">{selectedWorkspaceModeLabel}</span>
+              <ChevronDown size={12} className={cn('transition-transform', showWorkspaceModeMenu && 'rotate-180')} />
+            </button>
+
+            {showWorkspaceModeMenu && (
+              <div className="absolute top-full left-0 mt-1 w-40 bg-white border border-neutral-200 rounded-lg shadow-lg shadow-neutral-200/50 py-1 z-50">
+                <button
+                  type="button"
+                  onClick={() => { setWorkspaceMode(WorkspaceKind.WORKTREE); setShowWorkspaceModeMenu(false) }}
+                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-neutral-50 transition-colors"
+                >
+                  <Check size={14} className={cn('mr-2 shrink-0', workspaceMode === WorkspaceKind.WORKTREE ? 'opacity-100' : 'opacity-0')} />
+                  <span className={cn('truncate', workspaceMode === WorkspaceKind.WORKTREE ? 'text-neutral-900 font-medium' : 'text-neutral-600')}>
+                    {t('工作树模式')}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY); setShowWorkspaceModeMenu(false) }}
+                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-neutral-50 transition-colors"
+                >
+                  <Check size={14} className={cn('mr-2 shrink-0', workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'opacity-100' : 'opacity-0')} />
+                  <span className={cn('truncate', workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'text-neutral-900 font-medium' : 'text-neutral-600')}>
+                    {t('本地模式')}
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Team mode toggle — tab trigger connected to panel below */}
         <button
           type="button"
@@ -371,8 +434,13 @@ export function CreateTaskInput({
             if (isSubmitting) return
             const next = mode === 'SOLO' ? 'TEAM' : 'SOLO'
             setMode(next)
-            if (next === 'TEAM') setShowTeamConfig(true)
-            else setShowTeamConfig(false)
+            setShowWorkspaceModeMenu(false)
+            if (next === 'TEAM') {
+              setWorkspaceMode(WorkspaceKind.WORKTREE)
+              setShowTeamConfig(true)
+            } else {
+              setShowTeamConfig(false)
+            }
           }}
           disabled={isSubmitting}
           className={cn(
@@ -388,6 +456,14 @@ export function CreateTaskInput({
           <span>{t('团队协作')}</span>
         </button>
       </div>
+
+      {mode === 'SOLO' && workspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
+        <div className="mt-2 px-1">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800">
+            {t('Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。')}
+          </div>
+        </div>
+      )}
 
       {/* TeamRun configuration panel */}
       {mode === 'TEAM' && showTeamConfig && (

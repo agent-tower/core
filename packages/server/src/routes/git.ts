@@ -41,7 +41,12 @@ type ChangeEntry = { status: string; path: string };
 
 async function resolveBaseBranch(workingDir: string): Promise<string | null> {
   const workspace = await prisma.workspace.findFirst({
-    where: { worktreePath: workingDir },
+    where: {
+      OR: [
+        { workingDir },
+        { worktreePath: workingDir },
+      ],
+    },
     include: { task: { include: { project: true } } },
     orderBy: { updatedAt: 'desc' },
   });

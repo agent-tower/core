@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Workspace, GitOperationStatus } from '@agent-tower/shared'
+import type { Workspace, GitOperationStatus, WorkspaceKind } from '@agent-tower/shared'
 import { apiClient } from '../lib/api-client'
 import { queryKeys } from './query-keys'
 
@@ -39,7 +39,7 @@ export function useCreateWorkspace(taskId: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (data: { branchName?: string }) =>
+    mutationFn: (data: { branchName?: string; workspaceKind?: WorkspaceKind }) =>
       apiClient.post<Workspace>(`/tasks/${taskId}/workspaces`, data),
     onSuccess: () => {
       // 创建 workspace 会同时影响 task 状态，所以两者都需要 invalidate

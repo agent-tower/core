@@ -13,6 +13,7 @@ import { getEventBus, getSessionManager } from '../core/container.js';
 import { getProviderById } from '../executors/providers.js';
 import type { NormalizedConversation } from '../output/index.js';
 import { sessionMsgStoreManager } from '../output/index.js';
+import { isMainDirectoryWorkspace } from './workspace-kind.js';
 
 /** diff 最大字符数，超出则截断并附加 stat 摘要 */
 const MAX_DIFF_CHARS = 8000;
@@ -63,6 +64,7 @@ export class CommitMessageService {
     });
 
     if (!workspace || workspace.status !== WorkspaceStatus.ACTIVE) return;
+    if (isMainDirectoryWorkspace(workspace)) return;
     if (!workspace.worktreePath) return;
 
     const lastSession = workspace.sessions[0];

@@ -22,6 +22,14 @@ export enum WorkspaceStatus {
   HIBERNATED = 'HIBERNATED',
 }
 
+/** 工作空间存储模式 */
+export enum WorkspaceKind {
+  WORKTREE = 'WORKTREE',
+  MAIN_DIRECTORY = 'MAIN_DIRECTORY',
+}
+
+export type WorkspaceStorageMode = WorkspaceKind
+
 /** AI 代理类型 */
 export enum AgentType {
   CLAUDE_CODE = 'CLAUDE_CODE',
@@ -279,6 +287,10 @@ export interface Workspace {
   baseBranch?: string | null
   /** worktree 路径 (对应 Prisma worktreePath) */
   worktreePath: string
+  /** Workspace 存储模式 */
+  workspaceKind: WorkspaceKind
+  /** Agent/Editor/Terminal 使用的实际工作目录 */
+  workingDir: string
   status: WorkspaceStatus
   /** AI 生成的 commit message（合并时使用） */
   commitMessage?: string | null

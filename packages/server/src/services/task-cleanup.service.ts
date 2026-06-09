@@ -1,6 +1,7 @@
 import { prisma } from '../utils/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
 import type { SessionManager } from './session-manager.js';
+import { isWorktreeWorkspace } from './workspace-kind.js';
 
 export const TaskCleanupJobStatus = {
   PENDING: 'PENDING',
@@ -16,6 +17,8 @@ interface TaskCleanupSessionSnapshot {
 interface TaskCleanupWorkspaceSnapshot {
   id: string;
   worktreePath: string;
+  workingDir: string;
+  workspaceKind: string;
   branchName: string;
   baseBranch: string | null;
   sessions: TaskCleanupSessionSnapshot[];
@@ -202,6 +205,7 @@ export class TaskCleanupService {
     }
 
     for (const workspace of snapshot.workspaces) {
+      if (!isWorktreeWorkspace(workspace)) continue;
       if (!workspace.worktreePath) continue;
       const result = await worktreeManager.remove(workspace.worktreePath);
       if (result.status === 'unregistered') {
@@ -210,6 +214,7 @@ export class TaskCleanupService {
     }
 
     for (const workspace of snapshot.workspaces) {
+      if (!isWorktreeWorkspace(workspace)) continue;
       const result = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
         protectedBranches: [snapshot.project.mainBranch, workspace.baseBranch],
       });
@@ -221,7 +226,9 @@ export class TaskCleanupService {
       }
     }
 
-    await worktreeManager.prune();
+    if (snapshot.workspaces.some((workspace) => isWorktreeWorkspace(workspace))) {
+      await worktreeManager.prune();
+    }
   }
 
   private async recordFailure(jobId: string, attempts: number, message: string): Promise<void> {

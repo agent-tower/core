@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { TeamLockService } from '../team-lock.service.js';
+import { WorkspaceKind } from '../../types/index.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-workspace-service-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -197,6 +198,50 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
+  it('creates a main-directory workspace without creating a git worktree', async () => {
+    const { project, task } = await createTask('main directory workspace task');
+
+    const workspace = await service.create(task.id, {
+      workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+    });
+
+    expect(workspace).toMatchObject({
+      taskId: task.id,
+      workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+      workingDir: project.repoPath,
+      worktreePath: '',
+      branchName: '',
+      status: 'ACTIVE',
+    });
+    expect(createWorktreeMock).not.toHaveBeenCalled();
+    expect(ensureWorktreeExistsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects worktree lifecycle git operations for main-directory workspaces', async () => {
+    const { task } = await createTask('main directory git operations task');
+    const workspace = await service.create(task.id, {
+      workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+    });
+
+    await expect(service.getDiff(workspace.id)).rejects.toMatchObject({
+      code: 'WORKSPACE_GIT_UNAVAILABLE',
+    });
+    await expect(service.merge(workspace.id)).rejects.toMatchObject({
+      code: 'WORKSPACE_GIT_UNAVAILABLE',
+    });
+    await expect(service.rebase(workspace.id)).rejects.toMatchObject({
+      code: 'WORKSPACE_GIT_UNAVAILABLE',
+    });
+
+    expect(await service.getGitStatus(workspace.id)).toMatchObject({
+      operation: 'idle',
+      conflictedFiles: [],
+      ahead: 0,
+      behind: 0,
+      hasUncommittedChanges: false,
+    });
+  });
+
   it('creates and binds a main workspace without reusing child or inactive task workspaces', async () => {
     const { task, teamRun, member } = await createTeamRunWithMember();
     const inactiveRoot = await prisma.workspace.create({
@@ -350,6 +395,28 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(workspace.worktreePath).toBe(mockRestoredWorktreePath('dedicated-child'));
     expect(ensureWorktreeExistsMock).toHaveBeenCalledWith('dedicated-child');
     expect(createWorktreeMock).not.toHaveBeenCalledWith(expect.stringContaining('member-'));
+  });
+
+  it('clears workingDir on hibernate and restores it on reactivate', async () => {
+    const { task } = await createTask('hibernate working dir sync task');
+    const workspace = await service.create(task.id, { branchName: 'hibernate-sync' });
+
+    expect(workspace.worktreePath).toBe(mockCreatedWorktreePath('hibernate-sync'));
+    expect(workspace.workingDir).toBe(workspace.worktreePath);
+
+    await service.hibernate(workspace.id);
+
+    const hibernated = await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } });
+    expect(hibernated.status).toBe('HIBERNATED');
+    expect(hibernated.worktreePath).toBe('');
+    expect(hibernated.workingDir).toBe('');
+
+    const reactivated = await service.reactivate(workspace.id);
+    const restoredPath = mockRestoredWorktreePath('hibernate-sync');
+
+    expect(reactivated.status).toBe('ACTIVE');
+    expect(reactivated.worktreePath).toBe(restoredPath);
+    expect(reactivated.workingDir).toBe(restoredPath);
   });
 
   it('cleans up a worktree when the task is deleted during workspace creation', async () => {

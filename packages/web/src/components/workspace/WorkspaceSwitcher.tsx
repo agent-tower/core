@@ -3,7 +3,7 @@ import { Check, ChevronDown, GitBranch, Layers3 } from 'lucide-react'
 import { WorkspaceStatus, type TeamRun, type Workspace } from '@agent-tower/shared'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
-import { buildWorkspaceViews } from './team-workspace-view'
+import { buildWorkspaceViews, getWorkspaceBranchLabel } from './team-workspace-view'
 
 interface WorkspaceSwitcherProps {
   workspaces?: Workspace[]
@@ -89,7 +89,7 @@ export function WorkspaceSwitcher({
           {t(selected.roleLabel)}
         </span>
         <span className="min-w-0 truncate font-medium text-neutral-900">{t(selected.displayName)}</span>
-        <span className="min-w-0 truncate font-mono text-[11px] text-neutral-500">{shortBranch(selected.workspace.branchName)}</span>
+        <span className="min-w-0 truncate font-mono text-[11px] text-neutral-500">{shortBranch(getWorkspaceBranchLabel(selected.workspace))}</span>
         <ChevronDown size={13} className={cn('shrink-0 text-neutral-400 transition-transform', open && 'rotate-180')} />
       </button>
 
@@ -123,7 +123,7 @@ export function WorkspaceSwitcher({
                       {view.workspace.status}
                     </span>
                   </div>
-                  <div className="mt-1 truncate font-mono text-[11px] text-neutral-500">{view.workspace.branchName}</div>
+                  <div className="mt-1 truncate font-mono text-[11px] text-neutral-500">{getWorkspaceBranchLabel(view.workspace)}</div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-neutral-400">
                     {view.ownerName && <span>{t('Owner')}: {view.ownerName}</span>}
                     {view.parentBranchName && <span>{t('Parent')}: {view.parentBranchName}</span>}

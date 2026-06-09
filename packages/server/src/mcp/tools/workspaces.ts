@@ -17,7 +17,9 @@ export function registerWorkspaceTools(server: McpServer, client: AgentTowerClie
     async (params) => {
       try {
         // 1. 创建工作空间
-        const workspace = await client.createWorkspace(params.task_id);
+        const workspace = await client.createWorkspace(params.task_id, {
+          workspaceKind: params.mode === 'main_directory' ? 'MAIN_DIRECTORY' : 'WORKTREE',
+        });
         // 2. 创建会话
         const session = await client.createSession(
           workspace.id,
@@ -33,6 +35,7 @@ export function registerWorkspaceTools(server: McpServer, client: AgentTowerClie
               task_id: params.task_id,
               workspace_id: workspace.id,
               session_id: session.id,
+              mode: params.mode ?? 'worktree',
             }, null, 2),
           }],
         };

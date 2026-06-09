@@ -31,6 +31,7 @@ import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher'
 import {
   canRunWorkspaceGitOperations,
   getWorkspaceMergeTargetBranch,
+  getWorkspaceWorkingDir,
   resolveDefaultWorkspaceId,
 } from '@/components/workspace/team-workspace-view'
 import { GitStatusBar } from '@/components/workspace/GitStatusBar'
@@ -178,11 +179,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
 
   const workingDir = useMemo(() => {
     if (!workspaces) return undefined
-    if (selectedWorkspace) return selectedWorkspace.worktreePath || undefined
+    if (selectedWorkspace) return getWorkspaceWorkingDir(selectedWorkspace)
     for (const ws of workspaces) {
-      if (ws.status === 'ACTIVE' && ws.worktreePath) return ws.worktreePath
+      if (ws.status === 'ACTIVE' && getWorkspaceWorkingDir(ws)) return getWorkspaceWorkingDir(ws)
     }
-    return workspaces[0]?.worktreePath
+    return getWorkspaceWorkingDir(workspaces[0])
   }, [selectedWorkspace, workspaces])
 
   // ============ Git Operation State ============
@@ -341,7 +342,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
     maxHeight: 140,
   })
 
-  const selectedWorkspaceOpenId = selectedWorkspace?.worktreePath ? selectedWorkspace.id : undefined
+  const selectedWorkspaceOpenId = workingDir && selectedWorkspace ? selectedWorkspace.id : undefined
 
 
   // ============ Mutations ============

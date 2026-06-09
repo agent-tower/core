@@ -81,7 +81,7 @@ export async function systemRoutes(app: FastifyInstance) {
     return discoverSkillCatalog(agentType, workingDir);
   });
 
-  // MCP 上下文检测：根据 cwd 路径查找匹配的活跃工作空间
+  // MCP 上下文检测：优先根据 sessionId 精确定位，fallback 到 cwd 路径匹配活跃工作空间。
   app.get('/system/workspace-context', async (request, reply) => {
     const { path: cwdPath, sessionId } = request.query as { path?: string; sessionId?: string };
     if (!cwdPath) {
@@ -89,10 +89,25 @@ export async function systemRoutes(app: FastifyInstance) {
       return { error: 'path query parameter is required' };
     }
 
-    const workspace = await prisma.workspace.findFirst({
-      where: { worktreePath: cwdPath, status: 'ACTIVE' },
-      include: { task: { include: { project: true } } },
-    });
+    const workspaceFromSession = sessionId
+      ? await prisma.session.findUnique({
+          where: { id: sessionId },
+          include: { workspace: { include: { task: { include: { project: true } } } } },
+        })
+      : null;
+
+    const workspace = workspaceFromSession?.workspace
+      ?? await prisma.workspace.findFirst({
+        where: {
+          status: 'ACTIVE',
+          OR: [
+            { workingDir: cwdPath },
+            { worktreePath: cwdPath },
+          ],
+        },
+        include: { task: { include: { project: true } } },
+        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      });
 
     if (!workspace) {
       reply.code(404);
@@ -106,6 +121,8 @@ export async function systemRoutes(app: FastifyInstance) {
       taskTitle: workspace.task.title,
       workspaceId: workspace.id,
       workspaceBranch: workspace.branchName,
+      workspaceKind: workspace.workspaceKind,
+      workingDir: workspace.workingDir || workspace.worktreePath,
       ...await resolveTeamRunContext(workspace.id, sessionId),
     };
   });

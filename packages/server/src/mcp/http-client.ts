@@ -90,8 +90,8 @@ export class AgentTowerClient {
 
   // ── Workspaces ──
 
-  async createWorkspace(taskId: string, branchName?: string) {
-    return this.request<any>('POST', `/api/tasks/${taskId}/workspaces`, branchName ? { branchName } : {});
+  async createWorkspace(taskId: string, input: { branchName?: string; workspaceKind?: string } = {}) {
+    return this.request<any>('POST', `/api/tasks/${taskId}/workspaces`, input);
   }
 
   async getWorkspaceDiff(workspaceId: string) {

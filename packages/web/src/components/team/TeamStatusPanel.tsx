@@ -4,7 +4,7 @@ import { WorkspaceStatus, type AgentInvocation, type TeamMember, type TeamMember
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
-import { buildWorkspaceViews } from '@/components/workspace/team-workspace-view'
+import { buildWorkspaceViews, getWorkspaceBranchLabel } from '@/components/workspace/team-workspace-view'
 import { ACTIVE_ROOM_INVOCATION_STATUSES } from './room-timeline-items'
 import {
   useApproveWorkRequest,
@@ -610,7 +610,7 @@ export function TeamStatusPanel({
               <span className="ml-auto flex items-center gap-1.5">
                 {selectedWorkspace && (
                   <span className="max-w-[120px] truncate font-mono text-[10px] font-normal text-neutral-400">
-                    {selectedWorkspace.workspace.branchName}
+                    {getWorkspaceBranchLabel(selectedWorkspace.workspace)}
                   </span>
                 )}
                 <span className="rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-600">
@@ -648,7 +648,7 @@ export function TeamStatusPanel({
                             </span>
                           </div>
                           <div className="mt-0.5 truncate font-mono text-[10px] text-neutral-500">
-                            {view.workspace.branchName}
+                            {getWorkspaceBranchLabel(view.workspace)}
                           </div>
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-neutral-400">
                             {view.ownerName && <span>{t('Owner')}: {view.ownerName}</span>}

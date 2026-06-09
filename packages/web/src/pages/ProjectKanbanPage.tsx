@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
-import type { Task } from '@agent-tower/shared'
+import { WorkspaceKind, type Task } from '@agent-tower/shared'
 import { TaskList } from '@/components/task'
 import { TaskDetail } from '@/components/task/TaskDetail'
 import type { UITaskDetailData } from '@/components/task/types'
@@ -24,9 +24,11 @@ import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
 import { CreateProjectModal } from '@/components/project/CreateProjectModal'
 import { BrandLogo } from '@/components/BrandLogo'
 import { CreateTaskInput } from '@/components/task/CreateTaskInput'
+import { getWorkspaceBranchLabel } from '@/components/workspace/team-workspace-view'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
+type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 
 function TypewriterText({ text, className }: { text: string; className?: string }) {
   const [displayed, setDisplayed] = useState('')
@@ -217,9 +219,9 @@ export function ProjectKanbanPage() {
 
     const project = projects.find(p => p.id === task.projectId)
     if (!project) {
-      const branch = task.workspaces?.find(w => w.status === 'ACTIVE')?.branchName
-        ?? task.workspaces?.[0]?.branchName
-        ?? '—'
+      const branch = getWorkspaceBranchLabel(
+        task.workspaces?.find(w => w.status === 'ACTIVE') ?? task.workspaces?.[0],
+      )
 
       return {
         id: task.id,
@@ -333,12 +335,13 @@ export function ProjectKanbanPage() {
     projectId: string
     providerId: string
     mode: CreateTaskMode
+    workspaceMode: WorkspaceMode
     teamRunMode: TeamRunMode
     teamTemplateId: string | null
     memberPresetIds: string[]
     attachmentLinks: string
   }) => {
-    const { title, description, projectId, providerId, mode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks } = data
+    const { title, description, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks } = data
     const fullDescription = [description, attachmentLinks].filter(Boolean).join('\n\n')
 
     let createdTask: Task | null = null
@@ -371,7 +374,10 @@ export function ProjectKanbanPage() {
         const prompt = [title, fullDescription].filter(Boolean).join('\n\n')
 
         setCreateStep('creating-workspace')
-        const workspace = await apiClient.post<{ id: string }>(`/tasks/${createdTask.id}/workspaces`, {})
+        const workspace = await apiClient.post<{ id: string }>(
+          `/tasks/${createdTask.id}/workspaces`,
+          { workspaceKind: workspaceMode },
+        )
 
         setCreateStep('creating-session')
         const session = await apiClient.post<{ id: string }>(

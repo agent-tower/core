@@ -9,7 +9,7 @@ import type {
   Project as SharedProject,
   Workspace as SharedWorkspace,
 } from '@agent-tower/shared'
-import { TaskStatus as SharedTaskStatus, AgentType } from '@agent-tower/shared'
+import { TaskStatus as SharedTaskStatus, AgentType, WorkspaceKind } from '@agent-tower/shared'
 import type { UITask, UIProject, UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
 
@@ -103,6 +103,11 @@ function getPreferredWorkspace(
   return workspace ?? workspaces?.find(w => w.status === 'ACTIVE') ?? workspaces?.[0]
 }
 
+function getWorkspaceBranchLabel(workspace?: SharedWorkspace): string {
+  if (!workspace) return '—'
+  return workspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY ? 'Project directory' : workspace.branchName
+}
+
 /**
  * 将后端 Project 转为 UI 层 Project
  *
@@ -133,7 +138,7 @@ function extractActiveWorkspaceInfo(workspaces?: SharedWorkspace[]): {
     return { agent: '—', branch: '—' }
   }
 
-  const branch = active.branchName
+  const branch = getWorkspaceBranchLabel(active)
 
   // 从活跃 workspace 的最新 session 获取 agent 类型
   const sessions = active.sessions
@@ -185,7 +190,7 @@ export function adaptTaskForDetail(
   workspace?: SharedWorkspace,
 ): UITaskDetailData {
   const activeWorkspace = getPreferredWorkspace(task.workspaces, workspace)
-  const branch = activeWorkspace?.branchName ?? '—'
+  const branch = getWorkspaceBranchLabel(activeWorkspace)
 
   return {
     id: task.id,

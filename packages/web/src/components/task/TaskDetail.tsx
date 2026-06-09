@@ -22,6 +22,8 @@ import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
 import { WorkspacePanel, type WorkspaceTab } from '@/components/workspace/WorkspacePanel'
 import {
   canRunWorkspaceGitOperations,
+  getWorkspaceBranchLabel,
+  getWorkspaceWorkingDir,
   getWorkspaceMergeTargetBranch,
   resolveDefaultWorkspaceId,
 } from '@/components/workspace/team-workspace-view'
@@ -375,16 +377,16 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     return !hasActiveWs
   }, [activeSession, workspaces])
 
-  // Derive workingDir from the active workspace's worktreePath
+  // Derive workingDir from the selected workspace's actual execution directory.
   const workingDir = useMemo(() => {
     if (!workspaces || isJustRetried) return undefined
-    if (selectedWorkspace) return selectedWorkspace.worktreePath || undefined
+    if (selectedWorkspace) return getWorkspaceWorkingDir(selectedWorkspace)
     for (const ws of workspaces) {
-      if (ws.status === 'ACTIVE' && ws.worktreePath) {
-        return ws.worktreePath
+      if (ws.status === 'ACTIVE' && getWorkspaceWorkingDir(ws)) {
+        return getWorkspaceWorkingDir(ws)
       }
     }
-    return workspaces[0]?.worktreePath
+    return getWorkspaceWorkingDir(workspaces[0])
   }, [isJustRetried, selectedWorkspace, workspaces])
 
   const slashCommandMenu = useSlashCommandMenu({
@@ -414,7 +416,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   // Collect sessions from active workspace for ResolveConflictsDialog
   const selectedWorkspaceSessions = selectedWorkspace?.sessions ?? []
 
-  const selectedWorkspaceBranch = selectedWorkspace?.branchName ?? ''
+  const selectedWorkspaceBranch = getWorkspaceBranchLabel(selectedWorkspace)
 
   const selectedWorkspaceCommitMessage = selectedWorkspace?.commitMessage
   const selectedWorkspaceMergeTargetBranch = useMemo(
@@ -842,7 +844,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           {/* Open in IDE */}
           <button
             onClick={handleOpenInIde}
-            disabled={!selectedWorkspace?.worktreePath || isProjectReadOnly}
+            disabled={!workingDir || isProjectReadOnly}
             className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             title={t('Open in IDE')}
           >

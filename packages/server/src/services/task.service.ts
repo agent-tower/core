@@ -1,5 +1,6 @@
 import { prisma } from '../utils/index.js';
 import { TaskStatus, SessionStatus, SessionPurpose, WorkspaceStatus } from '../types/index.js';
+import { getWorkspaceWorkingDir } from './workspace-kind.js';
 import {
   NotFoundError,
   ValidationError,
@@ -346,6 +347,8 @@ export class TaskService {
         workspaces: taskForCleanup.workspaces.map((workspace) => ({
           id: workspace.id,
           worktreePath: workspace.worktreePath,
+          workingDir: getWorkspaceWorkingDir(workspace),
+          workspaceKind: workspace.workspaceKind,
           branchName: workspace.branchName,
           baseBranch: workspace.baseBranch,
           sessions: workspace.sessions

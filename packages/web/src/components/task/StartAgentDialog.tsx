@@ -7,7 +7,9 @@ import { useProviders } from '@/hooks/use-providers'
 import { queryKeys } from '@/hooks/query-keys'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
+import { Select } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
+import { WorkspaceKind } from '@agent-tower/shared'
 
 interface StartAgentDialogProps {
   isOpen: boolean
@@ -18,6 +20,7 @@ interface StartAgentDialogProps {
 }
 
 type StartStep = 'idle' | 'creating-workspace' | 'creating-session' | 'starting-session'
+type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 
 export function StartAgentDialog({
   isOpen,
@@ -29,6 +32,7 @@ export function StartAgentDialog({
   const { t } = useI18n()
   const [selectedProviderId, setSelectedProviderId] = useState<string>('')
   const [prompt, setPrompt] = useState('')
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(WorkspaceKind.WORKTREE)
   const [step, setStep] = useState<StartStep>('idle')
   const [error, setError] = useState<string | null>(null)
 
@@ -52,6 +56,7 @@ export function StartAgentDialog({
       const parts = [taskTitle]
       if (taskDescription) parts.push(taskDescription)
       setPrompt(parts.join('\n\n'))
+      setWorkspaceMode(WorkspaceKind.WORKTREE)
       setStep('idle')
       setError(null)
     }
@@ -67,7 +72,7 @@ export function StartAgentDialog({
     try {
       // Step 1: 创建 Workspace
       setStep('creating-workspace')
-      const workspace = await createWorkspace.mutateAsync({})
+      const workspace = await createWorkspace.mutateAsync({ workspaceKind: workspaceMode })
 
       // Step 2: 创建 Session (使用 providerId)
       setStep('creating-session')
@@ -98,6 +103,18 @@ export function StartAgentDialog({
     'creating-session': t('创建会话...'),
     'starting-session': t('启动 Agent...'),
   }
+  const providerOptions = (providersData ?? []).map(({ provider, availability }) => {
+    const isAvailable = availability.type !== 'NOT_FOUND'
+    return {
+      value: provider.id,
+      label: isAvailable ? provider.name : `${provider.name}${t(' (不可用)')}`,
+      disabled: !isAvailable,
+    }
+  })
+  const workspaceModeOptions = [
+    { value: WorkspaceKind.WORKTREE, label: t('工作树模式') },
+    { value: WorkspaceKind.MAIN_DIRECTORY, label: t('本地模式') },
+  ]
 
   return (
     <Modal
@@ -119,31 +136,37 @@ export function StartAgentDialog({
       }
     >
       <div className="space-y-5">
-        {/* Provider 选择 */}
         <div>
-          <label className="block text-sm font-medium text-neutral-700 mb-2">
-            {t('选择 Provider')}
-          </label>
-          <div className="flex gap-2 flex-wrap">
-            {isLoading && (
-              <span className="text-sm text-neutral-400">{t('加载中...')}</span>
-            )}
-            {providersData?.map(({ provider, availability }) => {
-              const isAvailable = availability.type !== 'NOT_FOUND'
-              return (
-                <Button
-                  key={provider.id}
-                  variant={selectedProviderId === provider.id ? 'default' : 'outline'}
-                  size="sm"
-                  disabled={!isAvailable || isStarting}
-                  onClick={() => setSelectedProviderId(provider.id)}
-                >
-                  {provider.name}
-                  {!isAvailable && t(' (不可用)')}
-                </Button>
-              )
-            })}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium text-neutral-700 mb-2">
+                {t('Agent')}
+              </label>
+              <Select
+                value={selectedProviderId}
+                onChange={setSelectedProviderId}
+                options={providerOptions}
+                placeholder={isLoading ? t('加载中...') : t('选择 Agent')}
+                disabled={isStarting || isLoading}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-neutral-700 mb-2">
+                {t('模式')}
+              </label>
+              <Select
+                value={workspaceMode}
+                onChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
+                options={workspaceModeOptions}
+                disabled={isStarting}
+              />
+            </div>
           </div>
+          {workspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
+            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+              {t('Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。')}
+            </div>
+          )}
         </div>
 
         {/* Prompt 输入 */}

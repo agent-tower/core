@@ -15,6 +15,12 @@ export enum WorkspaceStatus {
   HIBERNATED = 'HIBERNATED',
 }
 
+// 工作空间存储模式
+export enum WorkspaceKind {
+  WORKTREE = 'WORKTREE',
+  MAIN_DIRECTORY = 'MAIN_DIRECTORY',
+}
+
 // AI 代理类型
 export enum AgentType {
   CLAUDE_CODE = 'CLAUDE_CODE',
