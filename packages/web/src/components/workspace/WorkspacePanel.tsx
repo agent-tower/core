@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect, useMemo } from "react"
+import React, { useState, useRef, useEffect, useMemo, useImperativeHandle } from "react"
 import { Code2, Terminal, Globe, GitGraph, History, Users } from "lucide-react"
-import type { TeamRun } from "@agent-tower/shared"
+import type { TeamRun, Workspace } from "@agent-tower/shared"
 
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
@@ -9,10 +9,12 @@ import { EditorView } from "./EditorView"
 import { ChangesView } from "./ChangesView"
 import { HistoryView } from "./HistoryView"
 import { PreviewPanel } from "./PreviewPanel"
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
+import { buildWorkspaceViews } from "./team-workspace-view"
 import { useProject } from "@/hooks/use-projects"
 import type { QuickCommand } from "@agent-tower/shared"
 
-type WorkspaceTab = "editor" | "terminal" | "preview" | "changes" | "history"
+export type WorkspaceTab = "editor" | "terminal" | "preview" | "changes" | "history"
 type WorkspaceTabWithTeam = WorkspaceTab | "team-status"
 
 export interface WorkspacePanelProps {
@@ -30,6 +32,22 @@ export interface WorkspacePanelProps {
   repoDeleted?: boolean
   teamRun?: TeamRun | null
   teamStatus?: React.ReactNode
+  /** Git operation props for Changes tab */
+  gitProps?: {
+    branchName: string
+    targetBranch: string
+    commitMessage?: string | null
+    canRunGitOperations: boolean
+    onRefreshCommitMessage?: () => void | Promise<unknown>
+    onConflict: (details?: import('./GitOperationsDialog').ConflictDetails) => void
+    onResolveConflicts: () => void
+  }
+  /** Workspace switcher props (multi-workspace) */
+  workspaces?: Workspace[]
+  selectedWorkspaceId?: string | null
+  onSelectWorkspace?: (workspaceId: string) => void
+  /** Imperative ref to switch tabs from parent */
+  tabRef?: React.RefObject<{ setTab: (tab: WorkspaceTab) => void } | null>
 }
 
 // ============================================================
@@ -94,6 +112,11 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     repoDeleted,
     teamRun,
     teamStatus,
+    gitProps,
+    workspaces,
+    selectedWorkspaceId,
+    onSelectWorkspace,
+    tabRef,
   }) {
     const { t } = useI18n()
     const tabs = useMemo(() => {
@@ -107,6 +130,10 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
         : availableTabs
     }, [hideChanges, readOnly, teamRun])
     const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(hideChanges ? "history" : "changes")
+
+    useImperativeHandle(tabRef, () => ({
+      setTab: (tab: WorkspaceTab) => setActiveTab(tab),
+    }), [])
 
     // Fetch project to get quickCommands
     const { data: project } = useProject(projectId ?? '')
@@ -139,6 +166,8 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
       setActiveTab(hideChanges ? 'history' : 'changes')
     }, [activeTab, hideChanges, teamRun])
 
+    const showSwitcher = !!onSelectWorkspace && buildWorkspaceViews(workspaces, teamRun).length > 1
+
     return (
       <div className={cn("flex flex-col h-full bg-white", className)}>
         {readOnly && (
@@ -161,46 +190,65 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
           ))}
         </div>
 
-        {/* 内容区域 */}
-        <div className="flex-1 overflow-hidden relative">
-          {/* Team Status Tab */}
-          {activeTab === "team-status" && teamRun && (
-            teamStatus
+        {/* Content area: flex column so switcher toolbar + tab body stack properly */}
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          {showSwitcher && (
+            <div className="shrink-0 px-3 py-1.5 border-b border-neutral-100 bg-neutral-50/60">
+              <WorkspaceSwitcher
+                workspaces={workspaces}
+                teamRun={teamRun}
+                selectedWorkspaceId={selectedWorkspaceId}
+                onSelectWorkspace={onSelectWorkspace!}
+                buttonClassName="h-7 text-[11px]"
+              />
+            </div>
           )}
 
-          {/* Editor Tab */}
-          {activeTab === "editor" && (
-            <EditorView workingDir={workingDir} readOnly={readOnly} />
-          )}
+          {/* Tab body — fills remaining space; absolute children stay within */}
+          <div className="relative flex-1 min-h-0 overflow-hidden">
+            {activeTab === "team-status" && teamRun && (
+              teamStatus
+            )}
 
-          {/* Terminal Tab — one TerminalTabs per workingDir, kept mounted */}
-          {terminalDirs.map(dir => {
-            const visible = activeTab === "terminal" && workingDir === dir
-            return (
-              <div
-                key={dir}
-                className="h-full absolute inset-0"
-                style={{ display: visible ? 'block' : 'none' }}
-              >
-                <TerminalTabs cwd={dir} isVisible={visible} quickCommands={quickCommands} />
-              </div>
-            )
-          })}
+            {activeTab === "editor" && (
+              <EditorView workingDir={workingDir} readOnly={readOnly} />
+            )}
 
-          {/* Preview Tab */}
-          {activeTab === "preview" && (
-            <PreviewPanel workspaceId={workspaceId} readOnly={readOnly} />
-          )}
+            {terminalDirs.map(dir => {
+              const visible = activeTab === "terminal" && workingDir === dir
+              return (
+                <div
+                  key={dir}
+                  className="h-full absolute inset-0"
+                  style={{ display: visible ? 'block' : 'none' }}
+                >
+                  <TerminalTabs cwd={dir} isVisible={visible} quickCommands={quickCommands} />
+                </div>
+              )
+            })}
 
-          {/* Changes Tab */}
-          {activeTab === "changes" && (
-            <ChangesView workingDir={workingDir} />
-          )}
+            {activeTab === "preview" && (
+              <PreviewPanel workspaceId={workspaceId} readOnly={readOnly} />
+            )}
 
-          {/* History Tab */}
-          {activeTab === "history" && (
-            <HistoryView workingDir={workingDir} />
-          )}
+            {activeTab === "changes" && (
+              <ChangesView
+                workingDir={workingDir}
+                workspaceId={workspaceId}
+                branchName={gitProps?.branchName}
+                targetBranch={gitProps?.targetBranch}
+                commitMessage={gitProps?.commitMessage}
+                canRunGitOperations={gitProps?.canRunGitOperations}
+                onRefreshCommitMessage={gitProps?.onRefreshCommitMessage}
+                onConflict={gitProps?.onConflict}
+                onResolveConflicts={gitProps?.onResolveConflicts}
+              />
+            )}
+
+            {activeTab === "history" && (
+              <HistoryView workingDir={workingDir} />
+            )}
+          </div>
         </div>
       </div>
     )

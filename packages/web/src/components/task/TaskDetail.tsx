@@ -15,12 +15,11 @@ import { LogStream } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
-import { Paperclip, ArrowUp, ArrowDown, ArrowLeft, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, GitFork, RotateCcw, Plus } from 'lucide-react'
+import { Paperclip, ArrowUp, ArrowDown, ArrowLeft, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, RotateCcw, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
-import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
-import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher'
+import { WorkspacePanel, type WorkspaceTab } from '@/components/workspace/WorkspacePanel'
 import {
   canRunWorkspaceGitOperations,
   getWorkspaceMergeTargetBranch,
@@ -49,7 +48,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { ConflictBanner } from '@/components/workspace/ConflictBanner'
 import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsDialog'
-import { GitOperationsDialog, type ConflictDetails } from '@/components/workspace/GitOperationsDialog'
+import { type ConflictDetails } from '@/components/workspace/GitOperationsDialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
@@ -202,7 +201,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const [isRetrying, setIsRetrying] = useState(false)
   const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
   const [pendingConflictDetails, setPendingConflictDetails] = useState<ConflictDetails | null>(null)
-  const [isGitDialogOpen, setIsGitDialogOpen] = useState(false)
+  const workspacePanelTabRef = useRef<{ setTab: (tab: WorkspaceTab) => void } | null>(null)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const [focusedInvocationSessionId, setFocusedInvocationSessionId] = useState<string | null>(null)
   const [explicitWorkspaceId, setExplicitWorkspaceId] = useState<string | undefined>(undefined)
@@ -840,25 +839,6 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             onChangeStatus={!isProjectReadOnly && onTaskStatusChange ? (newStatus) => onTaskStatusChange(task.id, newStatus) : undefined}
           />
 
-          <WorkspaceSwitcher
-            workspaces={workspaces}
-            teamRun={teamRun}
-            selectedWorkspaceId={resolvedWorkspaceId}
-            onSelectWorkspace={setExplicitWorkspaceId}
-          />
-
-          {/* Git Operations */}
-          {selectedWorkspace && !isProjectReadOnly && (
-            <button
-              onClick={() => setIsGitDialogOpen(true)}
-              disabled={!canRunSelectedWorkspaceGitOperations}
-              className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-              title={t('Git 操作')}
-            >
-              <GitFork size={18} />
-            </button>
-          )}
-
           {/* Open in IDE */}
           <button
             onClick={handleOpenInIde}
@@ -1319,6 +1299,19 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                   onViewInvocationSession={handleViewInvocationSession}
                 />
               ) : undefined}
+              workspaces={workspaces}
+              selectedWorkspaceId={resolvedWorkspaceId}
+              onSelectWorkspace={setExplicitWorkspaceId}
+              tabRef={workspacePanelTabRef}
+              gitProps={canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId ? {
+                branchName: selectedWorkspaceBranch,
+                targetBranch: selectedWorkspaceMergeTargetBranch,
+                commitMessage: selectedWorkspaceCommitMessage,
+                canRunGitOperations: true,
+                onRefreshCommitMessage: refreshWorkspaces,
+                onConflict: handleOpenResolveConflicts,
+                onResolveConflicts: () => handleOpenResolveConflicts(),
+              } : undefined}
             />
           </div>
         )}
@@ -1344,19 +1337,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
         />
       )}
 
-      {/* Git Operations Dialog */}
-      {canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId && !isProjectReadOnly && (
-        <GitOperationsDialog
-          open={isGitDialogOpen}
-          onOpenChange={setIsGitDialogOpen}
-          workspaceId={selectedWorkspaceOperationId}
-          branchName={selectedWorkspaceBranch}
-          targetBranch={selectedWorkspaceMergeTargetBranch}
-          commitMessage={selectedWorkspaceCommitMessage}
-          onRefreshCommitMessage={refreshWorkspaces}
-          onConflict={handleOpenResolveConflicts}
-        />
-      )}
+      {/* GitOperationsDialog removed — Git operations are now inline in Changes tab */}
 
       {/* Resolve Conflicts Dialog */}
       {canRunSelectedWorkspaceGitOperations && resolveConflictWorkspaceId && conflictDetails && (

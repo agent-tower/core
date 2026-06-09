@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { useQueryClient } from '@tanstack/react-query'
-import { SessionStatus, type Session } from '@agent-tower/shared'
+import { SessionStatus, WorkspaceStatus, type ConflictOp, type Session } from '@agent-tower/shared'
 import { LogStream, TodoPanel, TokenUsageIndicator } from '@/components/agent'
 import {
   ArrowLeft, ArrowUp, ArrowDown, Paperclip, Play, Square,
@@ -28,7 +28,17 @@ import { ProviderSelector } from '@/components/task/ProviderSelector'
 import { SlashCommandPopover } from '@/components/task/SlashCommandPopover'
 import { DeleteTaskConfirmDialog } from '@/components/task/DeleteTaskConfirmDialog'
 import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher'
-import { resolveDefaultWorkspaceId } from '@/components/workspace/team-workspace-view'
+import {
+  canRunWorkspaceGitOperations,
+  getWorkspaceMergeTargetBranch,
+  resolveDefaultWorkspaceId,
+} from '@/components/workspace/team-workspace-view'
+import { GitStatusBar } from '@/components/workspace/GitStatusBar'
+import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsDialog'
+import type { ConflictDetails } from '@/components/workspace/GitOperationsDialog'
+import { useGitStatus } from '@/hooks/use-workspaces'
+import { useGitChanges } from '@/hooks/use-git'
+import { queryKeys } from '@/hooks/query-keys'
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 import { useSlashCommandMenu } from '@/components/task/useSlashCommandMenu'
@@ -164,6 +174,61 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
     [resolvedWorkspaceId, workspaces],
   )
 
+  // ============ Working Dir (hoisted for git hooks) ============
+
+  const workingDir = useMemo(() => {
+    if (!workspaces) return undefined
+    if (selectedWorkspace) return selectedWorkspace.worktreePath || undefined
+    for (const ws of workspaces) {
+      if (ws.status === 'ACTIVE' && ws.worktreePath) return ws.worktreePath
+    }
+    return workspaces[0]?.worktreePath
+  }, [selectedWorkspace, workspaces])
+
+  // ============ Git Operation State ============
+
+  const selectedWorkspaceOperationId = selectedWorkspace?.status === WorkspaceStatus.ACTIVE
+    ? selectedWorkspace.id
+    : undefined
+  const canRunGit = canRunWorkspaceGitOperations(selectedWorkspace, teamRun)
+  const selectedWorkspaceBranch = selectedWorkspace?.branchName ?? ''
+  const selectedWorkspaceCommitMessage = selectedWorkspace?.commitMessage
+  const selectedWorkspaceMergeTargetBranch = useMemo(
+    () => getWorkspaceMergeTargetBranch(selectedWorkspace, workspaces, task?.mainBranch ?? ''),
+    [selectedWorkspace, task?.mainBranch, workspaces],
+  )
+  const { data: gitStatus } = useGitStatus(selectedWorkspaceOperationId ?? '')
+  const { data: gitChangesData } = useGitChanges(workingDir)
+  const committedFileCount = gitChangesData?.committed?.length
+  const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
+  const [pendingConflictDetails, setPendingConflictDetails] = useState<ConflictDetails | null>(null)
+
+  const conflictDetails = useMemo<ConflictDetails | null>(() => {
+    if (gitStatus?.conflictOp && gitStatus.conflictedFiles.length > 0) {
+      return {
+        conflictOp: gitStatus.conflictOp as ConflictOp,
+        conflictedFiles: gitStatus.conflictedFiles,
+      }
+    }
+    return pendingConflictDetails
+  }, [gitStatus?.conflictOp, gitStatus?.conflictedFiles, pendingConflictDetails])
+
+  const resolveConflictWorkspaceId = conflictDetails?.targetWorkspaceId ?? selectedWorkspaceOperationId
+  const resolveConflictWorktreePath = conflictDetails?.targetWorktreePath ?? selectedWorkspace?.worktreePath
+  const resolveConflictSourceBranch = conflictDetails?.sourceBranch ?? selectedWorkspaceBranch
+  const resolveConflictTargetBranch = conflictDetails?.targetBranch ?? selectedWorkspaceMergeTargetBranch
+  const selectedWorkspaceSessions = selectedWorkspace?.sessions ?? []
+
+  const handleOpenResolveConflicts = useCallback((details?: ConflictDetails) => {
+    setPendingConflictDetails(details ?? null)
+    setIsResolveDialogOpen(true)
+  }, [])
+
+  const refreshWorkspaces = useCallback(() => {
+    if (!task?.id) return Promise.resolve()
+    return queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
+  }, [task?.id, queryClient])
+
   const activeSession = useMemo(() => {
     if (!workspaces) return null
     const allSessions: Session[] = workspaces
@@ -255,15 +320,6 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const handleSelectProvider = useCallback((providerId: string | null) => {
     setSelectedProviderOverride({ sessionId, providerId })
   }, [sessionId])
-
-  const workingDir = useMemo(() => {
-    if (!workspaces) return undefined
-    if (selectedWorkspace) return selectedWorkspace.worktreePath || undefined
-    for (const ws of workspaces) {
-      if (ws.status === 'ACTIVE' && ws.worktreePath) return ws.worktreePath
-    }
-    return workspaces[0]?.worktreePath
-  }, [selectedWorkspace, workspaces])
 
   const slashCommandMenu = useSlashCommandMenu({
     agentType: activeSession?.agentType,
@@ -872,6 +928,20 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
               />
             </div>
           )}
+          {canRunGit && selectedWorkspaceOperationId && (
+            <div className="shrink-0">
+              <GitStatusBar
+                workspaceId={selectedWorkspaceOperationId}
+                branchName={selectedWorkspaceBranch}
+                targetBranch={selectedWorkspaceMergeTargetBranch}
+                commitMessage={selectedWorkspaceCommitMessage}
+                committedFileCount={committedFileCount}
+                onRefreshCommitMessage={refreshWorkspaces}
+                onConflict={handleOpenResolveConflicts}
+                onResolveConflicts={() => handleOpenResolveConflicts()}
+              />
+            </div>
+          )}
           <MobileChangesView workingDir={workingDir} />
         </div>
       )}
@@ -921,6 +991,33 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
         workspaces={workspaces}
         isLoading={isDeleting}
       />
+
+      {/* Resolve Conflicts Dialog */}
+      {isResolveDialogOpen && conflictDetails && resolveConflictWorkspaceId && (
+        <ResolveConflictsDialog
+          open={isResolveDialogOpen}
+          onOpenChange={(open) => {
+            setIsResolveDialogOpen(open)
+            if (!open) setPendingConflictDetails(null)
+          }}
+          workspaceId={resolveConflictWorkspaceId}
+          conflictOp={conflictDetails.conflictOp}
+          conflictedFiles={conflictDetails.conflictedFiles}
+          sourceBranch={resolveConflictSourceBranch}
+          targetBranch={resolveConflictTargetBranch}
+          operation={gitStatus?.operation}
+          worktreePath={resolveConflictWorktreePath}
+          mergeAborted={conflictDetails.mergeAborted}
+          mergeStrategy={conflictDetails.mergeStrategy}
+          sourceWorkspaceId={conflictDetails.sourceWorkspaceId}
+          targetWorkspaceId={conflictDetails.targetWorkspaceId}
+          sourceWorktreePath={conflictDetails.sourceWorktreePath}
+          targetWorktreePath={conflictDetails.targetWorktreePath}
+          sessions={selectedWorkspaceSessions}
+          currentSessionId={teamRun ? undefined : sessionId}
+          teamRunId={teamRun?.id}
+        />
+      )}
     </div>
   )
 }

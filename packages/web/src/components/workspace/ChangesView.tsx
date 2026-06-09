@@ -3,6 +3,7 @@ import { GitGraph, Loader2, FileCode2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { useGitChanges, useGitDiff, type GitChangeEntry } from '@/hooks/use-git'
+import { GitStatusBar } from './GitStatusBar'
 
 type DiffType = 'uncommitted' | 'committed'
 
@@ -181,8 +182,30 @@ const DiffViewer: React.FC<{
   )
 }
 
+export interface ChangesViewProps {
+  workingDir?: string
+  workspaceId?: string
+  branchName?: string
+  targetBranch?: string
+  commitMessage?: string | null
+  canRunGitOperations?: boolean
+  onRefreshCommitMessage?: () => void | Promise<unknown>
+  onConflict?: (details?: import('./GitOperationsDialog').ConflictDetails) => void
+  onResolveConflicts?: () => void
+}
+
 /** Changes Tab 主组件 */
-export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) => {
+export const ChangesView: React.FC<ChangesViewProps> = ({
+  workingDir,
+  workspaceId,
+  branchName,
+  targetBranch,
+  commitMessage,
+  canRunGitOperations,
+  onRefreshCommitMessage,
+  onConflict,
+  onResolveConflicts,
+}) => {
   const { t } = useI18n()
   const { data, isLoading, isError } = useGitChanges(workingDir)
   const [selected, setSelected] = useState<{ path: string; type: DiffType } | null>(null)
@@ -244,8 +267,26 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
   const committed = data?.committed || []
   const totalChanges = uncommitted.length + committed.length
 
+  const showGitBar = canRunGitOperations && workspaceId && branchName && targetBranch
+
   return (
-    <div className="flex h-full bg-white" style={isDragging ? { userSelect: 'none', cursor: 'col-resize' } : undefined}>
+    <div className="flex flex-col h-full bg-white">
+      {/* Git status & operations bar */}
+      {showGitBar && onConflict && onResolveConflicts && (
+        <GitStatusBar
+          workspaceId={workspaceId}
+          branchName={branchName}
+          targetBranch={targetBranch}
+          commitMessage={commitMessage}
+          committedFileCount={committed.length}
+          onRefreshCommitMessage={onRefreshCommitMessage}
+          onConflict={onConflict}
+          onResolveConflicts={onResolveConflicts}
+        />
+      )}
+
+      {/* File changes area */}
+      <div className="flex flex-1 min-h-0" style={isDragging ? { userSelect: 'none', cursor: 'col-resize' } : undefined}>
       {/* Left: file list */}
       <div className="border-r border-neutral-200 flex flex-col shrink-0" style={{ width: treeWidth }}>
         {/* Header */}
@@ -326,6 +367,7 @@ export const ChangesView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
             </div>
           </div>
         )}
+      </div>
       </div>
     </div>
   )

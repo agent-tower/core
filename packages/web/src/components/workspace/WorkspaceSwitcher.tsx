@@ -70,14 +70,7 @@ export function WorkspaceSwitcher({
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  if (views.length === 0) {
-    return (
-      <div className={cn('inline-flex h-8 items-center gap-2 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 text-xs text-neutral-400', className)}>
-        <Layers3 size={14} />
-        <span>{t('No workspace')}</span>
-      </div>
-    )
-  }
+  if (views.length <= 1) return null
 
   return (
     <div ref={ref} className={cn('relative', className)}>
@@ -101,7 +94,7 @@ export function WorkspaceSwitcher({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-[420px] max-w-[calc(100vw-2rem)] rounded-lg border border-neutral-200 bg-white py-1.5 shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-2 w-[420px] max-w-[calc(100vw-2rem)] rounded-lg border border-neutral-200 bg-white py-1.5 shadow-lg">
           {views.map((view) => {
             const isSelected = view.workspace.id === selected.workspace.id
             return (

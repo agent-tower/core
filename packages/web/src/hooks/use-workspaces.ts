@@ -59,6 +59,10 @@ export function useMergeWorkspace() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.git.all })
+    },
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.git.all })
     },
   })
 }
@@ -132,10 +136,11 @@ export function useRebaseWorkspace() {
       apiClient.post<{ success: boolean }>(`/workspaces/${id}/rebase`),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.gitStatus(id) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.git.all })
     },
     onError: (_error, id) => {
-      // 冲突时也刷新 git status 以更新 ConflictBanner
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.gitStatus(id) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.git.all })
     },
   })
 }
@@ -149,6 +154,7 @@ export function useAbortOperation() {
       apiClient.post<{ success: boolean }>(`/workspaces/${id}/abort-operation`),
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.gitStatus(id) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.git.all })
     },
   })
 }
