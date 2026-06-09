@@ -28,6 +28,35 @@ import { CreateTaskInput } from '@/components/task/CreateTaskInput'
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
 
+function TypewriterText({ text, className }: { text: string; className?: string }) {
+  const [displayed, setDisplayed] = useState('')
+  const [done, setDone] = useState(false)
+
+  useEffect(() => {
+    setDisplayed('')
+    setDone(false)
+    let i = 0
+    const id = setInterval(() => {
+      i++
+      if (i >= text.length) {
+        setDisplayed(text)
+        setDone(true)
+        clearInterval(id)
+      } else {
+        setDisplayed(text.slice(0, i))
+      }
+    }, 50)
+    return () => clearInterval(id)
+  }, [text])
+
+  return (
+    <p className={className}>
+      {displayed}
+      {!done && <span className="inline-block w-[2px] h-[1em] bg-neutral-400 ml-0.5 align-middle animate-pulse" />}
+    </p>
+  )
+}
+
 // === rendering-hoist-jsx: 静态顶部栏标题文字 ===
 const HEADER_TITLE = (
   <span className="font-bold text-neutral-900 tracking-tight text-base">
@@ -451,8 +480,8 @@ export function ProjectKanbanPage() {
             </button>
           </header>
           <div className="flex-1 flex flex-col items-center justify-center px-4">
-            <h1 className="text-xl font-semibold text-neutral-900 mb-1.5 tracking-tight">{t('欢迎使用 Agent Tower')}</h1>
-            <p className="text-[13px] text-neutral-400 mb-6">{t('描述任务，选择 Agent 或团队，即刻开始')}</p>
+            <h1 className="text-xl text-neutral-900 mb-1.5 tracking-tight">{t('欢迎使用 Agent Tower')}</h1>
+            <TypewriterText text={t('描述任务，选择 Agent 或团队，即刻开始')} className="text-[13px] text-neutral-400 mb-6" />
             <CreateTaskInput
               projects={createTaskProjectOptions}
               providers={createTaskProviderOptions}
@@ -596,8 +625,8 @@ export function ProjectKanbanPage() {
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center bg-white min-w-0 px-8">
             <div className="w-full max-w-3xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
-              <h1 className="text-2xl font-semibold text-neutral-900 mb-1.5 tracking-tight">{t('欢迎使用 Agent Tower')}</h1>
-              <p className="text-[13px] text-neutral-400 mb-8">{t('描述任务，选择 Agent 或团队，即刻开始')}</p>
+              <h1 className="text-2xl text-neutral-900 mb-1.5 tracking-tight">{t('欢迎使用 Agent Tower')}</h1>
+              <TypewriterText text={t('描述任务，选择 Agent 或团队，即刻开始')} className="text-[13px] text-neutral-400 mb-8" />
               <CreateTaskInput
                 projects={createTaskProjectOptions}
                 providers={createTaskProviderOptions}
