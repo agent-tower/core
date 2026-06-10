@@ -447,6 +447,10 @@ export class SessionManager {
       await this.teamReconciler.handleSessionStopped(id);
     }
     this.eventBus.emit('session:stopped', { sessionId: id });
+    // stop() 路径不会触发 session:exit（pipeline.destroy 先于 PTY 退出，
+    // onExit 被 destroyed 标志短路），handleSessionExit 不会执行，
+    // 因此在这里释放 MsgStore。快照已在上方持久化（CANCELLED）。
+    sessionMsgStoreManager.delete(id);
     return session;
   }
 
@@ -593,6 +597,8 @@ export class SessionManager {
     }).catch(() => {
       // process row may not have been created yet
     });
+    // 补偿路径同样释放 MsgStore（sendMessage 在 spawn 前已 getOrCreate）
+    sessionMsgStoreManager.delete(sessionId);
   }
 
   private createParser(agentType: AgentType, workingDir: string, msgStore: ReturnType<typeof sessionMsgStoreManager.getOrCreate>): OutputParser | null {
@@ -972,5 +978,11 @@ export class SessionManager {
         }
       }
     }
+
+    // 释放内存中的 MsgStore，防止单例 Map 随会话数量无限增长（每个最高 100MB）。
+    // 此时快照已通过 flushSnapshotPersist 持久化到 DB；后续读取（/logs API、
+    // sendMessage 重启、resolveAgentSessionId、commit message 提取）都有
+    // logSnapshot fallback，sendMessage 会经 restoreFromSnapshot 恢复上下文。
+    sessionMsgStoreManager.delete(sessionId);
   }
 }
