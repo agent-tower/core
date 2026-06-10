@@ -30,35 +30,6 @@ type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-work
 type CreateTaskMode = 'SOLO' | 'TEAM'
 type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 
-function TypewriterText({ text, className }: { text: string; className?: string }) {
-  const [displayed, setDisplayed] = useState('')
-  const [done, setDone] = useState(false)
-
-  useEffect(() => {
-    setDisplayed('')
-    setDone(false)
-    let i = 0
-    const id = setInterval(() => {
-      i++
-      if (i >= text.length) {
-        setDisplayed(text)
-        setDone(true)
-        clearInterval(id)
-      } else {
-        setDisplayed(text.slice(0, i))
-      }
-    }, 50)
-    return () => clearInterval(id)
-  }, [text])
-
-  return (
-    <p className={className}>
-      {displayed}
-      {!done && <span className="inline-block w-[2px] h-[1em] bg-neutral-400 ml-0.5 align-middle animate-pulse" />}
-    </p>
-  )
-}
-
 // === rendering-hoist-jsx: 静态顶部栏标题文字 ===
 const HEADER_TITLE = (
   <span className="font-bold text-neutral-900 tracking-tight text-base">
@@ -82,7 +53,7 @@ interface PaginatedResponse<T> {
 }
 
 export function ProjectKanbanPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   // === 状态 ===
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [filterProjectId, setFilterProjectId] = useState<string | null>(null)
@@ -448,6 +419,22 @@ export function ProjectKanbanPage() {
     return activeProjects[0]?.id ?? ''
   }, [activeProjects, effectiveFilterProjectId])
 
+  const [createTaskProjectId, setCreateTaskProjectId] = useState(defaultProjectId)
+
+  useEffect(() => {
+    setCreateTaskProjectId(defaultProjectId)
+  }, [defaultProjectId])
+
+  const createTaskProjectName = useMemo(() => {
+    return activeProjects.find(p => p.id === createTaskProjectId)?.name
+      ?? activeProjects.find(p => p.id === defaultProjectId)?.name
+      ?? t('Project')
+  }, [activeProjects, createTaskProjectId, defaultProjectId, t])
+
+  const createTaskTitle = locale === 'zh-CN'
+    ? `你需要在 ${createTaskProjectName} 中做点什么？`
+    : `What do you need to do in ${createTaskProjectName}?`
+
   const defaultProviderId = useMemo(() => {
     const lastProviderId = localStorage.getItem('lastSelectedProviderId')
     if (lastProviderId && sortedProviders.find(p => p.provider.id === lastProviderId && p.availability.type !== 'NOT_FOUND')) return lastProviderId
@@ -486,8 +473,7 @@ export function ProjectKanbanPage() {
             </button>
           </header>
           <div className="flex-1 flex flex-col items-center justify-center px-4">
-            <h1 className="text-xl text-neutral-900 mb-1.5 tracking-tight">{t('欢迎使用 Agent Tower')}</h1>
-            <TypewriterText text={t('描述任务，选择 Agent 或团队，即刻开始')} className="text-[13px] text-neutral-400 mb-6" />
+            <h1 className="max-w-full text-center text-xl leading-tight text-neutral-900 mb-6 break-words">{createTaskTitle}</h1>
             <CreateTaskInput
               projects={createTaskProjectOptions}
               providers={createTaskProviderOptions}
@@ -495,6 +481,7 @@ export function ProjectKanbanPage() {
               onSubmit={handleMobileSubmitTask}
               defaultProjectId={defaultProjectId}
               defaultProviderId={defaultProviderId}
+              onProjectChange={setCreateTaskProjectId}
               createStep={createStep}
             />
           </div>
@@ -631,8 +618,7 @@ export function ProjectKanbanPage() {
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center bg-white min-w-0 px-8">
             <div className="w-full max-w-3xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
-              <h1 className="text-2xl text-neutral-900 mb-1.5 tracking-tight">{t('欢迎使用 Agent Tower')}</h1>
-              <TypewriterText text={t('描述任务，选择 Agent 或团队，即刻开始')} className="text-[13px] text-neutral-400 mb-8" />
+              <h1 className="max-w-full text-center text-2xl leading-tight text-neutral-900 mb-8 break-words">{createTaskTitle}</h1>
               <CreateTaskInput
                 projects={createTaskProjectOptions}
                 providers={createTaskProviderOptions}
@@ -640,6 +626,7 @@ export function ProjectKanbanPage() {
                 onSubmit={handleSubmitTask}
                 defaultProjectId={defaultProjectId}
                 defaultProviderId={defaultProviderId}
+                onProjectChange={setCreateTaskProjectId}
                 createStep={createStep}
               />
             </div>

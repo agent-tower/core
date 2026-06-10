@@ -41,6 +41,7 @@ export interface CreateTaskInputProps {
   }) => Promise<void>
   defaultProjectId?: string
   defaultProviderId?: string
+  onProjectChange?: (projectId: string) => void
   createStep: CreateStep
 }
 
@@ -60,6 +61,7 @@ export function CreateTaskInput({
   onSubmit,
   defaultProjectId = '',
   defaultProviderId = '',
+  onProjectChange,
   createStep,
 }: CreateTaskInputProps) {
   const { t } = useI18n()
@@ -85,7 +87,10 @@ export function CreateTaskInput({
 
   const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, isUploading } = useAttachments()
 
-  useEffect(() => { setProjectId(defaultProjectId) }, [defaultProjectId])
+  useEffect(() => {
+    setProjectId(defaultProjectId)
+    onProjectChange?.(defaultProjectId)
+  }, [defaultProjectId, onProjectChange])
   useEffect(() => { setProviderId(defaultProviderId) }, [defaultProviderId])
 
   useEffect(() => {
@@ -166,6 +171,12 @@ export function CreateTaskInput({
     }
     e.target.value = ''
   }, [addFiles])
+
+  const handleProjectSelect = useCallback((nextProjectId: string) => {
+    setProjectId(nextProjectId)
+    onProjectChange?.(nextProjectId)
+    setShowProjectMenu(false)
+  }, [onProjectChange])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData.items
@@ -327,7 +338,7 @@ export function CreateTaskInput({
                 <button
                   key={p.id}
                   type="button"
-                  onClick={() => { setProjectId(p.id); setShowProjectMenu(false) }}
+                  onClick={() => handleProjectSelect(p.id)}
                   className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-neutral-50 transition-colors"
                 >
                   <Check size={14} className={cn('mr-2 shrink-0', p.id === projectId ? 'opacity-100' : 'opacity-0')} />
