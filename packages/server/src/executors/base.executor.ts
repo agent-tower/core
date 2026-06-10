@@ -18,6 +18,7 @@ import {
 } from '../utils/process-launch.js';
 
 const PTY_LOG_FILE = getPtyLogFilePath();
+const OUTPUT_BUFFER_LIMIT = 8000;
 function ptyLog(pid: number, msg: string): void {
   const line = `[${new Date().toISOString()}][pid=${pid}] ${msg}\n`;
   process.stdout.write(line);
@@ -258,7 +259,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     // 收集并实时记录 PTY 输出（写入系统临时目录日志方便诊断）
     let outputBuffer = '';
     const offData = shell.onData((data) => {
-      if (outputBuffer.length < 8000) {
+      if (outputBuffer.length < OUTPUT_BUFFER_LIMIT) {
         outputBuffer += data;
       }
       const cleaned = stripAnsiSequences(data).replace(/\s+/g, ' ').trim();
@@ -326,45 +327,70 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     console.log('[BaseExecutor] Wrote stdin data to temp file:', tmpFile);
     const invocation = buildPtyCommandWithStdin(programPath, fullArgs, tmpFile);
 
-    const shell = pty.spawn(invocation.command, invocation.args, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd: config.workingDir,
-      env: env.getFullEnv(),
-    });
+    let shell: IPty | undefined;
+    let offData: { dispose(): void } | undefined;
+    let offExit: { dispose(): void } | undefined;
 
-    console.log('[BaseExecutor] Process spawned with PID:', shell.pid);
+    try {
+      shell = pty.spawn(invocation.command, invocation.args, {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: config.workingDir,
+        env: env.getFullEnv(),
+      });
+      const spawnedShell = shell;
 
-    // 添加调试输出监听
-    let outputBuffer = '';
-    shell.onData((data) => {
-      outputBuffer += data;
-      // 只打印前1000个字符，避免日志过多
-      if (outputBuffer.length < 1000) {
-        console.log('[BaseExecutor] PTY output:', data.substring(0, 200));
+      console.log('[BaseExecutor] Process spawned with PID:', spawnedShell.pid);
+
+      // 添加调试输出监听
+      let outputBuffer = '';
+      offData = spawnedShell.onData((data) => {
+        if (outputBuffer.length < OUTPUT_BUFFER_LIMIT) {
+          outputBuffer += data;
+        }
+        // 只打印前1000个字符，避免日志过多
+        if (outputBuffer.length < 1000) {
+          console.log('[BaseExecutor] PTY output:', data.substring(0, 200));
+        }
+      });
+
+      // 监听退出事件
+      offExit = spawnedShell.onExit(({ exitCode, signal }) => {
+        offData?.dispose();
+        offExit?.dispose();
+        console.log('[BaseExecutor] PTY exited, code:', exitCode, 'signal:', signal);
+        console.log('[BaseExecutor] Total output length:', outputBuffer.length);
+        if (outputBuffer.length < 2000) {
+          console.log('[BaseExecutor] Full output:', outputBuffer);
+        }
+      });
+
+      // 监听取消信号
+      cancel.onCancelled(() => {
+        spawnedShell.kill('SIGINT');
+      });
+
+      return {
+        pid: spawnedShell.pid,
+        pty: spawnedShell,
+        cancel,
+      };
+    } catch (error) {
+      offData?.dispose();
+      offExit?.dispose();
+      try {
+        shell?.kill('SIGINT');
+      } catch {
+        // ignore cleanup errors; preserve original spawn failure
       }
-    });
-
-    // 监听退出事件
-    shell.onExit(({ exitCode, signal }) => {
-      console.log('[BaseExecutor] PTY exited, code:', exitCode, 'signal:', signal);
-      console.log('[BaseExecutor] Total output length:', outputBuffer.length);
-      if (outputBuffer.length < 2000) {
-        console.log('[BaseExecutor] Full output:', outputBuffer);
+      try {
+        await fs.unlink(tmpFile);
+      } catch {
+        // wrapper may already have cleaned it or the file may not exist
       }
-    });
-
-    // 监听取消信号
-    cancel.onCancelled(() => {
-      shell.kill('SIGINT');
-    });
-
-    return {
-      pid: shell.pid,
-      pty: shell,
-      cancel,
-    };
+      throw error;
+    }
   }
 
   /**
