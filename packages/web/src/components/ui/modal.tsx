@@ -30,15 +30,17 @@ export const Modal: React.FC<ModalProps> = ({
   className,
 }) => {
   const [isVisible, setIsVisible] = useState(false)
+  const contentRef = useRef<HTMLDivElement | null>(null)
   const lockedRef = useRef(false)
 
   useEffect(() => {
     if (isOpen) {
-      setIsVisible(true)
+      const timer = setTimeout(() => setIsVisible(true), 0)
       if (!lockedRef.current) {
         acquireScrollLock()
         lockedRef.current = true
       }
+      return () => clearTimeout(timer)
     } else {
       const timer = setTimeout(() => setIsVisible(false), 200)
       if (lockedRef.current) {
@@ -57,6 +59,15 @@ export const Modal: React.FC<ModalProps> = ({
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const element = contentRef.current
+    if (!element || element.contains(document.activeElement)) return
+
+    element.focus()
+  }, [isOpen])
 
   if (!isVisible && !isOpen) return null
 
@@ -81,7 +92,7 @@ export const Modal: React.FC<ModalProps> = ({
 
       {/* Content — tabIndex for keyboard event capture */}
       <div
-        ref={(el) => { if (el && isOpen) el.focus() }}
+        ref={contentRef}
         tabIndex={-1}
         className={cn(
           "relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden bg-white rounded-xl shadow-2xl shadow-neutral-200/50 border border-neutral-100 transform transition-all duration-200 outline-none",
