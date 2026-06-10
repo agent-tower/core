@@ -78,6 +78,9 @@ export type TeamMemberSessionPolicy = 'new_per_request' | 'resume_last'
 /** 团队成员队列管理策略 */
 export type TeamMemberQueueManagementPolicy = 'own_only' | 'team_pending'
 
+/** TeamRun 成员生命周期状态 */
+export type TeamMemberMembershipStatus = 'ACTIVE' | 'REMOVED'
+
 /** 目标成员忙碌时的处理策略 */
 export type IfBusyPolicy = 'queue' | 'cancel_current_and_start'
 
@@ -93,6 +96,7 @@ export type TeamMemberStatus =
   | 'READY_FOR_REVIEW'
   | 'FAILED'
   | 'CANCELLED'
+  | 'REMOVED'
   | (string & {})
 
 /** 房间消息发送者类型 */
@@ -385,6 +389,7 @@ export interface TeamMember {
   triggerPolicy: TeamMemberTriggerPolicy
   sessionPolicy: TeamMemberSessionPolicy
   queueManagementPolicy: TeamMemberQueueManagementPolicy
+  membershipStatus: TeamMemberMembershipStatus
   avatar?: string | null
   status: TeamMemberStatus
   createdAt?: string

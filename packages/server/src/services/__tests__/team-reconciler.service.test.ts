@@ -156,7 +156,7 @@ function createRouteSchedulerMock(): RouteSchedulerMock {
 
     return asAgentInvocations(invocations);
   });
-  scheduler.approveWorkRequestAndStartNext = vi.fn(async (workRequestId: string) => {
+  scheduler.approveWorkRequestAndStartNext = vi.fn(async (workRequestId: string, _options?: unknown) => {
     const workRequest = await prisma.workRequest.update({
       where: { id: workRequestId },
       data: { status: 'QUEUED' },
@@ -164,7 +164,7 @@ function createRouteSchedulerMock(): RouteSchedulerMock {
     const startedInvocations = await scheduler.startNextSessions(workRequest.teamRunId);
     return { workRequest: asWorkRequest(workRequest), startedInvocations };
   });
-  scheduler.rejectWorkRequest = vi.fn(async (workRequestId: string) => prisma.workRequest.update({
+  scheduler.rejectWorkRequest = vi.fn(async (workRequestId: string, _options?: unknown) => prisma.workRequest.update({
     where: { id: workRequestId },
     data: { status: 'REJECTED' },
   }).then(asWorkRequest));
@@ -1639,6 +1639,16 @@ describe('TeamReconcilerService', () => {
       expect(noMentionResult.isError).toBe(true);
       expect(getMcpToolText(noMentionResult)).toContain('mentionMembers');
 
+      const noStopResult = await callToolForCurrentMember(noRead, noReadInvocation.id, {
+        name: 'stop_member_work',
+        arguments: {
+          member_id: noRead.members[1]!.id,
+          cancel_queued: true,
+        },
+      });
+      expect(noStopResult.isError).toBe(true);
+      expect(getMcpToolText(noStopResult)).toContain('stopMemberWork');
+
       await expect(prisma.roomMessage.count({
         where: {
           content: {
@@ -1687,6 +1697,24 @@ describe('TeamReconcilerService', () => {
       targetMemberId: members[1]!.id,
       status: 'QUEUED',
       instruction: 'Other queued request',
+    });
+    const ownPendingApproval = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+      instruction: 'Own pending approval',
+    });
+    const ownPendingRejection = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+      instruction: 'Own pending rejection',
+    });
+    const otherPendingApproval = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'PENDING_APPROVAL',
+      instruction: 'Other pending approval',
     });
     const app = Fastify({ logger: false });
 
@@ -1761,6 +1789,36 @@ describe('TeamReconcilerService', () => {
         });
         expect(forbiddenCancel.isError).toBe(true);
         expect(getMcpToolText(forbiddenCancel)).toContain('FORBIDDEN');
+        await expect(prisma.workRequest.findUnique({ where: { id: otherRequest.id } })).resolves.toMatchObject({
+          status: 'QUEUED',
+        });
+
+        const approveResult = await client.callTool({
+          name: 'approve_work_request',
+          arguments: { work_request_id: ownPendingApproval.id },
+        });
+        expect(approveResult.isError, getMcpToolText(approveResult)).not.toBe(true);
+        expect(JSON.parse(getMcpToolText(approveResult)).workRequest).toMatchObject({
+          id: ownPendingApproval.id,
+          status: 'QUEUED',
+        });
+
+        const rejectResult = await client.callTool({
+          name: 'reject_work_request',
+          arguments: { work_request_id: ownPendingRejection.id },
+        });
+        expect(rejectResult.isError, getMcpToolText(rejectResult)).not.toBe(true);
+        expect(JSON.parse(getMcpToolText(rejectResult))).toMatchObject({
+          id: ownPendingRejection.id,
+          status: 'REJECTED',
+        });
+
+        const forbiddenApprove = await client.callTool({
+          name: 'approve_work_request',
+          arguments: { work_request_id: otherPendingApproval.id },
+        });
+        expect(forbiddenApprove.isError).toBe(true);
+        expect(getMcpToolText(forbiddenApprove)).toContain('FORBIDDEN');
       } finally {
         await client.close();
         await server.close();
@@ -1770,7 +1828,13 @@ describe('TeamReconcilerService', () => {
         status: 'CANCELLED',
       });
       await expect(prisma.workRequest.findUnique({ where: { id: otherRequest.id } })).resolves.toMatchObject({
-        status: 'QUEUED',
+        status: 'STARTED',
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: ownPendingRejection.id } })).resolves.toMatchObject({
+        status: 'REJECTED',
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: otherPendingApproval.id } })).resolves.toMatchObject({
+        status: 'PENDING_APPROVAL',
       });
     } finally {
       restoreTeamRunEnv(previousEnv);
@@ -1915,6 +1979,120 @@ describe('TeamReconcilerService', () => {
       await expect(prisma.workRequest.findUnique({ where: { id: otherQueued.id } })).resolves.toMatchObject({
         status: 'QUEUED',
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('passes requester member scope for REST WorkRequest approval and rejection', async () => {
+    const { teamRun, members } = await createFixture({ memberCount: 2, teamRunMode: 'CONFIRM' });
+    const ownPending = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+      instruction: 'Own approval',
+    });
+    const otherPending = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+      status: 'PENDING_APPROVAL',
+      instruction: 'Other rejection',
+    });
+    const routeScheduler = createRouteSchedulerMock();
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const approve = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/work-requests/${ownPending.id}/approve`,
+        payload: {
+          teamRunId: teamRun.id,
+          requesterMemberId: members[0]!.id,
+        },
+      });
+      expect(approve.statusCode).toBe(200);
+      expect(routeScheduler.approveWorkRequestAndStartNext).toHaveBeenCalledWith(ownPending.id, {
+        teamRunId: teamRun.id,
+        requesterMemberId: members[0]!.id,
+      });
+
+      const reject = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/work-requests/${otherPending.id}/reject`,
+        payload: {
+          teamRunId: teamRun.id,
+          requesterMemberId: members[0]!.id,
+        },
+      });
+      expect(reject.statusCode).toBe(200);
+      expect(routeScheduler.rejectWorkRequest).toHaveBeenCalledWith(otherPending.id, {
+        teamRunId: teamRun.id,
+        requesterMemberId: members[0]!.id,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not soft-remove a member when active stop fails during removal', async () => {
+    const { workspace, teamRun, members } = await createFixture({ memberCount: 2 });
+    const activeRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+      instruction: 'Active work',
+    });
+    const queuedRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+      instruction: 'Queued work',
+    });
+    await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: activeRequest.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    const routeScheduler = createRouteSchedulerMock();
+    routeScheduler.stopMemberWork = vi.fn(async () => {
+      throw new Error('stop failed');
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/${teamRun.id}/members/${members[0]!.id}/remove`,
+        payload: {
+          stopActive: true,
+          cancelQueued: true,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(routeScheduler.stopMemberWork).toHaveBeenCalledWith(teamRun.id, members[0]!.id, {
+        cancelQueued: true,
+      });
+      await expect(prisma.teamMember.findUnique({ where: { id: members[0]!.id } })).resolves.toMatchObject({
+        membershipStatus: 'ACTIVE',
+        status: 'IDLE',
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: queuedRequest.id } })).resolves.toMatchObject({
+        status: 'QUEUED',
+      });
+      await expect(prisma.agentInvocation.count({
+        where: {
+          teamRunId: teamRun.id,
+          memberId: members[0]!.id,
+          status: 'RUNNING',
+        },
+      })).resolves.toBe(1);
     } finally {
       await app.close();
     }

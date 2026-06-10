@@ -989,6 +989,107 @@ describe('TeamRunService', () => {
     await expect(service.listWorkRequests(teamRun.id)).resolves.toEqual([]);
   });
 
+  it('adds, patches, and soft-removes TeamRun members without deleting history', async () => {
+    const initialPreset = await service.createMemberPreset(presetInput('Lead'));
+    const addedPreset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [initialPreset.id],
+    });
+
+    const added = await service.addTeamRunMember(teamRun.id, { memberPresetId: addedPreset.id });
+    expect(added).toMatchObject({
+      name: 'Coder',
+      membershipStatus: 'ACTIVE',
+      status: 'IDLE',
+    });
+
+    const patched = await service.patchTeamRunMember(teamRun.id, added.id, {
+      name: 'Coder Prime',
+      aliases: ['prime'],
+    });
+    expect(patched).toMatchObject({
+      name: 'Coder Prime',
+      aliases: ['prime'],
+      membershipStatus: 'ACTIVE',
+    });
+
+    const message = await service.createPrivateRoomMessage(teamRun.id, {
+      content: 'Private work',
+      recipientMemberIds: [added.id],
+    });
+    expect(message.participantMemberIds).toEqual([added.id]);
+
+    const removed = await service.softRemoveTeamRunMember(teamRun.id, added.id);
+    expect(removed.member).toMatchObject({
+      id: added.id,
+      membershipStatus: 'REMOVED',
+      status: 'REMOVED',
+    });
+
+    const members = await service.listTeamMembers(teamRun.id);
+    expect(members.find((member) => member.id === added.id)).toMatchObject({
+      membershipStatus: 'REMOVED',
+      status: 'REMOVED',
+    });
+    const messages = await service.listRoomMessages(teamRun.id);
+    expect(messages.find((item) => item.id === message.id)?.participantMemberIds).toEqual([added.id]);
+  });
+
+  it('excludes removed members from future mentions, private recipients, and USER_MESSAGES fallback', async () => {
+    const leadPreset = await service.createMemberPreset(userMessagesPresetInput('Lead'));
+    const coderPreset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [leadPreset.id, coderPreset.id],
+    });
+    const lead = teamRun.members?.find((member) => member.name === 'Lead');
+    const coder = teamRun.members?.find((member) => member.name === 'Coder');
+    expect(lead).toBeDefined();
+    expect(coder).toBeDefined();
+
+    await service.softRemoveTeamRunMember(teamRun.id, lead!.id);
+
+    await expect(service.createRoomMessage(teamRun.id, {
+      content: 'Please review',
+      mentions: [{ memberId: lead!.id, label: 'Lead' }],
+    })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    await expect(service.createPrivateRoomMessage(teamRun.id, {
+      content: 'Private review',
+      recipientMemberIds: [lead!.id],
+    })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'No fallback should target removed Lead',
+      senderType: 'agent',
+      senderId: coder!.id,
+    });
+    expect(message.workRequestIds).toEqual([]);
+    const requests = await service.listWorkRequests(teamRun.id);
+    expect(requests.filter((request) => request.targetMemberId === lead!.id)).toHaveLength(0);
+  });
+
+  it('rejects queue access for removed TeamRun members', async () => {
+    const leadPreset = await service.createMemberPreset(presetInput('Lead'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [leadPreset.id],
+    });
+    const lead = teamRun.members?.[0];
+    expect(lead).toBeDefined();
+
+    await service.softRemoveTeamRunMember(teamRun.id, lead!.id);
+
+    await expect(service.listQueuedWorkRequestsForMember(teamRun.id, lead!.id)).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      statusCode: 403,
+    });
+  });
+
   it('queues WorkRequests in AUTO mode and preserves senderInvocationId', async () => {
     const preset = await service.createMemberPreset(presetInput('Reviewer'));
     const task = await createTask();

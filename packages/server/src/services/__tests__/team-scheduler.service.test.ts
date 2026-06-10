@@ -336,6 +336,113 @@ describe('TeamSchedulerService', () => {
     });
   });
 
+  it('enforces requester member scope when approving WorkRequests', async () => {
+    const { teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities, readOnlyCapabilities, readOnlyCapabilities],
+      queueManagementPolicies: ['own_only', 'team_pending', 'own_only'],
+    });
+    const ownRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+    const managerRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[2]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+    const forbiddenRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[2]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+
+    await expect(service.approveWorkRequest(ownRequest.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).resolves.toMatchObject({ status: 'QUEUED' });
+
+    await expect(service.approveWorkRequest(managerRequest.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[1]!.id,
+    })).resolves.toMatchObject({ status: 'QUEUED' });
+
+    await expect(service.approveWorkRequest(forbiddenRequest.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      statusCode: 403,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: forbiddenRequest.id } })).resolves.toMatchObject({
+      status: 'PENDING_APPROVAL',
+    });
+  });
+
+  it('does not approve a WorkRequest outside the scoped TeamRun', async () => {
+    const first = await createTeamRunFixture();
+    const second = await createTeamRunFixture();
+    const request = await createWorkRequest({
+      teamRunId: second.teamRun.id,
+      targetMemberId: second.members[0]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+
+    await expect(service.approveWorkRequest(request.id, {
+      teamRunId: first.teamRun.id,
+      requesterMemberId: first.members[0]!.id,
+    })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      statusCode: 404,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'PENDING_APPROVAL',
+    });
+  });
+
+  it('enforces requester member scope when rejecting WorkRequests', async () => {
+    const { teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities, readOnlyCapabilities, readOnlyCapabilities],
+      queueManagementPolicies: ['own_only', 'team_pending', 'own_only'],
+    });
+    const ownRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+    const managerRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[2]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+    const forbiddenRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[2]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+
+    await expect(service.rejectWorkRequest(ownRequest.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).resolves.toMatchObject({ status: 'REJECTED' });
+
+    await expect(service.rejectWorkRequest(managerRequest.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[1]!.id,
+    })).resolves.toMatchObject({ status: 'REJECTED' });
+
+    await expect(service.rejectWorkRequest(forbiddenRequest.id, {
+      teamRunId: teamRun.id,
+      requesterMemberId: members[0]!.id,
+    })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      statusCode: 403,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: forbiddenRequest.id } })).resolves.toMatchObject({
+      status: 'PENDING_APPROVAL',
+    });
+  });
+
   it('does not start queued work for a deleted task', async () => {
     const { task, teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
     const request = await createWorkRequest({
@@ -366,6 +473,43 @@ describe('TeamSchedulerService', () => {
     });
     await expect(prisma.workspace.count({ where: { taskId: task.id } })).resolves.toBe(0);
     await expect(prisma.session.count()).resolves.toBe(0);
+    await expect(prisma.agentInvocation.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+  });
+
+  it('does not start queued work for removed TeamRun members', async () => {
+    const { teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+    await prisma.teamMember.update({
+      where: { id: members[0]!.id },
+      data: { membershipStatus: 'REMOVED' },
+    });
+    const workspaceService = createWorkspaceServiceMock();
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.planNext(teamRun.id)).resolves.toEqual([
+      expect.objectContaining({
+        workRequestId: request.id,
+        memberId: members[0]!.id,
+        canStart: false,
+        blockedReason: 'member_not_found',
+      }),
+    ]);
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    expect(workspaceService.create).not.toHaveBeenCalled();
+    expect(sessionManager.create).not.toHaveBeenCalled();
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
     await expect(prisma.agentInvocation.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
   });
 

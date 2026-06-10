@@ -205,6 +205,7 @@ export type TeamRunInvalidationScope =
 
 export type TeamRunInvalidationReason =
   | 'team-run-created'
+  | 'team-members-updated'
   | 'room-message-created'
   | 'work-request-updated'
   | 'agent-invocation-updated'

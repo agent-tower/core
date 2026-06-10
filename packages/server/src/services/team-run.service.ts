@@ -12,6 +12,7 @@ import type {
   StructuredMention,
   TeamMember,
   TeamMemberCapabilities,
+  TeamMemberMembershipStatus,
   TeamMemberQueueManagementPolicy,
   TeamMemberSessionPolicy,
   TeamMemberStatus,
@@ -86,6 +87,17 @@ export interface CreateTeamRunMemberInput {
   sessionPolicy: TeamMemberSessionPolicy;
   queueManagementPolicy: TeamMemberQueueManagementPolicy;
   avatar?: string | null;
+}
+
+export interface AddTeamRunMemberInput {
+  memberPresetId?: string;
+  member?: CreateTeamRunMemberInput;
+}
+
+export type PatchTeamRunMemberInput = Partial<CreateTeamRunMemberInput>;
+
+export interface RemoveTeamRunMemberOptions {
+  cancelQueued?: boolean;
 }
 
 export interface CreateTeamRunInput {
@@ -196,6 +208,8 @@ const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
 
 const DEFAULT_SESSION_POLICY: TeamMemberSessionPolicy = 'new_per_request';
 const DEFAULT_QUEUE_MANAGEMENT_POLICY: TeamMemberQueueManagementPolicy = 'own_only';
+const ACTIVE_MEMBERSHIP_STATUS: TeamMemberMembershipStatus = 'ACTIVE';
+const REMOVED_MEMBERSHIP_STATUS: TeamMemberMembershipStatus = 'REMOVED';
 const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
   'QUEUED',
   'RUNNING',
@@ -335,6 +349,10 @@ function uniqueMemberIds(memberIds: string[]): string[] {
   return Array.from(new Set(memberIds.map((memberId) => memberId.trim()).filter(Boolean)));
 }
 
+function isActiveMembershipStatus(value: string | null | undefined): boolean {
+  return value !== REMOVED_MEMBERSHIP_STATUS;
+}
+
 function buildRoomMessageVisibilityWhere(
   teamRunId: string,
   viewerMemberId?: string | null
@@ -355,6 +373,13 @@ function buildRoomMessageVisibilityWhere(
         },
       },
     ],
+  };
+}
+
+function activeTeamMembersWhere(teamRunId: string) {
+  return {
+    teamRunId,
+    membershipStatus: ACTIVE_MEMBERSHIP_STATUS,
   };
 }
 
@@ -621,6 +646,7 @@ export class TeamRunService {
               triggerPolicy: snapshot.triggerPolicy,
               sessionPolicy: snapshot.sessionPolicy,
               queueManagementPolicy: snapshot.queueManagementPolicy,
+              membershipStatus: ACTIVE_MEMBERSHIP_STATUS,
               avatar: snapshot.avatar,
             },
           });
@@ -693,6 +719,7 @@ export class TeamRunService {
               triggerPolicy: snapshot.triggerPolicy,
               sessionPolicy: snapshot.sessionPolicy,
               queueManagementPolicy: snapshot.queueManagementPolicy,
+              membershipStatus: ACTIVE_MEMBERSHIP_STATUS,
               avatar: snapshot.avatar,
             },
           });
@@ -837,6 +864,165 @@ export class TeamRunService {
     return members.map((member) => this.serializeTeamMember(member, memberStatuses.get(member.id)));
   }
 
+  async addTeamRunMember(teamRunId: string, input: AddTeamRunMemberInput): Promise<TeamMember> {
+    if ((input.memberPresetId ? 1 : 0) + (input.member ? 1 : 0) !== 1) {
+      throw new ValidationError('Exactly one of memberPresetId or member is required');
+    }
+
+    const snapshot = await this.buildAddTeamRunMemberSnapshot(input);
+    const created = await prisma.$transaction(async (tx) => {
+      const teamRun = await tx.teamRun.findUnique({
+        where: { id: teamRunId },
+        include: { task: true },
+      });
+      if (!teamRun) {
+        throw new NotFoundError('TeamRun', teamRunId);
+      }
+      ensureTaskNotDeleted(teamRun.task);
+
+      const existingMembers = await tx.teamMember.findMany({
+        where: activeTeamMembersWhere(teamRunId),
+        select: { name: true },
+      });
+      const instanceName = this.resolveAddedMemberInstanceName(snapshot.name, existingMembers.map((member) => member.name));
+
+      return tx.teamMember.create({
+        data: {
+          teamRunId,
+          presetId: snapshot.presetId,
+          name: instanceName,
+          aliases: stringifyJson(snapshot.aliases),
+          providerId: snapshot.providerId,
+          rolePrompt: snapshot.rolePrompt,
+          capabilities: stringifyJson(snapshot.capabilities),
+          workspacePolicy: snapshot.workspacePolicy,
+          triggerPolicy: snapshot.triggerPolicy,
+          sessionPolicy: snapshot.sessionPolicy,
+          queueManagementPolicy: snapshot.queueManagementPolicy,
+          membershipStatus: ACTIVE_MEMBERSHIP_STATUS,
+          avatar: snapshot.avatar,
+        },
+      });
+    });
+
+    await emitTeamRunInvalidated({
+      teamRunId,
+      scopes: ['team-run', 'team-members'],
+      reason: 'team-members-updated',
+    });
+
+    return this.serializeTeamMember(created);
+  }
+
+  async patchTeamRunMember(
+    teamRunId: string,
+    memberId: string,
+    input: PatchTeamRunMemberInput
+  ): Promise<TeamMember> {
+    if (Object.keys(input).length === 0) {
+      throw new ValidationError('At least one TeamMember field is required');
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const member = await tx.teamMember.findFirst({
+        where: { id: memberId, teamRunId },
+        include: { teamRun: { include: { task: true } } },
+      });
+      if (!member) {
+        const teamRun = await tx.teamRun.findUnique({ where: { id: teamRunId }, select: { id: true } });
+        if (!teamRun) throw new NotFoundError('TeamRun', teamRunId);
+        throw new NotFoundError('TeamMember', memberId);
+      }
+      ensureTaskNotDeleted(member.teamRun.task);
+      if (!isActiveMembershipStatus(member.membershipStatus)) {
+        throw new ServiceError('Removed TeamRun members cannot be updated', 'INVALID_STATE_TRANSITION', 400);
+      }
+
+      return tx.teamMember.update({
+        where: { id: memberId },
+        data: {
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.aliases !== undefined ? { aliases: stringifyJson(input.aliases) } : {}),
+          ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
+          ...(input.rolePrompt !== undefined ? { rolePrompt: input.rolePrompt } : {}),
+          ...(input.capabilities !== undefined ? { capabilities: stringifyJson(input.capabilities) } : {}),
+          ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
+          ...(input.triggerPolicy !== undefined ? { triggerPolicy: input.triggerPolicy } : {}),
+          ...(input.sessionPolicy !== undefined ? { sessionPolicy: input.sessionPolicy } : {}),
+          ...(input.queueManagementPolicy !== undefined ? { queueManagementPolicy: input.queueManagementPolicy } : {}),
+          ...(input.avatar !== undefined ? { avatar: input.avatar ?? null } : {}),
+        },
+      });
+    });
+
+    await emitTeamRunInvalidated({
+      teamRunId,
+      scopes: ['team-run', 'team-members'],
+      reason: 'team-members-updated',
+    });
+
+    return this.serializeTeamMember(updated);
+  }
+
+  async softRemoveTeamRunMember(
+    teamRunId: string,
+    memberId: string,
+    options: RemoveTeamRunMemberOptions = {}
+  ): Promise<{ member: TeamMember; cancelledWorkRequestIds: string[] }> {
+    const result = await prisma.$transaction(async (tx) => {
+      const member = await tx.teamMember.findFirst({
+        where: { id: memberId, teamRunId },
+        include: { teamRun: { include: { task: true } } },
+      });
+      if (!member) {
+        const teamRun = await tx.teamRun.findUnique({ where: { id: teamRunId }, select: { id: true } });
+        if (!teamRun) throw new NotFoundError('TeamRun', teamRunId);
+        throw new NotFoundError('TeamMember', memberId);
+      }
+      ensureTaskNotDeleted(member.teamRun.task);
+
+      const cancellableRequests = options.cancelQueued === false
+        ? []
+        : await tx.workRequest.findMany({
+          where: {
+            teamRunId,
+            targetMemberId: memberId,
+            status: { in: OPEN_WORK_REQUEST_STATUSES },
+          },
+          select: { id: true },
+        });
+      const cancellableRequestIds = cancellableRequests.map((request) => request.id);
+
+      if (cancellableRequestIds.length > 0) {
+        await tx.workRequest.updateMany({
+          where: { id: { in: cancellableRequestIds } },
+          data: { status: 'CANCELLED' },
+        });
+      }
+
+      const updated = await tx.teamMember.update({
+        where: { id: memberId },
+        data: {
+          membershipStatus: REMOVED_MEMBERSHIP_STATUS,
+          status: 'REMOVED',
+        },
+      });
+
+      return { member: updated, cancelledWorkRequestIds: cancellableRequestIds };
+    });
+
+    await emitTeamRunInvalidated({
+      teamRunId,
+      scopes: ['team-run', 'team-members', 'work-requests'],
+      reason: 'team-members-updated',
+    });
+
+    return {
+      member: this.serializeTeamMember(result.member, 'REMOVED'),
+      cancelledWorkRequestIds: result.cancelledWorkRequestIds,
+    };
+  }
+
   async listRoomMessages(teamRunId: string, options: TeamRunVisibilityOptions = {}): Promise<RoomMessage[]> {
     await this.assertTeamRunExists(teamRunId);
     const messages = await prisma.roomMessage.findMany({
@@ -869,6 +1055,10 @@ export class TeamRunService {
 
   async listQueuedWorkRequestsForMember(teamRunId: string, memberId: string): Promise<MemberWorkRequestQueue> {
     const member = await this.getTeamMemberOrThrow(teamRunId, memberId);
+    if (!isActiveMembershipStatus(member.membershipStatus)) {
+      throw new ServiceError('Removed TeamRun members cannot access the work request queue', 'FORBIDDEN', 403);
+    }
+
     const queueManagementPolicy = this.resolveQueueManagementPolicy(member.queueManagementPolicy);
     const canManageTeamRunQueue = queueManagementPolicy === 'team_pending';
     const workRequests = await prisma.workRequest.findMany({
@@ -968,7 +1158,7 @@ export class TeamRunService {
         throw new NotFoundError('Task', teamRun.taskId);
       }
 
-      const members = await tx.teamMember.findMany({ where: { teamRunId } });
+      const members = await tx.teamMember.findMany({ where: activeTeamMembersWhere(teamRunId) });
       const memberIds = new Set(members.map((member) => member.id));
       assertMentionsReferenceMembers(mentions, memberIds);
 
@@ -1082,7 +1272,7 @@ export class TeamRunService {
 
     let messageId = '';
     await prisma.$transaction(async (tx) => {
-      const members = await tx.teamMember.findMany({ where: { teamRunId } });
+      const members = await tx.teamMember.findMany({ where: activeTeamMembersWhere(teamRunId) });
       const memberIds = new Set(members.map((member) => member.id));
       for (const recipientMemberId of recipientMemberIds) {
         if (!memberIds.has(recipientMemberId)) {
@@ -1267,6 +1457,47 @@ export class TeamRunService {
     return snapshots;
   }
 
+  private async buildAddTeamRunMemberSnapshot(input: AddTeamRunMemberInput): Promise<TeamMemberSnapshot> {
+    if (input.memberPresetId) {
+      const preset = await prisma.memberPreset.findUnique({ where: { id: input.memberPresetId } });
+      if (!preset) {
+        throw new NotFoundError('MemberPreset', input.memberPresetId);
+      }
+      return this.memberPresetToSnapshot(preset);
+    }
+
+    if (!input.member) {
+      throw new ValidationError('member is required when memberPresetId is not provided');
+    }
+
+    return {
+      presetId: null,
+      name: input.member.name,
+      aliases: input.member.aliases,
+      providerId: input.member.providerId,
+      rolePrompt: input.member.rolePrompt,
+      capabilities: input.member.capabilities,
+      workspacePolicy: input.member.workspacePolicy,
+      triggerPolicy: input.member.triggerPolicy,
+      sessionPolicy: input.member.sessionPolicy,
+      queueManagementPolicy: input.member.queueManagementPolicy,
+      avatar: input.member.avatar ?? null,
+    };
+  }
+
+  private resolveAddedMemberInstanceName(baseName: string, existingNames: string[]): string {
+    const trimmedBaseName = baseName.trim();
+    if (!existingNames.includes(trimmedBaseName)) {
+      return trimmedBaseName;
+    }
+
+    let index = 2;
+    while (existingNames.includes(`${trimmedBaseName} #${index}`)) {
+      index += 1;
+    }
+    return `${trimmedBaseName} #${index}`;
+  }
+
   private memberPresetToSnapshot(preset: PrismaMemberPreset): TeamMemberSnapshot {
     return {
       presetId: preset.id,
@@ -1443,7 +1674,12 @@ export class TeamRunService {
     const statuses = new Map<string, TeamMemberStatus>();
 
     for (const member of members) {
-      statuses.set(member.id, this.deriveTeamMemberStatus(member.id, invocations, workRequests));
+      statuses.set(member.id, this.deriveTeamMemberStatus(
+        member.id,
+        invocations,
+        workRequests,
+        member.membershipStatus
+      ));
     }
 
     return statuses;
@@ -1452,8 +1688,11 @@ export class TeamRunService {
   private deriveTeamMemberStatus(
     memberId: string,
     invocations: PrismaAgentInvocation[],
-    workRequests: PrismaWorkRequest[]
+    workRequests: PrismaWorkRequest[],
+    membershipStatus?: string
   ): TeamMemberStatus {
+    if (!isActiveMembershipStatus(membershipStatus)) return 'REMOVED';
+
     const memberInvocations = invocations.filter((invocation) => invocation.memberId === memberId);
     if (memberInvocations.some((invocation) => invocation.status === 'RUNNING')) return 'RUNNING';
     if (memberInvocations.some((invocation) => invocation.status === 'WAITING_ROOM_REPLY')) return 'WAITING_ROOM_REPLY';
@@ -1476,6 +1715,9 @@ export class TeamRunService {
       triggerPolicy: member.triggerPolicy as TeamMemberTriggerPolicy,
       sessionPolicy: member.sessionPolicy as TeamMemberSessionPolicy || DEFAULT_SESSION_POLICY,
       queueManagementPolicy: this.resolveQueueManagementPolicy(member.queueManagementPolicy),
+      membershipStatus: (isActiveMembershipStatus(member.membershipStatus)
+        ? ACTIVE_MEMBERSHIP_STATUS
+        : REMOVED_MEMBERSHIP_STATUS),
       avatar: member.avatar ?? null,
       status: status ?? 'IDLE',
       createdAt: toIso(member.createdAt),

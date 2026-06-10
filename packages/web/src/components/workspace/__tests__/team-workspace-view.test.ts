@@ -52,6 +52,7 @@ const teamRun = {
       triggerPolicy: 'MENTION_ONLY',
       sessionPolicy: 'new_per_request',
       queueManagementPolicy: 'own_only',
+      membershipStatus: 'ACTIVE',
       status: 'IDLE',
     },
   ],

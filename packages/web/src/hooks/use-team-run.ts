@@ -6,6 +6,7 @@ import type {
   StructuredMention,
   TeamRun,
   TeamRunMode,
+  TeamMember,
   RoomMessageSenderType,
   RoomMessageKind,
   TeamTemplate,
@@ -94,6 +95,32 @@ export type CreateTaskTeamRunInput = {
   memberPresetIds?: string[]
 }
 
+export type TeamRunMemberSnapshotInput = {
+  name: string
+  aliases: string[]
+  providerId: string
+  rolePrompt: string
+  capabilities: TeamMemberCapabilities
+  workspacePolicy: WorkspacePolicy
+  triggerPolicy: TeamMemberTriggerPolicy
+  sessionPolicy: TeamMemberSessionPolicy
+  queueManagementPolicy: TeamMemberQueueManagementPolicy
+  avatar?: string | null
+}
+
+export type AddTeamRunMemberInput = {
+  memberPresetId?: string
+  member?: TeamRunMemberSnapshotInput
+}
+
+export type PatchTeamRunMemberInput = Partial<TeamRunMemberSnapshotInput>
+
+export type RemoveTeamRunMemberInput = {
+  memberId: string
+  stopActive?: boolean
+  cancelQueued?: boolean
+}
+
 export type StopMemberWorkInput = {
   memberId: string
   cancelQueued?: boolean
@@ -110,6 +137,14 @@ type ApproveWorkRequestResponse = {
 }
 
 type StopMemberWorkResponse = {
+  stoppedSessionIds: string[]
+  cancelledInvocationIds: string[]
+  cancelledWorkRequestIds: string[]
+  startedInvocations: AgentInvocation[]
+}
+
+type RemoveTeamRunMemberResponse = {
+  member: TeamMember
   stoppedSessionIds: string[]
   cancelledInvocationIds: string[]
   cancelledWorkRequestIds: string[]
@@ -372,6 +407,48 @@ export function usePostRoomMessage(teamRunId: string) {
       queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.all })
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+    },
+  })
+}
+
+/** Add a member to a running TeamRun. */
+export function useAddTeamRunMember(teamRunId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (input: AddTeamRunMemberInput) =>
+      apiClient.post<TeamMember>(`/team-runs/${teamRunId}/members`, input),
+    onSuccess: () => {
+      invalidateTeamRunActionQueries(queryClient, teamRunId)
+    },
+  })
+}
+
+/** Patch a TeamRun member snapshot. */
+export function usePatchTeamRunMember(teamRunId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ memberId, data }: { memberId: string; data: PatchTeamRunMemberInput }) =>
+      apiClient.patch<TeamMember>(`/team-runs/${teamRunId}/members/${memberId}`, data),
+    onSuccess: () => {
+      invalidateTeamRunActionQueries(queryClient, teamRunId)
+    },
+  })
+}
+
+/** Soft-remove a TeamRun member and optionally stop active work/cancel queue. */
+export function useRemoveTeamRunMember(teamRunId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ memberId, stopActive = true, cancelQueued = true }: RemoveTeamRunMemberInput) =>
+      apiClient.post<RemoveTeamRunMemberResponse>(`/team-runs/${teamRunId}/members/${memberId}/remove`, {
+        stopActive,
+        cancelQueued,
+      }),
+    onSuccess: () => {
+      invalidateTeamRunActionQueries(queryClient, teamRunId)
     },
   })
 }

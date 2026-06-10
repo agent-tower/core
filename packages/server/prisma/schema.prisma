@@ -139,6 +139,7 @@ model TeamMember {
   triggerPolicy   String
   sessionPolicy   String   @default("new_per_request")
   queueManagementPolicy String @default("own_only")
+  membershipStatus String  @default("ACTIVE")
   avatar          String?
   status          String   @default("IDLE")
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
@@ -147,6 +148,7 @@ model TeamMember {
   updatedAt       DateTime @updatedAt
 
   @@index([teamRunId])
+  @@index([teamRunId, membershipStatus])
 }
 
 model RoomMessage {

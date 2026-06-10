@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Ban, Check, ChevronDown, ChevronRight, Clock3, GitBranch, Layers3, MessageSquare, PanelRightOpen, Square, Users, X } from 'lucide-react'
+import { Ban, Check, ChevronDown, ChevronRight, Clock3, GitBranch, Layers3, MessageSquare, PanelRightOpen, Settings2, Square, Users, X } from 'lucide-react'
 import { WorkspaceStatus, type AgentInvocation, type TeamMember, type TeamMemberStatus, type TeamRun, type Workspace, type WorkRequest } from '@agent-tower/shared'
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,7 @@ import {
   useRejectWorkRequest,
   useStopMemberWork,
 } from '@/hooks/use-team-run'
+import { TeamMemberManageDialog } from './TeamMemberManageDialog'
 
 interface TeamStatusPanelProps {
   teamRun: TeamRun
@@ -24,7 +25,7 @@ const EMPTY_MEMBERS: TeamMember[] = []
 const EMPTY_WORK_REQUESTS: WorkRequest[] = []
 const EMPTY_INVOCATIONS: AgentInvocation[] = []
 
-type DisplayStatus = 'running' | 'waiting room reply' | 'queued' | 'session ended' | 'pending approval' | 'idle'
+type DisplayStatus = 'running' | 'waiting room reply' | 'queued' | 'session ended' | 'pending approval' | 'removed' | 'idle'
 
 function toDisplayStatus(status: TeamMemberStatus): DisplayStatus {
   switch (status) {
@@ -39,6 +40,8 @@ function toDisplayStatus(status: TeamMemberStatus): DisplayStatus {
       return 'session ended'
     case 'PENDING_APPROVAL':
       return 'pending approval'
+    case 'REMOVED':
+      return 'removed'
     case 'READY_FOR_REVIEW':
     case 'COMPLETED':
     case 'FAILED':
@@ -56,6 +59,7 @@ const DISPLAY_STATUS_SORT_ORDER: Record<DisplayStatus, number> = {
   'session ended': 3,
   'pending approval': 4,
   'idle': 5,
+  'removed': 6,
 }
 
 function formatTime(value?: string) {
@@ -81,6 +85,8 @@ function statusLabel(status: DisplayStatus) {
       return 'Session ended'
     case 'pending approval':
       return 'Pending approval'
+    case 'removed':
+      return 'Removed'
     case 'idle':
       return 'Idle'
   }
@@ -97,6 +103,8 @@ function statusClass(status: DisplayStatus) {
       return 'border-blue-200 bg-blue-50 text-blue-700'
     case 'pending approval':
       return 'border-neutral-200 bg-neutral-50 text-neutral-600'
+    case 'removed':
+      return 'border-neutral-200 bg-neutral-50 text-neutral-400'
     case 'idle':
       return 'border-neutral-200 bg-white text-neutral-500'
   }
@@ -113,6 +121,8 @@ function statusDotClass(status: DisplayStatus) {
       return 'bg-blue-500'
     case 'pending approval':
       return 'bg-neutral-400'
+    case 'removed':
+      return 'bg-neutral-300'
     case 'idle':
       return 'bg-neutral-300'
   }
@@ -199,8 +209,13 @@ export function TeamStatusPanel({
   const [stopPromptMemberId, setStopPromptMemberId] = useState<string | null>(null)
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null)
   const [workspacesExpanded, setWorkspacesExpanded] = useState(false)
+  const [memberManageOpen, setMemberManageOpen] = useState(false)
 
   const members = teamRun.members ?? EMPTY_MEMBERS
+  const activeMembers = useMemo(
+    () => members.filter((member) => member.membershipStatus !== 'REMOVED'),
+    [members],
+  )
   const workRequests = teamRun.workRequests ?? EMPTY_WORK_REQUESTS
   const invocations = teamRun.invocations ?? EMPTY_INVOCATIONS
   const workspaceViews = useMemo(
@@ -256,6 +271,11 @@ export function TeamStatusPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
+      <TeamMemberManageDialog
+        isOpen={memberManageOpen}
+        onClose={() => setMemberManageOpen(false)}
+        teamRun={teamRun}
+      />
       {/* Header */}
       <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
@@ -278,8 +298,8 @@ export function TeamStatusPanel({
           <Users size={11} className="text-neutral-400" />
           <span className="tabular-nums">
             {runningCount > 0
-              ? `${runningCount}/${members.length}`
-              : members.length}
+              ? `${runningCount}/${activeMembers.length}`
+              : activeMembers.length}
           </span>
           {runningCount > 0 && (
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
@@ -372,7 +392,16 @@ export function TeamStatusPanel({
           <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-neutral-500">
             <Users size={13} />
             <span>{t('Members')}</span>
-            <span className="ml-auto text-[10px] font-normal text-neutral-400">{members.length}</span>
+            <span className="ml-auto text-[10px] font-normal text-neutral-400">{activeMembers.length}</span>
+            <button
+              type="button"
+              onClick={() => setMemberManageOpen(true)}
+              className="rounded-md p-1 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+              title={t('Manage Team Members')}
+              aria-label={t('Manage Team Members')}
+            >
+              <Settings2 size={13} />
+            </button>
           </div>
 
           {members.length === 0 ? (

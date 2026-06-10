@@ -48,6 +48,11 @@ export interface StopMemberWorkResult {
   startedInvocations: AgentInvocation[];
 }
 
+export interface WorkRequestControlOptions {
+  teamRunId?: string;
+  requesterMemberId?: string;
+}
+
 export interface CancelWorkRequestOptions {
   teamRunId: string;
   requesterMemberId: string;
@@ -456,7 +461,13 @@ export class TeamSchedulerService {
     return startedInvocations;
   }
 
-  async approveWorkRequest(workRequestId: string): Promise<WorkRequest> {
+  async approveWorkRequest(
+    workRequestId: string,
+    options?: WorkRequestControlOptions
+  ): Promise<WorkRequest> {
+    const current = await this.getWorkRequestOrThrow(workRequestId);
+    await this.assertMemberCanControlWorkRequest(current, options, 'approve');
+
     const workRequest = await this.transitionWorkRequestStatus(
       workRequestId,
       'approve',
@@ -467,16 +478,25 @@ export class TeamSchedulerService {
     return workRequest;
   }
 
-  async approveWorkRequestAndStartNext(workRequestId: string): Promise<{
+  async approveWorkRequestAndStartNext(
+    workRequestId: string,
+    options?: WorkRequestControlOptions
+  ): Promise<{
     workRequest: WorkRequest;
     startedInvocations: AgentInvocation[];
   }> {
-    const workRequest = await this.approveWorkRequest(workRequestId);
+    const workRequest = await this.approveWorkRequest(workRequestId, options);
     const startedInvocations = await this.startNextSessions(workRequest.teamRunId);
     return { workRequest, startedInvocations };
   }
 
-  async rejectWorkRequest(workRequestId: string): Promise<WorkRequest> {
+  async rejectWorkRequest(
+    workRequestId: string,
+    options?: WorkRequestControlOptions
+  ): Promise<WorkRequest> {
+    const current = await this.getWorkRequestOrThrow(workRequestId);
+    await this.assertMemberCanControlWorkRequest(current, options, 'reject');
+
     const workRequest = await this.transitionWorkRequestStatus(
       workRequestId,
       'reject',
@@ -503,7 +523,7 @@ export class TeamSchedulerService {
     if (current.teamRunId !== options.teamRunId) {
       throw new NotFoundError('WorkRequest', workRequestId);
     }
-    await this.assertMemberCanCancelWorkRequest(current, options.requesterMemberId);
+    await this.assertMemberCanControlWorkRequest(current, options, 'cancel');
 
     const workRequest = await this.transitionWorkRequestStatus(
       workRequestId,
@@ -765,7 +785,7 @@ export class TeamSchedulerService {
 
     const [members, workRequests] = await Promise.all([
       prisma.teamMember.findMany({
-        where: { teamRunId },
+        where: { teamRunId, membershipStatus: 'ACTIVE' },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       }),
       prisma.workRequest.findMany({
@@ -805,21 +825,43 @@ export class TeamSchedulerService {
     throw new NotFoundError('TeamMember', memberId);
   }
 
-  private async assertMemberCanCancelWorkRequest(
+  private async assertMemberCanControlWorkRequest(
     workRequest: PrismaWorkRequest,
-    requesterMemberId: string
+    options: WorkRequestControlOptions | undefined,
+    action: 'approve' | 'reject' | 'cancel'
   ): Promise<void> {
+    if (!options) {
+      return;
+    }
+
+    if (!options.teamRunId || !options.requesterMemberId) {
+      throw new ServiceError(
+        `teamRunId and requesterMemberId are required when ${action}ing a TeamRun WorkRequest`,
+        'VALIDATION_ERROR',
+        400
+      );
+    }
+
+    if (workRequest.teamRunId !== options.teamRunId) {
+      throw new NotFoundError('WorkRequest', workRequest.id);
+    }
+
+    const requester = await this.getTeamMemberOrThrow(workRequest.teamRunId, options.requesterMemberId);
+    if (requester.membershipStatus === 'REMOVED') {
+      throw new ServiceError('Removed TeamRun members cannot control WorkRequests', 'FORBIDDEN', 403);
+    }
+
+    const requesterMemberId = options.requesterMemberId;
     if (workRequest.targetMemberId === requesterMemberId) {
       return;
     }
 
-    const requester = await this.getTeamMemberOrThrow(workRequest.teamRunId, requesterMemberId);
     if (this.resolveQueueManagementPolicy(requester.queueManagementPolicy) === 'team_pending') {
       return;
     }
 
     throw new ServiceError(
-      'Current TeamRun member cannot cancel WorkRequest for another member',
+      `Current TeamRun member cannot ${action} WorkRequest for another member`,
       'FORBIDDEN',
       403
     );

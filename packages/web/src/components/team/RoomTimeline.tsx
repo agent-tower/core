@@ -166,6 +166,10 @@ function memberMatchesQuery(member: TeamMember, query: string) {
   return fields.some((field) => field.toLowerCase().includes(normalized))
 }
 
+function isActiveTeamMember(member: TeamMember) {
+  return member.membershipStatus !== 'REMOVED'
+}
+
 function getMentionLabel(mention: StructuredMention, memberById: Map<string, TeamMember>) {
   return mention.label ?? memberById.get(mention.memberId)?.name ?? mention.memberId
 }
@@ -813,6 +817,11 @@ export function RoomTimeline({
     return new Map((teamRun.members ?? []).map((member) => [member.id, member]))
   }, [teamRun.members])
 
+  const activeMembers = useMemo(
+    () => (teamRun.members ?? []).filter(isActiveTeamMember),
+    [teamRun.members],
+  )
+
   const invocationById = useMemo(() => {
     return new Map((teamRun.invocations ?? []).map((invocation) => [invocation.id, invocation]))
   }, [teamRun.invocations])
@@ -846,11 +855,12 @@ export function RoomTimeline({
     return selectedMemberIds
       .map((memberId) => memberById.get(memberId))
       .filter((member): member is TeamMember => Boolean(member))
+      .filter(isActiveTeamMember)
   }, [memberById, selectedMemberIds])
 
   const mentionCandidates = useMemo(() => {
     const query = inlineMention?.query ?? ''
-    return (teamRun.members ?? [])
+    return activeMembers
       .filter((member) => memberMatchesQuery(member, query))
       .sort((a, b) => {
         const aSelected = selectedMemberIds.includes(a.id)
@@ -858,7 +868,7 @@ export function RoomTimeline({
         if (aSelected !== bSelected) return aSelected ? 1 : -1
         return a.name.localeCompare(b.name)
       })
-  }, [inlineMention?.query, selectedMemberIds, teamRun.members])
+  }, [activeMembers, inlineMention?.query, selectedMemberIds])
 
   const mentionMenuOpen = !readOnly && (mentionPickerOpen || Boolean(inlineMention)) && mentionCandidates.length > 0
 
@@ -942,7 +952,7 @@ export function RoomTimeline({
     if (readOnly || isSubmitting || isUploading) return
     const attachmentMarkdown = buildMarkdownLinks()
     const attachmentIds = getDoneAttachments().map((attachment) => attachment.id)
-    const mentions = buildStructuredMentionsFromSelectedMembers(selectedMemberIds, teamRun.members ?? [])
+    const mentions = buildStructuredMentionsFromSelectedMembers(selectedMemberIds, activeMembers)
     const input = buildRoomMessageSubmitInput({
       draft,
       attachmentMarkdown,
@@ -988,7 +998,7 @@ export function RoomTimeline({
     } finally {
       setIsSubmitting(false)
     }
-  }, [attachmentFiles, buildMarkdownLinks, clearAttachments, compactComposer, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, restoreAttachments, scrollToBottom, selectedMemberIds, teamRun.id, teamRun.members])
+  }, [activeMembers, attachmentFiles, buildMarkdownLinks, clearAttachments, compactComposer, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, restoreAttachments, scrollToBottom, selectedMemberIds, teamRun.id])
 
   const handleDraftKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
@@ -1293,7 +1303,7 @@ export function RoomTimeline({
                     setInlineMention(null)
                     requestAnimationFrame(() => textareaRef.current?.focus())
                   }}
-                  disabled={selectedMembers.length === 0 && (teamRun.members ?? []).length === 0}
+                  disabled={selectedMembers.length === 0 && activeMembers.length === 0}
                   title={t('Mention members')}
                   aria-label={t('Mention members')}
                   className={cn(
@@ -1302,7 +1312,7 @@ export function RoomTimeline({
                     mentionPickerOpen
                       ? 'bg-neutral-100 text-neutral-700'
                       : 'text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600',
-                    selectedMembers.length === 0 && (teamRun.members ?? []).length === 0
+                    selectedMembers.length === 0 && activeMembers.length === 0
                       ? 'cursor-not-allowed opacity-50'
                       : '',
                   )}

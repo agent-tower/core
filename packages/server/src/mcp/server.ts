@@ -152,6 +152,9 @@ async function requireCurrentMemberCapabilities(
   if (!member) {
     throw new Error('Current TeamRun member was not found.');
   }
+  if (member.membershipStatus === 'REMOVED') {
+    throw new Error('Current TeamRun member has been removed.');
+  }
 
   const missing = requiredCapabilities.filter((capability) => member.capabilities?.[capability] !== true);
   if (missing.length > 0) {
@@ -159,6 +162,41 @@ async function requireCurrentMemberCapabilities(
   }
 
   return memberId;
+}
+
+async function requireCurrentActiveTeamMember(
+  client: AgentTowerClient,
+  context: McpContext | null,
+  teamRunId: string
+): Promise<string> {
+  const memberId = requireCurrentTeamMemberId(context, teamRunId);
+  const members = await client.listTeamMembers(teamRunId);
+  const member = members.find((item) => item.id === memberId);
+  if (!member) {
+    throw new Error('Current TeamRun member was not found.');
+  }
+  if (member.membershipStatus === 'REMOVED') {
+    throw new Error('Current TeamRun member has been removed.');
+  }
+  return memberId;
+}
+
+async function assertCurrentTeamMemberActiveIfPresent(
+  client: AgentTowerClient,
+  context: McpContext | null,
+  teamRunId: string
+): Promise<void> {
+  const memberId = resolveCurrentTeamMemberId(context, teamRunId);
+  if (!memberId) return;
+
+  const members = await client.listTeamMembers(teamRunId);
+  const member = members.find((item) => item.id === memberId);
+  if (!member) {
+    throw new Error('Current TeamRun member was not found.');
+  }
+  if (member.membershipStatus === 'REMOVED') {
+    throw new Error('Current TeamRun member has been removed.');
+  }
 }
 
 function formatTeamMembersForAgent(teamRunId: string, members: any[]) {
@@ -169,7 +207,9 @@ function formatTeamMembersForAgent(teamRunId: string, members: any[]) {
   return {
     teamRunId,
     currentMemberId,
-    members: members.map((member) => ({
+    members: members
+      .filter((member) => member.membershipStatus !== 'REMOVED')
+      .map((member) => ({
       id: member.id,
       name: member.name,
       aliases: member.aliases ?? [],
@@ -192,6 +232,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
     async (params) => {
       try {
         const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        await assertCurrentTeamMemberActiveIfPresent(client, context, teamRunId);
         const { invocationId, memberId } = resolveTeamRunAgentIdentity(context, teamRunId);
         const message = await client.createRoomMessage(teamRunId, {
           content: params.content,
@@ -272,6 +313,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
     async (params) => {
       try {
         const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        await assertCurrentTeamMemberActiveIfPresent(client, context, teamRunId);
         const members = await client.listTeamMembers(teamRunId);
         const memberId = resolveCurrentTeamMemberId(context, teamRunId);
         const result = {
@@ -292,7 +334,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
     async (params) => {
       try {
         const teamRunId = resolveTeamRunId(params.team_run_id, context);
-        const memberId = requireCurrentTeamMemberId(context, teamRunId);
+        const memberId = await requireCurrentActiveTeamMember(client, context, teamRunId);
         const result = await client.listMemberWorkRequests(teamRunId, memberId);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (e: any) {
@@ -307,7 +349,12 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
     WorkRequestControlInput.shape,
     async (params) => {
       try {
-        const result = await client.approveWorkRequest(params.work_request_id);
+        const teamRunId = resolveTeamRunId(undefined, context);
+        const memberId = await requireCurrentActiveTeamMember(client, context, teamRunId);
+        const result = await client.approveWorkRequest(params.work_request_id, {
+          teamRunId,
+          requesterMemberId: memberId,
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
@@ -321,7 +368,12 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
     WorkRequestControlInput.shape,
     async (params) => {
       try {
-        const result = await client.rejectWorkRequest(params.work_request_id);
+        const teamRunId = resolveTeamRunId(undefined, context);
+        const memberId = await requireCurrentActiveTeamMember(client, context, teamRunId);
+        const result = await client.rejectWorkRequest(params.work_request_id, {
+          teamRunId,
+          requesterMemberId: memberId,
+        });
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
@@ -336,7 +388,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
     async (params) => {
       try {
         const teamRunId = resolveTeamRunId(params.team_run_id, context);
-        const memberId = requireCurrentTeamMemberId(context, teamRunId);
+        const memberId = await requireCurrentActiveTeamMember(client, context, teamRunId);
         const result = await client.cancelWorkRequest(params.work_request_id, {
           teamRunId,
           requesterMemberId: memberId,
@@ -355,6 +407,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
     async (params) => {
       try {
         const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        await requireCurrentMemberCapabilities(client, context, teamRunId, ['stopMemberWork']);
         const result = await client.stopMemberWork(teamRunId, params.member_id, {
           cancelQueued: params.cancel_queued,
         });

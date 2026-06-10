@@ -68,6 +68,14 @@ const createTeamTemplateSchema = z.object({
 const updateTeamTemplateSchema = createTeamTemplateSchema.partial();
 
 const createTeamRunMemberSchema = teamMemberSnapshotSchema;
+const addTeamRunMemberSchema = z.object({
+  memberPresetId: z.string().min(1).optional(),
+  member: teamMemberSnapshotSchema.optional(),
+}).refine((value) => Number(Boolean(value.memberPresetId)) + Number(Boolean(value.member)) === 1, {
+  message: 'Exactly one of memberPresetId or member is required',
+});
+
+const patchTeamRunMemberSchema = teamMemberSnapshotSchema.partial();
 
 const createTeamRunSchema = z.object({
   mode: z.enum(['CONFIRM', 'AUTO']).default('AUTO'),
@@ -103,9 +111,19 @@ const stopMemberWorkSchema = z.object({
   cancelQueued: z.boolean().optional(),
 });
 
+const removeTeamRunMemberSchema = z.object({
+  stopActive: z.boolean().default(true),
+  cancelQueued: z.boolean().default(true),
+});
+
 const cancelWorkRequestSchema = z.object({
   teamRunId: z.string().min(1),
   requesterMemberId: z.string().min(1),
+});
+
+const scopedWorkRequestControlSchema = z.object({
+  teamRunId: z.string().min(1).optional(),
+  requesterMemberId: z.string().min(1).optional(),
 });
 
 function handleError(error: unknown, reply: any) {
@@ -176,6 +194,35 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   async function resolveAgentInvocationIdentity(teamRunId: string, request: { headers: Record<string, unknown> }) {
     return service.resolveAgentInvocationIdentity(teamRunId, getInvocationId(request));
+  }
+
+  async function resolveWorkRequestControlOptions(
+    action: 'approving' | 'rejecting',
+    body: z.infer<typeof scopedWorkRequestControlSchema>,
+    request: { headers: Record<string, unknown> }
+  ) {
+    const invocationId = getInvocationId(request);
+    if (invocationId && !body.teamRunId) {
+      throw new ValidationError(`teamRunId is required when ${action} a WorkRequest from a TeamRun agent`);
+    }
+    if (!invocationId && (body.teamRunId || body.requesterMemberId) && !(body.teamRunId && body.requesterMemberId)) {
+      throw new ValidationError('teamRunId and requesterMemberId must be provided together');
+    }
+
+    const invocationIdentity = body.teamRunId
+      ? await resolveAgentInvocationIdentity(body.teamRunId, request)
+      : null;
+    if (invocationId && !invocationIdentity) {
+      throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
+    }
+
+    if (invocationIdentity) {
+      return { teamRunId: body.teamRunId!, requesterMemberId: invocationIdentity.memberId };
+    }
+
+    return body.teamRunId && body.requesterMemberId
+      ? { teamRunId: body.teamRunId, requesterMemberId: body.requesterMemberId }
+      : undefined;
   }
 
   app.get('/member-presets', async (_request, reply) => {
@@ -386,6 +433,57 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
     }
   });
 
+  app.post<{ Params: { id: string } }>('/team-runs/:id/members', async (request, reply) => {
+    try {
+      const body = addTeamRunMemberSchema.parse(request.body);
+      const member = await service.addTeamRunMember(request.params.id, {
+        memberPresetId: body.memberPresetId,
+        member: body.member,
+      });
+      reply.code(201);
+      return member;
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.patch<{ Params: { id: string; memberId: string } }>('/team-runs/:id/members/:memberId', async (request, reply) => {
+    try {
+      const body = patchTeamRunMemberSchema.parse(request.body);
+      return await service.patchTeamRunMember(request.params.id, request.params.memberId, body);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.post<{ Params: { id: string; memberId: string } }>('/team-runs/:id/members/:memberId/remove', async (request, reply) => {
+    try {
+      const body = removeTeamRunMemberSchema.parse(request.body ?? {});
+      const cancelQueued = body.stopActive ? true : body.cancelQueued;
+      const stopResult = body.stopActive
+        ? await scheduler.stopMemberWork(request.params.id, request.params.memberId, {
+          cancelQueued,
+        })
+        : null;
+      const removed = await service.softRemoveTeamRunMember(request.params.id, request.params.memberId, {
+        cancelQueued,
+      });
+
+      return {
+        ...removed,
+        stoppedSessionIds: stopResult?.stoppedSessionIds ?? [],
+        cancelledInvocationIds: stopResult?.cancelledInvocationIds ?? [],
+        cancelledWorkRequestIds: Array.from(new Set([
+          ...removed.cancelledWorkRequestIds,
+          ...(stopResult?.cancelledWorkRequestIds ?? []),
+        ])),
+        startedInvocations: stopResult?.startedInvocations ?? [],
+      };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
   app.get<{ Params: { id: string } }>('/team-runs/:id/work-requests', async (request, reply) => {
     try {
       const viewerMemberId = await resolveViewerMemberId(request.params.id, request);
@@ -415,7 +513,9 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.post<{ Params: { id: string } }>('/team-runs/work-requests/:id/approve', async (request, reply) => {
     try {
-      return await scheduler.approveWorkRequestAndStartNext(request.params.id);
+      const body = scopedWorkRequestControlSchema.parse(request.body ?? {});
+      const options = await resolveWorkRequestControlOptions('approving', body, request);
+      return await scheduler.approveWorkRequestAndStartNext(request.params.id, options);
     } catch (error) {
       return handleError(error, reply);
     }
@@ -423,7 +523,9 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.post<{ Params: { id: string } }>('/team-runs/work-requests/:id/reject', async (request, reply) => {
     try {
-      return await scheduler.rejectWorkRequest(request.params.id);
+      const body = scopedWorkRequestControlSchema.parse(request.body ?? {});
+      const options = await resolveWorkRequestControlOptions('rejecting', body, request);
+      return await scheduler.rejectWorkRequest(request.params.id, options);
     } catch (error) {
       return handleError(error, reply);
     }
