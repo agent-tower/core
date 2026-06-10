@@ -819,7 +819,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     <div className="flex-1 flex flex-col h-full bg-white relative overflow-hidden">
       {/* Header */}
       <div className="px-6 py-4 flex items-center justify-between border-b border-neutral-100 bg-white/80 backdrop-blur-sm z-20 flex-shrink-0">
-        <div className="flex flex-col">
+        <div className="flex flex-col min-w-0 flex-1 mr-4">
           <div className="flex items-center gap-2 mb-0.5">
             <span className={`text-xs font-semibold uppercase tracking-wider ${task.projectColor}`}>
               {task.projectName}
@@ -830,12 +830,12 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
               </span>
             )}
             <span className="text-neutral-300 text-xs">/</span>
-            <span className="text-xs text-neutral-500 font-mono">{task.branch}</span>
+            <span className="text-xs text-neutral-500 font-mono truncate">{task.branch}</span>
           </div>
-          <h2 className="text-lg font-bold text-neutral-900">{task.title}</h2>
+          <h2 className="text-lg font-bold text-neutral-900 break-words line-clamp-2" title={task.title}>{task.title}</h2>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-shrink-0">
           <StatusBadge
             status={task.status}
             onChangeStatus={!isProjectReadOnly && onTaskStatusChange ? (newStatus) => onTaskStatusChange(task.id, newStatus) : undefined}
@@ -1016,11 +1016,11 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           {/* Scrollable Logs */}
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
-            <div ref={contentRef} className={`w-full ${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+            <div ref={contentRef} className={`w-full min-w-0 ${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
               {/* Task Description */}
-              <div className="mb-4 pb-4 border-b border-neutral-100">
+              <div className="mb-4 pb-4 border-b border-neutral-100 min-w-0">
                 {task.description ? (
-                  <div className="text-sm text-neutral-500 leading-relaxed prose prose-sm max-w-none">
+                  <div className="text-sm text-neutral-500 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
                     <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
                       {task.description}
                     </Streamdown>
