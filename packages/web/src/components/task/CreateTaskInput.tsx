@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { ArrowUp, FolderOpen, Bot, Paperclip, Users, Loader2, ChevronDown, Check, GitBranch } from 'lucide-react'
+import { ArrowUp, Bot, Paperclip, Loader2, ChevronDown, Check, GitBranch } from 'lucide-react'
 import { WorkspaceKind, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
@@ -219,9 +219,9 @@ export function CreateTaskInput({
       {/* Input box — matches session input style */}
       <div
         className={cn(
-          'relative bg-white rounded-xl border shadow-sm transition-all duration-200',
-          'hover:shadow-md focus-within:shadow-md focus-within:border-neutral-300',
-          isDragOver ? 'border-blue-400 bg-blue-50/50 shadow-md' : 'border-neutral-200',
+          'relative bg-background rounded-xl border shadow-sm transition-all duration-200',
+          'hover:shadow-md focus-within:shadow-md focus-within:border-ring/60',
+          isDragOver ? 'border-info bg-info/5 shadow-md' : 'border-border',
           isSubmitting && 'opacity-80',
         )}
         onDragOver={handleDragOver}
@@ -244,15 +244,16 @@ export function CreateTaskInput({
           onPaste={handlePaste}
           placeholder={t('Describe your task...')}
           disabled={isSubmitting}
+          autoFocus
           rows={1}
-          className="w-full px-4 pt-4 pb-2 bg-transparent border-none focus:outline-none resize-none text-sm text-neutral-900 placeholder-neutral-400 leading-relaxed"
+          className="w-full px-4 pt-4 pb-2 bg-transparent border-none focus:outline-none resize-none text-sm text-foreground placeholder-muted-foreground/70 leading-relaxed"
           style={{ minHeight: '72px', maxHeight: '200px', fieldSizing: 'content' } as React.CSSProperties}
         />
 
         {/* Drag overlay */}
         {isDragOver && (
           <div className="px-4 pb-2">
-            <div className="flex items-center justify-center py-3 border-2 border-dashed border-neutral-300 rounded-lg text-sm text-neutral-500">
+            <div className="flex items-center justify-center py-3 border-2 border-dashed border-border rounded-lg text-sm text-muted-foreground">
               {t('Drop files here')}
             </div>
           </div>
@@ -265,7 +266,7 @@ export function CreateTaskInput({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={isSubmitting || isUploading}
-              className="p-2 text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="p-2 text-muted-foreground/70 hover:text-muted-foreground hover:bg-accent rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title={t('Attach files')}
             >
               <Paperclip size={18} />
@@ -281,19 +282,24 @@ export function CreateTaskInput({
 
           <div className="flex items-center gap-2">
             {isUploading && (
-              <span className="flex items-center gap-1.5 text-xs text-neutral-500">
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 size={14} className="animate-spin" />
                 {t('Uploading...')}
               </span>
             )}
             {isSubmitting && (
-              <span className="flex items-center gap-1.5 text-xs text-neutral-500">
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 size={14} className="animate-spin" />
                 {t(CREATE_STEP_LABEL[createStep])}
               </span>
             )}
             {!isSubmitting && !isUploading && mode === 'TEAM' && !hasTeamMembers && title.trim().length > 0 && (
-              <span className="text-[11px] text-amber-600">{t('请选择团队模板或追加成员')}</span>
+              <span className="text-[11px] text-warning">{t('请选择团队模板或追加成员')}</span>
+            )}
+            {canSubmit && (
+              <span className="hidden sm:inline text-[11px] text-muted-foreground/60 select-none">
+                ⏎ {t('创建')}
+              </span>
             )}
             <button
               type="button"
@@ -302,8 +308,8 @@ export function CreateTaskInput({
               className={cn(
                 'p-2 rounded-lg transition-all duration-200',
                 canSubmit
-                  ? 'bg-neutral-900 text-white shadow-md hover:bg-black'
-                  : 'bg-transparent text-neutral-300 cursor-not-allowed',
+                  ? 'bg-primary text-primary-foreground shadow-md hover:bg-primary/90'
+                  : 'bg-transparent text-muted-foreground/50 cursor-not-allowed',
               )}
               title={t('Create & Start')}
             >
@@ -313,8 +319,8 @@ export function CreateTaskInput({
         </div>
       </div>
 
-      {/* Control options — below input box */}
-      <div className="flex items-center flex-wrap gap-1 mt-3 px-1">
+      {/* Control row — chips aligned to card edges */}
+      <div className="flex items-center flex-wrap gap-1.5 mt-2.5">
         {/* Project selector */}
         <div className="relative" ref={projectMenuRef}>
           <button
@@ -323,28 +329,35 @@ export function CreateTaskInput({
             disabled={isSubmitting}
             className={cn(
               'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
-              'hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed',
-              selectedProject ? 'text-neutral-700' : 'text-neutral-400',
+              'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
+              selectedProject ? 'text-foreground/80' : 'text-muted-foreground/70',
             )}
           >
-            <FolderOpen size={14} />
+            <span
+              className="size-2 rounded-full shrink-0"
+              style={{ backgroundColor: selectedProject?.color ?? 'var(--muted-foreground)' }}
+            />
             <span className="max-w-[120px] truncate">{selectedProject?.name ?? t('Project')}</span>
-            <ChevronDown size={12} className={cn('transition-transform', showProjectMenu && 'rotate-180')} />
+            <ChevronDown size={12} className={cn('text-muted-foreground/70 transition-transform', showProjectMenu && 'rotate-180')} />
           </button>
 
           {showProjectMenu && (
-            <div className="absolute top-full left-0 mt-1 w-52 bg-white border border-neutral-200 rounded-lg shadow-lg shadow-neutral-200/50 py-1 max-h-[240px] overflow-y-auto z-50">
+            <div className="absolute top-full left-0 mt-1 w-52 bg-background border border-border rounded-lg shadow-lg shadow-black/5 py-1 max-h-[240px] overflow-y-auto z-50">
               {projects.map(p => (
                 <button
                   key={p.id}
                   type="button"
                   onClick={() => handleProjectSelect(p.id)}
-                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-neutral-50 transition-colors"
+                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-muted/50 transition-colors"
                 >
-                  <Check size={14} className={cn('mr-2 shrink-0', p.id === projectId ? 'opacity-100' : 'opacity-0')} />
-                  <span className={cn('truncate', p.id === projectId ? 'text-neutral-900 font-medium' : 'text-neutral-600')}>
+                  <span
+                    className="size-2 rounded-full shrink-0 mr-2"
+                    style={{ backgroundColor: p.color ?? 'var(--muted-foreground)' }}
+                  />
+                  <span className={cn('truncate flex-1', p.id === projectId ? 'text-foreground font-medium' : 'text-muted-foreground')}>
                     {p.name}
                   </span>
+                  <Check size={14} className={cn('ml-2 shrink-0', p.id === projectId ? 'opacity-100' : 'opacity-0')} />
                 </button>
               ))}
             </div>
@@ -360,17 +373,17 @@ export function CreateTaskInput({
               disabled={isSubmitting}
               className={cn(
                 'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
-                'hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed',
-                selectedProvider ? 'text-neutral-700' : 'text-neutral-400',
+                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
+                selectedProvider ? 'text-foreground/80' : 'text-muted-foreground/70',
               )}
             >
-              <Bot size={14} />
+              <Bot size={14} className="text-muted-foreground" />
               <span className="max-w-[120px] truncate">{selectedProvider?.name ?? (isProvidersLoading ? t('Loading...') : t('Agent'))}</span>
-              <ChevronDown size={12} className={cn('transition-transform', showProviderMenu && 'rotate-180')} />
+              <ChevronDown size={12} className={cn('text-muted-foreground/70 transition-transform', showProviderMenu && 'rotate-180')} />
             </button>
 
             {showProviderMenu && (
-              <div className="absolute top-full left-0 mt-1 w-52 bg-white border border-neutral-200 rounded-lg shadow-lg shadow-neutral-200/50 py-1 max-h-[240px] overflow-y-auto z-50">
+              <div className="absolute top-full left-0 mt-1 w-52 bg-background border border-border rounded-lg shadow-lg shadow-black/5 py-1 max-h-[240px] overflow-y-auto z-50">
                 {providers.map(p => (
                   <button
                     key={p.id}
@@ -378,12 +391,12 @@ export function CreateTaskInput({
                     disabled={!p.available}
                     onClick={() => { setProviderId(p.id); setShowProviderMenu(false) }}
                     className={cn(
-                      'flex items-center w-full px-3 py-2 text-xs text-left hover:bg-neutral-50 transition-colors',
+                      'flex items-center w-full px-3 py-2 text-xs text-left hover:bg-muted/50 transition-colors',
                       !p.available && 'opacity-40 cursor-not-allowed',
                     )}
                   >
                     <Check size={14} className={cn('mr-2 shrink-0', p.id === providerId ? 'opacity-100' : 'opacity-0')} />
-                    <span className={cn('truncate', p.id === providerId ? 'text-neutral-900 font-medium' : 'text-neutral-600')}>
+                    <span className={cn('truncate', p.id === providerId ? 'text-foreground font-medium' : 'text-muted-foreground')}>
                       {p.name}{!p.available ? t(' (unavailable)') : ''}
                     </span>
                   </button>
@@ -402,34 +415,34 @@ export function CreateTaskInput({
               disabled={isSubmitting}
               className={cn(
                 'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
-                'hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed',
-                'text-neutral-700',
+                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
+                'text-foreground/80',
               )}
             >
-              <GitBranch size={14} />
+              <GitBranch size={14} className="text-muted-foreground" />
               <span className="max-w-[96px] truncate">{selectedWorkspaceModeLabel}</span>
-              <ChevronDown size={12} className={cn('transition-transform', showWorkspaceModeMenu && 'rotate-180')} />
+              <ChevronDown size={12} className={cn('text-muted-foreground/70 transition-transform', showWorkspaceModeMenu && 'rotate-180')} />
             </button>
 
             {showWorkspaceModeMenu && (
-              <div className="absolute top-full left-0 mt-1 w-40 bg-white border border-neutral-200 rounded-lg shadow-lg shadow-neutral-200/50 py-1 z-50">
+              <div className="absolute top-full left-0 mt-1 w-40 bg-background border border-border rounded-lg shadow-lg shadow-black/5 py-1 z-50">
                 <button
                   type="button"
                   onClick={() => { setWorkspaceMode(WorkspaceKind.WORKTREE); setShowWorkspaceModeMenu(false) }}
-                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-neutral-50 transition-colors"
+                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-muted/50 transition-colors"
                 >
                   <Check size={14} className={cn('mr-2 shrink-0', workspaceMode === WorkspaceKind.WORKTREE ? 'opacity-100' : 'opacity-0')} />
-                  <span className={cn('truncate', workspaceMode === WorkspaceKind.WORKTREE ? 'text-neutral-900 font-medium' : 'text-neutral-600')}>
+                  <span className={cn('truncate', workspaceMode === WorkspaceKind.WORKTREE ? 'text-foreground font-medium' : 'text-muted-foreground')}>
                     {t('工作树模式')}
                   </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => { setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY); setShowWorkspaceModeMenu(false) }}
-                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-neutral-50 transition-colors"
+                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-muted/50 transition-colors"
                 >
                   <Check size={14} className={cn('mr-2 shrink-0', workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'opacity-100' : 'opacity-0')} />
-                  <span className={cn('truncate', workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'text-neutral-900 font-medium' : 'text-neutral-600')}>
+                  <span className={cn('truncate', workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'text-foreground font-medium' : 'text-muted-foreground')}>
                     {t('本地模式')}
                   </span>
                 </button>
@@ -438,59 +451,62 @@ export function CreateTaskInput({
           </div>
         )}
 
-        {/* Team mode toggle — tab trigger connected to panel below */}
-        <button
-          type="button"
-          onClick={() => {
-            if (isSubmitting) return
-            const next = mode === 'SOLO' ? 'TEAM' : 'SOLO'
-            setMode(next)
-            setShowWorkspaceModeMenu(false)
-            if (next === 'TEAM') {
+        {/* Solo / Team segmented control */}
+        <div className="ml-auto inline-flex items-center rounded-lg border border-border/70 bg-muted/50 p-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              if (isSubmitting || mode === 'SOLO') return
+              setMode('SOLO')
+              setShowTeamConfig(false)
+            }}
+            disabled={isSubmitting}
+            className={cn(
+              'px-2.5 py-1 rounded-md text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+              mode === 'SOLO'
+                ? 'bg-background text-foreground font-medium shadow-sm'
+                : 'text-muted-foreground hover:text-foreground/80',
+            )}
+            title={t('Switch to Solo Agent')}
+          >
+            {t('单人')}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (isSubmitting || mode === 'TEAM') return
+              setMode('TEAM')
+              setShowWorkspaceModeMenu(false)
               setWorkspaceMode(WorkspaceKind.WORKTREE)
               setShowTeamConfig(true)
-            } else {
-              setShowTeamConfig(false)
-            }
-          }}
-          disabled={isSubmitting}
-          className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-colors',
-            'disabled:opacity-40 disabled:cursor-not-allowed',
-            mode === 'TEAM'
-              ? 'text-blue-600 bg-neutral-50 rounded-t-lg rounded-b-none'
-              : 'text-neutral-500 hover:text-neutral-700 hover:bg-neutral-50 rounded-lg',
-          )}
-          title={mode === 'SOLO' ? t('Switch to TeamRun') : t('Switch to Solo Agent')}
-        >
-          <Users size={14} />
-          <span>{t('团队协作')}</span>
-        </button>
+            }}
+            disabled={isSubmitting}
+            className={cn(
+              'px-2.5 py-1 rounded-md text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+              mode === 'TEAM'
+                ? 'bg-background text-foreground font-medium shadow-sm'
+                : 'text-muted-foreground hover:text-foreground/80',
+            )}
+            title={t('Switch to TeamRun')}
+          >
+            {t('团队')}
+          </button>
+        </div>
       </div>
 
       {mode === 'SOLO' && workspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
-        <div className="mt-2 px-1">
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800">
+        <div className="mt-2">
+          <div className="rounded-lg border border-warning/30 bg-warning/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-warning">
             {t('Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。')}
           </div>
         </div>
       )}
 
-      {/* TeamRun configuration panel */}
+      {/* TeamRun configuration panel — muted secondary area below input */}
       {mode === 'TEAM' && showTeamConfig && (
-        <div className="rounded-b-xl rounded-tr-xl bg-neutral-50 px-4 pt-3 pb-4">
-          <div className="flex items-center justify-between mb-2.5">
-            <span className="text-[11px] font-medium text-neutral-500">{t('团队协作配置')}</span>
-            <button
-              type="button"
-              onClick={() => {
-                setMode('SOLO')
-                setShowTeamConfig(false)
-              }}
-              className="text-[11px] text-neutral-400 hover:text-neutral-600 transition-colors"
-            >
-              {t('切换回单 Agent')}
-            </button>
+        <div className="mt-2 rounded-xl bg-muted/50 px-4 pt-3 pb-4">
+          <div className="mb-2.5">
+            <span className="text-[11px] font-medium text-muted-foreground">{t('团队协作配置')}</span>
           </div>
           <TeamRunCreateForm
             mode={teamRunMode}

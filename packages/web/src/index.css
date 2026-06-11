@@ -27,6 +27,14 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -47,43 +55,55 @@
 
 :root {
   --radius: 0.625rem;
+  /* 中性色统一带轻微冷蓝倾向（hue ≈ 255–264），详见 .design/DESIGN.md */
   --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --foreground: oklch(0.24 0.006 258);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.24 0.006 258);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.24 0.006 258);
+  /* Charcoal #181e25 — Minimax 式深色主按钮 */
+  --primary: oklch(0.235 0.015 252);
+  --primary-foreground: oklch(0.985 0.002 264);
+  --secondary: oklch(0.967 0.003 264);
+  --secondary-foreground: oklch(0.24 0.006 258);
+  --muted: oklch(0.967 0.003 264);
+  --muted-foreground: oklch(0.55 0.016 262);
+  --accent: oklch(0.967 0.003 264);
+  --accent-foreground: oklch(0.24 0.006 258);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* Brand = Charcoal 黑（主调），蓝色仅保留为 info 语义 */
+  --brand: oklch(0.235 0.015 252);
+  --brand-foreground: oklch(0.985 0.002 264);
+  --success: oklch(0.627 0.194 149.214);
+  --success-foreground: oklch(0.985 0.002 264);
+  --warning: oklch(0.666 0.179 58.318);
+  --warning-foreground: oklch(0.985 0.002 264);
+  --info: oklch(0.546 0.245 262.881);
+  --info-foreground: oklch(0.985 0.002 264);
+  --border: oklch(0.928 0.006 264.531);
+  --input: oklch(0.928 0.006 264.531);
+  /* 焦点环为中性灰：focus 表现为边框加深，不引入彩色描边 */
+  --ring: oklch(0.708 0.008 264);
+  --chart-1: oklch(0.623 0.214 259.815);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.606 0.25 292.717);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.985 0.002 264);
+  --sidebar-foreground: oklch(0.24 0.006 258);
+  --sidebar-primary: oklch(0.235 0.015 252);
+  --sidebar-primary-foreground: oklch(0.985 0.002 264);
+  --sidebar-accent: oklch(0.967 0.003 264);
+  --sidebar-accent-foreground: oklch(0.24 0.006 258);
+  --sidebar-border: oklch(0.928 0.006 264.531);
+  --sidebar-ring: oklch(0.708 0.008 264);
   --scrollbar-size: 8px;
   --scrollbar-thin-size: 4px;
   --scrollbar-radius: 9999px;
   --scrollbar-track: transparent;
-  --scrollbar-thumb: oklch(0.84 0 0);
-  --scrollbar-thumb-hover: oklch(0.708 0 0);
+  --scrollbar-thumb: oklch(0.84 0.004 264);
+  --scrollbar-thumb-hover: oklch(0.708 0.008 264);
 }
 
 .dark {
@@ -102,6 +122,15 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  /* 暗色仅保持变量完整，主题切换为后续迭代（见 .design/DESIGN.md §9） */
+  --brand: oklch(0.623 0.214 259.815);
+  --brand-foreground: oklch(0.985 0.002 264);
+  --success: oklch(0.696 0.17 162.48);
+  --success-foreground: oklch(0.205 0 0);
+  --warning: oklch(0.769 0.188 70.08);
+  --warning-foreground: oklch(0.205 0 0);
+  --info: oklch(0.623 0.214 259.815);
+  --info-foreground: oklch(0.205 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);

@@ -12,7 +12,7 @@ import { useTasks, useDeleteTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
 import { useStartSession } from '@/hooks/use-sessions'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
-import { Settings } from 'lucide-react'
+import { Settings, ChevronDown, Check, Layers as LayersIcon, Plus as PlusIcon } from 'lucide-react'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useUIStore } from '@/stores/ui-store'
 import { MobileTaskDetail } from '@/components/mobile'
@@ -32,10 +32,112 @@ type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 
 // === rendering-hoist-jsx: 静态顶部栏标题文字 ===
 const HEADER_TITLE = (
-  <span className="font-bold text-neutral-900 tracking-tight text-base">
+  <span className="font-bold text-foreground tracking-tight text-base">
     Agent Tower
   </span>
 )
+
+/** 顶栏项目切换器：面包屑式「Agent Tower / 项目 ▾」，侧栏空间全部留给任务 */
+function ProjectSwitcher({
+  projects,
+  filterProjectId,
+  setFilterProjectId,
+  onCreateProject,
+}: {
+  projects: ReturnType<typeof adaptProject>[]
+  filterProjectId: string | null
+  setFilterProjectId: (id: string | null) => void
+  onCreateProject: () => void
+}) {
+  const { t } = useI18n()
+  const [isOpen, setIsOpen] = useState(false)
+  const activeProjects = projects.filter(p => !p.archivedAt)
+  const current = filterProjectId ? projects.find(p => p.id === filterProjectId) ?? null : null
+
+  return (
+    <div className="relative flex items-center min-w-0">
+      <span className="mx-1.5 text-muted-foreground/40 select-none">/</span>
+      <button
+        onClick={() => setIsOpen(prev => !prev)}
+        className="flex items-center gap-1.5 px-2 py-1 rounded-md text-sm text-foreground/90 hover:bg-accent transition-colors min-w-0"
+      >
+        {current ? (
+          <span className={`w-2 h-2 rounded-full shrink-0 ${current.color.replace('text-', 'bg-')}`} />
+        ) : (
+          <LayersIcon size={13} className="text-muted-foreground shrink-0" />
+        )}
+        <span className="truncate max-w-[200px] font-medium">{current ? current.name : t('All Projects')}</span>
+        <ChevronDown size={13} className={`text-muted-foreground/70 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen ? (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setIsOpen(false)} />
+          <div className="absolute left-4 top-full mt-1.5 w-60 bg-popover border border-border rounded-lg shadow-lg shadow-black/5 z-40 py-1 animate-in fade-in zoom-in-95 duration-100 origin-top-left">
+            <button
+              onClick={() => { setFilterProjectId(null); setIsOpen(false) }}
+              className="w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 hover:bg-accent/50 transition-colors"
+            >
+              <LayersIcon size={13} className="text-muted-foreground shrink-0" />
+              <span className={`flex-1 truncate ${filterProjectId === null ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
+                {t('All Projects')}
+              </span>
+              {filterProjectId === null ? <Check size={14} className="text-foreground shrink-0" /> : null}
+            </button>
+
+            <div className="h-px bg-border/60 my-1 mx-2" />
+
+            <div className="max-h-[40vh] overflow-y-auto scrollbar-app-thin">
+              {activeProjects.map(p => {
+                const isActive = filterProjectId === p.id
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => { setFilterProjectId(p.id); setIsOpen(false) }}
+                    className="w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 hover:bg-accent/50 transition-colors"
+                  >
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${p.color.replace('text-', 'bg-')}`} />
+                    <span className={`flex-1 truncate ${isActive ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
+                      {p.name}
+                    </span>
+                    {isActive ? <Check size={14} className="text-foreground shrink-0" /> : null}
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="h-px bg-border/60 my-1 mx-2" />
+
+            <button
+              onClick={() => { setIsOpen(false); onCreateProject() }}
+              className="w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+            >
+              <PlusIcon size={13} />
+              <span>{t('Create New Project...')}</span>
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+/** 任务列表加载骨架：结构与真实列表行一致，避免加载完成后跳动 */
+function TaskListSkeleton() {
+  return (
+    <div className="px-4 pt-6 space-y-5 animate-pulse" aria-hidden>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="flex items-start gap-3">
+          <div className="w-4 h-4 rounded-full bg-muted shrink-0 mt-0.5" />
+          <div className="flex-1 space-y-2">
+            <div className="h-3 rounded bg-muted" style={{ width: `${70 - (i % 3) * 12}%` }} />
+            <div className="h-2.5 rounded bg-muted/70" style={{ width: `${45 + (i % 2) * 18}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 // === 拖拽 resize 的常量配置 ===
 const MIN_SIDEBAR_WIDTH = 260
@@ -198,7 +300,7 @@ export function ProjectKanbanPage() {
         id: task.id,
         projectId: task.projectId,
         projectName: 'Unknown',
-        projectColor: 'text-neutral-500',
+        projectColor: 'text-muted-foreground',
         title: task.title,
         status: mapTaskStatusToUI(task.status),
         branch,
@@ -399,8 +501,12 @@ export function ProjectKanbanPage() {
   const isLoading = isProjectsLoading || isFilteredTasksLoading || isAllTasksLoading
 
   const createTaskProjectOptions = useMemo(() =>
-    activeProjects.map(p => ({ id: p.id, name: p.name })),
-    [activeProjects],
+    activeProjects.map(p => ({
+      id: p.id,
+      name: p.name,
+      color: uiProjects.find(u => u.id === p.id)?.color,
+    })),
+    [activeProjects, uiProjects],
   )
 
   const createTaskProviderOptions = useMemo(() =>
@@ -463,17 +569,17 @@ export function ProjectKanbanPage() {
     // Mobile create view — fullscreen create input
     if (mobileCreateOpen) {
       return (
-        <div className="flex flex-col h-dvh bg-white overflow-hidden text-sm">
-          <header className="h-12 border-b border-neutral-200 flex items-center px-4 shrink-0">
+        <div className="flex flex-col h-dvh bg-background overflow-hidden text-sm">
+          <header className="h-12 border-b border-border/60 flex items-center px-4 shrink-0">
             <button
               onClick={() => setMobileCreateOpen(false)}
-              className="text-sm text-neutral-600 active:text-neutral-900"
+              className="text-sm text-muted-foreground active:text-foreground"
             >
               {t('Cancel')}
             </button>
           </header>
           <div className="flex-1 flex flex-col items-center justify-center px-4">
-            <h1 className="max-w-full text-center text-xl leading-tight text-neutral-900 mb-6 break-words">{createTaskTitle}</h1>
+            <h1 className="max-w-full text-center text-xl leading-tight text-foreground mb-6 break-words">{createTaskTitle}</h1>
             <CreateTaskInput
               projects={createTaskProjectOptions}
               providers={createTaskProviderOptions}
@@ -511,23 +617,29 @@ export function ProjectKanbanPage() {
     // Mobile task list — 复用桌面端 TaskList，全宽 + 隐藏右侧边框
     return (
       <>
-        <div className="flex flex-col h-dvh bg-neutral-50 overflow-hidden text-sm">
+        <div className="flex flex-col h-dvh bg-sidebar overflow-hidden text-sm">
           {/* 顶部栏 */}
-          <header className="h-12 bg-white border-b border-neutral-200 flex items-center px-4 justify-between shrink-0 z-10">
-            <div className="flex items-center gap-2">
+          <header className="h-12 bg-sidebar flex items-center px-4 justify-between shrink-0 z-20">
+            <div className="flex items-center gap-2 min-w-0">
               <BrandLogo />
               {HEADER_TITLE}
+              <ProjectSwitcher
+                projects={uiProjects}
+                filterProjectId={effectiveFilterProjectId}
+                setFilterProjectId={setFilterProjectId}
+                onCreateProject={handleCreateProject}
+              />
             </div>
             <div className="flex items-center gap-1">
               <TunnelButton />
-              <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-neutral-400 active:text-neutral-900 rounded-md">
+              <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-muted-foreground/70 active:text-foreground rounded-md">
                 <Settings size={16} />
               </button>
             </div>
           </header>
 
           {isLoading && uiTasks.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center text-sm text-neutral-400">{t('Loading...')}</div>
+            <div className="flex-1 overflow-hidden"><TaskListSkeleton /></div>
           ) : (
             <TaskList
               tasks={uiTasks}
@@ -537,7 +649,6 @@ export function ProjectKanbanPage() {
               filterProjectId={effectiveFilterProjectId}
               setFilterProjectId={setFilterProjectId}
               width="100%"
-              onCreateProject={handleCreateProject}
               onCreateTask={handleMobileCreateTask}
               activeTaskIds={activeTaskIds}
               onTaskStatusChange={handleTaskStatusChange}
@@ -554,16 +665,22 @@ export function ProjectKanbanPage() {
 
   // === Desktop: 原有三栏布局 ===
   return (
-    <div ref={containerRef} className="flex flex-col h-screen bg-neutral-50 overflow-hidden text-sm">
+    <div ref={containerRef} className="flex flex-col h-screen bg-sidebar overflow-hidden text-sm">
       {/* === 顶部栏 === */}
-      <header className="h-12 bg-white border-b border-neutral-200 flex items-center px-4 justify-between flex-shrink-0 z-10 relative">
-        <div className="flex items-center gap-2">
+      <header className="h-12 bg-sidebar flex items-center px-4 justify-between flex-shrink-0 z-20 relative">
+        <div className="flex items-center gap-2 min-w-0">
           <BrandLogo />
           {HEADER_TITLE}
+          <ProjectSwitcher
+            projects={uiProjects}
+            filterProjectId={effectiveFilterProjectId}
+            setFilterProjectId={setFilterProjectId}
+            onCreateProject={handleCreateProject}
+          />
         </div>
         <div className="flex items-center gap-1">
           <TunnelButton />
-          <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 rounded-md transition-colors">
+          <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-muted-foreground/70 hover:text-foreground hover:bg-accent rounded-md transition-colors">
             <Settings size={16} />
           </button>
         </div>
@@ -574,10 +691,10 @@ export function ProjectKanbanPage() {
         {/* 左侧: TaskList */}
         {isLoading && uiTasks.length === 0 ? (
           <div
-            className="h-full flex items-center justify-center text-sm text-neutral-400 border-r border-neutral-200 flex-shrink-0"
+            className="h-full overflow-hidden flex-shrink-0"
             style={{ width: sidebarWidth }}
           >
-            {t('Loading...')}
+            <TaskListSkeleton />
           </div>
         ) : (
           <TaskList
@@ -588,8 +705,8 @@ export function ProjectKanbanPage() {
             filterProjectId={effectiveFilterProjectId}
             setFilterProjectId={setFilterProjectId}
             width={sidebarWidth}
-            onCreateProject={handleCreateProject}
             onCreateTask={handleCreateTask}
+            isCreateActive={!effectiveSelectedTaskId}
             activeTaskIds={activeTaskIds}
             onTaskStatusChange={handleTaskStatusChange}
             onDeleteTask={handleDeleteTask}
@@ -599,39 +716,41 @@ export function ProjectKanbanPage() {
         {/* 拖拽分隔线 */}
         <div
           onMouseDown={handleMouseDown}
-          className="w-1 cursor-col-resize hover:bg-neutral-300 active:bg-neutral-400 transition-colors z-50 -ml-[2px] flex-shrink-0 h-full"
+          className="w-1 cursor-col-resize hover:bg-border active:bg-ring/40 transition-colors z-50 -ml-[2px] flex-shrink-0 h-full"
           title={t('Drag to resize')}
         />
 
-        {/* 右侧: TaskDetail or Create Panel */}
-        {effectiveSelectedTaskId && taskDetailData ? (
-          <TaskDetail
-            task={taskDetailData}
-            onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
-            isDeleting={deleteTask.isPending}
-            onTaskStatusChange={taskDetailData.projectArchivedAt ? undefined : handleTaskStatusChange}
-          />
-        ) : effectiveSelectedTaskId && !taskDetailData ? (
-          <div className="flex-1 flex items-center justify-center bg-white min-w-0">
-            <span className="text-sm text-neutral-400">{t('Loading...')}</span>
-          </div>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center bg-white min-w-0 px-8">
-            <div className="w-full max-w-3xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
-              <h1 className="max-w-full text-center text-2xl leading-tight text-neutral-900 mb-8 break-words">{createTaskTitle}</h1>
-              <CreateTaskInput
-                projects={createTaskProjectOptions}
-                providers={createTaskProviderOptions}
-                isProvidersLoading={isProvidersLoading}
-                onSubmit={handleSubmitTask}
-                defaultProjectId={defaultProjectId}
-                defaultProviderId={defaultProviderId}
-                onProjectChange={setCreateTaskProjectId}
-                createStep={createStep}
-              />
+        {/* 右侧: 内容岛屿（圆角面板，四周边框一致） */}
+        <div className="flex-1 flex min-w-0 mb-2 mr-2 rounded-xl border border-border/60 bg-background overflow-hidden shadow-sm">
+          {effectiveSelectedTaskId && taskDetailData ? (
+            <TaskDetail
+              task={taskDetailData}
+              onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
+              isDeleting={deleteTask.isPending}
+              onTaskStatusChange={taskDetailData.projectArchivedAt ? undefined : handleTaskStatusChange}
+            />
+          ) : effectiveSelectedTaskId && !taskDetailData ? (
+            <div className="flex-1 flex items-center justify-center bg-background min-w-0">
+              <span className="text-sm text-muted-foreground/70">{t('Loading...')}</span>
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center bg-background min-w-0 px-8">
+              <div className="w-full max-w-3xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
+                <h1 className="max-w-full text-center text-2xl leading-tight text-foreground mb-8 break-words">{createTaskTitle}</h1>
+                <CreateTaskInput
+                  projects={createTaskProjectOptions}
+                  providers={createTaskProviderOptions}
+                  isProvidersLoading={isProvidersLoading}
+                  onSubmit={handleSubmitTask}
+                  defaultProjectId={defaultProjectId}
+                  defaultProviderId={defaultProviderId}
+                  onProjectChange={setCreateTaskProjectId}
+                  createStep={createStep}
+                />
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* === Modals === */}
