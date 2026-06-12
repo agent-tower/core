@@ -444,7 +444,7 @@ export function ProjectKanbanPage() {
           ...(memberPresetIds.length > 0 ? { memberPresetIds } : {}),
         })
       } else if (providerId) {
-        const prompt = [title, fullDescription].filter(Boolean).join('\n\n')
+        const prompt = [createdTask.title, createdTask.description].filter(Boolean).join('\n\n')
 
         setCreateStep('creating-workspace')
         const workspace = await apiClient.post<{ id: string }>(

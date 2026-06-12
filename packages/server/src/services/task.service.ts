@@ -45,13 +45,181 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 };
 const CANCELLABLE_DELETE_WORK_REQUEST_STATUSES = ['PENDING_APPROVAL', 'QUEUED', 'STARTED'];
 const CANCELLABLE_DELETE_INVOCATION_STATUSES = ['QUEUED', 'RUNNING', 'SESSION_ENDED', 'WAITING_ROOM_REPLY'];
+export const TASK_TITLE_MAX_LENGTH = 200;
+export const TASK_TITLE_AUTOSPLIT_THRESHOLD = 240;
+export const TASK_PREVIEW_MAX_LENGTH = 240;
+export const TASK_HISTORICAL_TITLE_BODY_THRESHOLD = TASK_TITLE_AUTOSPLIT_THRESHOLD;
+const visibleSessionSummary = {
+  where: { purpose: { not: SessionPurpose.COMMIT_MSG } },
+  select: {
+    id: true,
+    workspaceId: true,
+    agentType: true,
+    variant: true,
+    providerId: true,
+    status: true,
+    purpose: true,
+    tokenUsage: true,
+    createdAt: true,
+    updatedAt: true,
+  },
+};
+
+function compactWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function truncateWithEllipsis(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const limit = Math.max(1, maxLength - 3);
+  const sliced = value.slice(0, limit);
+  const boundary = Math.max(
+    sliced.lastIndexOf(' '),
+    sliced.lastIndexOf('，'),
+    sliced.lastIndexOf('。'),
+    sliced.lastIndexOf(','),
+    sliced.lastIndexOf('.')
+  );
+  const candidate = boundary >= Math.floor(limit * 0.6) ? sliced.slice(0, boundary) : sliced;
+  return `${candidate.trimEnd()}...`;
+}
 
 function normalizeTaskTitle(title: string): string {
-  const normalized = title.trim();
+  const normalized = compactWhitespace(title);
   if (normalized.length === 0) {
     throw new ValidationError('Task title is required');
   }
-  return normalized;
+  return truncateWithEllipsis(normalized, TASK_TITLE_MAX_LENGTH);
+}
+
+function needsBodySplit(rawTitle: string, normalizedTitle: string): boolean {
+  if (rawTitle.length > TASK_TITLE_AUTOSPLIT_THRESHOLD || normalizedTitle.length > TASK_TITLE_MAX_LENGTH) {
+    return true;
+  }
+
+  const nonEmptyLines = rawTitle.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return nonEmptyLines.length > 1 && rawTitle.trim().length > TASK_TITLE_MAX_LENGTH;
+}
+
+function deriveTitleFromBody(rawBody: string): string {
+  const firstLine = rawBody.split(/\r?\n/).map((line) => compactWhitespace(line)).find(Boolean) ?? rawBody;
+  const sentenceMatch = firstLine.match(/^(.+?[。！？.!?])(?:\s|$)/u);
+  const candidate = sentenceMatch?.[1] ?? firstLine;
+  return normalizeTaskTitle(candidate);
+}
+
+function mergeDescriptionParts(parts: Array<string | null | undefined>): string | undefined {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const trimmed = part?.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    merged.push(part!);
+    seen.add(trimmed);
+  }
+  return merged.length > 0 ? merged.join('\n\n') : undefined;
+}
+
+function normalizeCreateTaskInput(input: CreateTaskInput): Required<Pick<CreateTaskInput, 'title'>> & Pick<CreateTaskInput, 'description' | 'priority'> {
+  const rawTitle = input.title;
+  const compactTitle = compactWhitespace(rawTitle);
+  if (compactTitle.length === 0) {
+    throw new ValidationError('Task title is required');
+  }
+
+  if (!needsBodySplit(rawTitle, compactTitle)) {
+    return {
+      title: normalizeTaskTitle(rawTitle),
+      description: input.description,
+      priority: input.priority,
+    };
+  }
+
+  return {
+    title: deriveTitleFromBody(rawTitle),
+    description: mergeDescriptionParts([rawTitle, input.description]),
+    priority: input.priority,
+  };
+}
+
+function normalizeUpdateTaskInput(
+  current: { description?: string | null },
+  input: UpdateTaskInput
+): UpdateTaskInput {
+  if (input.title === undefined) {
+    return input;
+  }
+
+  const rawTitle = input.title;
+  const compactTitle = compactWhitespace(rawTitle);
+  if (compactTitle.length === 0) {
+    throw new ValidationError('Task title is required');
+  }
+
+  if (!needsBodySplit(rawTitle, compactTitle)) {
+    return {
+      ...input,
+      title: normalizeTaskTitle(rawTitle),
+    };
+  }
+
+  return {
+    ...input,
+    title: deriveTitleFromBody(rawTitle),
+    description: mergeDescriptionParts([
+      rawTitle,
+      input.description,
+      current.description,
+    ]),
+  };
+}
+
+export function buildTextPreview(value: string | null | undefined, maxLength = TASK_PREVIEW_MAX_LENGTH): string {
+  const trimmed = (value ?? '').trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return truncateWithEllipsis(compactWhitespace(trimmed), maxLength);
+}
+
+function withTaskPreviews<T extends { title: string; description?: string | null }>(
+  task: T,
+  options: { omitDescription?: boolean } = {}
+) {
+  const titlePreview = buildTextPreview(task.title, TASK_TITLE_MAX_LENGTH);
+  const contentPreview = buildTextPreview(task.description);
+  const isTruncated =
+    task.title !== titlePreview
+    || Boolean(task.description && task.description !== contentPreview);
+
+  const base = {
+    ...task,
+    title: titlePreview,
+    titlePreview,
+    contentPreview: contentPreview || undefined,
+    isTruncated,
+  };
+
+  if (options.omitDescription) {
+    const withoutDescription = { ...base };
+    delete (withoutDescription as { description?: unknown }).description;
+    return withoutDescription;
+  }
+
+  return base;
+}
+
+function buildTaskPrompt(task: { title: string; description?: string | null }): string {
+  const title = task.title.trim();
+  const description = task.description;
+  return description?.trim()
+    ? [title, description].filter(Boolean).join('\n\n')
+    : title;
 }
 
 export class TaskService {
@@ -96,7 +264,18 @@ export class TaskService {
     const [data, total] = await Promise.all([
       prisma.task.findMany({
         where,
-        include: { workspaces: true, project: true },
+        select: {
+          id: true,
+          projectId: true,
+          title: true,
+          status: true,
+          priority: true,
+          position: true,
+          createdAt: true,
+          updatedAt: true,
+          workspaces: { include: { sessions: visibleSessionSummary } },
+          project: true,
+        },
         orderBy: [{ updatedAt: 'desc' }],
         skip,
         take: limit,
@@ -112,7 +291,7 @@ export class TaskService {
     });
 
     return {
-      data,
+      data: data.map((task) => withTaskPreviews(task, { omitDescription: true })),
       total,
       page,
       limit,
@@ -126,14 +305,65 @@ export class TaskService {
   async findById(id: string) {
     const task = await prisma.task.findFirst({
       where: { id, deletedAt: null },
-      include: { workspaces: { include: { sessions: { where: { purpose: { not: SessionPurpose.COMMIT_MSG } } } } } },
+      select: {
+        id: true,
+        projectId: true,
+        title: true,
+        status: true,
+        priority: true,
+        position: true,
+        createdAt: true,
+        updatedAt: true,
+        workspaces: { include: { sessions: visibleSessionSummary } },
+      },
     });
 
     if (!task) {
       throw new NotFoundError('Task', id);
     }
 
-    return task;
+    return withTaskPreviews(task, { omitDescription: true });
+  }
+
+  async findBodyById(id: string) {
+    const task = await prisma.task.findFirst({
+      where: { id, deletedAt: null },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+      },
+    });
+
+    if (!task) {
+      throw new NotFoundError('Task', id);
+    }
+
+    const hasDescription = Boolean(task.description?.trim());
+    const titlePreview = buildTextPreview(task.title, TASK_TITLE_MAX_LENGTH);
+    const usesHistoricalTitleBody =
+      !hasDescription
+      && (task.title.length > TASK_HISTORICAL_TITLE_BODY_THRESHOLD || task.title !== titlePreview);
+    const body = hasDescription
+      ? task.description!
+      : usesHistoricalTitleBody
+        ? task.title
+        : '';
+    const prompt = hasDescription
+      ? buildTaskPrompt(task)
+      : usesHistoricalTitleBody
+        ? task.title
+        : task.title.trim();
+
+    return {
+      taskId: task.id,
+      title: titlePreview,
+      titlePreview,
+      body,
+      bodySource: hasDescription ? 'description' : usesHistoricalTitleBody ? 'historical_title' : 'none',
+      prompt,
+      isTruncated: task.title !== titlePreview,
+    };
   }
 
   /**
@@ -142,7 +372,7 @@ export class TaskService {
    * - 自动计算 position（同状态下最大 position + 1）
    */
   async create(projectId: string, input: CreateTaskInput) {
-    const title = normalizeTaskTitle(input.title);
+    const normalizedInput = normalizeCreateTaskInput(input);
 
     // 校验项目存在
     const project = await prisma.project.findUnique({
@@ -161,9 +391,9 @@ export class TaskService {
 
     return prisma.task.create({
       data: {
-        title,
-        description: input.description,
-        priority: input.priority ?? 0,
+        title: normalizedInput.title,
+        description: normalizedInput.description,
+        priority: normalizedInput.priority ?? 0,
         position: (maxPosition._max.position ?? 0) + 1,
         projectId,
       },
@@ -174,10 +404,6 @@ export class TaskService {
    * 更新任务基本信息
    */
   async update(id: string, input: UpdateTaskInput) {
-    const normalizedInput = {
-      ...input,
-      ...(input.title !== undefined ? { title: normalizeTaskTitle(input.title) } : {}),
-    };
     const task = await prisma.task.findFirst({
       where: { id, deletedAt: null },
       include: { project: true },
@@ -186,6 +412,7 @@ export class TaskService {
       throw new NotFoundError('Task', id);
     }
     ensureProjectIsMutable(task.project, 'update tasks');
+    const normalizedInput = normalizeUpdateTaskInput(task, input);
 
     return prisma.task.update({
       where: { id },

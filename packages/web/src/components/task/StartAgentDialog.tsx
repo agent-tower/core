@@ -17,6 +17,7 @@ interface StartAgentDialogProps {
   taskId: string
   taskTitle: string
   taskDescription: string
+  taskPrompt?: string
 }
 
 type StartStep = 'idle' | 'creating-workspace' | 'creating-session' | 'starting-session'
@@ -28,6 +29,7 @@ export function StartAgentDialog({
   taskId,
   taskTitle,
   taskDescription,
+  taskPrompt,
 }: StartAgentDialogProps) {
   const { t } = useI18n()
   const [selectedProviderId, setSelectedProviderId] = useState<string>('')
@@ -55,12 +57,12 @@ export function StartAgentDialog({
     if (isOpen) {
       const parts = [taskTitle]
       if (taskDescription) parts.push(taskDescription)
-      setPrompt(parts.join('\n\n'))
+      setPrompt(taskPrompt?.trim() || parts.join('\n\n'))
       setWorkspaceMode(WorkspaceKind.WORKTREE)
       setStep('idle')
       setError(null)
     }
-  }, [isOpen, taskTitle, taskDescription])
+  }, [isOpen, taskTitle, taskDescription, taskPrompt])
 
   const isStarting = step !== 'idle'
 

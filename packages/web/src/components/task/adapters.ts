@@ -166,11 +166,11 @@ export function adaptTaskForList(task: SharedTask): UITask {
   return {
     id: task.id,
     projectId: task.projectId,
-    title: task.title,
+    title: task.titlePreview ?? task.title,
     status: mapTaskStatusToUI(task.status),
     agent,
     branch,
-    description: task.description ?? '',
+    description: task.contentPreview ?? task.description ?? '',
     projectArchivedAt: project?.archivedAt ?? null,
     projectRepoDeletedAt: project?.repoDeletedAt ?? null,
   }
@@ -197,7 +197,7 @@ export function adaptTaskForDetail(
     projectId: project.id,
     projectName: project.name,
     projectColor: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],
-    title: task.title,
+    title: task.titlePreview ?? task.title,
     status: mapTaskStatusToUI(task.status),
     branch,
     mainBranch: activeWorkspace?.baseBranch ?? project.mainBranch ?? 'main',

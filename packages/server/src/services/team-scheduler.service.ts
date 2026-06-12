@@ -64,6 +64,8 @@ type SchedulerTeamRun = {
   mainWorkspaceId: string | null;
   task: {
     projectId: string;
+    title: string;
+    description: string | null;
     deletedAt: Date | null;
     workspaces: PrismaWorkspace[];
   };
@@ -406,7 +408,7 @@ export class TeamSchedulerService {
         const session = await this.sessionManager.create(
           workspace.id,
           provider.agentType as AgentType,
-          await this.buildSessionPrompt(member, freshWorkRequest),
+          await this.buildSessionPrompt(context.teamRun, member, freshWorkRequest),
           'DEFAULT',
           member.providerId
         );
@@ -1098,13 +1100,29 @@ export class TeamSchedulerService {
     return workspace;
   }
 
-  private async buildSessionPrompt(member: PrismaTeamMember, workRequest: PrismaWorkRequest): Promise<string> {
+  private async buildSessionPrompt(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+    workRequest: PrismaWorkRequest
+  ): Promise<string> {
     const triggerMessage = await prisma.roomMessage.findUnique({
       where: { id: workRequest.triggerMessageId },
-      select: { attachmentIds: true },
+      select: { content: true, attachmentIds: true },
     });
     const attachmentIds = parseJsonField<string[]>(triggerMessage?.attachmentIds, []);
-    const instruction = await appendAttachmentMarkdownContext(workRequest.instruction, attachmentIds);
+    const taskContext = [
+      teamRun.task.title.trim(),
+      teamRun.task.description?.trim() ?? '',
+    ].filter(Boolean).join('\n\n');
+    const triggerContent = triggerMessage?.content?.trim() ?? '';
+    const instructionParts = [
+      taskContext,
+      triggerContent && triggerContent !== taskContext ? `Triggering room message:\n${triggerContent}` : '',
+      workRequest.instruction.trim() && workRequest.instruction.trim() !== triggerContent
+        ? `Work request summary:\n${workRequest.instruction.trim()}`
+        : '',
+    ].filter(Boolean);
+    const instruction = await appendAttachmentMarkdownContext(instructionParts.join('\n\n'), attachmentIds);
 
     return `${member.rolePrompt}\n\nTask:\n${instruction}`;
   }

@@ -60,6 +60,7 @@ interface RoomTimelineProps {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const INLINE_PREVIEW_MAX_LENGTH = 240
 
 type PendingRoomMessageStatus = 'sending' | 'failed'
 type PendingRoomMessage = RoomMessage & {
@@ -147,6 +148,12 @@ function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
+function previewText(value?: string | null, maxLength = INLINE_PREVIEW_MAX_LENGTH) {
+  const compact = (value ?? '').replace(/\s+/g, ' ').trim()
+  if (compact.length <= maxLength) return compact
+  return `${compact.slice(0, maxLength - 3).trimEnd()}...`
+}
+
 function findInlineMention(value: string, cursor: number) {
   const beforeCursor = value.slice(0, cursor)
   const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/)
@@ -181,16 +188,17 @@ function getPrivateRecipientLabels(message: RoomMessage, memberById: Map<string,
 
 function getDisplayContent(message: RoomMessage, memberById: Map<string, TeamMember>) {
   const mentions = message.mentions ?? []
-  if (mentions.length === 0) return message.content
+  const baseContent = message.contentPreview ?? message.content
+  if (mentions.length === 0) return baseContent
 
   const missingLabels = mentions
     .map((mention) => getMentionLabel(mention, memberById))
-    .filter((label) => label && !message.content.includes(`@${label}`))
+    .filter((label) => label && !baseContent.includes(`@${label}`))
 
-  if (missingLabels.length === 0) return message.content
+  if (missingLabels.length === 0) return baseContent
 
   const suffix = missingLabels.map((label) => `@${label}`).join(' ')
-  return message.content.trimEnd() ? `${message.content.trimEnd()} ${suffix}` : suffix
+  return baseContent.trimEnd() ? `${baseContent.trimEnd()} ${suffix}` : suffix
 }
 
 function resolveSenderMember(
@@ -739,7 +747,7 @@ function PendingApprovalBubble({
         </div>
 
         <div className="text-sm leading-6 text-neutral-800 [overflow-wrap:anywhere]">
-          {request.instruction}
+          {request.instructionPreview ?? previewText(request.instruction)}
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">

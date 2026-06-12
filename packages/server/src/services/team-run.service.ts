@@ -43,6 +43,7 @@ import { prisma } from '../utils/index.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
+import { buildTextPreview, TASK_TITLE_MAX_LENGTH } from './task.service.js';
 
 export interface CreateMemberPresetInput {
   name: string;
@@ -275,13 +276,22 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 function buildInitialTaskRoomMessageContent(task: { title: string; description?: string | null }): string {
-  const title = task.title.trim();
+  const title = buildTextPreview(task.title, TASK_TITLE_MAX_LENGTH);
   if (title.length === 0) {
     throw new ValidationError('Task title is required to create a TeamRun');
   }
 
-  const description = task.description?.trim() ?? '';
-  return [title, description].filter(Boolean).join('\n\n');
+  const descriptionPreview = buildTextPreview(task.description, 120);
+  return [
+    title,
+    task.description?.trim()
+      ? `Details preview: ${descriptionPreview}\n\nFull details are stored on the task description.`
+      : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function buildInitialTaskMentionSource(task: { title: string; description?: string | null }): string {
+  return [task.title.trim(), task.description?.trim() ?? ''].filter(Boolean).join('\n\n');
 }
 
 function extractMentionTokens(content: string): string[] {
@@ -690,6 +700,7 @@ export class TeamRunService {
         ensureTaskNotDeleted(task);
         projectId = task.projectId;
         const initialContent = buildInitialTaskRoomMessageContent(task);
+        const initialMentionSource = buildInitialTaskMentionSource(task);
 
         const existing = await tx.teamRun.findUnique({ where: { taskId } });
         if (existing) {
@@ -726,7 +737,7 @@ export class TeamRunService {
           members.push(member);
         }
 
-        const initialMentionParse = deriveStructuredMentionsFromContent(initialContent, members);
+        const initialMentionParse = deriveStructuredMentionsFromContent(initialMentionSource, members);
         const message = await tx.roomMessage.create({
           data: {
             teamRunId: teamRun.id,
@@ -1146,7 +1157,8 @@ export class TeamRunService {
     const workRequestStatus: WorkRequestStatus = teamRun.mode === 'CONFIRM'
       ? 'PENDING_APPROVAL'
       : 'QUEUED';
-    const workRequestInstruction = await appendAttachmentMarkdownContext(input.content, input.attachmentIds);
+    await appendAttachmentMarkdownContext(input.content, input.attachmentIds);
+    const workRequestInstruction = this.contentPreview(input.content);
 
     let messageId = '';
     await prisma.$transaction(async (tx) => {
@@ -1268,7 +1280,7 @@ export class TeamRunService {
     const workRequestStatus: WorkRequestStatus = teamRun.mode === 'CONFIRM'
       ? 'PENDING_APPROVAL'
       : 'QUEUED';
-    const workRequestInstruction = await appendAttachmentMarkdownContext(input.content, input.attachmentIds);
+    const workRequestInstruction = this.contentPreview(input.content);
 
     let messageId = '';
     await prisma.$transaction(async (tx) => {
@@ -1581,8 +1593,20 @@ export class TeamRunService {
   }
 
   private contentPreview(content: string): string {
-    const compact = content.replace(/\s+/g, ' ').trim();
-    return compact.length <= 240 ? compact : `${compact.slice(0, 237)}...`;
+    return buildTextPreview(content);
+  }
+
+  private compactContentPreview(content: string): string {
+    return buildTextPreview(content.replace(/\s+/g, ' '));
+  }
+
+  private serializePreviewField(content: string): { value: string; preview: string; isTruncated: boolean } {
+    const preview = this.contentPreview(content);
+    return {
+      value: preview,
+      preview,
+      isTruncated: content !== preview,
+    };
   }
 
   private teamRunInclude() {
@@ -1732,8 +1756,12 @@ export class TeamRunService {
       .map((participant) => participant.memberId);
     const participantMemberIds = participants.map((participant) => participant.memberId);
 
+    const serializedContent = this.serializePreviewField(message.content);
     return {
       ...message,
+      content: serializedContent.value,
+      contentPreview: serializedContent.preview,
+      isTruncated: serializedContent.isTruncated,
       senderType: message.senderType as RoomMessageSenderType,
       kind: message.kind as RoomMessageKind,
       visibility: message.visibility as RoomMessageVisibility,
@@ -1757,8 +1785,12 @@ export class TeamRunService {
   }
 
   private serializeWorkRequest(workRequest: PrismaWorkRequest): WorkRequest {
+    const serializedInstruction = this.serializePreviewField(workRequest.instruction);
     return {
       ...workRequest,
+      instruction: serializedInstruction.value,
+      instructionPreview: serializedInstruction.preview,
+      isTruncated: serializedInstruction.isTruncated,
       requesterType: workRequest.requesterType as WorkRequestRequesterType,
       ifBusy: workRequest.ifBusy as IfBusyPolicy,
       status: workRequest.status as WorkRequestStatus,
@@ -1781,7 +1813,7 @@ export class TeamRunService {
           senderId: triggerMessage.senderId,
           senderInvocationId: triggerMessage.senderInvocationId,
           kind: triggerMessage.kind as RoomMessageKind,
-          contentPreview: this.contentPreview(triggerMessage.content),
+          contentPreview: this.compactContentPreview(triggerMessage.content),
           createdAt: toIso(triggerMessage.createdAt),
         }
         : null,

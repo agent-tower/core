@@ -2189,7 +2189,7 @@ describe('TeamReconcilerService', () => {
         messages: Array<{ id: string; content: string; senderType: string; kind: string; mentions: unknown[]; workRequestIds: string[] }>;
         workRequests: Array<{ id: string; targetMemberId: string; instruction: string; status: string }>;
       };
-      const initialContent = 'Build CSV import\n\nParse uploaded files and show validation errors.';
+      const initialContent = 'Build CSV import\n\nDetails preview: Parse uploaded files and show validation errors.\n\nFull details are stored on the task description.';
       expect(teamRun.messages).toHaveLength(1);
       expect(teamRun.messages[0]).toMatchObject({
         senderType: 'user',
@@ -2328,7 +2328,7 @@ describe('TeamReconcilerService', () => {
       };
       const reviewer = teamRun.members.find((member) => member.name === 'Reviewer');
       const implementer = teamRun.members.find((member) => member.name === 'Implementer');
-      const initialContent = 'Investigate import failures\n\nPlease @Reviewer check the error handling.';
+      const initialContent = 'Investigate import failures\n\nDetails preview: Please @Reviewer check the error handling.\n\nFull details are stored on the task description.';
 
       expect(reviewer).toBeDefined();
       expect(implementer).toBeDefined();

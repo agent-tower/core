@@ -131,7 +131,6 @@ function DraggableTaskCard({
         {/* 单行：标题为主体，右侧轻量项目 meta（Codex 式） */}
         <span
           className={`min-w-0 flex-1 truncate ${isSelected ? 'text-foreground font-medium' : 'text-foreground/90'}`}
-          title={task.title}
         >
           {task.title}
         </span>

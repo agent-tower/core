@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
-import type { Task, TaskStatus } from '@agent-tower/shared'
+import type { Task, TaskBody, TaskStatus } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
 
@@ -67,6 +67,10 @@ export function removeTaskFromListCaches(
     queryKey: queryKeys.tasks.detail(taskId),
     exact: true,
   })
+  queryClient.removeQueries({
+    queryKey: queryKeys.tasks.body(taskId),
+    exact: true,
+  })
 
   return snapshots
 }
@@ -121,6 +125,18 @@ export function useTask(id: string) {
   })
 }
 
+/**
+ * 按需获取任务完整正文。点击任务/TeamRun 热路径不要默认调用。
+ * GET /api/tasks/:id/body
+ */
+export function useTaskBody(id: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.tasks.body(id),
+    queryFn: () => apiClient.get<TaskBody>(`/tasks/${id}/body`),
+    enabled: !!id && enabled,
+  })
+}
+
 // ============ Mutation Hooks ============
 
 /**
@@ -158,6 +174,9 @@ export function useUpdateTask() {
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.detail(data.id),
+      })
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.tasks.body(data.id),
       })
     },
   })
@@ -223,6 +242,9 @@ export function useRetryTask() {
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.detail(data.id),
+      })
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.tasks.body(data.id),
       })
     },
   })

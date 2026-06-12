@@ -6,13 +6,13 @@ import { ServiceError } from '../errors.js';
 import { getEventBus, getSessionManager, getTaskCleanupService } from '../core/container.js';
 
 const createTaskSchema = z.object({
-  title: z.string().trim().min(1, 'title is required'),
+  title: z.string().min(1, 'title is required').refine((value) => value.trim().length > 0, 'title is required'),
   description: z.string().optional(),
   priority: z.number().int().min(0).default(0),
 });
 
 const updateTaskSchema = z.object({
-  title: z.string().trim().min(1, 'title cannot be empty').optional(),
+  title: z.string().min(1, 'title cannot be empty').refine((value) => value.trim().length > 0, 'title cannot be empty').optional(),
   description: z.string().optional(),
   priority: z.number().int().min(0).optional(),
 });
@@ -106,6 +106,14 @@ export async function taskRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/tasks/:id', async (request, reply) => {
     try {
       return await taskService.findById(request.params.id);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/tasks/:id/body', async (request, reply) => {
+    try {
+      return await taskService.findBodyById(request.params.id);
     } catch (error) {
       return handleError(error, reply);
     }

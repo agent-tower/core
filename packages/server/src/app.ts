@@ -22,6 +22,7 @@ export async function buildApp() {
     logger: {
       level: process.env.LOG_LEVEL || 'info',
     },
+    bodyLimit: 10 * 1024 * 1024,
   });
 
   // 注册插件
@@ -78,8 +79,9 @@ export async function buildApp() {
     // 启动任务删除后台资源清理 worker
     getTaskCleanupService().start();
 
-    // 启动 workspace git 变化监听，补齐外部终端/IDE 手动 git 操作的实时刷新链路
-    await getWorkspaceGitWatcherService().start().catch((err) => {
+    // 启动 workspace git 变化监听，补齐外部终端/IDE 手动 git 操作的实时刷新链路。
+    // 全量 watcher 初始化会扫描所有 ACTIVE worktree，不能阻塞 Fastify ready/listen。
+    void getWorkspaceGitWatcherService().start().catch((err) => {
       app.log.warn(`Workspace git watcher startup failed: ${err instanceof Error ? err.message : err}`);
     });
   });

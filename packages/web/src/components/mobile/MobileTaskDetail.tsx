@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { useQueryClient } from '@tanstack/react-query'
-import { SessionStatus, WorkspaceStatus, type ConflictOp, type Session } from '@agent-tower/shared'
+import { SessionStatus, WorkspaceStatus, type ConflictOp, type Session, type TaskBody } from '@agent-tower/shared'
 import { LogStream, TodoPanel, TokenUsageIndicator } from '@/components/agent'
 import {
   ArrowLeft, ArrowUp, ArrowDown, Paperclip, Play, Square,
@@ -18,6 +18,7 @@ import { useWorkspaces, useOpenInEditor } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useSendMessage, useStopSession } from '@/hooks/use-sessions'
 import { useProviders } from '@/hooks/use-providers'
+import { useTaskBody } from '@/hooks/use-tasks'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
@@ -40,6 +41,7 @@ import type { ConflictDetails } from '@/components/workspace/GitOperationsDialog
 import { useGitStatus } from '@/hooks/use-workspaces'
 import { useGitChanges } from '@/hooks/use-git'
 import { queryKeys } from '@/hooks/query-keys'
+import { apiClient } from '@/lib/api-client'
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 import { useSlashCommandMenu } from '@/components/task/useSlashCommandMenu'
@@ -144,6 +146,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
   const teamRun = taskTeamRun ?? null
   const tabConfig = teamRun ? TEAM_RUN_TAB_CONFIG : SOLO_TAB_CONFIG
+  const shouldLoadTaskBody = taskTeamRun === null
+  const { data: taskBody, isLoading: isLoadingTaskBody } = useTaskBody(task.id, shouldLoadTaskBody)
 
   useEffect(() => {
     setExplicitWorkspaceId(undefined)
@@ -229,6 +233,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
     if (!task?.id) return Promise.resolve()
     return queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
   }, [task?.id, queryClient])
+  const ensureTaskBody = useCallback(async () => {
+    return queryClient.fetchQuery({
+      queryKey: queryKeys.tasks.body(task.id),
+      queryFn: () => apiClient.get<TaskBody>(`/tasks/${task.id}/body`),
+    })
+  }, [queryClient, task.id])
 
   const activeSession = useMemo(() => {
     if (!workspaces) return null
@@ -715,10 +725,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
             <div ref={contentRef}>
             {/* Task Description */}
             <div className="mb-3 pb-2 border-b border-neutral-100">
-              {task.description ? (
+              {isLoadingTaskBody ? (
+                <p className="text-[13px] text-neutral-400 italic">{t('Loading...')}</p>
+              ) : taskBody?.body ? (
                 <div className="text-[13px] text-neutral-500 leading-relaxed prose prose-sm max-w-none">
                   <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
-                    {task.description}
+                    {taskBody.body}
                   </Streamdown>
                 </div>
               ) : (
@@ -749,7 +761,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                   {isProjectReadOnly ? projectReadOnlyMessage : t('选择一个 Agent 来执行此任务')}
                 </p>
                 {!isProjectReadOnly && (
-                  <Button onClick={() => setIsStartDialogOpen(true)}>
+                  <Button onClick={async () => { await ensureTaskBody(); setIsStartDialogOpen(true) }}>
                     <Play size={16} className="mr-1.5" />
                     {t('启动 Agent')}
                   </Button>
@@ -790,7 +802,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
             <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
               <div className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
                 <span className="text-xs text-neutral-500">{t('代码已合并，以上为历史沟通记录')}</span>
-                <Button size="sm" onClick={() => setIsStartDialogOpen(true)}>
+                <Button size="sm" onClick={async () => { await ensureTaskBody(); setIsStartDialogOpen(true) }}>
                   <Play size={14} className="mr-1.5" />
                   {t('启动新 Agent')}
                 </Button>
@@ -974,8 +986,9 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           isOpen={isStartDialogOpen}
           onClose={() => setIsStartDialogOpen(false)}
           taskId={task.id}
-          taskTitle={task.title}
-          taskDescription={task.description}
+          taskTitle={taskBody?.title ?? task.title}
+          taskDescription={taskBody?.body ?? ''}
+          taskPrompt={taskBody?.prompt}
         />
       )}
 

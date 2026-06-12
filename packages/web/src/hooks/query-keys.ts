@@ -16,6 +16,7 @@ export const queryKeys = {
     list: (projectId: string, params?: Record<string, unknown>) =>
       ['tasks', 'list', projectId, params] as const,
     detail: (id: string) => ['tasks', 'detail', id] as const,
+    body: (id: string) => ['tasks', 'body', id] as const,
     stats: (projectId: string) => ['tasks', 'stats', projectId] as const,
   },
 

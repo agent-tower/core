@@ -263,7 +263,13 @@ export interface Task {
   id: string
   projectId: string
   title: string
+  /** Short, display-safe title for list/header hot paths. */
+  titlePreview?: string
   description?: string
+  /** Short preview of long task body/content when the full field is omitted. */
+  contentPreview?: string
+  /** True when one or more large text fields were truncated in this payload. */
+  isTruncated?: boolean
   status: TaskStatus
   /** 优先级 (对应 Prisma priority) */
   priority?: number
@@ -275,6 +281,19 @@ export interface Task {
   teamRun?: TeamRun | null
   createdAt?: string
   updatedAt?: string
+}
+
+export type TaskBodySource = 'description' | 'historical_title' | 'none'
+
+/** Full task body loaded only on explicit demand. */
+export interface TaskBody {
+  taskId: string
+  title: string
+  titlePreview: string
+  body: string
+  bodySource: TaskBodySource
+  prompt: string
+  isTruncated: boolean
 }
 
 /** 工作空间 */
@@ -406,6 +425,8 @@ export interface RoomMessage {
   kind: RoomMessageKind
   visibility: RoomMessageVisibility
   content: string
+  contentPreview?: string
+  isTruncated?: boolean
   mentions: StructuredMention[]
   recipientMemberIds?: string[] | null
   participantMemberIds?: string[] | null
@@ -435,6 +456,8 @@ export interface WorkRequest {
   targetMemberId: string
   triggerMessageId: string
   instruction: string
+  instructionPreview?: string
+  isTruncated?: boolean
   ifBusy: IfBusyPolicy
   cancelQueued: boolean
   status: WorkRequestStatus

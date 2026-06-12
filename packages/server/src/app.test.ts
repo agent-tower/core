@@ -3,6 +3,11 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const taskCleanupStartMock = vi.fn()
+const taskCleanupStopMock = vi.fn()
+const workspaceGitWatcherStartMock = vi.fn(() => Promise.resolve())
+const workspaceGitWatcherStopMock = vi.fn()
+
 vi.mock('./routes/index.js', () => ({
   registerRoutes: vi.fn(async () => {}),
 }))
@@ -20,12 +25,12 @@ vi.mock('./services/workspace.service.js', () => ({
 
 vi.mock('./core/container.js', () => ({
   getTaskCleanupService: vi.fn(() => ({
-    start: vi.fn(),
-    stop: vi.fn(),
+    start: taskCleanupStartMock,
+    stop: taskCleanupStopMock,
   })),
   getWorkspaceGitWatcherService: vi.fn(() => ({
-    start: vi.fn(() => Promise.resolve()),
-    stop: vi.fn(),
+    start: workspaceGitWatcherStartMock,
+    stop: workspaceGitWatcherStopMock,
   })),
 }))
 
@@ -48,6 +53,11 @@ let tempWebDir = ''
 describe('buildApp static web hosting', () => {
   beforeEach(() => {
     tempWebDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-web-'))
+    taskCleanupStartMock.mockClear()
+    taskCleanupStopMock.mockClear()
+    workspaceGitWatcherStartMock.mockReset()
+    workspaceGitWatcherStartMock.mockResolvedValue(undefined)
+    workspaceGitWatcherStopMock.mockClear()
   })
 
   afterEach(() => {
@@ -95,6 +105,59 @@ describe('buildApp static web hosting', () => {
       expect(response.body).toContain('agent tower')
     } finally {
       await app.close()
+    }
+  })
+})
+
+describe('buildApp startup services', () => {
+  beforeEach(() => {
+    delete process.env.AGENT_TOWER_WEB_DIR
+    taskCleanupStartMock.mockClear()
+    taskCleanupStopMock.mockClear()
+    workspaceGitWatcherStartMock.mockReset()
+    workspaceGitWatcherStartMock.mockResolvedValue(undefined)
+    workspaceGitWatcherStopMock.mockClear()
+  })
+
+  afterEach(() => {
+    if (originalWebDir === undefined) {
+      delete process.env.AGENT_TOWER_WEB_DIR
+    } else {
+      process.env.AGENT_TOWER_WEB_DIR = originalWebDir
+    }
+  })
+
+  it('does not block Fastify ready on workspace git watcher startup', async () => {
+    let resolveWatcherStart!: () => void
+    workspaceGitWatcherStartMock.mockReturnValue(new Promise<void>((resolve) => {
+      resolveWatcherStart = resolve
+    }))
+
+    const app = await buildApp()
+
+    try {
+      await expect(app.ready()).resolves.toBe(app)
+      expect(workspaceGitWatcherStartMock).toHaveBeenCalledTimes(1)
+    } finally {
+      resolveWatcherStart()
+      await app.close()
+    }
+  })
+
+  it('logs workspace git watcher startup failures without failing Fastify ready', async () => {
+    workspaceGitWatcherStartMock.mockRejectedValue(new Error('watcher failed'))
+
+    const app = await buildApp()
+    const warnSpy = vi.spyOn(app.log, 'warn')
+
+    try {
+      await expect(app.ready()).resolves.toBe(app)
+      await vi.waitFor(() => {
+        expect(warnSpy).toHaveBeenCalledWith('Workspace git watcher startup failed: watcher failed')
+      })
+    } finally {
+      await app.close()
+      warnSpy.mockRestore()
     }
   })
 })

@@ -122,4 +122,193 @@ describe('task routes', () => {
       await app.close();
     }
   });
+
+  it('accepts long single-input task content and stores it as title plus description', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task route long input project',
+        repoPath: testDir,
+      },
+    });
+    const longInput = `Analyze API logs\n${'request failed '.repeat(300)}`;
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${project.id}/tasks`,
+        payload: {
+          title: longInput,
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({
+        title: 'Analyze API logs',
+        description: longInput,
+      });
+      const stored = await prisma.task.findFirstOrThrow({ where: { projectId: project.id } });
+      expect(stored.title).toBe('Analyze API logs');
+      expect(stored.description).toBe(longInput);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('accepts long update input without storing it in Task.title', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task route long update project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        projectId: project.id,
+        title: 'Original title',
+        description: 'Existing body',
+      },
+    });
+    const longInput = `Updated logs\n${'stacktrace '.repeat(300)}`;
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/tasks/${task.id}`,
+        payload: {
+          title: longInput,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        title: 'Updated logs',
+      });
+      const stored = await prisma.task.findUniqueOrThrow({ where: { id: task.id } });
+      expect(stored.title).toBe('Updated logs');
+      expect(stored.description).toContain(longInput);
+      expect(stored.description).toContain('Existing body');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('omits full task descriptions from project task lists', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task route summary project',
+        repoPath: testDir,
+      },
+    });
+    await prisma.task.create({
+      data: {
+        title: `Historical title ${'x'.repeat(1000)}`,
+        description: `Huge body ${'y'.repeat(1000)}`,
+        projectId: project.id,
+      },
+    });
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/projects/${project.id}/tasks`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const json = response.json();
+      expect(json.data[0].title.length).toBeLessThanOrEqual(200);
+      expect(json.data[0].description).toBeUndefined();
+      expect(json.data[0].contentPreview).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns task summary without full description and exposes full body on demand', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task route body project',
+        repoPath: testDir,
+      },
+    });
+    const hugeDescription = `Huge body ${'diagnostic '.repeat(400)}`;
+    const task = await prisma.task.create({
+      data: {
+        title: 'Body summary task',
+        description: hugeDescription,
+        projectId: project.id,
+      },
+    });
+    const app = await buildTestApp();
+
+    try {
+      const summaryResponse = await app.inject({
+        method: 'GET',
+        url: `/api/tasks/${task.id}`,
+      });
+      expect(summaryResponse.statusCode).toBe(200);
+      const summary = summaryResponse.json();
+      expect(summary.title).toBe('Body summary task');
+      expect(summary.description).toBeUndefined();
+      expect(summary.contentPreview).toBeUndefined();
+
+      const bodyResponse = await app.inject({
+        method: 'GET',
+        url: `/api/tasks/${task.id}/body`,
+      });
+      expect(bodyResponse.statusCode).toBe(200);
+      expect(bodyResponse.json()).toMatchObject({
+        taskId: task.id,
+        title: 'Body summary task',
+        body: hugeDescription,
+        bodySource: 'description',
+        prompt: `Body summary task\n\n${hugeDescription}`,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns historical oversized title as full body when description is empty', async () => {
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task route historical title project',
+        repoPath: testDir,
+      },
+    });
+    const historicalTitle = `Historical pasted logs\n${'legacy-line '.repeat(400)}`;
+    const task = await prisma.task.create({
+      data: {
+        title: historicalTitle,
+        projectId: project.id,
+      },
+    });
+    const app = await buildTestApp();
+
+    try {
+      const summaryResponse = await app.inject({
+        method: 'GET',
+        url: `/api/tasks/${task.id}`,
+      });
+      expect(summaryResponse.statusCode).toBe(200);
+      expect(summaryResponse.json().title.length).toBeLessThanOrEqual(200);
+      expect(summaryResponse.json().description).toBeUndefined();
+
+      const bodyResponse = await app.inject({
+        method: 'GET',
+        url: `/api/tasks/${task.id}/body`,
+      });
+      expect(bodyResponse.statusCode).toBe(200);
+      expect(bodyResponse.json()).toMatchObject({
+        taskId: task.id,
+        body: historicalTitle,
+        bodySource: 'historical_title',
+        prompt: historicalTitle,
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });

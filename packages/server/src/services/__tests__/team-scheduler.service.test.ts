@@ -1244,7 +1244,7 @@ describe('TeamSchedulerService', () => {
     expect(sessionManager.create).toHaveBeenCalledWith(
       invocations[0]!.workspaceId,
       AgentType.CODEX,
-      'Role 1\n\nTask:\nImplement the shared work',
+      'Role 1\n\nTask:\nTeam scheduler task\n\nWork request summary:\nImplement the shared work',
       'DEFAULT',
       members[0]!.providerId
     );
@@ -1312,10 +1312,54 @@ describe('TeamSchedulerService', () => {
     expect(sessionManager.create).toHaveBeenCalledWith(
       expect.any(String),
       AgentType.CODEX,
-      `Role 1\n\nTask:\nUse this reference\n\nAttachments:\n![reference.png](${attachment.storagePath})`,
+      `Role 1\n\nTask:\nTeam scheduler task\n\nTriggering room message:\nUse this reference\n\nAttachments:\n![reference.png](${attachment.storagePath})`,
       'DEFAULT',
       members[0]!.providerId
     );
+  });
+
+  it('builds session prompt from full Task description when WorkRequest only stores a preview', async () => {
+    const { task, teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const longDescription = `Full task body\n${'diagnostic-log '.repeat(300)}`;
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        title: 'Short generated title',
+        description: longDescription,
+      },
+    });
+    const message = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        kind: 'chat',
+        content: 'Short generated title\n\nTask details preview: Full task body...',
+        mentions: stringifyJson([]),
+        workRequestIds: stringifyJson([]),
+        artifactRefs: stringifyJson([]),
+        attachmentIds: stringifyJson([]),
+      },
+    });
+    await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Short generated title\n\nFull details are stored on the task description.',
+      triggerMessageId: message.id,
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await service.startNextSessions(teamRun.id);
+
+    const prompt = sessionManager.create.mock.calls[0]?.[2] ?? '';
+    expect(prompt).toContain('Short generated title');
+    expect(prompt).toContain('Full task body');
+    expect(prompt).toContain('diagnostic-log '.repeat(50).trim());
+    expect(prompt).toContain('Work request summary:');
   });
 
   it('does not duplicate session prompt attachment context when the WorkRequest instruction already includes the storage path', async () => {
@@ -1362,7 +1406,7 @@ describe('TeamSchedulerService', () => {
     expect(sessionManager.create).toHaveBeenCalledWith(
       expect.any(String),
       AgentType.CODEX,
-      `Role 1\n\nTask:\n${instruction}`,
+      `Role 1\n\nTask:\nTeam scheduler task\n\nTriggering room message:\n${instruction}`,
       'DEFAULT',
       members[0]!.providerId
     );
@@ -1428,7 +1472,7 @@ describe('TeamSchedulerService', () => {
     expect(sessionManager.create).toHaveBeenCalledWith(
       workspace!.id,
       AgentType.CODEX,
-      'Role 1\n\nTask:\nContinue with context',
+      'Role 1\n\nTask:\nTeam scheduler task\n\nWork request summary:\nContinue with context',
       'DEFAULT',
       members[0]!.providerId
     );
@@ -1437,7 +1481,7 @@ describe('TeamSchedulerService', () => {
     await expect(prisma.session.findUnique({ where: { id: invocations[0]!.sessionId! } })).resolves.toMatchObject({
       workspaceId: workspace!.id,
       providerId: members[0]!.providerId,
-      prompt: 'Role 1\n\nTask:\nContinue with context',
+      prompt: 'Role 1\n\nTask:\nTeam scheduler task\n\nWork request summary:\nContinue with context',
       status: 'RUNNING',
     });
   });

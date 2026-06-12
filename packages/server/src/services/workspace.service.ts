@@ -28,8 +28,22 @@ const WORKSPACE_READY_RETRY_DELAY_MS = 50;
 
 const execAsync = promisify(exec);
 
-/** 过滤条件：只返回用户可见的 CHAT session */
-const visibleSessionsFilter = { where: { purpose: { not: SessionPurpose.COMMIT_MSG } } };
+/** 过滤条件：只返回用户可见的 CHAT session，且不在 workspace 热路径携带 prompt/logSnapshot。 */
+const visibleSessionsFilter = {
+  where: { purpose: { not: SessionPurpose.COMMIT_MSG } },
+  select: {
+    id: true,
+    workspaceId: true,
+    agentType: true,
+    variant: true,
+    providerId: true,
+    status: true,
+    purpose: true,
+    tokenUsage: true,
+    createdAt: true,
+    updatedAt: true,
+  },
+} satisfies Prisma.SessionFindManyArgs;
 const activeSessionStatuses = [SessionStatus.PENDING, SessionStatus.RUNNING];
 const finalChildWorkspaceStatuses = [WorkspaceStatus.MERGED, WorkspaceStatus.ABANDONED];
 

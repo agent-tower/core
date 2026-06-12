@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { useQueryClient } from '@tanstack/react-query'
-import { SessionStatus, WorkspaceStatus, type Session } from '@agent-tower/shared'
+import { SessionStatus, WorkspaceStatus, type Session, type TaskBody } from '@agent-tower/shared'
 import type { ConflictOp } from '@agent-tower/shared'
 import {
   ServerEvents,
@@ -35,7 +35,7 @@ import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
 import { socketManager } from '@/lib/socket/manager'
 import { useSendMessage, useStopSession, useStartSession } from '@/hooks/use-sessions'
-import { useRetryTask } from '@/hooks/use-tasks'
+import { useRetryTask, useTaskBody } from '@/hooks/use-tasks'
 import { useProviders } from '@/hooks/use-providers'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
@@ -239,6 +239,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   const teamRun = taskTeamRun ?? null
   const isTeamRunMode = Boolean(teamRun)
   const showCreateTeamRunEntry = taskTeamRun === null
+  const shouldLoadTaskBody = Boolean(task?.id && taskTeamRun === null)
+  const { data: taskBody, isLoading: isLoadingTaskBody } = useTaskBody(task?.id ?? '', shouldLoadTaskBody)
 
   // task 切换时清空 isJustRetried
   useEffect(() => {
@@ -442,6 +444,13 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   // ============ Query Client & Mutations ============
 
   const queryClient = useQueryClient()
+  const ensureTaskBody = useCallback(async () => {
+    if (!task?.id) return null
+    return queryClient.fetchQuery({
+      queryKey: queryKeys.tasks.body(task.id),
+      queryFn: () => apiClient.get<TaskBody>(`/tasks/${task.id}/body`),
+    })
+  }, [queryClient, task?.id])
   const refreshWorkspaces = useCallback(() => {
     if (!task?.id) return Promise.resolve()
     return queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
@@ -494,11 +503,11 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
       ?? providers?.find(p => p.availability.type !== 'NOT_FOUND')?.provider.id
     if (!retryProviderId) return
 
-    const prompt = [task.title, task.description].filter(Boolean).join('\n\n')
-
     setIsRetryConfirmOpen(false)
     setIsRetrying(true)
     try {
+      const body = await ensureTaskBody()
+      const prompt = body?.prompt ?? task.title
       await retryTaskMutation.mutateAsync(task.id)
       setIsJustRetried(true)
 
@@ -518,8 +527,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
     } finally {
       setIsRetrying(false)
     }
-  }, [task?.id, task?.title, task?.description, activeSession?.providerId, providers,
+  }, [task?.id, task?.title, activeSession?.providerId, providers, ensureTaskBody,
       retryTaskMutation, createWorkspaceMutation, startSessionMutation, queryClient])
+
+  const handleOpenStartDialog = useCallback(async () => {
+    if (!task?.id) return
+    await ensureTaskBody()
+    setIsStartDialogOpen(true)
+  }, [ensureTaskBody, task?.id])
 
   const handleOpenInIde = useCallback(() => {
     if (!selectedWorkspace?.id) return
@@ -834,7 +849,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             <span className="text-muted-foreground/40 text-xs">/</span>
             <span className="text-xs text-muted-foreground/70 font-mono truncate">{task.branch}</span>
           </div>
-          <h2 className="text-lg font-semibold text-foreground break-words line-clamp-2" title={task.title}>{task.title}</h2>
+          <h2 className="text-lg font-semibold text-foreground break-words line-clamp-2">{task.title}</h2>
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0">
@@ -1027,14 +1042,18 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
             <div ref={contentRef} className={`w-full min-w-0 ${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
-              {/* Task Description — 无描述时整块隐藏，避免占位噪音 */}
-              {task.description && (
+              {/* Task Description */}
+              {(isLoadingTaskBody || taskBody?.body) && (
                 <div className="mb-4 pb-4 border-b border-border/60 min-w-0">
-                  <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
-                    <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
-                      {task.description}
-                    </Streamdown>
-                  </div>
+                  {isLoadingTaskBody ? (
+                    <p className="text-sm text-muted-foreground/70 italic">{t('Loading...')}</p>
+                  ) : taskBody?.body ? (
+                    <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
+                      <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
+                        {taskBody.body}
+                      </Streamdown>
+                    </div>
+                  ) : null}
                 </div>
               )}
 
@@ -1102,7 +1121,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                   </p>
                   {!isProjectReadOnly && (
                     <div className="flex flex-wrap items-center justify-center gap-3">
-                      <Button onClick={() => setIsStartDialogOpen(true)}>
+                      <Button onClick={handleOpenStartDialog}>
                         <Play size={16} className="mr-1.5" />
                         {t('启动 Agent')}
                       </Button>
@@ -1155,7 +1174,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
               <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
                 <div className="flex items-center justify-between bg-muted/50 rounded-xl border border-border px-4 py-3">
                   <span className="text-sm text-muted-foreground">{t('代码已合并，以上为历史沟通记录')}</span>
-                  <Button size="sm" onClick={() => setIsStartDialogOpen(true)}>
+                  <Button size="sm" onClick={handleOpenStartDialog}>
                     <Play size={14} className="mr-1.5" />
                     {t('启动新 Agent')}
                   </Button>
@@ -1333,8 +1352,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           isOpen={isStartDialogOpen}
           onClose={() => setIsStartDialogOpen(false)}
           taskId={task.id}
-          taskTitle={task.title}
-          taskDescription={task.description}
+          taskTitle={taskBody?.title ?? task.title}
+          taskDescription={taskBody?.body ?? ''}
+          taskPrompt={taskBody?.prompt}
         />
       )}
 

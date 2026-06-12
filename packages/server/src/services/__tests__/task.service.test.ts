@@ -131,6 +131,159 @@ describe('TaskService', () => {
     expect(task.title).toBe('Ship TeamRun startup');
   });
 
+  it('splits long single-input task content into a short title and full description', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task long input project',
+        repoPath: testDir,
+      },
+    });
+    const longInput = [
+      'Analyze production checkout failure logs',
+      'error='.repeat(200),
+      'stack='.repeat(200),
+    ].join('\n');
+
+    const task = await service.create(project.id, { title: longInput });
+
+    expect(task.title).toBe('Analyze production checkout failure logs');
+    expect(task.title.length).toBeLessThanOrEqual(200);
+    expect(task.description).toBe(longInput);
+  });
+
+  it('preserves existing description content when splitting long task input', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task long input with attachments project',
+        repoPath: testDir,
+      },
+    });
+    const longInput = `Investigate logs\n${'line '.repeat(300)}`;
+    const attachmentDescription = 'Attachments:\n[log.txt](/attachments/log.txt)';
+
+    const task = await service.create(project.id, {
+      title: longInput,
+      description: attachmentDescription,
+    });
+
+    expect(task.title).toBe('Investigate logs');
+    expect(task.description).toContain(longInput);
+    expect(task.description).toContain(attachmentDescription);
+  });
+
+  it('keeps existing description when updating a task with long single-input content', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task long update project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Existing task',
+        description: 'Original description',
+        projectId: project.id,
+      },
+    });
+    const longInput = `New incident analysis\n${'trace '.repeat(300)}`;
+
+    const updated = await service.update(task.id, { title: longInput });
+
+    expect(updated.title).toBe('New incident analysis');
+    expect(updated.description).toContain(longInput);
+    expect(updated.description).toContain('Original description');
+  });
+
+  it('returns preview-only task lists for historical oversized titles and descriptions', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task preview list project',
+        repoPath: testDir,
+      },
+    });
+    const hugeTitle = `Historical oversized title ${'x'.repeat(1000)}`;
+    const hugeDescription = `Historical oversized description ${'y'.repeat(1000)}`;
+    await prisma.task.create({
+      data: {
+        title: hugeTitle,
+        description: hugeDescription,
+        projectId: project.id,
+      },
+    });
+
+    const list = await service.findByProjectId(project.id);
+
+    expect(list.data[0]?.title.length).toBeLessThanOrEqual(200);
+    expect(list.data[0]?.titlePreview).toBe(list.data[0]?.title);
+    expect('description' in list.data[0]!).toBe(false);
+    expect(list.data[0]?.contentPreview).toBeUndefined();
+    expect(list.data[0]?.isTruncated).toBe(true);
+  });
+
+  it('returns summary detail without full description and full body on demand', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task body detail project',
+        repoPath: testDir,
+      },
+    });
+    const description = `Full task body\n${'diagnostic '.repeat(300)}`;
+    const task = await prisma.task.create({
+      data: {
+        title: 'Analyze incident',
+        description,
+        projectId: project.id,
+      },
+    });
+
+    const summary = await service.findById(task.id);
+    expect('description' in summary).toBe(false);
+    expect(summary.contentPreview).toBeUndefined();
+
+    const body = await service.findBodyById(task.id);
+    expect(body).toMatchObject({
+      taskId: task.id,
+      title: 'Analyze incident',
+      body: description,
+      bodySource: 'description',
+      prompt: `Analyze incident\n\n${description}`,
+    });
+  });
+
+  it('returns historical oversized title as on-demand body when no description exists', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task historical body project',
+        repoPath: testDir,
+      },
+    });
+    const historicalTitle = `Historical incident logs\n${'legacy '.repeat(300)}`;
+    const task = await prisma.task.create({
+      data: {
+        title: historicalTitle,
+        projectId: project.id,
+      },
+    });
+
+    const summary = await service.findById(task.id);
+    expect(summary.title.length).toBeLessThanOrEqual(200);
+    expect('description' in summary).toBe(false);
+
+    const body = await service.findBodyById(task.id);
+    expect(body).toMatchObject({
+      taskId: task.id,
+      body: historicalTitle,
+      bodySource: 'historical_title',
+      prompt: historicalTitle,
+    });
+  });
+
   it('marks a task deleted and enqueues a cleanup job without waiting for resource cleanup', async () => {
     const stopSessionMock = vi.fn();
     const cleanupTriggerMock = vi.fn();

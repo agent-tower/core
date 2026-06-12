@@ -234,6 +234,37 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(ensureWorktreeExistsMock).not.toHaveBeenCalled();
   });
 
+  it('omits session prompt and logSnapshot from workspace task lists', async () => {
+    const { task } = await createTask('workspace session summary task');
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'summary-workspace',
+        worktreePath: path.join(testDir, 'summary-workspace'),
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        prompt: `large prompt ${'x'.repeat(1000)}`,
+        logSnapshot: `large snapshot ${'y'.repeat(1000)}`,
+        status: 'COMPLETED',
+      },
+    });
+
+    const workspaces = await service.findByTaskId(task.id);
+
+    expect(workspaces[0]?.sessions).toHaveLength(1);
+    expect(workspaces[0]?.sessions?.[0]).toMatchObject({
+      agentType: 'CODEX',
+      status: 'COMPLETED',
+    });
+    expect(workspaces[0]?.sessions?.[0]).not.toHaveProperty('prompt');
+    expect(workspaces[0]?.sessions?.[0]).not.toHaveProperty('logSnapshot');
+  });
+
   it('rejects worktree lifecycle git operations for main-directory workspaces', async () => {
     const { task } = await createTask('main directory git operations task');
     const workspace = await service.create(task.id, {

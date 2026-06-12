@@ -365,6 +365,88 @@ describe('TeamRunService', () => {
     });
   });
 
+  it('creates initial TeamRun messages and WorkRequests with previews instead of full task description', async () => {
+    const preset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Initial preview project',
+        repoPath: testDir,
+      },
+    });
+    const longDescription = `Full diagnostic logs\n${'line '.repeat(500)}`;
+    const task = await prisma.task.create({
+      data: {
+        title: 'Investigate checkout logs',
+        description: longDescription,
+        projectId: project.id,
+      },
+    });
+
+    const teamRun = await service.createTeamRunWithInitialRoomMessage(task.id, {
+      mode: 'CONFIRM',
+      memberPresetIds: [preset.id],
+    });
+
+    expect(teamRun.messages).toHaveLength(1);
+    expect(teamRun.workRequests).toHaveLength(1);
+    expect(teamRun.messages?.[0]?.content).toContain('Investigate checkout logs');
+    expect(teamRun.messages?.[0]?.content).toContain('Full details are stored on the task description');
+    expect(teamRun.messages?.[0]?.content).not.toContain('line '.repeat(100));
+    expect(teamRun.workRequests?.[0]?.instruction).not.toContain('line '.repeat(100));
+
+    const storedMessage = await prisma.roomMessage.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
+    const storedRequest = await prisma.workRequest.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
+    expect(storedMessage.content).not.toContain('line '.repeat(100));
+    expect(storedRequest.instruction).not.toContain('line '.repeat(100));
+  });
+
+  it('parses initial TeamRun mentions from full task body while storing only previews', async () => {
+    const leaderPreset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
+    const reviewerPreset = await service.createMemberPreset(presetInput('Reviewer', ['reviewer']));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Initial mention full body project',
+        repoPath: testDir,
+      },
+    });
+    const longDescription = [
+      'Please inspect this incident.',
+      'log-line '.repeat(300),
+      '@Reviewer please review the failure handling.',
+    ].join('\n');
+    const task = await prisma.task.create({
+      data: {
+        title: 'Investigate checkout logs',
+        description: longDescription,
+        projectId: project.id,
+      },
+    });
+
+    const teamRun = await service.createTeamRunWithInitialRoomMessage(task.id, {
+      mode: 'CONFIRM',
+      memberPresetIds: [leaderPreset.id, reviewerPreset.id],
+    });
+    const reviewer = teamRun.members?.find((member) => member.name === 'Reviewer');
+    expect(reviewer).toBeDefined();
+
+    expect(teamRun.messages).toHaveLength(1);
+    expect(teamRun.messages?.[0]?.mentions).toEqual([
+      expect.objectContaining({
+        memberId: reviewer!.id,
+        label: 'Reviewer',
+      }),
+    ]);
+    expect(teamRun.workRequests).toHaveLength(1);
+    expect(teamRun.workRequests?.[0]?.targetMemberId).toBe(reviewer!.id);
+    expect(teamRun.messages?.[0]?.content).not.toContain('@Reviewer please review');
+    expect(teamRun.workRequests?.[0]?.instruction).not.toContain('@Reviewer please review');
+
+    const storedMessage = await prisma.roomMessage.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
+    const storedRequest = await prisma.workRequest.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
+    expect(storedMessage.content).not.toContain('@Reviewer please review');
+    expect(storedRequest.instruction).not.toContain('@Reviewer please review');
+  });
+
   it('rolls back RoomMessage and WorkRequest creation if the task is deleted before transaction writes', async () => {
     const preset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
     const task = await createTask();
@@ -1262,9 +1344,7 @@ describe('TeamRunService', () => {
       where: { id: message.workRequestIds![0]! },
     });
 
-    expect(request?.instruction).toBe(
-      `Please inspect this UI\n\nAttachments:\n![screenshot.png](${attachment.storagePath})`
-    );
+    expect(request?.instruction).toBe('Please inspect this UI');
   });
 
   it('does not duplicate WorkRequest attachment context when content already includes the storage path', async () => {

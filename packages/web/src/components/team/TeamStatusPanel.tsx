@@ -24,6 +24,7 @@ interface TeamStatusPanelProps {
 const EMPTY_MEMBERS: TeamMember[] = []
 const EMPTY_WORK_REQUESTS: WorkRequest[] = []
 const EMPTY_INVOCATIONS: AgentInvocation[] = []
+const INLINE_PREVIEW_MAX_LENGTH = 240
 
 type DisplayStatus = 'running' | 'waiting room reply' | 'queued' | 'session ended' | 'pending approval' | 'removed' | 'idle'
 
@@ -71,6 +72,17 @@ function formatTime(value?: string) {
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
+}
+
+function previewText(value?: string | null, maxLength = INLINE_PREVIEW_MAX_LENGTH) {
+  const compact = (value ?? '').replace(/\s+/g, ' ').trim()
+  if (compact.length <= maxLength) return compact
+  return `${compact.slice(0, maxLength - 3).trimEnd()}...`
+}
+
+function workRequestInstructionPreview(request?: WorkRequest | null) {
+  if (!request) return ''
+  return request.instructionPreview ?? previewText(request.instruction)
 }
 
 function statusLabel(status: DisplayStatus) {
@@ -347,7 +359,7 @@ export function TeamStatusPanel({
                           </span>
                         </div>
                         <div className="mt-1 text-[11px] leading-relaxed text-neutral-600 line-clamp-2">
-                          {request.instruction}
+                          {workRequestInstructionPreview(request)}
                         </div>
                       </div>
                     </div>
@@ -435,7 +447,7 @@ export function TeamStatusPanel({
                         </div>
                         {isActive && activeWorkRequest?.instruction && (
                           <div className="mt-0.5 truncate pl-3 text-[10px] text-neutral-500">
-                            {activeWorkRequest.instruction}
+                            {workRequestInstructionPreview(activeWorkRequest)}
                           </div>
                         )}
                       </div>
@@ -547,7 +559,7 @@ export function TeamStatusPanel({
                                         </span>
                                       </div>
                                       <div className="mt-0.5 truncate text-[11px] text-neutral-500">
-                                        {workRequest?.instruction ?? invocation.workRequestId}
+                                        {workRequestInstructionPreview(workRequest) || invocation.workRequestId}
                                       </div>
                                     </div>
                                     {canOpenSession && (
@@ -612,7 +624,7 @@ export function TeamStatusPanel({
                           </span>
                         </div>
                         <div className="mt-0.5 truncate text-[11px] text-neutral-500">
-                          {request.instruction}
+                          {workRequestInstructionPreview(request)}
                         </div>
                       </div>
                       <span className="shrink-0 text-[10px] text-neutral-400">{formatTime(request.createdAt)}</span>
