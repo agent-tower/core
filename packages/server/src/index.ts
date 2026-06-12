@@ -20,6 +20,8 @@ if (!existsSync(dataDir)) {
 const dbPath = path.join(dataDir, 'data.db');
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
 process.env.AGENT_TOWER_DATA_DIR = dataDir;
+process.env.AGENT_TOWER_PORT = String(PORT);
+process.env.AGENT_TOWER_URL = `http://127.0.0.1:${PORT}`;
 
 // 确保数据库 schema 与当前版本一致
 const schemaPath = path.resolve(__dirname, '../prisma/schema.prisma');

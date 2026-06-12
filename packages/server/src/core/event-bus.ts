@@ -1,4 +1,4 @@
-import type { TeamRunInvalidatedPayload } from '@agent-tower/shared/socket';
+import type { TeamRunInvalidatedPayload, WorkspaceGitChangedPayload } from '@agent-tower/shared/socket';
 
 type EventMap = {
   'session:stdout': { sessionId: string; data: string };
@@ -33,6 +33,7 @@ type EventMap = {
     taskId: string;
     projectId: string;
   };
+  'workspace:git_changed': WorkspaceGitChangedPayload;
   'team-run:invalidated': TeamRunInvalidatedPayload;
 };
 

@@ -10,7 +10,7 @@ import { initializeSocket, closeSocket } from './socket/index.js';
 import { WorkspaceService } from './services/workspace.service.js';
 import { HibernationScheduler } from './services/hibernation-scheduler.js';
 import { TunnelService } from './services/tunnel.service.js';
-import { getTaskCleanupService } from './core/container.js';
+import { getTaskCleanupService, getWorkspaceGitWatcherService } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 
 let hibernationScheduler: HibernationScheduler | null = null;
@@ -77,12 +77,18 @@ export async function buildApp() {
 
     // 启动任务删除后台资源清理 worker
     getTaskCleanupService().start();
+
+    // 启动 workspace git 变化监听，补齐外部终端/IDE 手动 git 操作的实时刷新链路
+    await getWorkspaceGitWatcherService().start().catch((err) => {
+      app.log.warn(`Workspace git watcher startup failed: ${err instanceof Error ? err.message : err}`);
+    });
   });
 
-  // 服务器关闭时清理 Socket.IO、Tunnel 和 HibernationScheduler
+  // 服务器关闭时清理 Socket.IO、Tunnel、HibernationScheduler 和 watcher
   app.addHook('onClose', async () => {
     hibernationScheduler?.stop();
     getTaskCleanupService().stop();
+    getWorkspaceGitWatcherService().stop();
     TunnelService.stop();
     await closeSocket();
   });

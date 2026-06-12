@@ -8,9 +8,26 @@ import type { PrismaClient } from '@prisma/client';
 import { AgentType, SessionStatus } from '../../types/index.js';
 import { EventBus } from '../../core/event-bus.js';
 import type { ExecutorSpawnConfig } from '../../executors/index.js';
+import {
+  AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
+  AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
+  AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
+} from '../../executors/execution-env.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-session-manager-team-run-'));
 const dbPath = path.join(testDir, 'test.db');
+const envKeysToRestore = [
+  ...AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
+  ...AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
+  ...AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
+  'AGENT_TOWER_TEST_NORMAL_ENV',
+] as const;
+
+const originalEnv: Record<string, string | undefined> = {};
+for (const key of envKeysToRestore) {
+  originalEnv[key] = process.env[key];
+}
+
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
 
 const { spawnMock, spawnFollowUpMock } = vi.hoisted(() => ({
@@ -42,7 +59,20 @@ vi.mock('../../executors/index.js', async (importOriginal) => {
       id: 'codex-default',
       name: 'Codex',
       agentType: 'CODEX',
-      env: {},
+      env: {
+        DATABASE_URL: 'file:/provider/database-url.db',
+        AGENT_TOWER_DATABASE_URL: 'file:/provider/agent-tower.db',
+        AGENT_TOWER_DATA_DIR: '/provider/agent-tower-data',
+        AGENT_TOWER_WEB_DIR: '/provider/agent-tower-web',
+        DATA_DIR: '/provider/data-dir',
+        AGENT_TOWER_SESSION_ID: 'provider-session',
+        AGENT_TOWER_INVOCATION_ID: 'provider-invocation',
+        AGENT_TOWER_TEAM_RUN_ID: 'provider-team-run',
+        AGENT_TOWER_MEMBER_ID: 'provider-member',
+        AGENT_TOWER_URL: 'http://127.0.0.1:9999',
+        AGENT_TOWER_PORT: '9999',
+        PROVIDER_SAFE_ENV: 'provider-value',
+      },
       config: {},
       isDefault: true,
     })),
@@ -56,6 +86,43 @@ const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let prisma: PrismaClient;
 let SessionManager: typeof import('../session-manager.js').SessionManager;
+
+function seedServiceEnv(): void {
+  process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
+  process.env.DATABASE_URL = 'file:/prod/database-url.db';
+  process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
+  process.env.AGENT_TOWER_WEB_DIR = '/prod/agent-tower-web';
+  process.env.DATA_DIR = '/prod/data-dir';
+  process.env.AGENT_TOWER_SESSION_ID = 'inherited-session';
+  process.env.AGENT_TOWER_INVOCATION_ID = 'inherited-invocation';
+  process.env.AGENT_TOWER_TEAM_RUN_ID = 'inherited-team-run';
+  process.env.AGENT_TOWER_MEMBER_ID = 'inherited-member';
+  process.env.AGENT_TOWER_URL = 'http://127.0.0.1:12580';
+  process.env.AGENT_TOWER_PORT = '12580';
+  process.env.AGENT_TOWER_TEST_NORMAL_ENV = 'keep-me';
+}
+
+function restoreEnv(): void {
+  for (const [key, value] of Object.entries(originalEnv)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
+function expectServiceEnvFiltered(fullEnv: Record<string, string>): void {
+  for (const key of AGENT_SUBPROCESS_BLOCKED_ENV_KEYS) {
+    expect(fullEnv).not.toHaveProperty(key);
+  }
+  expect(fullEnv).toMatchObject({
+    AGENT_TOWER_URL: 'http://127.0.0.1:12580',
+    AGENT_TOWER_PORT: '12580',
+    AGENT_TOWER_TEST_NORMAL_ENV: 'keep-me',
+    PROVIDER_SAFE_ENV: 'provider-value',
+  });
+}
 
 function createPty() {
   return {
@@ -114,6 +181,7 @@ describe('SessionManager TeamRun env injection', () => {
   });
 
   beforeEach(async () => {
+    seedServiceEnv();
     vi.clearAllMocks();
     spawnMock.mockImplementation(async () => ({
       pid: 12345,
@@ -140,6 +208,7 @@ describe('SessionManager TeamRun env injection', () => {
     vi.restoreAllMocks();
     await prisma.$disconnect();
     fs.rmSync(testDir, { recursive: true, force: true });
+    restoreEnv();
   });
 
   it('injects TeamRun identity env when the session is linked to an AgentInvocation', async () => {
@@ -204,6 +273,14 @@ describe('SessionManager TeamRun env injection', () => {
       AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
       AGENT_TOWER_MEMBER_ID: member.id,
     });
+    const fullEnv = spawnConfig.env.getFullEnv();
+    expectServiceEnvFiltered(fullEnv);
+    expect(fullEnv).toMatchObject({
+      AGENT_TOWER_SESSION_ID: session.id,
+      AGENT_TOWER_INVOCATION_ID: invocation.id,
+      AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
+      AGENT_TOWER_MEMBER_ID: member.id,
+    });
     manager.destroyAll();
   });
 
@@ -226,6 +303,12 @@ describe('SessionManager TeamRun env injection', () => {
     expect(spawnConfig.env.toObject()).not.toHaveProperty('AGENT_TOWER_INVOCATION_ID');
     expect(spawnConfig.env.toObject()).not.toHaveProperty('AGENT_TOWER_TEAM_RUN_ID');
     expect(spawnConfig.env.toObject()).not.toHaveProperty('AGENT_TOWER_MEMBER_ID');
+    const fullEnv = spawnConfig.env.getFullEnv();
+    expectServiceEnvFiltered(fullEnv);
+    expect(fullEnv).not.toHaveProperty('AGENT_TOWER_SESSION_ID');
+    expect(fullEnv).not.toHaveProperty('AGENT_TOWER_INVOCATION_ID');
+    expect(fullEnv).not.toHaveProperty('AGENT_TOWER_TEAM_RUN_ID');
+    expect(fullEnv).not.toHaveProperty('AGENT_TOWER_MEMBER_ID');
     manager.destroyAll();
   });
 
@@ -300,6 +383,14 @@ describe('SessionManager TeamRun env injection', () => {
     const spawnConfig = spawnFollowUpMock.mock.calls[0]![0] as ExecutorSpawnConfig;
     expect(spawnConfig.prompt).toBe('next prompt');
     expect(spawnConfig.env.toObject()).toMatchObject({
+      AGENT_TOWER_SESSION_ID: nextSession.id,
+      AGENT_TOWER_INVOCATION_ID: invocation.id,
+      AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
+      AGENT_TOWER_MEMBER_ID: member.id,
+    });
+    const fullEnv = spawnConfig.env.getFullEnv();
+    expectServiceEnvFiltered(fullEnv);
+    expect(fullEnv).toMatchObject({
       AGENT_TOWER_SESSION_ID: nextSession.id,
       AGENT_TOWER_INVOCATION_ID: invocation.id,
       AGENT_TOWER_TEAM_RUN_ID: teamRun.id,

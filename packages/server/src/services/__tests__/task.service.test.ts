@@ -433,6 +433,69 @@ describe('TaskService', () => {
     expect(stats.todo).toBe(1);
   });
 
+  it('unwatches active workspaces when retry abandons them', async () => {
+    const stopSessionMock = vi.fn();
+    const unwatchWorkspaceMock = vi.fn();
+    const service = new TaskService(
+      new EventBus(),
+      { stop: stopSessionMock } as unknown as SessionManager,
+      undefined,
+      { unwatchWorkspace: unwatchWorkspaceMock },
+    );
+    const project = await prisma.project.create({
+      data: {
+        name: 'Task retry watcher project',
+        repoPath: testDir,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Retry releases watcher',
+        projectId: project.id,
+        status: 'IN_PROGRESS',
+      },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'at/retry-watcher',
+        baseBranch: 'main',
+        worktreePath: path.join(testDir, '.worktrees', 'at', 'retry-watcher'),
+        workingDir: path.join(testDir, '.worktrees', 'at', 'retry-watcher'),
+        status: 'ACTIVE',
+      },
+    });
+    const inactiveWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'at/retry-old',
+        baseBranch: 'main',
+        worktreePath: path.join(testDir, '.worktrees', 'at', 'retry-old'),
+        workingDir: path.join(testDir, '.worktrees', 'at', 'retry-old'),
+        status: 'ABANDONED',
+      },
+    });
+    const runningSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        prompt: 'run',
+        status: 'RUNNING',
+      },
+    });
+
+    const updated = await service.retry(task.id);
+
+    expect(updated.status).toBe('TODO');
+    expect(stopSessionMock).toHaveBeenCalledWith(runningSession.id);
+    expect(unwatchWorkspaceMock).toHaveBeenCalledTimes(1);
+    expect(unwatchWorkspaceMock).toHaveBeenCalledWith(workspace.id);
+    expect(unwatchWorkspaceMock).not.toHaveBeenCalledWith(inactiveWorkspace.id);
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({
+      status: 'ABANDONED',
+    });
+  });
+
   it('processes a cleanup job and hard-deletes task records after resources are cleaned', async () => {
     const stopSessionMock = vi.fn();
     const cleanupService = new TaskCleanupService({ stop: stopSessionMock } as unknown as SessionManager);

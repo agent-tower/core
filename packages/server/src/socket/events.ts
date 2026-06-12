@@ -27,6 +27,8 @@ export {
   type WorkspaceSetupProgressPayload,
   type WorkspaceCommitMessageUpdatedPayload,
   type WorkspaceHibernatedPayload,
+  type WorkspaceGitChangeReason,
+  type WorkspaceGitChangedPayload,
   type TeamRunInvalidatedPayload,
   type AckResponse,
   type ClientEventType,

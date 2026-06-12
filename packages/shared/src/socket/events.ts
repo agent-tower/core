@@ -35,6 +35,7 @@ export const ServerEvents = {
   WORKSPACE_SETUP_PROGRESS: 'workspace:setup_progress',
   WORKSPACE_COMMIT_MESSAGE_UPDATED: 'workspace:commit_message_updated',
   WORKSPACE_HIBERNATED: 'workspace:hibernated',
+  WORKSPACE_GIT_CHANGED: 'workspace:git_changed',
   TEAM_RUN_INVALIDATED: 'team-run:invalidated',
 } as const;
 
@@ -192,6 +193,20 @@ export interface WorkspaceHibernatedPayload {
   workspaceId: string;
   taskId: string;
   projectId: string;
+}
+
+export type WorkspaceGitChangeReason =
+  | 'worktree'
+  | 'git-dir'
+  | 'refresh'
+  | 'unknown';
+
+export interface WorkspaceGitChangedPayload {
+  workspaceId: string;
+  taskId: string;
+  projectId: string;
+  workingDir: string;
+  reason: WorkspaceGitChangeReason;
 }
 
 export type TeamRunInvalidationScope =

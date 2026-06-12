@@ -1,6 +1,7 @@
 import { prisma } from '../utils/index.js';
 import { AgentType, SessionStatus, SessionPurpose, TaskStatus } from '../types/index.js';
 import { getExecutor, getExecutorByProvider, getProviderById, ExecutionEnv } from '../executors/index.js';
+import { filterAgentSubprocessExternalEnv } from '../executors/execution-env.js';
 import {
   sessionMsgStoreManager,
   createClaudeCodeParser,
@@ -151,10 +152,11 @@ export class SessionManager {
     if (session.providerId) {
       const provider = getProviderById(session.providerId);
       if (provider && Object.keys(provider.env).length > 0) {
-        env.merge(provider.env);
+        env.merge(filterAgentSubprocessExternalEnv(provider.env));
       }
     }
 
+    this.injectAgentTowerMcpServiceEnv(env);
     await this.injectTeamRunInvocationEnv(id, env);
 
     const spawnResult = await executor.spawn({
@@ -218,10 +220,11 @@ export class SessionManager {
     if (session.providerId) {
       const provider = getProviderById(session.providerId);
       if (provider && Object.keys(provider.env).length > 0) {
-        env.merge(provider.env);
+        env.merge(filterAgentSubprocessExternalEnv(provider.env));
       }
     }
 
+    this.injectAgentTowerMcpServiceEnv(env);
     await this.injectTeamRunInvocationEnv(id, env);
 
     const spawnConfig = {
@@ -362,10 +365,11 @@ export class SessionManager {
     if (effectiveProviderId) {
       const provider = getProviderById(effectiveProviderId);
       if (provider && Object.keys(provider.env).length > 0) {
-        env.merge(provider.env);
+        env.merge(filterAgentSubprocessExternalEnv(provider.env));
       }
     }
 
+    this.injectAgentTowerMcpServiceEnv(env);
     await this.injectTeamRunInvocationEnv(id, env);
 
     const spawnConfig = {
@@ -612,6 +616,19 @@ export class SessionManager {
       return createCodexParser(msgStore);
     }
     return null;
+  }
+
+  private injectAgentTowerMcpServiceEnv(env: ExecutionEnv): void {
+    const serviceEnv: Record<string, string> = {};
+    if (process.env.AGENT_TOWER_URL) {
+      serviceEnv.AGENT_TOWER_URL = process.env.AGENT_TOWER_URL;
+    }
+    if (process.env.AGENT_TOWER_PORT) {
+      serviceEnv.AGENT_TOWER_PORT = process.env.AGENT_TOWER_PORT;
+    }
+    if (Object.keys(serviceEnv).length > 0) {
+      env.merge(serviceEnv);
+    }
   }
 
   private async injectTeamRunInvocationEnv(sessionId: string, env: ExecutionEnv): Promise<void> {

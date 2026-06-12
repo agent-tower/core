@@ -19,6 +19,10 @@ import {
 } from './base.executor.js';
 import { CommandBuilder, applyOverrides, CmdOverrides } from './command-builder.js';
 import { extractImagePaths } from './image-utils.js';
+import {
+  AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
+  AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
+} from './execution-env.js';
 
 /**
  * 将嵌套对象展平为 dotted path 键值对（递归到标量叶子）
@@ -62,10 +66,8 @@ function toTomlLiteral(value: unknown): string {
 }
 
 const AGENT_TOWER_MCP_ENV_KEYS = [
-  'AGENT_TOWER_SESSION_ID',
-  'AGENT_TOWER_INVOCATION_ID',
-  'AGENT_TOWER_TEAM_RUN_ID',
-  'AGENT_TOWER_MEMBER_ID',
+  ...AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
+  ...AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
 ] as const;
 
 const AGENT_TOWER_MCP_SERVER_NAMES = [

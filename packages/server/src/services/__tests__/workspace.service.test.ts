@@ -20,6 +20,8 @@ const {
   mergeWorktreeMock,
   mergeIntoWorktreeMock,
   execGitMock,
+  refreshWorkspaceGitWatcherMock,
+  unwatchWorkspaceGitWatcherMock,
 } = vi.hoisted(() => ({
   createWorktreeMock: vi.fn(),
   ensureWorktreeExistsMock: vi.fn(),
@@ -28,6 +30,8 @@ const {
   mergeWorktreeMock: vi.fn(),
   mergeIntoWorktreeMock: vi.fn(),
   execGitMock: vi.fn(),
+  refreshWorkspaceGitWatcherMock: vi.fn(async () => undefined),
+  unwatchWorkspaceGitWatcherMock: vi.fn(),
 }));
 
 vi.mock('../../git/worktree.manager.js', () => ({
@@ -66,6 +70,19 @@ execGitMock.mockImplementation(async (_repoPath: string, args: string[]) => {
 vi.mock('../copy-files.service.js', () => ({
   copyProjectFiles: vi.fn(),
 }));
+
+vi.mock('../../core/container.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/container.js')>();
+  return {
+    ...actual,
+    getWorkspaceGitWatcherService: vi.fn(() => ({
+      refreshWorkspace: refreshWorkspaceGitWatcherMock,
+      unwatchWorkspace: unwatchWorkspaceGitWatcherMock,
+      start: vi.fn(),
+      stop: vi.fn(),
+    })),
+  };
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

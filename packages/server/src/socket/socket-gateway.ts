@@ -13,6 +13,7 @@ import {
   type TerminalInputPayload,
   type TerminalResizePayload,
   type TeamRunInvalidatedPayload,
+  type WorkspaceGitChangedPayload,
 } from './events.js';
 
 export class SocketGateway {
@@ -154,6 +155,10 @@ export class SocketGateway {
       this.nsp.emit(ServerEvents.WORKSPACE_HIBERNATED, payload);
     };
 
+    const onWorkspaceGitChanged = (payload: WorkspaceGitChangedPayload) => {
+      this.nsp.emit(ServerEvents.WORKSPACE_GIT_CHANGED, payload);
+    };
+
     const onTeamRunInvalidated = (payload: TeamRunInvalidatedPayload) => {
       this.nsp.emit(ServerEvents.TEAM_RUN_INVALIDATED, payload);
     };
@@ -170,6 +175,7 @@ export class SocketGateway {
     this.eventBus.on('terminal:exit', onTerminalExit);
     this.eventBus.on('workspace:setup_progress', onWorkspaceSetupProgress);
     this.eventBus.on('workspace:hibernated', onWorkspaceHibernated);
+    this.eventBus.on('workspace:git_changed', onWorkspaceGitChanged);
     this.eventBus.on('team-run:invalidated', onTeamRunInvalidated);
 
     this.cleanups.push(
@@ -185,6 +191,7 @@ export class SocketGateway {
       () => this.eventBus.off('terminal:exit', onTerminalExit),
       () => this.eventBus.off('workspace:setup_progress', onWorkspaceSetupProgress),
       () => this.eventBus.off('workspace:hibernated', onWorkspaceHibernated),
+      () => this.eventBus.off('workspace:git_changed', onWorkspaceGitChanged),
       () => this.eventBus.off('team-run:invalidated', onTeamRunInvalidated),
     );
   }

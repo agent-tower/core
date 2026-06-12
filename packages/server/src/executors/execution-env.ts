@@ -7,6 +7,42 @@ import type { ChildProcess } from 'child_process';
 import * as path from 'node:path';
 import type { CmdOverrides } from './command-builder.js';
 
+export const AGENT_SUBPROCESS_BLOCKED_ENV_KEYS = [
+  'DATABASE_URL',
+  'AGENT_TOWER_DATABASE_URL',
+  'AGENT_TOWER_DATA_DIR',
+  'AGENT_TOWER_WEB_DIR',
+  'DATA_DIR',
+] as const;
+
+export const AGENT_TOWER_MCP_IDENTITY_ENV_KEYS = [
+  'AGENT_TOWER_SESSION_ID',
+  'AGENT_TOWER_INVOCATION_ID',
+  'AGENT_TOWER_TEAM_RUN_ID',
+  'AGENT_TOWER_MEMBER_ID',
+] as const;
+
+export const AGENT_TOWER_MCP_SERVICE_ENV_KEYS = [
+  'AGENT_TOWER_URL',
+  'AGENT_TOWER_PORT',
+] as const;
+
+const AGENT_SUBPROCESS_EXTERNAL_ENV_BLOCKED_KEYS = new Set<string>([
+  ...AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
+  ...AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
+  ...AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
+]);
+
+export function filterAgentSubprocessExternalEnv(overrides: Record<string, string>): Record<string, string> {
+  const filtered: Record<string, string> = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!AGENT_SUBPROCESS_EXTERNAL_ENV_BLOCKED_KEYS.has(key)) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
 /**
  * 仓库上下文
  */
@@ -78,7 +114,7 @@ export class ExecutionEnv {
   withProfile(cmd?: CmdOverrides): ExecutionEnv {
     if (cmd?.env) {
       const newEnv = this.clone();
-      newEnv.merge(cmd.env);
+      newEnv.merge(filterAgentSubprocessExternalEnv(cmd.env));
       return newEnv;
     }
     return this;
@@ -108,7 +144,9 @@ export class ExecutionEnv {
 
   /**
    * 获取完整的环境变量（包含 process.env）
-   * 过滤掉会阻止 Agent CLI 嵌套启动的环境变量
+   * 过滤掉会阻止 Agent CLI 嵌套启动的环境变量、继承自父进程的
+   * TeamRun/MCP 身份变量，以及 Agent Tower 服务自身 DB/data/web 目录变量。
+   * TeamRun/MCP 身份变量仍可通过 ExecutionEnv 显式注入到具体 invocation。
    * 当 provider 设置了 ANTHROPIC_* 变量时，清除 process.env 中残留的同类变量，
    * 避免 Claude Code 优先使用错误的认证信息
    */
@@ -130,10 +168,17 @@ export class ExecutionEnv {
       }
     }
 
+    for (const key of AGENT_TOWER_MCP_IDENTITY_ENV_KEYS) {
+      delete env[key];
+    }
+
     Object.assign(env, providerVars);
 
     // Claude Code 检测 CLAUDECODE 环境变量来阻止嵌套启动
     delete env.CLAUDECODE;
+    for (const key of AGENT_SUBPROCESS_BLOCKED_ENV_KEYS) {
+      delete env[key];
+    }
     return env;
   }
 

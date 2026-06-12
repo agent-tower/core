@@ -18,6 +18,17 @@ vi.mock('./services/workspace.service.js', () => ({
   },
 }))
 
+vi.mock('./core/container.js', () => ({
+  getTaskCleanupService: vi.fn(() => ({
+    start: vi.fn(),
+    stop: vi.fn(),
+  })),
+  getWorkspaceGitWatcherService: vi.fn(() => ({
+    start: vi.fn(() => Promise.resolve()),
+    stop: vi.fn(),
+  })),
+}))
+
 vi.mock('./services/tunnel.service.js', () => ({
   TunnelService: {
     isRunning: vi.fn(() => false),

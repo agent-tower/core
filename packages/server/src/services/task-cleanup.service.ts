@@ -1,6 +1,7 @@
 import { prisma } from '../utils/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
 import type { SessionManager } from './session-manager.js';
+import type { WorkspaceGitWatcherService } from './workspace-git-watcher.service.js';
 import { isWorktreeWorkspace } from './workspace-kind.js';
 
 export const TaskCleanupJobStatus = {
@@ -75,7 +76,10 @@ export class TaskCleanupService {
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly sessionManager: SessionManager) {}
+  constructor(
+    private readonly sessionManager: SessionManager,
+    private readonly workspaceGitWatcher?: Pick<WorkspaceGitWatcherService, 'unwatchWorkspace'>,
+  ) {}
 
   start(intervalMs = 30_000): void {
     if (this.timer) return;
@@ -190,6 +194,10 @@ export class TaskCleanupService {
 
   private async cleanupSnapshot(snapshot: TaskCleanupSnapshot): Promise<void> {
     const worktreeManager = new WorktreeManager(snapshot.project.repoPath);
+
+    for (const workspace of snapshot.workspaces) {
+      this.workspaceGitWatcher?.unwatchWorkspace(workspace.id);
+    }
 
     for (const workspace of snapshot.workspaces) {
       for (const session of workspace.sessions) {

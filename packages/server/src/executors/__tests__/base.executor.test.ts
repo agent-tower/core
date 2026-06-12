@@ -5,7 +5,12 @@ import path from 'node:path';
 import { AgentType } from '../../types/index.js';
 import { BaseExecutor, type AvailabilityInfo } from '../base.executor.js';
 import { CommandBuilder, type CommandParts } from '../command-builder.js';
-import { ExecutionEnv } from '../execution-env.js';
+import {
+  AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
+  AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
+  AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
+  ExecutionEnv,
+} from '../execution-env.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const whichMock = vi.hoisted(() => vi.fn(async (command: string) => `/bin/${command}`));
@@ -30,16 +35,146 @@ class TestExecutor extends BaseExecutor {
     return { type: 'INSTALLATION_FOUND' };
   }
 
-  spawnForTest(commandParts: CommandParts, stdinData: string) {
+  spawnForTest(commandParts: CommandParts, stdinData: string, env = ExecutionEnv.default(os.tmpdir())) {
     return this.spawnWithStdin({
       workingDir: os.tmpdir(),
       prompt: '',
-      env: ExecutionEnv.default(os.tmpdir()),
+      env,
     }, commandParts, stdinData);
+  }
+
+  spawnInternalForTest(commandParts: CommandParts, env: ExecutionEnv) {
+    return this.spawnInternal({
+      workingDir: os.tmpdir(),
+      prompt: 'prompt',
+      env,
+    }, commandParts);
   }
 }
 
 const tmpFileForNow = (now: number) => path.join(os.tmpdir(), `agent-tower-stdin-${now}.json`);
+const envKeysToRestore = [
+  ...AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
+  ...AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
+  ...AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
+  'AGENT_TOWER_TEST_NORMAL_ENV',
+] as const;
+
+function snapshotEnv(keys: readonly string[]): Record<string, string | undefined> {
+  const snapshot: Record<string, string | undefined> = {};
+  for (const key of keys) {
+    snapshot[key] = process.env[key];
+  }
+  return snapshot;
+}
+
+function restoreEnv(snapshot: Record<string, string | undefined>): void {
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
+describe('ExecutionEnv.getFullEnv', () => {
+  const originalEnv = snapshotEnv(envKeysToRestore);
+
+  afterEach(() => {
+    restoreEnv(originalEnv);
+  });
+
+  it('filters Agent Tower service env while preserving normal and TeamRun/MCP env', () => {
+    process.env.DATABASE_URL = 'file:/prod/database-url.db';
+    process.env.AGENT_TOWER_DATABASE_URL = 'file:/prod/agent-tower.db';
+    process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
+    process.env.AGENT_TOWER_WEB_DIR = '/prod/agent-tower-web';
+    process.env.DATA_DIR = '/prod/data-dir';
+    process.env.AGENT_TOWER_SESSION_ID = 'inherited-session';
+    process.env.AGENT_TOWER_INVOCATION_ID = 'inherited-invocation';
+    process.env.AGENT_TOWER_TEAM_RUN_ID = 'inherited-team-run';
+    process.env.AGENT_TOWER_MEMBER_ID = 'inherited-member';
+    process.env.AGENT_TOWER_URL = 'http://127.0.0.1:12580';
+    process.env.AGENT_TOWER_PORT = '12580';
+    process.env.AGENT_TOWER_TEST_NORMAL_ENV = 'keep-me';
+
+    const env = ExecutionEnv.default(os.tmpdir()).merge({
+      DATABASE_URL: 'file:/provider/database-url.db',
+      AGENT_TOWER_DATABASE_URL: 'file:/provider/agent-tower.db',
+      AGENT_TOWER_DATA_DIR: '/provider/agent-tower-data',
+      AGENT_TOWER_WEB_DIR: '/provider/agent-tower-web',
+      DATA_DIR: '/provider/data-dir',
+      AGENT_TOWER_SESSION_ID: 'session-1',
+      AGENT_TOWER_INVOCATION_ID: 'invocation-1',
+      AGENT_TOWER_TEAM_RUN_ID: 'team-run-1',
+      AGENT_TOWER_MEMBER_ID: 'member-1',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      AGENT_TOWER_PORT: '42232',
+      PROVIDER_SAFE_ENV: 'provider-value',
+    });
+
+    const fullEnv = env.getFullEnv();
+
+    for (const key of AGENT_SUBPROCESS_BLOCKED_ENV_KEYS) {
+      expect(fullEnv).not.toHaveProperty(key);
+    }
+    expect(fullEnv).toMatchObject({
+      AGENT_TOWER_SESSION_ID: 'session-1',
+      AGENT_TOWER_INVOCATION_ID: 'invocation-1',
+      AGENT_TOWER_TEAM_RUN_ID: 'team-run-1',
+      AGENT_TOWER_MEMBER_ID: 'member-1',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      AGENT_TOWER_PORT: '42232',
+      AGENT_TOWER_TEST_NORMAL_ENV: 'keep-me',
+      PROVIDER_SAFE_ENV: 'provider-value',
+    });
+  });
+
+  it('filters internal env from cmd override profiles without replacing explicit MCP env', () => {
+    const env = ExecutionEnv.default(os.tmpdir()).merge({
+      AGENT_TOWER_SESSION_ID: 'session-1',
+      AGENT_TOWER_INVOCATION_ID: 'invocation-1',
+      AGENT_TOWER_TEAM_RUN_ID: 'team-run-1',
+      AGENT_TOWER_MEMBER_ID: 'member-1',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      AGENT_TOWER_PORT: '42232',
+    });
+
+    const profiledEnv = env.withProfile({
+      env: {
+        DATABASE_URL: 'file:/provider/database-url.db',
+        AGENT_TOWER_SESSION_ID: 'provider-session',
+        AGENT_TOWER_URL: 'http://127.0.0.1:9999',
+        PROVIDER_SAFE_ENV: 'provider-value',
+      },
+    });
+
+    expect(profiledEnv.getFullEnv()).toMatchObject({
+      AGENT_TOWER_SESSION_ID: 'session-1',
+      AGENT_TOWER_INVOCATION_ID: 'invocation-1',
+      AGENT_TOWER_TEAM_RUN_ID: 'team-run-1',
+      AGENT_TOWER_MEMBER_ID: 'member-1',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      AGENT_TOWER_PORT: '42232',
+      PROVIDER_SAFE_ENV: 'provider-value',
+    });
+    expect(profiledEnv.getFullEnv()).not.toHaveProperty('DATABASE_URL');
+  });
+
+  it('does not inherit parent TeamRun identity env without explicit injection', () => {
+    process.env.AGENT_TOWER_SESSION_ID = 'inherited-session';
+    process.env.AGENT_TOWER_INVOCATION_ID = 'inherited-invocation';
+    process.env.AGENT_TOWER_TEAM_RUN_ID = 'inherited-team-run';
+    process.env.AGENT_TOWER_MEMBER_ID = 'inherited-member';
+
+    const fullEnv = ExecutionEnv.default(os.tmpdir()).getFullEnv();
+
+    for (const key of AGENT_TOWER_MCP_IDENTITY_ENV_KEYS) {
+      expect(fullEnv).not.toHaveProperty(key);
+    }
+  });
+});
 
 describe('BaseExecutor.spawnWithStdin', () => {
   let now = 0;
@@ -117,5 +252,63 @@ describe('BaseExecutor.spawnWithStdin', () => {
     await executor.spawnForTest({ program: 'mock-agent', args: [] }, '{"message":"hello"}');
 
     expect(existsSync(tmpFileForNow(now))).toBe(true);
+  });
+});
+
+describe('BaseExecutor subprocess env', () => {
+  const originalEnv = snapshotEnv(envKeysToRestore);
+
+  beforeEach(() => {
+    spawnMock.mockReset();
+    whichMock.mockClear();
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    restoreEnv(originalEnv);
+  });
+
+  it('passes a sanitized env to agent pty.spawn', async () => {
+    process.env.DATABASE_URL = 'file:/prod/database-url.db';
+    process.env.AGENT_TOWER_DATABASE_URL = 'file:/prod/agent-tower.db';
+    process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
+    process.env.AGENT_TOWER_WEB_DIR = '/prod/agent-tower-web';
+    process.env.DATA_DIR = '/prod/data-dir';
+    process.env.AGENT_TOWER_SESSION_ID = 'inherited-session';
+    process.env.AGENT_TOWER_INVOCATION_ID = 'inherited-invocation';
+    process.env.AGENT_TOWER_TEAM_RUN_ID = 'inherited-team-run';
+    process.env.AGENT_TOWER_MEMBER_ID = 'inherited-member';
+
+    spawnMock.mockReturnValueOnce({
+      pid: 12345,
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+      kill: vi.fn(),
+    });
+
+    const env = ExecutionEnv.default(os.tmpdir()).merge({
+      AGENT_TOWER_SESSION_ID: 'session-1',
+      AGENT_TOWER_INVOCATION_ID: 'invocation-1',
+      AGENT_TOWER_TEAM_RUN_ID: 'team-run-1',
+      AGENT_TOWER_MEMBER_ID: 'member-1',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      DATABASE_URL: 'file:/provider/database-url.db',
+    });
+
+    const executor = new TestExecutor();
+    await executor.spawnInternalForTest({ program: 'mock-agent', args: ['--json'] }, env);
+
+    const spawnOptions = spawnMock.mock.calls[0]![2] as { env: Record<string, string> };
+    for (const key of AGENT_SUBPROCESS_BLOCKED_ENV_KEYS) {
+      expect(spawnOptions.env).not.toHaveProperty(key);
+    }
+    expect(spawnOptions.env).toMatchObject({
+      AGENT_TOWER_SESSION_ID: 'session-1',
+      AGENT_TOWER_INVOCATION_ID: 'invocation-1',
+      AGENT_TOWER_TEAM_RUN_ID: 'team-run-1',
+      AGENT_TOWER_MEMBER_ID: 'member-1',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+    });
   });
 });
