@@ -17,7 +17,7 @@ import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { Plus, Pencil, Trash2, CheckCircle2, XCircle, ChevronDown, Download, Upload, ArrowLeft, RotateCcw, AlertTriangle, Cpu } from 'lucide-react'
+import { Plus, Pencil, Trash2, CheckCircle2, XCircle, ChevronDown, Download, Upload, RotateCcw, AlertTriangle, Cpu } from 'lucide-react'
 import {
   AgentType,
   type ProviderBackupFile,
@@ -35,6 +35,7 @@ import {
   SettingsPageHeader,
   SettingsSectionTitle,
 } from '@/components/settings/SettingsSection'
+import { SettingsMasterDetail } from '@/components/settings/SettingsMasterDetail'
 
 const AGENT_TYPE_LABELS: Record<string, string> = {
   CLAUDE_CODE: 'Claude Code',
@@ -882,8 +883,6 @@ export function ProviderSettingsPage() {
     }
   }, [providers, selectedId])
 
-  const selectedItem = providers.find(p => p.provider.id === selectedId)
-
   const handleCreate = (data: CreateProviderInput) => {
     createProvider.mutate(data, {
       onSuccess: () => setEditModal(null),
@@ -1053,74 +1052,54 @@ export function ProviderSettingsPage() {
           }
         />
       ) : (
-        <div className="grid gap-5 lg:grid-cols-[240px_minmax(0,1fr)] lg:h-[calc(100vh-16rem)] lg:max-h-[640px]">
-          {/* Provider list sidebar — independent scroll */}
-          <div className={cn('space-y-1 lg:overflow-y-auto lg:pr-1 scrollbar-app-thin', mobileShowDetail && 'hidden lg:block')}>
-            {providers.map(item => {
-              const p = item.provider
-              const isActive = p.id === selectedId
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    setSelectedId(p.id)
-                    setMobileShowDetail(true)
-                  }}
-                  aria-current={isActive ? 'true' : undefined}
-                  className={cn(
-                    'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-                    isActive
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-foreground hover:bg-muted/50',
-                  )}
-                >
-                  <AvailabilityDot type={item.availability.type} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium">{p.name}</div>
-                    <div className={cn('truncate text-[11px]', isActive ? 'text-primary-foreground/60' : 'text-muted-foreground')}>
-                      {AGENT_TYPE_LABELS[p.agentType] ?? p.agentType}
-                    </div>
+        <SettingsMasterDetail
+          items={providers}
+          selectedId={selectedId}
+          onSelectItem={(id) => {
+            setSelectedId(id)
+            setMobileShowDetail(true)
+          }}
+          getItemId={(item) => item.provider.id}
+          mobileShowDetail={mobileShowDetail}
+          onMobileBack={() => setMobileShowDetail(false)}
+          renderListItem={(item, isActive) => {
+            const p = item.provider
+            return (
+              <>
+                <AvailabilityDot type={item.availability.type} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-medium">{p.name}</div>
+                  <div className={cn('truncate text-[11px]', isActive ? 'text-primary-foreground/60' : 'text-muted-foreground')}>
+                    {AGENT_TYPE_LABELS[p.agentType] ?? p.agentType}
                   </div>
-                  {p.isDefault && (
-                    <span className={cn(
-                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
-                      isActive ? 'bg-white/20 text-primary-foreground' : 'bg-primary/[0.06] text-primary',
-                    )}>
-                      {t('默认')}
-                    </span>
-                  )}
-                </button>
-              )
-            })}
-          </div>
-
-          {/* Detail panel — independent scroll */}
-          <div className={cn(
-            'rounded-xl border border-border bg-card p-5 lg:overflow-y-auto scrollbar-app-thin',
-            !mobileShowDetail && 'hidden lg:block',
-          )}>
-            {/* Mobile back button */}
-            <button
-              onClick={() => setMobileShowDetail(false)}
-              className="mb-4 flex items-center gap-1.5 rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 lg:hidden"
-            >
-              <ArrowLeft size={14} />
-              {t('返回列表')}
-            </button>
-
-            {selectedItem ? (
-              <ProviderDetailPanel
-                item={selectedItem}
-                onEdit={() => openEdit(selectedItem)}
-                onDelete={() => handleDelete(selectedItem.provider)}
-              />
+                </div>
+                {p.isDefault && (
+                  <span className={cn(
+                    'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                    isActive ? 'bg-white/20 text-primary-foreground' : 'bg-primary/[0.06] text-primary',
+                  )}>
+                    {t('默认')}
+                  </span>
+                )}
+              </>
+            )
+          }}
+          renderDetail={(item) =>
+            item ? (
+              <div className="p-5">
+                <ProviderDetailPanel
+                  item={item}
+                  onEdit={() => openEdit(item)}
+                  onDelete={() => handleDelete(item.provider)}
+                />
+              </div>
             ) : (
               <div className="py-16 text-center text-sm text-muted-foreground">
                 {t('选择一个 Provider 查看详情')}
               </div>
-            )}
-          </div>
-        </div>
+            )
+          }
+        />
       )}
 
       {editModal && (
