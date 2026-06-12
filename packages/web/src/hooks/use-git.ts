@@ -5,6 +5,8 @@ import { queryKeys } from './query-keys'
 export type GitChangeEntry = {
   status: string
   path: string
+  additions?: number
+  deletions?: number
 }
 
 export type GitChangesResponse = {

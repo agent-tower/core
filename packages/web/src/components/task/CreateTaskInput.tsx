@@ -219,9 +219,9 @@ export function CreateTaskInput({
       {/* Input box — matches session input style */}
       <div
         className={cn(
-          'relative bg-background rounded-xl border shadow-sm transition-all duration-200',
-          'hover:shadow-md focus-within:shadow-md focus-within:border-ring/60',
-          isDragOver ? 'border-info bg-info/5 shadow-md' : 'border-border',
+          'relative bg-background rounded-xl border transition-colors duration-200',
+          'hover:border-ring/40 focus-within:border-ring/60',
+          isDragOver ? 'border-info bg-info/5' : 'border-border',
           isSubmitting && 'opacity-80',
         )}
         onDragOver={handleDragOver}
@@ -246,8 +246,8 @@ export function CreateTaskInput({
           disabled={isSubmitting}
           autoFocus
           rows={1}
-          className="w-full px-4 pt-4 pb-2 bg-transparent border-none focus:outline-none resize-none text-sm text-foreground placeholder-muted-foreground/70 leading-relaxed"
-          style={{ minHeight: '72px', maxHeight: '200px', fieldSizing: 'content' } as React.CSSProperties}
+          className="w-full px-4 pt-4 pb-2 bg-transparent border-none focus:outline-none resize-none text-base text-foreground placeholder-muted-foreground/70 leading-relaxed"
+          style={{ minHeight: '80px', maxHeight: '200px', fieldSizing: 'content' } as React.CSSProperties}
         />
 
         {/* Drag overlay */}
@@ -308,7 +308,7 @@ export function CreateTaskInput({
               className={cn(
                 'p-2 rounded-lg transition-all duration-200',
                 canSubmit
-                  ? 'bg-primary text-primary-foreground shadow-md hover:bg-primary/90'
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                   : 'bg-transparent text-muted-foreground/50 cursor-not-allowed',
               )}
               title={t('Create & Start')}

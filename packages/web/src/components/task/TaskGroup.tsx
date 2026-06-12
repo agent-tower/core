@@ -111,16 +111,13 @@ function DraggableTaskCard({
         onTouchStart={handleTouchStart}
         onTouchEnd={clearLongPress}
         onTouchMove={clearLongPress}
-        className={`flex items-start pl-7 pr-4 py-2 text-sm w-full text-left transition-all border-l-2 group
+        className={`flex items-center gap-2.5 mx-2 px-2 py-2 rounded-md text-sm text-left transition-colors group
           ${isDragging ? 'opacity-30' : ''}
-          ${isSelected
-            ? 'bg-background border-brand'
-            : 'border-transparent hover:bg-accent/50'
-          }`}
+          ${isSelected ? 'bg-accent' : 'hover:bg-accent/50'}`}
         {...(dragDisabled ? {} : listeners)}
         {...(dragDisabled ? {} : attributes)}
       >
-        <div className="mt-0.5 mr-3 flex-shrink-0">
+        <span className="shrink-0 flex items-center">
           {(() => {
             const { icon: StatusIcon, iconClass } = STATUS_STYLES[status]
             return (
@@ -129,41 +126,31 @@ function DraggableTaskCard({
               />
             )
           })()}
-        </div>
+        </span>
 
-        <div className="flex-1 min-w-0">
-          {/* 第一行：任务标题为视觉主体 */}
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span
-              className={`min-w-0 flex-1 truncate text-[13px] ${isSelected ? 'text-foreground font-medium' : 'text-foreground/90'}`}
-              title={task.title}
-            >
-              {task.title}
-            </span>
-            {task.projectArchivedAt && (
-              <span className="inline-flex shrink-0 items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
-              </span>
-            )}
-            {isAgentActive && (
-              <span className="relative inline-flex h-2 w-2 shrink-0 align-middle">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success/70" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-success" />
-              </span>
-            )}
-          </div>
-          {/* 第二行：灰色 meta（项目色点 + 项目名 + 分支） */}
-          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/70">
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${project?.color ? project.color.replace('text-', 'bg-') : 'bg-muted-foreground/40'}`} />
-            <span className="truncate max-w-[45%]" title={project?.name}>{project?.name}</span>
-            {task.branch && task.branch !== '—' ? (
-              <>
-                <span className="shrink-0 text-muted-foreground/40">·</span>
-                <span className="truncate" title={task.branch}>{task.branch}</span>
-              </>
-            ) : null}
-          </div>
-        </div>
+        {/* 单行：标题为主体，右侧轻量项目 meta（Codex 式） */}
+        <span
+          className={`min-w-0 flex-1 truncate ${isSelected ? 'text-foreground font-medium' : 'text-foreground/90'}`}
+          title={task.title}
+        >
+          {task.title}
+        </span>
+        {task.projectArchivedAt && (
+          <span className="inline-flex shrink-0 items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
+          </span>
+        )}
+        {isAgentActive && (
+          <span className="relative inline-flex h-2 w-2 shrink-0 align-middle">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success/70" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-success" />
+          </span>
+        )}
+        {project && (
+          <span className="shrink-0 max-w-[96px] truncate text-xs text-muted-foreground/60" title={project.name}>
+            {project.name}
+          </span>
+        )}
       </button>
 
       {/* 右键菜单 */}
@@ -263,26 +250,26 @@ export const TaskGroup = memo(function TaskGroup({
     <div className="mb-2">
       <button
         onClick={() => !isGlobalDragging && setIsOpen(prev => !prev)}
-        className="flex items-center w-full px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+        className="flex items-center gap-1.5 w-full px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors group/header"
       >
-        <span className="mr-2 text-muted-foreground/70">
-          {shouldShowContent ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </span>
         <span className="flex-1 text-left">{translatedTitle}</span>
         {isReview && !isEmpty ? (
-          <span className="px-2 py-0.5 bg-warning/15 text-warning text-xs font-bold rounded-full animate-hop">
+          <span className="px-1.5 py-0.5 bg-warning/15 text-warning text-[11px] font-semibold rounded-full animate-hop">
             {tasks.length}
           </span>
         ) : (
-          <span className="text-xs text-muted-foreground/70 font-normal">({tasks.length})</span>
+          <span className="text-[11px] text-muted-foreground/50 font-normal tabular-nums">{tasks.length}</span>
         )}
+        <span className="text-muted-foreground/50">
+          {shouldShowContent ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </span>
       </button>
 
       {/* 目标分组：拖拽时显示紧凑 drop zone */}
       {isTargetGroup && (
         <div
           ref={setNodeRef}
-          className={`mx-3 my-1 flex items-center justify-center rounded-lg border-2 border-dashed transition-all duration-150 h-10
+          className={`mx-2 my-1 flex items-center justify-center rounded-lg border-2 border-dashed transition-all duration-150 h-10
             ${isOver
               ? 'border-info bg-info/10 text-info'
               : 'border-border bg-muted/30 text-muted-foreground/70'
@@ -298,12 +285,12 @@ export const TaskGroup = memo(function TaskGroup({
       {shouldShowContent && !isTargetGroup && (
         <div
           ref={isSourceGroup ? undefined : setNodeRef}
-          className={`flex flex-col mt-1 min-h-[40px] rounded-md mx-2 transition-colors
+          className={`flex flex-col mt-0.5 min-h-[40px] rounded-md transition-colors
             ${isOver && !isSourceGroup ? 'bg-info/10 ring-1 ring-info/30' : ''}
-            ${isEmpty && isGlobalDragging ? 'border border-dashed border-border' : ''}`}
+            ${isEmpty && isGlobalDragging ? 'border border-dashed border-border mx-2' : ''}`}
         >
           {isEmpty ? (
-            <span className="text-xs text-muted-foreground/50 py-2 pl-7">{t('No tasks')}</span>
+            <span className="text-xs text-muted-foreground/50 py-2 px-4">{t('No tasks')}</span>
           ) : (
             tasks.map(task => {
               const project = projects.find(p => p.id === task.projectId)

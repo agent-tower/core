@@ -32,7 +32,7 @@ type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 
 // === rendering-hoist-jsx: 静态顶部栏标题文字 ===
 const HEADER_TITLE = (
-  <span className="font-bold text-foreground tracking-tight text-base">
+  <span className="font-semibold text-foreground tracking-tight text-base">
     Agent Tower
   </span>
 )
@@ -578,8 +578,8 @@ export function ProjectKanbanPage() {
               {t('Cancel')}
             </button>
           </header>
-          <div className="flex-1 flex flex-col items-center justify-center px-4">
-            <h1 className="max-w-full text-center text-xl leading-tight text-foreground mb-6 break-words">{createTaskTitle}</h1>
+          <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[8vh]">
+            <h1 className="max-w-full text-center text-2xl tracking-tight leading-tight text-foreground mb-6 break-words">{createTaskTitle}</h1>
             <CreateTaskInput
               projects={createTaskProjectOptions}
               providers={createTaskProviderOptions}
@@ -650,6 +650,7 @@ export function ProjectKanbanPage() {
               setFilterProjectId={setFilterProjectId}
               width="100%"
               onCreateTask={handleMobileCreateTask}
+              onCreateProject={handleCreateProject}
               activeTaskIds={activeTaskIds}
               onTaskStatusChange={handleTaskStatusChange}
             />
@@ -706,6 +707,7 @@ export function ProjectKanbanPage() {
             setFilterProjectId={setFilterProjectId}
             width={sidebarWidth}
             onCreateTask={handleCreateTask}
+            onCreateProject={handleCreateProject}
             isCreateActive={!effectiveSelectedTaskId}
             activeTaskIds={activeTaskIds}
             onTaskStatusChange={handleTaskStatusChange}
@@ -721,7 +723,7 @@ export function ProjectKanbanPage() {
         />
 
         {/* 右侧: 内容岛屿（圆角面板，四周边框一致） */}
-        <div className="flex-1 flex min-w-0 mb-2 mr-2 rounded-xl border border-border/60 bg-background overflow-hidden shadow-sm">
+        <div className="flex-1 flex min-w-0 mb-2 mr-2 rounded-xl border border-border/50 bg-background overflow-hidden">
           {effectiveSelectedTaskId && taskDetailData ? (
             <TaskDetail
               task={taskDetailData}
@@ -734,9 +736,9 @@ export function ProjectKanbanPage() {
               <span className="text-sm text-muted-foreground/70">{t('Loading...')}</span>
             </div>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center bg-background min-w-0 px-8">
-              <div className="w-full max-w-3xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
-                <h1 className="max-w-full text-center text-2xl leading-tight text-foreground mb-8 break-words">{createTaskTitle}</h1>
+            <div className="flex-1 flex flex-col items-center justify-center bg-background min-w-0 px-8 pb-[10vh]">
+              <div className="w-full max-w-2xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
+                <h1 className="max-w-full text-center text-3xl tracking-tight leading-tight text-foreground mb-8 break-words">{createTaskTitle}</h1>
                 <CreateTaskInput
                   projects={createTaskProjectOptions}
                   providers={createTaskProviderOptions}

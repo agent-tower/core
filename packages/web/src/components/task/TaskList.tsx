@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react'
-import { Plus, Layers } from 'lucide-react'
+import { SquarePen, FolderPlus, Search, Layers } from 'lucide-react'
 import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core'
 import { useI18n } from '@/lib/i18n'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { TaskGroup } from './TaskGroup'
+import { TaskSearchModal } from './TaskSearchModal'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
 
@@ -17,6 +18,8 @@ interface TaskListProps {
   setFilterProjectId: (id: string | null) => void
   width?: number | string
   onCreateTask?: () => void
+  /** 新建项目入口回调 */
+  onCreateProject?: () => void
   /** 右侧当前正在展示创建任务面板（用于点亮入口的选中态） */
   isCreateActive?: boolean
   /** 当前有 Agent 正在运行的任务 ID 集合 */
@@ -65,6 +68,7 @@ export function TaskList({
   setFilterProjectId,
   width = 320,
   onCreateTask,
+  onCreateProject,
   isCreateActive,
   activeTaskIds,
   onTaskStatusChange,
@@ -74,6 +78,7 @@ export function TaskList({
   const isMobile = useIsMobile()
   const [activeDragTask, setActiveDragTask] = useState<UITask | null>(null)
   const [activeDragFromStatus, setActiveDragFromStatus] = useState<UITaskStatus | null>(null)
+  const [isSearchOpen, setIsSearchOpen] = useState(false)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -123,20 +128,38 @@ export function TaskList({
       className="h-full flex flex-col flex-shrink-0"
       style={{ width }}
     >
-      {/* New Task 入口（Codex「新对话」式） */}
+      {/* 顶部菜单组（Codex 侧栏式）：新项目 / 新任务 / 搜索 */}
       <div className="px-2 pt-2 pb-1 flex-shrink-0">
+        {onCreateProject && (
+          <button
+            onClick={onCreateProject}
+            className="w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm text-foreground/80 hover:bg-accent/50 transition-colors"
+            title={t('New Project')}
+          >
+            <FolderPlus size={16} className="text-muted-foreground" />
+            <span>{t('New Project')}</span>
+          </button>
+        )}
         <button
           onClick={onCreateTask}
           disabled={!canCreateTask}
-          className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] transition-colors disabled:opacity-30 disabled:cursor-not-allowed
+          className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm transition-colors disabled:opacity-30 disabled:cursor-not-allowed
             ${isCreateActive
-              ? 'bg-accent text-foreground font-medium'
-              : 'text-foreground/80 hover:bg-accent'
+              ? 'bg-accent text-foreground'
+              : 'text-foreground/80 hover:bg-accent/50'
             }`}
           title={canCreateTask ? t('New Task') : t('Deleted projects are read-only')}
         >
-          <Plus size={15} className="text-muted-foreground" />
+          <SquarePen size={16} className="text-muted-foreground" />
           <span>{t('New Task')}</span>
+        </button>
+        <button
+          onClick={() => setIsSearchOpen(true)}
+          className="w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm text-foreground/80 hover:bg-accent/50 transition-colors"
+          title={t('Search')}
+        >
+          <Search size={16} className="text-muted-foreground" />
+          <span>{t('Search')}</span>
         </button>
       </div>
 
@@ -156,7 +179,7 @@ export function TaskList({
         </div>
       ) : (
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-        <div className="flex-1 overflow-y-auto scrollbar-app-thin py-4 relative">
+        <div className="flex-1 overflow-y-auto scrollbar-app-thin pt-3 pb-4 relative">
           {TASK_GROUP_CONFIG.map(({ status, title, defaultOpen }) => (
             <TaskGroup
               key={status}
@@ -191,7 +214,7 @@ export function TaskList({
 
       {/* Footer */}
       {filteredTasks.length > 0 ? (
-        <div className="p-4 border-t border-border/60 text-xs text-muted-foreground/70 flex items-center justify-between">
+        <div className="px-4 py-3 border-t border-border/60 text-xs text-muted-foreground/70 flex items-center justify-between">
           <span>{t('{count} tasks', { count: filteredTasks.length })}</span>
           {filterProjectId ? (
             <button
@@ -203,10 +226,19 @@ export function TaskList({
           ) : null}
         </div>
       ) : (
-        <div className="p-4 border-t border-border/60 text-xs text-muted-foreground/70 flex items-center justify-between">
+        <div className="px-4 py-3 border-t border-border/60 text-xs text-muted-foreground/70 flex items-center justify-between">
           <span>{t('{count} tasks', { count: 0 })}</span>
         </div>
       )}
+
+      {/* 任务搜索浮层 */}
+      <TaskSearchModal
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        tasks={filteredTasks}
+        projects={projects}
+        onSelectTask={onSelectTask}
+      />
     </div>
   )
 }

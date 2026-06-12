@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
 import { TerminalTabs } from "./TerminalTabs"
 import { EditorView } from "./EditorView"
-import { ChangesView } from "./ChangesView"
+import { ReviewView } from "./ReviewView"
 import { HistoryView } from "./HistoryView"
 import { PreviewPanel } from "./PreviewPanel"
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
@@ -14,7 +14,7 @@ import { buildWorkspaceViews } from "./team-workspace-view"
 import { useProject } from "@/hooks/use-projects"
 import type { QuickCommand } from "@agent-tower/shared"
 
-export type WorkspaceTab = "editor" | "terminal" | "preview" | "changes" | "history"
+export type WorkspaceTab = "editor" | "terminal" | "preview" | "review" | "history"
 type WorkspaceTabWithTeam = WorkspaceTab | "team-status"
 
 export interface WorkspacePanelProps {
@@ -61,8 +61,7 @@ interface TabConfig {
 }
 
 const DESKTOP_TABS: TabConfig[] = [
-  { key: "changes", label: "Changes", icon: <GitGraph size={14} /> },
-  { key: "history", label: "History", icon: <History size={14} /> },
+  { key: "review", label: "Changes", icon: <GitGraph size={14} /> },
   { key: "editor", label: "Editor", icon: <Code2 size={14} /> },
   { key: "terminal", label: "Terminal", icon: <Terminal size={14} /> },
   { key: "preview", label: "Preview", icon: <Globe size={14} /> },
@@ -129,7 +128,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
         ? [{ key: "team-status" as const, label: "Team Status", icon: <Users size={14} /> }, ...availableTabs]
         : availableTabs
     }, [hideChanges, readOnly, teamRun])
-    const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(hideChanges ? "history" : "changes")
+    const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(hideChanges ? "history" : "review")
 
     useImperativeHandle(tabRef, () => ({
       setTab: (tab: WorkspaceTab) => setActiveTab(tab),
@@ -157,13 +156,13 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     useEffect(() => {
       if (!readOnly) return
       if (activeTab === 'terminal') {
-        setActiveTab(hideChanges ? 'history' : 'changes')
+        setActiveTab(hideChanges ? 'history' : 'review')
       }
     }, [activeTab, hideChanges, readOnly])
 
     useEffect(() => {
       if (teamRun || activeTab !== 'team-status') return
-      setActiveTab(hideChanges ? 'history' : 'changes')
+      setActiveTab(hideChanges ? 'history' : 'review')
     }, [activeTab, hideChanges, teamRun])
 
     const showSwitcher = !!onSelectWorkspace && buildWorkspaceViews(workspaces, teamRun).length > 1
@@ -231,8 +230,8 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
               <PreviewPanel workspaceId={workspaceId} readOnly={readOnly} />
             )}
 
-            {activeTab === "changes" && (
-              <ChangesView
+            {activeTab === "review" && (
+              <ReviewView
                 workingDir={workingDir}
                 workspaceId={workspaceId}
                 branchName={gitProps?.branchName}

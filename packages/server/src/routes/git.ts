@@ -37,7 +37,7 @@ function execGit(cwd: string, args: string[]): Promise<string> {
   });
 }
 
-type ChangeEntry = { status: string; path: string };
+type ChangeEntry = { status: string; path: string; additions?: number; deletions?: number };
 
 async function resolveBaseBranch(workingDir: string): Promise<string | null> {
   const workspace = await prisma.workspace.findFirst({
@@ -78,6 +78,38 @@ function parseNameStatus(output: string): ChangeEntry[] {
       return { status, path: filePath };
     })
     .filter((entry): entry is ChangeEntry => entry !== null);
+}
+
+/** Parse `git diff --numstat` output into a path → {additions, deletions} map. */
+function parseNumstat(output: string): Map<string, { additions: number; deletions: number }> {
+  const map = new Map<string, { additions: number; deletions: number }>();
+  if (!output.trim()) return map;
+  for (const line of output.trim().split('\n')) {
+    // Format: "12\t4\tpath"; binary files: "-\t-\tpath"; renames: "1\t2\told => new" or "1\t2\ta/{b => c}/d"
+    const parts = line.split('\t');
+    if (parts.length < 3) continue;
+    const additions = parts[0] === '-' ? 0 : Number(parts[0]) || 0;
+    const deletions = parts[1] === '-' ? 0 : Number(parts[1]) || 0;
+    let filePath = parts.slice(2).join('\t');
+    if (filePath.includes(' => ')) {
+      filePath = filePath.includes('{')
+        ? filePath.replace(/\{[^}]*? => ([^}]*?)\}/g, '$1').replace(/\/{2,}/g, '/')
+        : filePath.split(' => ').pop()!;
+    }
+    map.set(filePath, { additions, deletions });
+  }
+  return map;
+}
+
+/** Merge numstat counts into name-status entries by path. */
+function attachNumstat(
+  entries: ChangeEntry[],
+  stats: Map<string, { additions: number; deletions: number }>,
+): ChangeEntry[] {
+  return entries.map((entry) => {
+    const stat = stats.get(entry.path);
+    return stat ? { ...entry, additions: stat.additions, deletions: stat.deletions } : entry;
+  });
 }
 
 const workingDirSchema = z
@@ -144,11 +176,15 @@ export async function gitRoutes(app: FastifyInstance) {
       try {
         const output = await execGit(workingDir, ['diff', '--name-status', 'HEAD']);
         uncommitted = parseNameStatus(output);
+        const numstat = await execGit(workingDir, ['diff', '--numstat', 'HEAD']).catch(() => '');
+        uncommitted = attachNumstat(uncommitted, parseNumstat(numstat));
       } catch {
         // If HEAD doesn't exist (initial commit), try against empty tree
         try {
           const output = await execGit(workingDir, ['diff', '--name-status']);
           uncommitted = parseNameStatus(output);
+          const numstat = await execGit(workingDir, ['diff', '--numstat']).catch(() => '');
+          uncommitted = attachNumstat(uncommitted, parseNumstat(numstat));
         } catch {
           // ignore
         }
@@ -179,14 +215,25 @@ export async function gitRoutes(app: FastifyInstance) {
           `${committedBaseBranch}...HEAD`,
         ]);
         committed = parseNameStatus(output);
+        const numstat = await execGit(
+          workingDir,
+          ['diff', '--numstat', `${committedBaseBranch}...HEAD`],
+        ).catch(() => '');
+        committed = attachNumstat(committed, parseNumstat(numstat));
       } catch {
         try {
+          const remoteRef = getRemoteBranchRef(committedBaseBranch);
           const output = await execGit(workingDir, [
             'diff',
             '--name-status',
-            `${getRemoteBranchRef(committedBaseBranch)}...HEAD`,
+            `${remoteRef}...HEAD`,
           ]);
           committed = parseNameStatus(output);
+          const numstat = await execGit(
+            workingDir,
+            ['diff', '--numstat', `${remoteRef}...HEAD`],
+          ).catch(() => '');
+          committed = attachNumstat(committed, parseNumstat(numstat));
         } catch {
           // ignore — no base branch to compare against
         }
@@ -296,6 +343,11 @@ export async function gitRoutes(app: FastifyInstance) {
       try {
         const output = await execGit(workingDir, ['diff-tree', '--no-commit-id', '--name-status', '-r', hash]);
         files = parseNameStatus(output);
+        const numstat = await execGit(
+          workingDir,
+          ['diff-tree', '--no-commit-id', '--numstat', '-r', hash],
+        ).catch(() => '');
+        files = attachNumstat(files, parseNumstat(numstat));
       } catch {
         // ignore
       }

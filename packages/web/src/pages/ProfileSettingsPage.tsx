@@ -4,10 +4,18 @@ import type { VariantConfig } from '@/hooks/use-profiles'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { Plus, Pencil, Trash2, ChevronDown } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Plus, Pencil, Trash2, ChevronDown, Layers } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
-import { SettingsPageContainer } from '@/components/settings/SettingsSection'
+import {
+  SettingsPageContainer,
+  SettingsPageHeader,
+  SettingsField,
+  SettingsEmptyState,
+} from '@/components/settings/SettingsSection'
 
 function configSummary(config: VariantConfig): string {
   const entries = Object.entries(config)
@@ -41,70 +49,77 @@ function AgentTypeGroup({
   const variantEntries = Object.entries(variants)
 
   return (
-    <div className="rounded-lg border border-neutral-200 overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-border">
       {/* Group header */}
-      <div className="flex items-center justify-between gap-3 px-4 py-3 bg-neutral-50/60">
+      <div className="flex items-center justify-between gap-3 bg-muted/40 px-4 py-3">
         <button
           type="button"
           onClick={() => setExpanded(v => !v)}
-          className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+          aria-expanded={expanded}
+          className="flex items-center gap-3 rounded-md transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
-          <h3 className="text-[13px] font-semibold text-neutral-900">
+          <h3 className="text-[13px] font-semibold text-foreground">
             {AGENT_LABELS[agentType] ?? agentType}
           </h3>
-          <span className="text-[11px] text-neutral-400">
+          <span className="text-[11px] text-muted-foreground">
             {variantEntries.length} {t('个变体')}
           </span>
-          <ChevronDown size={14} className={cn('text-neutral-400 transition-transform', expanded && 'rotate-180')} />
+          <ChevronDown
+            size={14}
+            aria-hidden="true"
+            className={cn('text-muted-foreground transition-transform motion-reduce:transition-none', expanded && 'rotate-180')}
+          />
         </button>
         <button
           type="button"
           onClick={onNew}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-neutral-500 hover:text-neutral-900 hover:bg-white transition-colors"
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
-          <Plus size={12} />
+          <Plus size={12} aria-hidden="true" />
           {t('新增')}
         </button>
       </div>
 
       {/* Variant rows */}
       {expanded && (
-        <div className="divide-y divide-neutral-100">
+        <div className="divide-y divide-border/60">
           {variantEntries.map(([variant, config]) => {
             const builtIn = isBuiltIn(variant)
             return (
               <div
                 key={variant}
-                className="flex items-center gap-3 px-4 py-2.5 hover:bg-neutral-50/50 transition-colors"
+                className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-muted/40"
               >
                 <span className={cn(
-                  'inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide shrink-0',
-                  variant === 'DEFAULT' ? 'bg-blue-50 text-blue-600' : 'bg-neutral-100 text-neutral-600',
+                  'inline-flex shrink-0 items-center rounded px-2 py-0.5 text-[11px] font-semibold tracking-wide',
+                  variant === 'DEFAULT' ? 'bg-primary/[0.06] text-primary' : 'bg-muted text-muted-foreground',
                 )}>
                   {variant}
                 </span>
 
-                <span className="flex-1 min-w-0 text-[12px] text-neutral-400 font-mono truncate">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
                   {configSummary(config)}
                 </span>
 
                 {builtIn && (
-                  <span className="shrink-0 text-[10px] text-neutral-300 font-medium">{t('内置')}</span>
+                  <span className="shrink-0 text-[10px] font-medium text-muted-foreground/70">{t('内置')}</span>
                 )}
 
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex shrink-0 items-center gap-1">
                   <button
                     onClick={() => onEdit(variant, config)}
-                    className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 transition-colors"
+                    className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                     title={t('编辑')}
+                    aria-label={t('编辑')}
                   >
                     <Pencil size={12} />
                   </button>
                   {!builtIn && (
                     <button
                       onClick={() => onDelete(variant)}
-                      className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                      className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                       title={t('删除')}
+                      aria-label={t('删除')}
                     >
                       <Trash2 size={12} />
                     </button>
@@ -114,12 +129,39 @@ function AgentTypeGroup({
             )
           })}
           {variantEntries.length === 0 && (
-            <div className="px-4 py-4 text-center text-[12px] text-neutral-400">
+            <div className="px-4 py-4 text-center text-xs text-muted-foreground">
               {t('暂无变体')}
             </div>
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function ProfileSkeleton() {
+  return (
+    <div role="status" aria-label="Loading">
+      <Skeleton className="h-7 w-36" />
+      <Skeleton className="mt-2 h-3.5 w-72 max-w-full" />
+      <div className="mt-5 space-y-3">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <div key={i} className="overflow-hidden rounded-lg border border-border">
+            <div className="flex items-center gap-3 bg-muted/40 px-4 py-3">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-3 w-14" />
+            </div>
+            <div className="divide-y divide-border/60">
+              {Array.from({ length: 2 }).map((_, j) => (
+                <div key={j} className="flex items-center gap-3 px-4 py-2.5">
+                  <Skeleton className="h-5 w-16 rounded" />
+                  <Skeleton className="h-3.5 flex-1" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -186,9 +228,7 @@ export function ProfileSettingsPage() {
   if (isLoading) {
     return (
       <SettingsPageContainer>
-        <div className="flex items-center justify-center py-20">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
-        </div>
+        <ProfileSkeleton />
       </SettingsPageContainer>
     )
   }
@@ -197,10 +237,11 @@ export function ProfileSettingsPage() {
 
   return (
     <SettingsPageContainer>
-      <div className="mb-4">
-        <h2 className="text-base font-semibold text-neutral-900">{t('Profile 配置')}</h2>
-        <p className="mt-0.5 text-[12px] text-neutral-500">{t('管理 Agent 执行器的配置变体。每个变体定义一组运行参数。')}</p>
-      </div>
+      <SettingsPageHeader
+        title={t('Profile 配置')}
+        description={t('管理 Agent 执行器的配置变体。每个变体定义一组运行参数。')}
+        className="mb-4"
+      />
 
       <div className="space-y-3">
         {Object.entries(executors).map(([agentType, variants]) => (
@@ -217,9 +258,7 @@ export function ProfileSettingsPage() {
       </div>
 
       {Object.keys(executors).length === 0 && (
-        <div className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50/50 py-12 text-center">
-          <p className="text-sm text-neutral-400">{t('暂无 Profile 配置')}</p>
-        </div>
+        <SettingsEmptyState icon={Layers} message={t('暂无 Profile 配置')} />
       )}
 
       <Modal
@@ -238,27 +277,27 @@ export function ProfileSettingsPage() {
         }
       >
         <div className="space-y-4">
-          <div>
-            <label className="block text-[13px] font-medium text-neutral-700 mb-1">{t('Variant 名称')}</label>
-            <input
-              type="text"
+          <SettingsField label={t('Variant 名称')} htmlFor="profile-variant-name">
+            <Input
+              id="profile-variant-name"
               value={editVariantName}
               onChange={e => setEditVariantName(e.target.value)}
               disabled={!editModal?.isNew}
               placeholder={t('例如: CUSTOM')}
-              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm font-mono transition-colors focus:border-neutral-400 focus:outline-none disabled:bg-neutral-50 disabled:text-neutral-500"
+              className="font-mono"
             />
-          </div>
-          <div>
-            <label className="block text-[13px] font-medium text-neutral-700 mb-1">{t('配置 (JSON)')}</label>
-            <textarea
+          </SettingsField>
+          <SettingsField label={t('配置 (JSON)')} htmlFor="profile-variant-json">
+            <Textarea
+              id="profile-variant-json"
               value={editJson}
               onChange={e => { setEditJson(e.target.value); setJsonError('') }}
               rows={6}
-              className="w-full rounded-lg border border-neutral-200 bg-neutral-50/50 px-3 py-2 text-sm font-mono transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none resize-none"
+              className="resize-none font-mono"
+              aria-invalid={!!jsonError}
             />
-            {jsonError && <p className="mt-1 text-xs text-red-500">{jsonError}</p>}
-          </div>
+            {jsonError && <p role="alert" className="mt-1 text-xs text-destructive">{jsonError}</p>}
+          </SettingsField>
         </div>
       </Modal>
 

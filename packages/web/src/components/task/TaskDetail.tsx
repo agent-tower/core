@@ -136,11 +136,11 @@ function EmptyState() {
 
 // 状态色语义统一见 .design/DESIGN.md §2.4 与 status-styles.ts
 const STATUS_OPTIONS = [
-  { status: UITaskStatus.Review, className: 'bg-warning/10 text-warning border-warning/20', hoverClass: 'hover:bg-warning/15', icon: <IconReview className="w-3 h-3" /> },
-  { status: UITaskStatus.Running, className: 'bg-info/10 text-info border-info/20', hoverClass: 'hover:bg-info/15', icon: <IconRunning className="w-3 h-3" /> },
-  { status: UITaskStatus.Pending, className: 'bg-muted/50 text-muted-foreground border-border/60', hoverClass: 'hover:bg-muted', icon: <IconPending className="w-3 h-3" /> },
-  { status: UITaskStatus.Done, className: 'bg-success/10 text-success border-success/20', hoverClass: 'hover:bg-success/15', icon: <IconDone className="w-3 h-3" /> },
-  { status: UITaskStatus.Cancelled, className: 'bg-muted/50 text-muted-foreground border-border', hoverClass: 'hover:bg-border', icon: <IconCancelled className="w-3 h-3" /> },
+  { status: UITaskStatus.Review, className: 'bg-warning/10 text-warning', hoverClass: 'hover:bg-warning/15', icon: <IconReview className="w-3 h-3" /> },
+  { status: UITaskStatus.Running, className: 'bg-info/10 text-info', hoverClass: 'hover:bg-info/15', icon: <IconRunning className="w-3 h-3" /> },
+  { status: UITaskStatus.Pending, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-muted', icon: <IconPending className="w-3 h-3" /> },
+  { status: UITaskStatus.Done, className: 'bg-success/10 text-success', hoverClass: 'hover:bg-success/15', icon: <IconDone className="w-3 h-3" /> },
+  { status: UITaskStatus.Cancelled, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-border', icon: <IconCancelled className="w-3 h-3" /> },
 ] as const
 
 function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChangeStatus?: (newStatus: UITaskStatus) => void }) {
@@ -163,7 +163,7 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
     <div className="relative" ref={ref}>
       <button
         onClick={() => onChangeStatus && setIsOpen(v => !v)}
-        className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${current.className} ${onChangeStatus ? 'cursor-pointer hover:opacity-80' : ''}`}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${current.className} ${onChangeStatus ? 'cursor-pointer hover:opacity-80' : ''}`}
       >
         {current.icon}
         <span>{t(status)}</span>
@@ -819,95 +819,104 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
   return (
     <div className="flex-1 flex flex-col h-full bg-background relative overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-4 flex items-center justify-between border-b border-border/60 bg-background/80 backdrop-blur-sm z-20 flex-shrink-0">
+      <div className="px-6 py-3 flex items-center justify-between border-b border-border/60 bg-background z-20 flex-shrink-0">
         <div className="flex flex-col min-w-0 flex-1 mr-4">
-          <div className="flex items-center gap-2 mb-0.5">
-            <span className={`text-xs font-semibold uppercase tracking-wider ${task.projectColor}`}>
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${task.projectColor.replace('text-', 'bg-')}`} />
+            <span className="text-xs text-muted-foreground truncate">
               {task.projectName}
             </span>
             {task.projectArchivedAt && (
-              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground shrink-0">
                 {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
               </span>
             )}
-            <span className="text-muted-foreground/50 text-xs">/</span>
-            <span className="text-xs text-muted-foreground font-mono truncate">{task.branch}</span>
+            <span className="text-muted-foreground/40 text-xs">/</span>
+            <span className="text-xs text-muted-foreground/70 font-mono truncate">{task.branch}</span>
           </div>
-          <h2 className="text-lg font-bold text-foreground break-words line-clamp-2" title={task.title}>{task.title}</h2>
+          <h2 className="text-lg font-semibold text-foreground break-words line-clamp-2" title={task.title}>{task.title}</h2>
         </div>
 
-        <div className="flex items-center gap-4 flex-shrink-0">
+        <div className="flex items-center gap-3 flex-shrink-0">
           <StatusBadge
             status={task.status}
             onChangeStatus={!isProjectReadOnly && onTaskStatusChange ? (newStatus) => onTaskStatusChange(task.id, newStatus) : undefined}
           />
 
-          {/* Open in IDE */}
-          <button
-            onClick={handleOpenInIde}
-            disabled={!workingDir || isProjectReadOnly}
-            className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title={t('Open in IDE')}
-          >
-            <Code2 size={18} />
-          </button>
-
-          {/* Toggle Workspace */}
-          <button
-            onClick={handleToggleWorkspace}
-            className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
-            title={t('Toggle Workspace')}
-          >
-            {isWorkspaceOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-          </button>
-
-          {showCreateTeamRunEntry && !isProjectReadOnly && (
+          <div className="flex items-center gap-1">
+            {/* Open in IDE */}
             <button
-              onClick={() => setIsCreateTeamRunDialogOpen(true)}
-              className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground/80 transition-colors hover:border-muted-foreground/40 hover:bg-muted/50"
-              title={t('创建 TeamRun')}
+              onClick={handleOpenInIde}
+              disabled={!workingDir || isProjectReadOnly}
+              className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              title={t('Open in IDE')}
             >
-              <Plus size={14} />
-              <span>{t('创建 TeamRun')}</span>
+              <Code2 size={16} />
             </button>
-          )}
 
-          {/* More Actions */}
-          {onDeleteTask && !isProjectReadOnly && (
-            <div className="relative" ref={moreMenuRef}>
-              <button
-                onClick={() => setIsMoreMenuOpen(v => !v)}
-                className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
-                title={t('More actions')}
-              >
-                <MoreVertical size={18} />
-              </button>
-              {isMoreMenuOpen && (
-                <div className="absolute right-0 top-full mt-2 w-44 bg-background rounded-lg border border-border shadow-lg z-50 py-1">
-                  <button
-                    onClick={() => {
-                      setIsRetryConfirmOpen(true)
-                      setIsMoreMenuOpen(false)
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-foreground/80 hover:bg-muted/50 transition-colors"
-                  >
-                    <RotateCcw size={15} />
-                    <span>{t('重新开始')}</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsDeleteConfirmOpen(true)
-                      setIsMoreMenuOpen(false)
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
-                  >
-                    <Trash2 size={15} />
-                    <span>{t('删除任务')}</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+            {/* Toggle Workspace */}
+            <button
+              onClick={handleToggleWorkspace}
+              className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
+              title={t('Toggle Workspace')}
+            >
+              {isWorkspaceOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+            </button>
+
+            {/* More Actions — 创建 TeamRun / 重新开始 / 删除任务 */}
+            {(onDeleteTask || showCreateTeamRunEntry) && !isProjectReadOnly && (
+              <div className="relative" ref={moreMenuRef}>
+                <button
+                  onClick={() => setIsMoreMenuOpen(v => !v)}
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
+                  title={t('More actions')}
+                >
+                  <MoreVertical size={16} />
+                </button>
+                {isMoreMenuOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-44 bg-background rounded-lg border border-border shadow-lg z-50 py-1">
+                    {showCreateTeamRunEntry && (
+                      <button
+                        onClick={() => {
+                          setIsCreateTeamRunDialogOpen(true)
+                          setIsMoreMenuOpen(false)
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-foreground/80 hover:bg-muted/50 transition-colors"
+                      >
+                        <Plus size={15} />
+                        <span>{t('创建 TeamRun')}</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setIsRetryConfirmOpen(true)
+                        setIsMoreMenuOpen(false)
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-foreground/80 hover:bg-muted/50 transition-colors"
+                    >
+                      <RotateCcw size={15} />
+                      <span>{t('重新开始')}</span>
+                    </button>
+                    {onDeleteTask && (
+                      <>
+                        <div className="my-1 border-t border-border/60" />
+                        <button
+                          onClick={() => {
+                            setIsDeleteConfirmOpen(true)
+                            setIsMoreMenuOpen(false)
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                        >
+                          <Trash2 size={15} />
+                          <span>{t('删除任务')}</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1018,18 +1027,16 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
             <div ref={contentRef} className={`w-full min-w-0 ${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
-              {/* Task Description */}
-              <div className="mb-4 pb-4 border-b border-border/60 min-w-0">
-                {task.description ? (
+              {/* Task Description — 无描述时整块隐藏，避免占位噪音 */}
+              {task.description && (
+                <div className="mb-4 pb-4 border-b border-border/60 min-w-0">
                   <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
                     <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
                       {task.description}
                     </Streamdown>
                   </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground/70 italic">{t('No description')}</p>
-                )}
-              </div>
+                </div>
+              )}
 
               {/* Setup Script Progress */}
               {setupProgress && (
@@ -1165,8 +1172,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
             <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
             <div
               ref={inputContainerRef}
-              className={`relative bg-background rounded-xl border shadow-sm hover:shadow-md focus-within:shadow-md focus-within:border-ring/60 transition-all duration-200 ${
-              isDragOver ? 'border-info bg-info/5 shadow-md' : 'border-border'
+              className={`relative bg-background rounded-xl border hover:border-ring/40 focus-within:border-ring/60 transition-colors duration-200 ${
+              isDragOver ? 'border-info bg-info/5' : 'border-border'
             }`}
             >
               {/* Attachment Preview */}
@@ -1226,7 +1233,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                     <button
                       onClick={handleStop}
                       disabled={stopSession.isPending}
-                      className="p-2 rounded-lg transition-all duration-200 bg-destructive text-white hover:bg-destructive/90 shadow-md disabled:opacity-50"
+                      className="p-2 rounded-lg transition-all duration-200 bg-destructive text-white hover:bg-destructive/90 disabled:opacity-50"
                     >
                       <Square size={14} />
                     </button>
@@ -1236,7 +1243,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                       disabled={(!input.trim() && !hasAttachments) || isUploading}
                       className={`p-2 rounded-lg transition-all duration-200 ${
                         (input.trim() || hasAttachments) && !isUploading
-                          ? 'bg-primary text-primary-foreground shadow-md hover:bg-primary/90'
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                           : 'bg-transparent text-muted-foreground/50 cursor-not-allowed'
                       }`}
                     >

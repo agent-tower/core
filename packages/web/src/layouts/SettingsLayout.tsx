@@ -16,18 +16,18 @@ export function SettingsLayout() {
   const { t } = useI18n()
 
   return (
-    <div className="h-screen flex flex-col bg-white">
+    <div className="h-screen flex flex-col bg-background">
       {/* Top bar — matches homepage h-12 style */}
-      <header className="h-12 flex items-center justify-between px-4 border-b border-neutral-100 bg-white shrink-0 z-30">
+      <header className="h-12 flex items-center justify-between px-4 border-b border-border/60 bg-background shrink-0 z-30">
         <div className="flex items-center gap-2.5">
           <BrandLogo />
-          <span className="text-sm font-bold tracking-tight text-neutral-900">Agent Tower</span>
-          <span className="text-neutral-200 text-sm">/</span>
-          <span className="text-sm text-neutral-500">{t('设置')}</span>
+          <span className="text-sm font-bold tracking-tight text-foreground">Agent Tower</span>
+          <span className="text-border text-sm" aria-hidden="true">/</span>
+          <span className="text-sm text-muted-foreground">{t('设置')}</span>
         </div>
         <button
           onClick={() => navigate('/')}
-          className="flex items-center gap-1.5 text-xs text-neutral-400 hover:text-neutral-900 transition-colors"
+          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           <ArrowLeft size={14} />
           <span>{t('返回')}</span>
@@ -37,20 +37,20 @@ export function SettingsLayout() {
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar */}
-        <nav className="w-48 border-r border-neutral-100 pt-3 px-2 shrink-0">
+        <nav aria-label={t('设置')} className="w-48 border-r border-border/60 pt-3 px-2 shrink-0">
           {NAV_ITEMS.map(item => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                `flex items-center gap-2 px-3 py-1.5 rounded-md text-[13px] transition-colors ${
+                `flex items-center gap-2 px-3 py-1.5 rounded-md text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
                   isActive
-                    ? 'bg-neutral-100 text-neutral-900 font-medium'
-                    : 'text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50'
+                    ? 'bg-muted text-foreground font-medium'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                 }`
               }
             >
-              <item.icon size={14} />
+              <item.icon size={14} aria-hidden="true" />
               <span>{t(item.label)}</span>
             </NavLink>
           ))}

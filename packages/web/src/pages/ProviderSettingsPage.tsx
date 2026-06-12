@@ -199,11 +199,11 @@ function downloadJsonFile(filename: string, data: unknown) {
 function getImportActionMeta(action: ProviderImportAction) {
   switch (action) {
     case 'CREATE':
-      return { label: '新增', className: 'text-green-700 bg-green-50' }
+      return { label: '新增', className: 'bg-success/10 text-success' }
     case 'OVERWRITE':
-      return { label: '覆盖', className: 'text-amber-700 bg-amber-50' }
+      return { label: '覆盖', className: 'bg-warning/10 text-warning' }
     case 'SKIP':
-      return { label: '跳过', className: 'text-neutral-600 bg-neutral-100' }
+      return { label: '跳过', className: 'bg-muted text-muted-foreground' }
   }
 }
 
@@ -211,9 +211,11 @@ function AvailabilityDot({ type }: { type: string }) {
   const available = type === 'LOGIN_DETECTED' || type === 'INSTALLATION_FOUND'
   return (
     <span
-      className={cn('inline-block h-2 w-2 rounded-full shrink-0', available ? 'bg-emerald-500' : 'bg-neutral-300')}
+      className={cn('inline-block h-2 w-2 rounded-full shrink-0', available ? 'bg-success' : 'bg-border')}
       title={available ? 'Available' : 'Unavailable'}
-    />
+    >
+      <span className="sr-only">{available ? 'Available' : 'Unavailable'}</span>
+    </span>
   )
 }
 
@@ -221,15 +223,15 @@ function AvailabilityBadge({ type }: { type: string }) {
   const { t } = useI18n()
   if (type === 'LOGIN_DETECTED' || type === 'INSTALLATION_FOUND') {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
-        <CheckCircle2 size={11} />
+      <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
+        <CheckCircle2 size={11} aria-hidden="true" />
         {t('可用')}
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-500">
-      <XCircle size={11} />
+    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+      <XCircle size={11} aria-hidden="true" />
       {t('不可用')}
     </span>
   )
@@ -255,14 +257,19 @@ function CollapsibleSection({
 }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="rounded-lg border border-neutral-200">
+    <div className="rounded-lg border border-border">
       <button
         type="button"
         onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-neutral-700 hover:bg-neutral-50 transition-colors rounded-lg"
+        aria-expanded={open}
+        className="w-full flex items-center justify-between rounded-lg px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset"
       >
         {title}
-        <ChevronDown size={14} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown
+          size={14}
+          aria-hidden="true"
+          className={cn('text-muted-foreground transition-transform motion-reduce:transition-none', open && 'rotate-180')}
+        />
       </button>
       {open && <div className="px-4 pb-4 space-y-3">{children}</div>}
     </div>
@@ -280,7 +287,7 @@ function ConfigFieldsForm({
 }) {
   const { t } = useI18n()
   const fields = AGENT_CONFIG_FIELDS[agentType] ?? []
-  if (fields.length === 0) return <p className="text-xs text-neutral-400">{t('该类型暂无运行配置')}</p>
+  if (fields.length === 0) return <p className="text-xs text-muted-foreground">{t('该类型暂无运行配置')}</p>
 
   const updateField = (key: string, value: unknown) => {
     onChange({ ...config, [key]: value })
@@ -291,18 +298,18 @@ function ConfigFieldsForm({
       {fields.map(field =>
         field.type === 'textarea' ? (
           <div key={field.key}>
-            <label className="block text-sm text-neutral-700 mb-1">{t(field.label)}</label>
-            <textarea
+            <label className="mb-1 block text-sm text-foreground">{t(field.label)}</label>
+            <Textarea
               value={(config[field.key] as string) ?? ''}
               onChange={e => updateField(field.key, e.target.value || undefined)}
               placeholder={field.placeholder ? t(field.placeholder) : undefined}
               rows={field.rows ?? 3}
-              className="w-full rounded-lg border border-neutral-200 bg-neutral-50/50 px-3 py-1.5 text-sm transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none"
+              className="py-1.5"
             />
           </div>
         ) : field.type === 'cursor_model' ? (
           <div key={field.key} className="flex flex-col gap-2 sm:flex-row sm:items-start">
-            <label className="text-sm text-neutral-700 w-32 shrink-0 sm:pt-2">{t(field.label)}</label>
+            <label className="w-32 shrink-0 text-sm text-foreground sm:pt-2">{t(field.label)}</label>
             <CursorAgentModelField
               value={(config[field.key] as string) ?? ''}
               onChange={v => updateField(field.key, v)}
@@ -310,25 +317,20 @@ function ConfigFieldsForm({
           </div>
         ) : (
           <div key={field.key} className="flex items-center gap-3">
-            <label className="text-sm text-neutral-700 w-32 shrink-0">{t(field.label)}</label>
+            <label className="w-32 shrink-0 text-sm text-foreground">{t(field.label)}</label>
             {field.type === 'switch' && (
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={!!config[field.key]}
-                  onChange={e => updateField(field.key, e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-9 h-5 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neutral-900"></div>
-              </label>
+              <Switch
+                checked={!!config[field.key]}
+                onCheckedChange={checked => updateField(field.key, checked)}
+                aria-label={t(field.label)}
+              />
             )}
             {field.type === 'input' && (
-              <input
-                type="text"
+              <Input
                 value={(config[field.key] as string) ?? ''}
                 onChange={e => updateField(field.key, e.target.value || undefined)}
                 placeholder={field.placeholder ? t(field.placeholder) : undefined}
-                className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-sm transition-colors focus:border-neutral-400 focus:outline-none"
+                className="flex-1 py-1.5"
               />
             )}
             {field.type === 'select' && field.options && (
@@ -444,18 +446,17 @@ function ProviderFormModal({
       <div className="space-y-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="block text-xs font-medium text-neutral-700 mb-1">{t('名称')}</label>
-            <input
-              type="text"
+            <label htmlFor="provider-name" className="mb-1 block text-xs font-medium text-foreground">{t('名称')}</label>
+            <Input
+              id="provider-name"
               value={formData.name}
               onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
-              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm transition-colors focus:border-neutral-400 focus:outline-none"
               placeholder={t('例如: Claude Code (官方)')}
             />
           </div>
           {!initialData && (
             <div>
-              <label className="block text-xs font-medium text-neutral-700 mb-1">{t('Agent 类型')}</label>
+              <label className="mb-1 block text-xs font-medium text-foreground">{t('Agent 类型')}</label>
               <Select
                 value={formData.agentType}
                 onChange={value => handleAgentTypeChange(value as AgentType)}
@@ -475,9 +476,9 @@ function ProviderFormModal({
             id="isDefault"
             checked={formData.isDefault}
             onChange={e => setFormData(prev => ({ ...prev, isDefault: e.target.checked }))}
-            className="h-4 w-4 rounded border-neutral-300"
+            className="h-4 w-4 rounded border-border accent-primary"
           />
-          <label htmlFor="isDefault" className="text-sm text-neutral-700">
+          <label htmlFor="isDefault" className="text-sm text-foreground">
             {t('设为该类型的默认 Provider')}
           </label>
         </div>
@@ -491,14 +492,13 @@ function ProviderFormModal({
         </CollapsibleSection>
 
         <CollapsibleSection title={t('环境变量')} defaultOpen={formData.env.length > 0}>
-          <p className="text-xs text-neutral-500 mb-2">
-            {t('注入到 Agent 进程的环境变量。Codex 的')} <code className="bg-neutral-100 px-1 rounded">env_key</code> {t('指定的是变量名，实际值需在此处设置。')}
+          <p className="text-xs text-muted-foreground mb-2">
+            {t('注入到 Agent 进程的环境变量。Codex 的')} <code className="rounded bg-muted px-1">env_key</code> {t('指定的是变量名，实际值需在此处设置。')}
           </p>
           <div className="space-y-2">
             {formData.env.map((row, i) => (
               <div key={i} className="flex gap-2 items-center">
-                <input
-                  type="text"
+                <Input
                   value={row.key}
                   onChange={e => {
                     const next = [...formData.env]
@@ -506,10 +506,9 @@ function ProviderFormModal({
                     setFormData(prev => ({ ...prev, env: next }))
                   }}
                   placeholder={t('变量名，如 AZURE_OPENAI_API_KEY')}
-                  className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-sm font-mono transition-colors focus:border-neutral-400 focus:outline-none"
+                  className="flex-1 py-1.5 font-mono"
                 />
-                <input
-                  type="text"
+                <Input
                   value={row.value}
                   onChange={e => {
                     const next = [...formData.env]
@@ -517,7 +516,7 @@ function ProviderFormModal({
                     setFormData(prev => ({ ...prev, env: next }))
                   }}
                   placeholder={t('值')}
-                  className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-sm font-mono transition-colors focus:border-neutral-400 focus:outline-none"
+                  className="flex-1 py-1.5 font-mono"
                 />
                 <button
                   type="button"
@@ -525,7 +524,8 @@ function ProviderFormModal({
                     const next = formData.env.filter((_, j) => j !== i)
                     setFormData(prev => ({ ...prev, env: next }))
                   }}
-                  className="p-1.5 text-neutral-400 hover:text-red-500 transition-colors"
+                  aria-label={t('删除')}
+                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                 >
                   <Trash2 size={14} />
                 </button>
@@ -544,29 +544,30 @@ function ProviderFormModal({
 
         {showSettingsPanel && (
           <CollapsibleSection title={isCodex ? t('CLI 原生配置 (config.toml)') : t('CLI 原生配置 (settings.json)')}>
-            <p className="text-xs text-neutral-500 mb-2">
+            <p className="text-xs text-muted-foreground mb-2">
               {isCodex ? (
                 <>
-                  {t('直接填写 Codex')} <code className="bg-neutral-100 px-1 rounded">config.toml</code> {t('格式的配置片段，通过')} <code className="bg-neutral-100 px-1 rounded">-c</code> {t('参数注入。不会修改你的')} <code className="bg-neutral-100 px-1 rounded">~/.codex/config.toml</code> {t('文件。')}
+                  {t('直接填写 Codex')} <code className="rounded bg-muted px-1">config.toml</code> {t('格式的配置片段，通过')} <code className="rounded bg-muted px-1">-c</code> {t('参数注入。不会修改你的')} <code className="rounded bg-muted px-1">~/.codex/config.toml</code> {t('文件。')}
                 </>
               ) : (
                 <>
-                  {t('对应 Claude Code 的')} <code className="bg-neutral-100 px-1 rounded">~/.claude/settings.json</code>，{t('通过')} <code className="bg-neutral-100 px-1 rounded">--settings</code> {t('参数注入。在')} <code className="bg-neutral-100 px-1 rounded">env</code> {t('中设置 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等。')}
+                  {t('对应 Claude Code 的')} <code className="rounded bg-muted px-1">~/.claude/settings.json</code>，{t('通过')} <code className="rounded bg-muted px-1">--settings</code> {t('参数注入。在')} <code className="rounded bg-muted px-1">env</code> {t('中设置 ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等。')}
                 </>
               )}
             </p>
-            <textarea
+            <Textarea
               value={formData.settings}
               onChange={e => {
                 setFormData(prev => ({ ...prev, settings: e.target.value }))
                 setSettingsError('')
               }}
               rows={10}
-              className="w-full rounded-lg border border-neutral-200 bg-neutral-50/50 px-3 py-2 text-sm font-mono transition-colors focus:border-neutral-400 focus:bg-white focus:outline-none"
+              className="font-mono"
               placeholder={getSettingsTemplate(formData.agentType)}
+              aria-invalid={!!settingsError}
             />
             {settingsError && (
-              <p className="mt-1 text-xs text-red-600">{settingsError}</p>
+              <p role="alert" className="mt-1 text-xs text-destructive">{settingsError}</p>
             )}
           </CollapsibleSection>
         )}
@@ -612,19 +613,20 @@ function ExportBackupModal({
       }
     >
       <div className="space-y-4">
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          {t('导出的备份文件将包含完整的 Provider 配置，包括环境变量、CLI settings 等敏感信息。任何拿到文件的人都可能直接使用这些 Provider。')}
+        <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-foreground">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+          <span>{t('导出的备份文件将包含完整的 Provider 配置，包括环境变量、CLI settings 等敏感信息。任何拿到文件的人都可能直接使用这些 Provider。')}</span>
         </div>
-        <div className="text-sm text-neutral-600 space-y-2">
+        <div className="space-y-2 text-sm text-muted-foreground">
           <p>{t('这个功能用于备份和迁移，不用于分享配置。')}</p>
           <p>{t('导出内容只包含用户层配置：自定义 Provider，以及对内置 Provider 的覆盖。')}</p>
         </div>
-        <label className="flex items-start gap-3 rounded-lg border border-neutral-200 px-4 py-3 text-sm text-neutral-700">
+        <label className="flex items-start gap-3 rounded-lg border border-border px-4 py-3 text-sm text-foreground">
           <input
             type="checkbox"
             checked={acknowledged}
             onChange={e => onAcknowledgedChange(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-neutral-300"
+            className="mt-0.5 h-4 w-4 rounded border-border accent-primary"
           />
           <span>{t('我已知晓该备份文件包含敏感信息，只会保存在安全位置。')}</span>
         </label>
@@ -673,24 +675,24 @@ function ImportPreviewModal({
       }
     >
       <div className="space-y-4">
-        <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
+        <div className="rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
           <div>{t('导出时间：{value}', { value: new Date(backup.exportedAt).toLocaleString() })}</div>
           <div>{t('模式：完整备份（含敏感信息）')}</div>
           <div>{t('文件内 Provider 数量：{count}', { count: backup.providers.length })}</div>
         </div>
 
         <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3">
-            <div className="text-xs text-green-700">{t('新增')}</div>
-            <div className="text-lg font-semibold text-green-900">{preview.summary.create}</div>
+          <div className="rounded-lg border border-success/25 bg-success/10 px-4 py-3">
+            <div className="text-xs font-medium text-success">{t('新增')}</div>
+            <div className="text-lg font-semibold text-foreground">{preview.summary.create}</div>
           </div>
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-            <div className="text-xs text-amber-700">{t('覆盖')}</div>
-            <div className="text-lg font-semibold text-amber-900">{preview.summary.overwrite}</div>
+          <div className="rounded-lg border border-warning/25 bg-warning/10 px-4 py-3">
+            <div className="text-xs font-medium text-warning">{t('覆盖')}</div>
+            <div className="text-lg font-semibold text-foreground">{preview.summary.overwrite}</div>
           </div>
-          <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3">
-            <div className="text-xs text-neutral-500">{t('跳过')}</div>
-            <div className="text-lg font-semibold text-neutral-900">{preview.summary.skip}</div>
+          <div className="rounded-lg border border-border bg-muted/40 px-4 py-3">
+            <div className="text-xs font-medium text-muted-foreground">{t('跳过')}</div>
+            <div className="text-lg font-semibold text-foreground">{preview.summary.skip}</div>
           </div>
         </div>
 
@@ -698,34 +700,34 @@ function ImportPreviewModal({
           {sortedItems.map(item => {
             const meta = getImportActionMeta(item.action)
             return (
-              <div key={item.incoming.id} className="rounded-lg border border-neutral-200 px-4 py-3">
+              <div key={item.incoming.id} className="rounded-lg border border-border px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <h4 className="truncate text-sm font-medium text-neutral-900">{item.incoming.name}</h4>
+                      <h4 className="truncate text-sm font-medium text-foreground">{item.incoming.name}</h4>
                       <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.className}`}>
                         {t(meta.label)}
                       </span>
                     </div>
-                    <div className="mt-1 text-xs text-neutral-500">
+                    <div className="mt-1 text-xs text-muted-foreground">
                       {AGENT_TYPE_LABELS[item.incoming.agentType] ?? item.incoming.agentType}
                       {' · '}
-                      <code className="rounded bg-neutral-100 px-1 py-0.5">{item.incoming.id}</code>
+                      <code className="rounded bg-muted px-1 py-0.5">{item.incoming.id}</code>
                     </div>
                   </div>
                 </div>
                 {item.action === 'OVERWRITE' && item.existing && (
-                  <p className="mt-2 text-xs text-amber-700">
+                  <p className="mt-2 text-xs text-muted-foreground">
                     {t('将覆盖当前已有的 Provider：{name}', { name: item.existing.name })}
                   </p>
                 )}
                 {item.action === 'SKIP' && (
-                  <p className="mt-2 text-xs text-neutral-500">
+                  <p className="mt-2 text-xs text-muted-foreground">
                     {t('当前同 ID Provider 配置一致，本次不会重复写入。')}
                   </p>
                 )}
                 {item.action === 'CREATE' && (
-                  <p className="mt-2 text-xs text-green-700">
+                  <p className="mt-2 text-xs text-muted-foreground">
                     {t('当前不存在同 ID Provider，将直接新增。')}
                   </p>
                 )}
@@ -759,18 +761,18 @@ function ProviderDetailPanel({
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <h3 className="text-base font-semibold text-neutral-900">{provider.name}</h3>
+            <h3 className="text-base font-semibold text-foreground">{provider.name}</h3>
             <AvailabilityBadge type={availability.type} />
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>{AGENT_TYPE_LABELS[provider.agentType] ?? provider.agentType}</span>
             {provider.isDefault && (
-              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+              <span className="rounded-full bg-primary/[0.06] px-2 py-0.5 text-[11px] font-medium text-primary">
                 {t('默认')}
               </span>
             )}
             {provider.builtIn && (
-              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-500">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                 {t('内置')}
               </span>
             )}
@@ -795,12 +797,12 @@ function ProviderDetailPanel({
 
       {configEntries.length > 0 && (
         <div>
-          <h4 className="text-[12px] font-semibold uppercase tracking-wide text-neutral-400 mb-3">{t('运行配置')}</h4>
-          <div className="grid gap-px rounded-lg border border-neutral-200 bg-neutral-100 overflow-hidden">
+          <SettingsSectionTitle className="mb-3">{t('运行配置')}</SettingsSectionTitle>
+          <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border/60">
             {configEntries.map(([k, v]) => (
-              <div key={k} className="flex items-center gap-4 bg-white px-4 py-2.5">
-                <span className="text-[13px] text-neutral-500 w-32 shrink-0">{t(CONFIG_FIELD_LABELS[k] ?? k)}</span>
-                <span className="text-[13px] text-neutral-900 font-mono">{formatConfigValue(k, v)}</span>
+              <div key={k} className="flex items-center gap-4 bg-background px-4 py-2.5">
+                <span className="w-32 shrink-0 text-[13px] text-muted-foreground">{t(CONFIG_FIELD_LABELS[k] ?? k)}</span>
+                <span className="font-mono text-[13px] text-foreground">{formatConfigValue(k, v)}</span>
               </div>
             ))}
           </div>
@@ -809,12 +811,12 @@ function ProviderDetailPanel({
 
       {envKeys.length > 0 && (
         <div>
-          <h4 className="text-[12px] font-semibold uppercase tracking-wide text-neutral-400 mb-3">{t('环境变量')}</h4>
-          <div className="grid gap-px rounded-lg border border-neutral-200 bg-neutral-100 overflow-hidden">
+          <SettingsSectionTitle className="mb-3">{t('环境变量')}</SettingsSectionTitle>
+          <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border/60">
             {envKeys.map(k => (
-              <div key={k} className="flex items-center gap-4 bg-white px-4 py-2.5">
-                <span className="text-[13px] text-neutral-700 font-mono">{k}</span>
-                <span className="text-[13px] text-neutral-400">•••••</span>
+              <div key={k} className="flex items-center gap-4 bg-background px-4 py-2.5">
+                <span className="font-mono text-[13px] text-foreground">{k}</span>
+                <span className="text-[13px] text-muted-foreground" aria-label="hidden">•••••</span>
               </div>
             ))}
           </div>
@@ -823,9 +825,9 @@ function ProviderDetailPanel({
 
       {provider.settings?.trim() && (
         <div>
-          <h4 className="text-[12px] font-semibold uppercase tracking-wide text-neutral-400 mb-3">{t('CLI 配置')}</h4>
-          <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4">
-            <pre className="text-xs font-mono text-neutral-600 whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto">
+          <SettingsSectionTitle className="mb-3">{t('CLI 配置')}</SettingsSectionTitle>
+          <div className="rounded-lg border border-border bg-muted/40 p-4">
+            <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs text-muted-foreground">
               {provider.settings}
             </pre>
           </div>
@@ -833,7 +835,7 @@ function ProviderDetailPanel({
       )}
 
       {configEntries.length === 0 && envKeys.length === 0 && !provider.settings?.trim() && (
-        <div className="py-8 text-center text-sm text-neutral-400">
+        <div className="py-8 text-center text-sm text-muted-foreground">
           {t('该 Provider 未配置额外参数。点击"编辑"添加运行配置、环境变量或 CLI 配置。')}
         </div>
       )}
@@ -986,9 +988,7 @@ export function ProviderSettingsPage() {
   if (isLoading) {
     return (
       <SettingsPageContainer className="max-w-5xl">
-        <div className="flex items-center justify-center py-20">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
-        </div>
+        <SettingsMasterDetailSkeleton />
       </SettingsPageContainer>
     )
   }
@@ -1003,33 +1003,37 @@ export function ProviderSettingsPage() {
         onChange={handleImportFileChange}
       />
 
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-5">
-        <h2 className="text-base font-semibold text-neutral-900">{t('Agent 配置')}</h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleOpenImportFile} disabled={previewProviderImport.isPending || importProviderBackup.isPending}>
-            <Upload size={13} />
-            {t('导入')}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setIsExportBackupOpen(true)} disabled={exportProviderBackup.isPending}>
-            <Download size={13} />
-            {t('导出')}
-          </Button>
-          <Button size="sm" onClick={() => setEditModal({})}>
-            <Plus size={13} className="mr-1" />
-            {t('新建')}
-          </Button>
-        </div>
-      </div>
+      <SettingsPageHeader
+        title={t('Agent 配置')}
+        actions={
+          <>
+            <Button variant="outline" size="sm" onClick={handleOpenImportFile} disabled={previewProviderImport.isPending || importProviderBackup.isPending}>
+              <Upload size={13} />
+              {t('导入')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setIsExportBackupOpen(true)} disabled={exportProviderBackup.isPending}>
+              <Download size={13} />
+              {t('导出')}
+            </Button>
+            <Button size="sm" onClick={() => setEditModal({})}>
+              <Plus size={13} className="mr-1" />
+              {t('新建')}
+            </Button>
+          </>
+        }
+      />
 
       {providers.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50/50 py-16 text-center">
-          <p className="text-sm text-neutral-400">{t('暂无 Agent 配置')}</p>
-          <Button size="sm" className="mt-3" onClick={() => setEditModal({})}>
-            <Plus size={13} className="mr-1" />
-            {t('新建配置')}
-          </Button>
-        </div>
+        <SettingsEmptyState
+          icon={Cpu}
+          message={t('暂无 Agent 配置')}
+          action={
+            <Button size="sm" onClick={() => setEditModal({})}>
+              <Plus size={13} className="mr-1" />
+              {t('新建配置')}
+            </Button>
+          }
+        />
       ) : (
         <div className="grid gap-5 lg:grid-cols-[240px_minmax(0,1fr)] lg:h-[calc(100vh-16rem)] lg:max-h-[640px]">
           {/* Provider list sidebar — independent scroll */}
@@ -1044,24 +1048,25 @@ export function ProviderSettingsPage() {
                     setSelectedId(p.id)
                     setMobileShowDetail(true)
                   }}
+                  aria-current={isActive ? 'true' : undefined}
                   className={cn(
-                    'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all',
+                    'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
                     isActive
-                      ? 'bg-neutral-900 text-white'
-                      : 'hover:bg-neutral-50 text-neutral-700',
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-foreground hover:bg-muted/50',
                   )}
                 >
                   <AvailabilityDot type={item.availability.type} />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[13px] font-medium">{p.name}</div>
-                    <div className={cn('truncate text-[11px]', isActive ? 'text-neutral-300' : 'text-neutral-400')}>
+                    <div className={cn('truncate text-[11px]', isActive ? 'text-primary-foreground/60' : 'text-muted-foreground')}>
                       {AGENT_TYPE_LABELS[p.agentType] ?? p.agentType}
                     </div>
                   </div>
                   {p.isDefault && (
                     <span className={cn(
                       'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
-                      isActive ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-600',
+                      isActive ? 'bg-white/20 text-primary-foreground' : 'bg-primary/[0.06] text-primary',
                     )}>
                       {t('默认')}
                     </span>
@@ -1073,13 +1078,13 @@ export function ProviderSettingsPage() {
 
           {/* Detail panel — independent scroll */}
           <div className={cn(
-            'rounded-xl border border-neutral-200 bg-white p-5 lg:overflow-y-auto scrollbar-app-thin',
+            'rounded-xl border border-border bg-card p-5 lg:overflow-y-auto scrollbar-app-thin',
             !mobileShowDetail && 'hidden lg:block',
           )}>
             {/* Mobile back button */}
             <button
               onClick={() => setMobileShowDetail(false)}
-              className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors mb-4 lg:hidden"
+              className="mb-4 flex items-center gap-1.5 rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 lg:hidden"
             >
               <ArrowLeft size={14} />
               {t('返回列表')}
@@ -1092,7 +1097,7 @@ export function ProviderSettingsPage() {
                 onDelete={() => handleDelete(selectedItem.provider)}
               />
             ) : (
-              <div className="py-16 text-center text-sm text-neutral-400">
+              <div className="py-16 text-center text-sm text-muted-foreground">
                 {t('选择一个 Provider 查看详情')}
               </div>
             )}
