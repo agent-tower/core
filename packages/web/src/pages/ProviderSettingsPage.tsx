@@ -12,9 +12,12 @@ import {
 import type { CreateProviderInput, UpdateProviderInput, ProviderWithAvailability } from '@/hooks/use-providers'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
-import { Plus, Pencil, Trash2, CheckCircle2, XCircle, ChevronDown, Download, Upload, ArrowLeft, RotateCcw } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
+import { Plus, Pencil, Trash2, CheckCircle2, XCircle, ChevronDown, Download, Upload, ArrowLeft, RotateCcw, AlertTriangle, Cpu } from 'lucide-react'
 import {
   AgentType,
   type ProviderBackupFile,
@@ -25,7 +28,13 @@ import { toast } from 'sonner'
 import { CursorAgentModelField } from '@/components/provider/CursorAgentModelField'
 import { translate, useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
-import { SettingsPageContainer } from '@/components/settings/SettingsSection'
+import {
+  SettingsEmptyState,
+  SettingsMasterDetailSkeleton,
+  SettingsPageContainer,
+  SettingsPageHeader,
+  SettingsSectionTitle,
+} from '@/components/settings/SettingsSection'
 
 const AGENT_TYPE_LABELS: Record<string, string> = {
   CLAUDE_CODE: 'Claude Code',
@@ -876,11 +885,20 @@ export function ProviderSettingsPage() {
   const selectedItem = providers.find(p => p.provider.id === selectedId)
 
   const handleCreate = (data: CreateProviderInput) => {
-    createProvider.mutate(data, { onSuccess: () => setEditModal(null) })
+    createProvider.mutate(data, {
+      onSuccess: () => setEditModal(null),
+      onError: error => toast.error(getErrorMessage(error, t('创建 Provider 失败'))),
+    })
   }
 
   const handleUpdate = (id: string, data: UpdateProviderInput) => {
-    updateProvider.mutate({ id, data }, { onSuccess: () => setEditModal(null) })
+    updateProvider.mutate(
+      { id, data },
+      {
+        onSuccess: () => setEditModal(null),
+        onError: error => toast.error(getErrorMessage(error, t('更新 Provider 失败'))),
+      },
+    )
   }
 
   const handleDelete = (provider: { id: string; name: string; builtIn?: boolean; deletable?: boolean }) => {
