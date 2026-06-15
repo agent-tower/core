@@ -8,10 +8,39 @@ import { RoomTimeline } from '../RoomTimeline';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const { roomMessageDetailRefetchMock } = vi.hoisted(() => ({
+  roomMessageDetailRefetchMock: vi.fn(),
+}));
+
 vi.mock('@/hooks/use-app-settings', () => ({
   useAppSettings: () => ({ data: { locale: 'en' } }),
   useUpdateAppSettings: () => ({ mutate: vi.fn() }),
 }));
+
+vi.mock('@/hooks/use-team-run', async (importOriginal) => {
+  const ReactModule = await import('react');
+  const actual = await importOriginal<typeof import('@/hooks/use-team-run')>();
+  return {
+    ...actual,
+    useApproveWorkRequest: () => ({ mutate: vi.fn(), isPending: false }),
+    useRejectWorkRequest: () => ({ mutate: vi.fn(), isPending: false }),
+    useStopMemberWork: () => ({ mutate: vi.fn(), isPending: false }),
+    useRoomMessageDetail: () => {
+      const [data, setData] = ReactModule.useState<RoomMessage | undefined>(undefined);
+      return {
+        data,
+        isFetching: false,
+        refetch: async () => {
+          const result = await roomMessageDetailRefetchMock();
+          if (result.data) {
+            setData(result.data as RoomMessage);
+          }
+          return result;
+        },
+      };
+    },
+  };
+});
 
 vi.mock('@/hooks/use-attachments', async () => {
   const ReactModule = await import('react');
@@ -144,6 +173,12 @@ function getSendButton(container: HTMLElement) {
   return button as HTMLButtonElement;
 }
 
+function getExpandMessageButton(container: HTMLElement) {
+  const button = container.querySelector('button[aria-label="Expand full message"]');
+  if (!button) throw new Error('expand message button not found');
+  return button as HTMLButtonElement;
+}
+
 async function typeMessage(container: HTMLElement, value: string) {
   const textarea = getTextarea(container);
   await act(async () => {
@@ -183,6 +218,8 @@ describe('RoomTimeline optimistic sending', () => {
   let root: Root;
 
   beforeEach(() => {
+    roomMessageDetailRefetchMock.mockReset();
+    roomMessageDetailRefetchMock.mockResolvedValue({ data: undefined, error: null });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -288,5 +325,56 @@ describe('RoomTimeline optimistic sending', () => {
     expect(container.textContent).toContain('Send failed');
     expect(container.textContent).toContain('evidence.txt');
     expect(getSendButton(container).disabled).toBe(false);
+  });
+
+  it('loads message details for truncated RoomMessages', async () => {
+    const message = {
+      ...createRoomMessage('Preview text...'),
+      contentPreview: 'Preview text...',
+      isTruncated: true,
+    } as RoomMessage;
+    roomMessageDetailRefetchMock.mockResolvedValueOnce({
+      data: { content: 'Full message content from detail' },
+      error: null,
+    });
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <RoomTimeline teamRun={teamRun} messages={[message]} onSendMessage={vi.fn()} />
+        </I18nProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain('Preview text...');
+    expect(container.textContent).toContain('Expand full message');
+
+    await act(async () => {
+      getExpandMessageButton(container).click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(roomMessageDetailRefetchMock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Full message content from detail');
+  });
+
+  it('does not show a full-message action for untruncated RoomMessages', async () => {
+    const message = {
+      ...createRoomMessage('Initial task summary'),
+      contentPreview: 'Initial task summary',
+      isTruncated: false,
+    } as RoomMessage;
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <RoomTimeline teamRun={teamRun} messages={[message]} onSendMessage={vi.fn()} />
+        </I18nProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain('Initial task summary');
+    expect(container.textContent).not.toContain('Expand full message');
   });
 });

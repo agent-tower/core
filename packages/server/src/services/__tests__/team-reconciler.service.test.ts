@@ -798,6 +798,134 @@ describe('TeamReconcilerService', () => {
     }
   });
 
+  it('returns RoomMessage previews in REST/MCP lists and full content from detail endpoints', async () => {
+    const previousEnv = captureTeamRunEnv();
+    const { workspace, teamRun, members } = await createFixture({ memberCount: 1 });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+    });
+    const longContent = `Long Team Room detail\n${'visible detail '.repeat(80)}`;
+    const roomMessage = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        senderId: null,
+        senderInvocationId: null,
+        kind: 'chat',
+        visibility: 'PUBLIC',
+        content: longContent,
+        mentions: stringifyJson([]),
+        artifactRefs: stringifyJson([]),
+        attachmentIds: stringifyJson([]),
+        workRequestIds: stringifyJson([]),
+      },
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      setTeamRunEnv({
+        AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
+        AGENT_TOWER_MEMBER_ID: members[0]!.id,
+        AGENT_TOWER_INVOCATION_ID: invocation.id,
+        AGENT_TOWER_SESSION_ID: undefined,
+      });
+
+      await app.register(teamRunRoutes, { prefix: '/api' });
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const address = app.server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to start test server');
+      }
+
+      const restListResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages`,
+        headers: { 'x-agent-tower-invocation-id': invocation.id },
+      });
+      expect(restListResponse.statusCode).toBe(200);
+      const restList = restListResponse.json() as Array<{
+        id: string;
+        content: string;
+        contentPreview: string;
+        isTruncated: boolean;
+      }>;
+      expect(restList[0]).toMatchObject({
+        id: roomMessage.id,
+        isTruncated: true,
+      });
+      expect(restList[0]!.content).toBe(restList[0]!.contentPreview);
+      expect(restList[0]!.content).not.toBe(longContent);
+
+      const restDetailResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages/${roomMessage.id}`,
+        headers: { 'x-agent-tower-invocation-id': invocation.id },
+      });
+      expect(restDetailResponse.statusCode).toBe(200);
+      expect(restDetailResponse.json()).toMatchObject({
+        id: roomMessage.id,
+        content: longContent,
+        contentPreview: restList[0]!.contentPreview,
+        isTruncated: true,
+      });
+
+      const server = await createMcpServer(`http://127.0.0.1:${address.port}`);
+      const client = new Client({ name: 'team-room-detail-test-client', version: '0.1.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        const listResult = await client.callTool({
+          name: 'list_room_messages',
+          arguments: {},
+        });
+        expect(listResult.isError).not.toBe(true);
+        const mcpList = JSON.parse(getMcpToolText(listResult)) as Array<{
+          id: string;
+          content: string;
+          isTruncated: boolean;
+          contentPreview?: string;
+        }>;
+        expect(mcpList[0]).toMatchObject({
+          id: roomMessage.id,
+          isTruncated: true,
+        });
+        expect(mcpList[0]!.contentPreview).toBeUndefined();
+        expect(mcpList[0]!.content).toBe(restList[0]!.contentPreview);
+        expect(mcpList[0]!.content).not.toBe(longContent);
+
+        const detailResult = await client.callTool({
+          name: 'get_room_message',
+          arguments: {
+            message_id: roomMessage.id,
+          },
+        });
+        expect(detailResult.isError).not.toBe(true);
+        expect(JSON.parse(getMcpToolText(detailResult))).toMatchObject({
+          id: roomMessage.id,
+          content: longContent,
+          contentPreview: restList[0]!.contentPreview,
+          isTruncated: true,
+        });
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    } finally {
+      restoreTeamRunEnv(previousEnv);
+      await app.close();
+    }
+  });
+
   it('posts a room message from MCP workspace context identity when MCP env identity is missing', async () => {
     const previousTeamRunId = process.env.AGENT_TOWER_TEAM_RUN_ID;
     const previousMemberId = process.env.AGENT_TOWER_MEMBER_ID;
@@ -1618,6 +1746,15 @@ describe('TeamReconcilerService', () => {
       });
       expect(listResult.isError).toBe(true);
       expect(getMcpToolText(listResult)).toContain('readRoom');
+
+      const getMessageResult = await callToolForCurrentMember(noRead, noReadInvocation.id, {
+        name: 'get_room_message',
+        arguments: {
+          message_id: 'room-message-1',
+        },
+      });
+      expect(getMessageResult.isError).toBe(true);
+      expect(getMcpToolText(getMessageResult)).toContain('readRoom');
 
       const noPostResult = await callToolForCurrentMember(noPost, noPostInvocation.id, {
         name: 'post_private_message',

@@ -12,6 +12,12 @@ import { registerProviderTools } from './tools/providers.js';
 import { registerWorkspaceTools } from './tools/workspaces.js';
 import { registerSessionTools } from './tools/sessions.js';
 
+function serializeMcpRoomMessageListItem(message: Record<string, unknown>): Record<string, unknown> {
+  const output = { ...message };
+  delete output.contentPreview;
+  return output;
+}
+
 const RoomMessageMentionInput = z.object({
   memberId: z.string().min(1).describe('The target TeamMember ID to mention.'),
   label: z.string().optional().describe('Optional display label for the mention.'),
@@ -45,6 +51,11 @@ const PostPrivateMessageInput = z.object({
 const ListRoomMessagesInput = z.object({
   team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
   limit: z.number().int().min(1).max(200).optional().describe('Return only the last N messages.'),
+});
+
+const GetRoomMessageInput = z.object({
+  team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
+  message_id: z.string().min(1).describe('RoomMessage ID.'),
 });
 
 const ListTeamMembersInput = z.object({
@@ -287,7 +298,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
 
   server.tool(
     'list_room_messages',
-    'List TeamRun room messages visible to the current TeamRun member. Human/API host views may see all private messages; MCP agent sessions cannot impersonate another viewer.',
+    'List TeamRun room messages visible to the current TeamRun member. Long messages return content/isTruncated; use get_room_message to fetch full content by ID.',
     ListRoomMessagesInput.shape,
     async (params) => {
       try {
@@ -299,7 +310,28 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
         await requireCurrentMemberCapabilities(client, context, teamRunId, ['readRoom']);
         const messages = await client.listRoomMessages(teamRunId);
         const limited = params.limit ? messages.slice(-params.limit) : messages;
-        return { content: [{ type: 'text', text: JSON.stringify(limited, null, 2) }] };
+        const output = limited.map(serializeMcpRoomMessageListItem);
+        return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
+      } catch (e: any) {
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'get_room_message',
+    'Get a single TeamRun room message visible to the current TeamRun member, including full content when available.',
+    GetRoomMessageInput.shape,
+    async (params) => {
+      try {
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        const { invocationId, memberId } = resolveTeamRunAgentIdentity(context, teamRunId);
+        if (!invocationId || !memberId) {
+          throw new Error('Current TeamRun agent identity is required to get a room message.');
+        }
+        await requireCurrentMemberCapabilities(client, context, teamRunId, ['readRoom']);
+        const message = await client.getRoomMessage(teamRunId, params.message_id);
+        return { content: [{ type: 'text', text: JSON.stringify(message, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
       }

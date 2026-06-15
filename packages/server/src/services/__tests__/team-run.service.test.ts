@@ -333,6 +333,35 @@ describe('TeamRunService', () => {
     await expect(service.listWorkRequests(teamRun.id)).resolves.toEqual([]);
   });
 
+  it('lists long RoomMessages as previews and loads full content by message id even when content contains the initial-summary marker', async () => {
+    const preset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+    const fullContent = [
+      'Long room message',
+      'This user text quotes: Full details are stored on the task description.',
+      'full detail '.repeat(80),
+    ].join('\n');
+
+    const created = await service.createRoomMessage(teamRun.id, {
+      content: fullContent,
+    });
+    const messages = await service.listRoomMessages(teamRun.id);
+    const listed = messages.find((message) => message.id === created.id);
+    const detail = await service.getRoomMessage(teamRun.id, created.id);
+
+    expect(listed).toBeDefined();
+    expect(listed?.content).not.toBe(fullContent);
+    expect(listed?.contentPreview).toBe(listed?.content);
+    expect(listed?.isTruncated).toBe(true);
+    expect(detail.content).toBe(fullContent);
+    expect(detail.contentPreview).toBe(listed?.contentPreview);
+    expect(detail.isTruncated).toBe(true);
+  });
+
   it('creates WorkRequests for USER_MESSAGES members when a user message has no mentions', async () => {
     const leaderPreset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
     const coderPreset = await service.createMemberPreset(presetInput('Coder'));
@@ -398,6 +427,11 @@ describe('TeamRunService', () => {
     const storedRequest = await prisma.workRequest.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
     expect(storedMessage.content).not.toContain('line '.repeat(100));
     expect(storedRequest.instruction).not.toContain('line '.repeat(100));
+
+    const listed = await service.listRoomMessages(teamRun.id);
+    const detail = await service.getRoomMessage(teamRun.id, teamRun.messages![0]!.id);
+    expect(listed[0]?.isTruncated).toBe(false);
+    expect(detail.content).toBe(teamRun.messages?.[0]?.content);
   });
 
   it('parses initial TeamRun mentions from full task body while storing only previews', async () => {

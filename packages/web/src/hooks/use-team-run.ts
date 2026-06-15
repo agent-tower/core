@@ -29,6 +29,7 @@ export const teamRunQueryKeys = {
   task: (taskId: string) => ['team-runs', 'task', taskId] as const,
   detail: (teamRunId: string) => ['team-runs', 'detail', teamRunId] as const,
   messages: (teamRunId: string) => ['team-runs', 'messages', teamRunId] as const,
+  messageDetail: (teamRunId: string, messageId: string) => ['team-runs', 'messages', teamRunId, messageId] as const,
   workRequests: (teamRunId: string) => ['team-runs', 'work-requests', teamRunId] as const,
   invocations: (teamRunId: string) => ['team-runs', 'invocations', teamRunId] as const,
 }
@@ -376,6 +377,16 @@ export function useRoomMessages(teamRunId: string) {
     enabled: !!teamRunId,
     retry: false,
     refetchInterval: TEAM_RUN_REFRESH_INTERVAL_MS,
+  })
+}
+
+/** 获取单条 TeamRun RoomMessage 详情。 */
+export function useRoomMessageDetail(teamRunId: string, messageId: string, enabled = false) {
+  return useQuery({
+    queryKey: teamRunQueryKeys.messageDetail(teamRunId, messageId),
+    queryFn: () => apiClient.get<RoomMessage>(`/team-runs/${teamRunId}/messages/${messageId}`),
+    enabled: Boolean(teamRunId && messageId && enabled),
+    retry: false,
   })
 }
 

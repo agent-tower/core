@@ -167,6 +167,10 @@ export class AgentTowerClient {
     return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/messages`);
   }
 
+  async getRoomMessage(teamRunId: string, messageId: string) {
+    return this.request<any>('GET', `/api/team-runs/${teamRunId}/messages/${messageId}`);
+  }
+
   async listTeamMembers(teamRunId: string) {
     return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/members`);
   }

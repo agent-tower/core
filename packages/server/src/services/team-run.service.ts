@@ -1035,13 +1035,46 @@ export class TeamRunService {
   }
 
   async listRoomMessages(teamRunId: string, options: TeamRunVisibilityOptions = {}): Promise<RoomMessage[]> {
-    await this.assertTeamRunExists(teamRunId);
-    const messages = await prisma.roomMessage.findMany({
-      where: buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
-      include: { participants: true },
-      orderBy: { createdAt: 'asc' },
-    });
+    const [teamRun, messages] = await Promise.all([
+      prisma.teamRun.findUnique({
+        where: { id: teamRunId },
+        select: { id: true },
+      }),
+      prisma.roomMessage.findMany({
+        where: buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
+        include: { participants: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+    if (!teamRun) {
+      throw new NotFoundError('TeamRun', teamRunId);
+    }
     return messages.map((message) => this.serializeRoomMessage(message));
+  }
+
+  async getRoomMessage(teamRunId: string, messageId: string, options: TeamRunVisibilityOptions = {}): Promise<RoomMessage> {
+    const [teamRun, message] = await Promise.all([
+      prisma.teamRun.findUnique({
+        where: { id: teamRunId },
+        select: { id: true },
+      }),
+      prisma.roomMessage.findFirst({
+        where: {
+          id: messageId,
+          ...buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
+        },
+        include: { participants: true },
+      }),
+    ]);
+    if (!teamRun) {
+      throw new NotFoundError('TeamRun', teamRunId);
+    }
+    if (!message) {
+      throw new NotFoundError('RoomMessage', messageId);
+    }
+    return this.serializeRoomMessage(message, {
+      includeFullContent: true,
+    });
   }
 
   async listWorkRequests(teamRunId: string, options: TeamRunVisibilityOptions = {}): Promise<WorkRequest[]> {
@@ -1676,7 +1709,6 @@ export class TeamRunService {
       visibleInvocations ?? [],
       visibleWorkRequests ?? []
     );
-
     return {
       ...teamRun,
       mode: teamRun.mode as TeamRunMode,
@@ -1749,7 +1781,10 @@ export class TeamRunService {
     };
   }
 
-  private serializeRoomMessage(message: PrismaRoomMessageWithParticipants): RoomMessage {
+  private serializeRoomMessage(
+    message: PrismaRoomMessageWithParticipants,
+    options: { includeFullContent?: boolean } = {}
+  ): RoomMessage {
     const participants = (message.participants ?? []).map((participant) => this.serializeRoomMessageParticipant(participant));
     const recipientMemberIds = participants
       .filter((participant) => participant.role === 'recipient')
@@ -1759,7 +1794,7 @@ export class TeamRunService {
     const serializedContent = this.serializePreviewField(message.content);
     return {
       ...message,
-      content: serializedContent.value,
+      content: options.includeFullContent ? message.content : serializedContent.value,
       contentPreview: serializedContent.preview,
       isTruncated: serializedContent.isTruncated,
       senderType: message.senderType as RoomMessageSenderType,

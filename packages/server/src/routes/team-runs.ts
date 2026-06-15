@@ -424,6 +424,15 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
     }
   });
 
+  app.get<{ Params: { id: string; messageId: string } }>('/team-runs/:id/messages/:messageId', async (request, reply) => {
+    try {
+      const viewerMemberId = await resolveViewerMemberId(request.params.id, request);
+      return await service.getRoomMessage(request.params.id, request.params.messageId, { viewerMemberId });
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
   app.get<{ Params: { id: string } }>('/team-runs/:id/members', async (request, reply) => {
     try {
       const viewerMemberId = await resolveViewerMemberId(request.params.id, request);

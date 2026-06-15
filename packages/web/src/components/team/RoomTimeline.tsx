@@ -27,6 +27,7 @@ import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import {
   useApproveWorkRequest,
   useRejectWorkRequest,
+  useRoomMessageDetail,
   useStopMemberWork,
 } from '@/hooks/use-team-run'
 import { Button } from '@/components/ui/button'
@@ -329,12 +330,14 @@ function MessageAttachments({
 }
 
 function RoomMessageBody({
+  message,
   content,
   attachmentIds,
   isUser,
   tone,
   onOpenImage,
 }: {
+  message: RoomMessage
   content: string
   attachmentIds?: string[] | null
   isUser?: boolean
@@ -351,7 +354,9 @@ function RoomMessageBody({
     <>
       {renderedContent.trim() && (
         <CollapsibleRoomMessageContent
+          message={message}
           content={renderedContent}
+          attachments={attachments}
           isUser={isUser}
           tone={tone}
         />
@@ -465,20 +470,35 @@ export function buildRoomMessageSubmitInput({
 type RoomMessageTone = 'agent' | 'user' | 'system'
 
 function CollapsibleRoomMessageContent({
+  message,
   content,
+  attachments,
   isUser,
   tone = isUser ? 'user' : 'agent',
 }: {
+  message: RoomMessage
   content: string
+  attachments: Array<Pick<Attachment, 'originalName' | 'mimeType' | 'storagePath'>>
   isUser?: boolean
   tone?: RoomMessageTone
 }) {
   const { t } = useI18n()
   const contentId = useId()
   const contentRef = useRef<HTMLDivElement>(null)
-  const [expandedState, setExpandedState] = useState<{ content: string; expanded: boolean } | null>(null)
+  const [expandedState, setExpandedState] = useState<{ messageId: string; content: string; expanded: boolean } | null>(null)
   const [isCollapsible, setIsCollapsible] = useState(false)
-  const isExpanded = expandedState?.content === content && expandedState.expanded
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const detailQuery = useRoomMessageDetail(message.teamRunId, message.id, false)
+  const detailContent = detailQuery.data?.content
+  const filteredDetailContent = detailContent
+    ? filterGeneratedAttachmentMarkdown(detailContent, attachments)
+    : undefined
+  const hasFullContent = Boolean(filteredDetailContent && filteredDetailContent !== content)
+  const renderContent = hasFullContent ? filteredDetailContent! : content
+  const canLoadFullContent = Boolean(message.isTruncated && !isPendingRoomMessage(message))
+  const isExpanded = expandedState?.messageId === message.id
+    && expandedState.content === renderContent
+    && expandedState.expanded
 
   const measureContent = useCallback(() => {
     const element = contentRef.current
@@ -504,9 +524,34 @@ function CollapsibleRoomMessageContent({
       resizeObserver?.disconnect()
       window.removeEventListener('resize', measureContent)
     }
-  }, [content, measureContent])
+  }, [renderContent, measureContent])
 
-  const isCollapsed = isCollapsible && !isExpanded
+  const handleToggle = useCallback(async () => {
+    setLoadError(null)
+    if (isExpanded) {
+      setExpandedState({ messageId: message.id, content: renderContent, expanded: false })
+      return
+    }
+
+    if (canLoadFullContent && !detailContent) {
+      const result = await detailQuery.refetch()
+      if (result.error) {
+        setLoadError(getErrorMessage(result.error, t('Failed to load full message')))
+        return
+      }
+      const nextContent = result.data?.content
+        ? filterGeneratedAttachmentMarkdown(result.data.content, attachments)
+        : renderContent
+      setExpandedState({ messageId: message.id, content: nextContent, expanded: true })
+      return
+    }
+
+    setExpandedState({ messageId: message.id, content: renderContent, expanded: true })
+  }, [attachments, canLoadFullContent, detailContent, detailQuery, isExpanded, message.id, renderContent, t])
+
+  const isCollapsed = (isCollapsible || canLoadFullContent) && !isExpanded
+  const showToggle = isCollapsible || canLoadFullContent
+  const isLoadingFullContent = detailQuery.isFetching
 
   return (
     <div className="relative">
@@ -520,7 +565,7 @@ function CollapsibleRoomMessageContent({
         )}
         style={isCollapsed ? { maxHeight: ROOM_MESSAGE_COLLAPSED_MAX_HEIGHT } : undefined}
       >
-        <RoomMessageMarkdown content={content} isUser={isUser} />
+        <RoomMessageMarkdown content={renderContent} isUser={isUser} />
         {isCollapsed && (
           <div
             className={cn(
@@ -531,13 +576,14 @@ function CollapsibleRoomMessageContent({
         )}
       </div>
 
-      {isCollapsible && (
+      {showToggle && (
         <button
           type="button"
           aria-expanded={isExpanded}
           aria-controls={contentId}
           aria-label={isExpanded ? t('Collapse message') : t('Expand full message')}
-          onClick={() => setExpandedState({ content, expanded: !isExpanded })}
+          disabled={isLoadingFullContent}
+          onClick={() => void handleToggle()}
           className={cn(
             'mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300',
             tone === 'system'
@@ -545,11 +591,26 @@ function CollapsibleRoomMessageContent({
               : tone === 'user'
                 ? 'bg-white/10 text-neutral-100 hover:bg-white/15 hover:text-white'
                 : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900',
+            isLoadingFullContent ? 'cursor-wait opacity-70' : '',
           )}
         >
           {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          <span>{isExpanded ? t('Collapse message') : t('Expand full message')}</span>
+          <span>
+            {isLoadingFullContent
+              ? t('Loading')
+              : isExpanded
+                ? t('Collapse message')
+                : t('Expand full message')}
+          </span>
         </button>
+      )}
+      {loadError && (
+        <div className={cn(
+          'mt-1 text-xs',
+          tone === 'user' ? 'text-red-200' : 'text-red-600',
+        )}>
+          {loadError}
+        </div>
       )}
     </div>
   )
@@ -701,6 +762,7 @@ function RoomChatMessage({
       isPending={pendingStatus === 'sending'}
     >
       <RoomMessageBody
+        message={message}
         content={displayContent}
         attachmentIds={message.attachmentIds}
         isUser={isUser && pendingStatus !== 'failed'}
