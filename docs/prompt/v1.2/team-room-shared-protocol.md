@@ -34,6 +34,17 @@
 - 不要把正式回复只写在普通输出里，否则用户和其他成员在 Team Room 中看不到。
 </room_visibility_rules>
 
+<room_message_detail_rules>
+## 截断消息详情读取
+
+`list_room_messages` 返回的是可见消息列表。长消息的 `content` 可能只是预览，需通过 `isTruncated` 判断。
+
+- 如果相关消息 `isTruncated: true`，且会影响你理解用户需求、任务范围、派活内容、成员 result、review/test 结论或下一步决策，必须调用 `get_room_message`，用消息 `id` 获取完整内容。
+- 如果截断消息明显与当前工作无关，可以不读取详情。
+- 不要批量获取所有截断消息详情，只读取当前判断所必需的消息。
+- 不要基于截断预览对关键需求或结论做最终判断。
+</room_message_detail_rules>
+
 <room_message_rules>
 ## Team Room 消息原则
 
