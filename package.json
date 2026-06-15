@@ -6,7 +6,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "setup": "pnpm install && pnpm --filter @agent-tower/shared build",
-    "dev": "pnpm -r --parallel run dev",
+    "dev": "pnpm -r --parallel --filter '!@agent-tower/docs-site' run dev",
+    "dev:all": "pnpm -r --parallel run dev",
     "build": "pnpm -r run build",
     "docs:dev": "pnpm --filter @agent-tower/docs-site dev",
     "docs:build": "pnpm --filter @agent-tower/docs-site build",
