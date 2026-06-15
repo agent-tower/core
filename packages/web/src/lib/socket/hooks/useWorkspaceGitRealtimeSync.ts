@@ -6,9 +6,31 @@ import { useGitVisibilityStore, type VisibleGitContext } from '@/stores/git-visi
 import { socketManager } from '../manager.js'
 
 export function invalidateAllGitRealtimeQueries(queryClient: QueryClient) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.git.all })
-  queryClient.invalidateQueries({ queryKey: ['workspaces', 'gitStatus'] })
-  queryClient.invalidateQueries({ queryKey: ['workspaces', 'diff'] })
+  queryClient.invalidateQueries({ queryKey: queryKeys.git.all, refetchType: 'none' })
+  queryClient.invalidateQueries({ queryKey: ['workspaces', 'gitStatus'], refetchType: 'none' })
+  queryClient.invalidateQueries({ queryKey: ['workspaces', 'diff'], refetchType: 'none' })
+}
+
+function markWorkspaceGitQueriesStale(
+  queryClient: QueryClient,
+  payload: Partial<WorkspaceGitChangedPayload>,
+) {
+  if (payload.workingDir) {
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.git.changes(payload.workingDir),
+      refetchType: 'none',
+    })
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.git.log(payload.workingDir),
+      refetchType: 'none',
+    })
+  }
+  if (payload.workspaceId) {
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId),
+      refetchType: 'none',
+    })
+  }
 }
 
 export function syncVisibleWorkspaceGitQueries(
@@ -16,24 +38,38 @@ export function syncVisibleWorkspaceGitQueries(
   payload?: Partial<WorkspaceGitChangedPayload> | null,
   visibleContext?: VisibleGitContext | null,
 ) {
-  if (!payload?.workspaceId || !payload?.workingDir || !visibleContext) {
+  if (!payload?.workspaceId || !payload?.workingDir) {
     return
   }
 
   if (
-    visibleContext.workspaceId !== payload.workspaceId
+    !visibleContext
+    || visibleContext.workspaceId !== payload.workspaceId
     || visibleContext.workingDir !== payload.workingDir
   ) {
+    markWorkspaceGitQueriesStale(queryClient, payload)
     return
   }
 
   if (visibleContext.tab === 'changes') {
     queryClient.invalidateQueries({ queryKey: queryKeys.git.changes(payload.workingDir) })
     queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId) })
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.git.log(payload.workingDir),
+      refetchType: 'none',
+    })
     return
   }
 
   queryClient.invalidateQueries({ queryKey: queryKeys.git.log(payload.workingDir) })
+  queryClient.invalidateQueries({
+    queryKey: queryKeys.git.changes(payload.workingDir),
+    refetchType: 'none',
+  })
+  queryClient.invalidateQueries({
+    queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId),
+    refetchType: 'none',
+  })
 }
 
 export function useWorkspaceGitRealtimeSync() {
@@ -45,6 +81,12 @@ export function useWorkspaceGitRealtimeSync() {
 
     const handleConnect = () => {
       invalidateAllGitRealtimeQueries(queryClient)
+      if (visibleContext) {
+        syncVisibleWorkspaceGitQueries(queryClient, {
+          workspaceId: visibleContext.workspaceId,
+          workingDir: visibleContext.workingDir,
+        }, visibleContext)
+      }
     }
 
     const handleWorkspaceGitChanged = (payload: WorkspaceGitChangedPayload) => {

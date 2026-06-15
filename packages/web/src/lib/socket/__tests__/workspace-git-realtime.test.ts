@@ -11,6 +11,7 @@ describe('syncVisibleWorkspaceGitQueries', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity } },
     })
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     queryClient.setQueryData(queryKeys.git.changes('/tmp/workspace-1'), { uncommitted: [], committed: [] })
     queryClient.setQueryData(queryKeys.git.diff('/tmp/workspace-1', 'file.txt', 'uncommitted'), { diff: 'old' })
     queryClient.setQueryData(queryKeys.git.log('/tmp/workspace-1'), { commits: [] })
@@ -27,11 +28,15 @@ describe('syncVisibleWorkspaceGitQueries', () => {
       tab: 'changes',
     })
 
-    expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-1'))?.isInvalidated).toBe(true)
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.git.changes('/tmp/workspace-1') })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.workspaces.gitStatus('workspace-1') })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.git.log('/tmp/workspace-1'),
+      refetchType: 'none',
+    })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: queryKeys.git.log('/tmp/workspace-1') })
     expect(queryClient.getQueryState(queryKeys.git.diff('/tmp/workspace-1', 'file.txt', 'uncommitted'))?.isInvalidated).toBe(false)
-    expect(queryClient.getQueryState(queryKeys.git.log('/tmp/workspace-1'))?.isInvalidated).toBe(false)
     expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-2'))?.isInvalidated).toBe(false)
-    expect(queryClient.getQueryState(queryKeys.workspaces.gitStatus('workspace-1'))?.isInvalidated).toBe(true)
     expect(queryClient.getQueryState(queryKeys.workspaces.diff('workspace-1'))?.isInvalidated).toBe(false)
   })
 
@@ -39,6 +44,7 @@ describe('syncVisibleWorkspaceGitQueries', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity } },
     })
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     queryClient.setQueryData(queryKeys.git.changes('/tmp/workspace-1'), { uncommitted: [], committed: [] })
     queryClient.setQueryData(queryKeys.git.log('/tmp/workspace-1'), { commits: [] })
     queryClient.setQueryData(queryKeys.workspaces.gitStatus('workspace-1'), { operation: 'idle' })
@@ -52,9 +58,17 @@ describe('syncVisibleWorkspaceGitQueries', () => {
       tab: 'history',
     })
 
-    expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-1'))?.isInvalidated).toBe(false)
-    expect(queryClient.getQueryState(queryKeys.git.log('/tmp/workspace-1'))?.isInvalidated).toBe(true)
-    expect(queryClient.getQueryState(queryKeys.workspaces.gitStatus('workspace-1'))?.isInvalidated).toBe(false)
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.git.log('/tmp/workspace-1') })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.git.changes('/tmp/workspace-1'),
+      refetchType: 'none',
+    })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.workspaces.gitStatus('workspace-1'),
+      refetchType: 'none',
+    })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: queryKeys.git.changes('/tmp/workspace-1') })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: queryKeys.workspaces.gitStatus('workspace-1') })
   })
 
   it('does not invalidate when there is no visible matching git tab', () => {
@@ -77,8 +91,11 @@ describe('syncVisibleWorkspaceGitQueries', () => {
       workingDir: '/tmp/workspace-1',
     }, null)
 
-    expect(invalidateSpy).not.toHaveBeenCalled()
-    expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-1'))?.isInvalidated).toBe(false)
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.git.changes('/tmp/workspace-1'),
+      refetchType: 'none',
+    })
+    expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-1'))?.isInvalidated).toBe(true)
   })
 
   it('invalidates workspace git status and diff queries for reconnect fallback', () => {
@@ -90,9 +107,13 @@ describe('syncVisibleWorkspaceGitQueries', () => {
     queryClient.setQueryData(queryKeys.workspaces.gitStatus('workspace-2'), { operation: 'idle' })
     queryClient.setQueryData(queryKeys.workspaces.diff('workspace-1'), { diff: 'old' })
     queryClient.setQueryData(queryKeys.workspaces.detail('workspace-1'), { id: 'workspace-1' })
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     invalidateAllGitRealtimeQueries(queryClient)
 
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.git.all, refetchType: 'none' })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['workspaces', 'gitStatus'], refetchType: 'none' })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['workspaces', 'diff'], refetchType: 'none' })
     expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-1'))?.isInvalidated).toBe(true)
     expect(queryClient.getQueryState(queryKeys.workspaces.gitStatus('workspace-1'))?.isInvalidated).toBe(true)
     expect(queryClient.getQueryState(queryKeys.workspaces.gitStatus('workspace-2'))?.isInvalidated).toBe(true)
