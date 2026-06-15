@@ -171,6 +171,7 @@ export function adaptTaskForList(task: SharedTask): UITask {
     agent,
     branch,
     description: task.contentPreview ?? task.description ?? '',
+    updatedAt: task.updatedAt,
     projectArchivedAt: project?.archivedAt ?? null,
     projectRepoDeletedAt: project?.repoDeletedAt ?? null,
   }

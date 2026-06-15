@@ -22,9 +22,14 @@ export function getIO(): Server {
  * 初始化 Socket.IO 服务
  */
 export async function initializeSocket(fastify: FastifyInstance): Promise<Server> {
+  const socketStartedAt = Date.now()
+  const elapsed = () => `${Date.now() - socketStartedAt}ms`
+
+  fastify.log.info(`[startup:socket] initializeSocket enter elapsed=${elapsed()}`)
   // Clean up previous instance to prevent listener accumulation during dev hot-reload
   socketGateway?.destroy()
   socketGateway = null
+  fastify.log.info(`[startup:socket] previous gateway cleanup done elapsed=${elapsed()}`)
 
   io = new Server(fastify.server, {
     cors: {
@@ -35,19 +40,27 @@ export async function initializeSocket(fastify: FastifyInstance): Promise<Server
     pingTimeout: 300000,
     pingInterval: 25000,
   })
+  fastify.log.info(`[startup:socket] socket.io server created elapsed=${elapsed()}`)
 
   const nsp = io.of(NAMESPACE)
   nsp.use(authMiddleware)
+  fastify.log.info(`[startup:socket] namespace middleware registered elapsed=${elapsed()}`)
 
+  fastify.log.info(`[startup:socket] getTerminalManager start elapsed=${elapsed()}`)
   const tm = await getTerminalManager()
+  fastify.log.info(`[startup:socket] getTerminalManager done elapsed=${elapsed()}`)
+  fastify.log.info(`[startup:socket] getNotificationService start elapsed=${elapsed()}`)
   getNotificationService()
+  fastify.log.info(`[startup:socket] getNotificationService done elapsed=${elapsed()}`)
   socketGateway = new SocketGateway(nsp, getEventBus(), getSessionManager(), tm)
+  fastify.log.info(`[startup:socket] SocketGateway created elapsed=${elapsed()}`)
   nsp.on('connection', (socket) => {
     console.log(`[Socket] Connected: ${socket.id}`)
     socketGateway?.register(socket)
   })
 
   console.log('[Socket.IO] Initialized namespace:', NAMESPACE)
+  fastify.log.info(`[startup:socket] initializeSocket complete elapsed=${elapsed()}`)
 
   return io
 }

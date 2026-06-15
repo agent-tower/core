@@ -65,25 +65,39 @@ export async function buildApp() {
 
   // 服务器启动后初始化 Socket.IO 并清理过期 worktree
   app.addHook('onReady', async () => {
+    const readyStartedAt = Date.now();
+    const elapsed = () => `${Date.now() - readyStartedAt}ms`;
+
+    app.log.info(`[startup:onReady] enter elapsed=${elapsed()}`);
+    app.log.info(`[startup:onReady] initializeSocket start elapsed=${elapsed()}`);
     await initializeSocket(app);
+    app.log.info(`[startup:onReady] initializeSocket done elapsed=${elapsed()}`);
 
     // 启动时清理过期 worktree 引用
+    app.log.info(`[startup:onReady] pruneAllWorktrees schedule start elapsed=${elapsed()}`);
     WorkspaceService.pruneAllWorktrees().catch((err) => {
       app.log.warn(`Worktree prune on startup failed: ${err instanceof Error ? err.message : err}`);
     });
+    app.log.info(`[startup:onReady] pruneAllWorktrees scheduled elapsed=${elapsed()}`);
 
     // 启动空闲 workspace 自动休眠调度器
+    app.log.info(`[startup:onReady] hibernationScheduler start elapsed=${elapsed()}`);
     hibernationScheduler = new HibernationScheduler();
     hibernationScheduler.start();
+    app.log.info(`[startup:onReady] hibernationScheduler started elapsed=${elapsed()}`);
 
     // 启动任务删除后台资源清理 worker
+    app.log.info(`[startup:onReady] taskCleanupService start elapsed=${elapsed()}`);
     getTaskCleanupService().start();
+    app.log.info(`[startup:onReady] taskCleanupService started elapsed=${elapsed()}`);
 
     // 启动 workspace git 变化监听，补齐外部终端/IDE 手动 git 操作的实时刷新链路。
     // 全量 watcher 初始化会扫描所有 ACTIVE worktree，不能阻塞 Fastify ready/listen。
+    app.log.info(`[startup:onReady] workspaceGitWatcher start scheduled elapsed=${elapsed()}`);
     void getWorkspaceGitWatcherService().start().catch((err) => {
       app.log.warn(`Workspace git watcher startup failed: ${err instanceof Error ? err.message : err}`);
     });
+    app.log.info(`[startup:onReady] complete elapsed=${elapsed()}`);
   });
 
   // 服务器关闭时清理 Socket.IO、Tunnel、HibernationScheduler 和 watcher

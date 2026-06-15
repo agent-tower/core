@@ -51,6 +51,8 @@ export interface UITask {
   /** 当前工作分支（来自活跃 Workspace） */
   branch: string
   description: string
+  /** 最后更新时间（ISO 8601） */
+  updatedAt?: string
   projectArchivedAt?: string | null
   projectRepoDeletedAt?: string | null
 }

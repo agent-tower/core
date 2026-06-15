@@ -261,4 +261,25 @@
       transform: translateY(0);
     }
   }
+
+  @keyframes taskSlideIn {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-task-enter {
+    animation: taskSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-task-enter {
+      animation: none;
+    }
+  }
 }

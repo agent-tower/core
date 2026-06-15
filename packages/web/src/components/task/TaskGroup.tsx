@@ -1,11 +1,34 @@
-import { memo, useState, useCallback, useRef, useEffect } from 'react'
+import { memo, useState, useCallback, useRef, useEffect, useContext, createContext } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { STATUS_STYLES, STATUS_ORDER } from './status-styles'
-import { useI18n } from '@/lib/i18n'
+import { useI18n, translate } from '@/lib/i18n'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
+
+export interface FlipHandle {
+  registry: Map<string, HTMLElement>
+}
+export const FlipContext = createContext<FlipHandle | null>(null)
+
+const TICK_INTERVAL = 30_000
+
+function useTick(interval = TICK_INTERVAL) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(n => n + 1), interval)
+    return () => clearInterval(id)
+  }, [interval])
+}
+
+function timeAgo(isoString: string): string {
+  const diff = Math.max(0, Math.floor((Date.now() - new Date(isoString).getTime()) / 1000))
+  if (diff < 60) return translate('{count}s ago', { count: diff })
+  if (diff < 3600) return translate('{count}m ago', { count: Math.floor(diff / 60) })
+  if (diff < 86400) return translate('{count}h ago', { count: Math.floor(diff / 3600) })
+  return translate('{count}d ago', { count: Math.floor(diff / 86400) })
+}
 
 interface TaskGroupProps {
   title: string
@@ -51,13 +74,28 @@ function DraggableTaskCard({
   disableDrag?: boolean
 }) {
   const { t } = useI18n()
+  const flip = useContext(FlipContext)
+  const cardRef = useRef<HTMLButtonElement | null>(null)
   const isTaskReadOnly = Boolean(task.projectArchivedAt)
   const dragDisabled = isTaskReadOnly || !!disableDrag
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef: setDragRef, isDragging } = useDraggable({
     id: task.id,
     data: { task, fromStatus: status },
     disabled: dragDisabled,
   })
+
+  const mergedRef = useCallback((node: HTMLButtonElement | null) => {
+    cardRef.current = node
+    setDragRef(node)
+    if (flip) {
+      if (node) flip.registry.set(task.id, node)
+      else flip.registry.delete(task.id)
+    }
+  }, [setDragRef, flip, task.id])
+
+  useEffect(() => {
+    return () => { flip?.registry.delete(task.id) }
+  }, [task.id, flip])
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
@@ -102,16 +140,20 @@ function DraggableTaskCard({
     }
   }, [contextMenu])
 
+  const projectLabel = project ? project.name : undefined
+
   return (
     <>
       <button
-        ref={setNodeRef}
+        ref={mergedRef}
         onClick={() => onSelectTask(task.id)}
         onContextMenu={handleContextMenu}
         onTouchStart={handleTouchStart}
         onTouchEnd={clearLongPress}
         onTouchMove={clearLongPress}
-        className={`flex items-center gap-2.5 mx-2 px-2 py-2 rounded-md text-sm text-left transition-colors group
+        title={projectLabel}
+        aria-label={projectLabel ? `${task.title} — ${projectLabel}` : task.title}
+        className={`flex items-center gap-2.5 mx-2 px-2 py-2 rounded-md text-sm text-left transition-colors group animate-task-enter
           ${isDragging ? 'opacity-30' : ''}
           ${isSelected ? 'bg-accent' : 'hover:bg-accent/50'}`}
         {...(dragDisabled ? {} : listeners)}
@@ -128,7 +170,6 @@ function DraggableTaskCard({
           })()}
         </span>
 
-        {/* 单行：标题为主体，右侧轻量项目 meta（Codex 式） */}
         <span
           className={`min-w-0 flex-1 truncate ${isSelected ? 'text-foreground font-medium' : 'text-foreground/90'}`}
         >
@@ -145,9 +186,21 @@ function DraggableTaskCard({
             <span className="relative inline-flex rounded-full h-2 w-2 bg-success" />
           </span>
         )}
+        {task.updatedAt && (
+          <span
+            className="shrink-0 text-[11px] text-muted-foreground/50 tabular-nums group-hover:hidden"
+          >
+            {timeAgo(task.updatedAt)}
+          </span>
+        )}
         {project && (
-          <span className="shrink-0 max-w-[96px] truncate text-xs text-muted-foreground/60" title={project.name}>
-            {project.name}
+          <span
+            className="shrink-0 hidden group-hover:inline-flex items-center gap-1 max-w-[120px]"
+          >
+            <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${project.color.replace('text-', 'bg-')}`} />
+            <span className="truncate text-[11px] text-muted-foreground/60">
+              {project.name}
+            </span>
           </span>
         )}
       </button>
@@ -227,6 +280,7 @@ export const TaskGroup = memo(function TaskGroup({
 }: TaskGroupProps) {
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(defaultOpen)
+  useTick()
 
   const isEmpty = tasks.length === 0
   const isSourceGroup = isGlobalDragging && dragFromStatus === status
@@ -246,7 +300,7 @@ export const TaskGroup = memo(function TaskGroup({
   const shouldShowContent = isGlobalDragging ? isSourceGroup && (isOpen || true) : isOpen
 
   return (
-    <div className="mb-2">
+    <div className="mb-2" data-task-group-status={status}>
       <button
         onClick={() => !isGlobalDragging && setIsOpen(prev => !prev)}
         className="flex items-center gap-1.5 w-full px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors group/header"
