@@ -191,7 +191,6 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
     });
     service = new WorkspaceGitWatcherService(eventBus, {
       debounceMs: 10,
-      minCheckIntervalMs: 100,
       retryMs: 50,
     });
   });
@@ -203,18 +202,11 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('coalesces pending fingerprint checks while one is already running', async () => {
-    let releaseFirstFingerprint!: (value: string) => void;
-    const getFingerprintSpy = vi.spyOn(
-      service as unknown as { getFingerprint: (workingDir: string) => Promise<string> },
-      'getFingerprint',
+  it('debounces lightweight maybe-changed events without running git fingerprint commands', async () => {
+    const execGitSpy = vi.spyOn(
+      service as unknown as { execGit: (workingDir: string, args: string[]) => Promise<string> },
+      'execGit',
     );
-    getFingerprintSpy
-      .mockImplementationOnce(() => new Promise((resolve) => {
-        releaseFirstFingerprint = resolve;
-      }))
-      .mockResolvedValue('fingerprint-1');
-
     const managed = {
       workspace: {
         id: 'workspace-1',
@@ -229,10 +221,6 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
       timers: new Set<ReturnType<typeof setTimeout>>(),
       changeTimer: null,
       pendingReason: 'unknown',
-      fingerprint: 'fingerprint-0',
-      fingerprintInFlight: false,
-      fingerprintPending: false,
-      lastFingerprintStartedAt: 0,
       stopped: false,
     };
     const scheduleChange = (
@@ -240,19 +228,11 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
     ).scheduleChange.bind(service);
 
     scheduleChange(managed, 'worktree');
-    await vi.advanceTimersByTimeAsync(10);
-    expect(getFingerprintSpy).toHaveBeenCalledTimes(1);
-
     scheduleChange(managed, 'git-dir');
     scheduleChange(managed, 'worktree');
-    await vi.advanceTimersByTimeAsync(90);
-    expect(getFingerprintSpy).toHaveBeenCalledTimes(1);
-
-    releaseFirstFingerprint('fingerprint-1');
-    await Promise.resolve();
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(getFingerprintSpy).toHaveBeenCalledTimes(2);
+    expect(execGitSpy).not.toHaveBeenCalled();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       workspaceId: 'workspace-1',
@@ -265,13 +245,21 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
     const worktreePath = path.join(testDir, 'workspace-stop-race');
     fs.mkdirSync(worktreePath, { recursive: true });
 
-    let fingerprintStarted!: () => void;
-    const fingerprintStartedPromise = new Promise<void>((resolve) => {
-      fingerprintStarted = resolve;
+    let targetsStarted!: () => void;
+    const targetsStartedPromise = new Promise<void>((resolve) => {
+      targetsStarted = resolve;
     });
-    let releaseFingerprint!: (fingerprint: string) => void;
-    const fingerprintPromise = new Promise<string>((resolve) => {
-      releaseFingerprint = resolve;
+    let releaseTargets!: () => void;
+    const targetsPromise = new Promise<Array<{
+      path: string;
+      recursive: boolean;
+      kind: 'worktree';
+    }>>((resolve) => {
+      releaseTargets = () => resolve([{
+        path: worktreePath,
+        recursive: true,
+        kind: 'worktree',
+      }]);
     });
 
     const serviceInternals = service as unknown as {
@@ -280,17 +268,11 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
         recursive: boolean;
         kind: 'worktree';
       }>>;
-      getFingerprint: (workingDir: string) => Promise<string>;
       openWatcher: (managed: unknown, target: unknown) => void;
     };
-    vi.spyOn(serviceInternals, 'buildWatchTargets').mockImplementation(async (workingDir) => [{
-      path: workingDir,
-      recursive: true,
-      kind: 'worktree',
-    }]);
-    vi.spyOn(serviceInternals, 'getFingerprint').mockImplementation(async () => {
-      fingerprintStarted();
-      return fingerprintPromise;
+    vi.spyOn(serviceInternals, 'buildWatchTargets').mockImplementation(async () => {
+      targetsStarted();
+      return targetsPromise;
     });
     const openWatcherSpy = vi.spyOn(serviceInternals, 'openWatcher').mockImplementation(() => undefined);
 
@@ -301,10 +283,10 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
       workingDir: worktreePath,
       task: { projectId: 'project-1' },
     });
-    await fingerprintStartedPromise;
+    await targetsStartedPromise;
 
     service.stop();
-    releaseFingerprint('fingerprint-1');
+    releaseTargets();
     await watchPromise;
 
     expect(openWatcherSpy).not.toHaveBeenCalled();
@@ -312,22 +294,24 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
   });
 
   it('does not register a queued initial watcher after unwatchWorkspace invalidates it', async () => {
-    const firstWorktreePath = path.join(testDir, 'workspace-first');
     const queuedWorktreePath = path.join(testDir, 'workspace-queued');
-    fs.mkdirSync(firstWorktreePath, { recursive: true });
     fs.mkdirSync(queuedWorktreePath, { recursive: true });
 
-    let firstFingerprintStarted!: () => void;
-    const firstFingerprintStartedPromise = new Promise<void>((resolve) => {
-      firstFingerprintStarted = resolve;
-    });
-    let releaseFirstFingerprint!: (fingerprint: string) => void;
-    const firstFingerprintPromise = new Promise<string>((resolve) => {
-      releaseFirstFingerprint = resolve;
-    });
     let queuedTargetsBuilt!: () => void;
     const queuedTargetsBuiltPromise = new Promise<void>((resolve) => {
       queuedTargetsBuilt = resolve;
+    });
+    let releaseQueuedTargets!: () => void;
+    const queuedTargetsPromise = new Promise<Array<{
+      path: string;
+      recursive: boolean;
+      kind: 'worktree';
+    }>>((resolve) => {
+      releaseQueuedTargets = () => resolve([{
+        path: queuedWorktreePath,
+        recursive: true,
+        kind: 'worktree',
+      }]);
     });
     const openedWorkspaceIds: string[] = [];
 
@@ -337,12 +321,12 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
         recursive: boolean;
         kind: 'worktree';
       }>>;
-      getFingerprint: (workingDir: string) => Promise<string>;
       openWatcher: (managed: unknown, target: unknown) => void;
     };
     vi.spyOn(serviceInternals, 'buildWatchTargets').mockImplementation(async (workingDir) => {
       if (workingDir === queuedWorktreePath) {
         queuedTargetsBuilt();
+        return queuedTargetsPromise;
       }
       return [{
         path: workingDir,
@@ -350,24 +334,9 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
         kind: 'worktree',
       }];
     });
-    const getFingerprintSpy = vi.spyOn(serviceInternals, 'getFingerprint')
-      .mockImplementationOnce(async () => {
-        firstFingerprintStarted();
-        return firstFingerprintPromise;
-      })
-      .mockResolvedValue('queued-fingerprint');
     vi.spyOn(serviceInternals, 'openWatcher').mockImplementation((managed) => {
       openedWorkspaceIds.push((managed as { workspace: { id: string } }).workspace.id);
     });
-
-    const firstWatchPromise = service.watchWorkspace({
-      id: 'workspace-first',
-      taskId: 'task-1',
-      worktreePath: firstWorktreePath,
-      workingDir: firstWorktreePath,
-      task: { projectId: 'project-1' },
-    });
-    await firstFingerprintStartedPromise;
 
     const queuedWatchPromise = service.watchWorkspace({
       id: 'workspace-queued',
@@ -380,12 +349,10 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
     await Promise.resolve();
 
     service.unwatchWorkspace('workspace-queued');
-    releaseFirstFingerprint('first-fingerprint');
-    await firstWatchPromise;
+    releaseQueuedTargets();
     await queuedWatchPromise;
 
-    expect(getFingerprintSpy).toHaveBeenCalledTimes(1);
-    expect(openedWorkspaceIds).toEqual(['workspace-first']);
-    expect(service.getWatchedWorkspaceIds()).toEqual(['workspace-first']);
+    expect(openedWorkspaceIds).toEqual([]);
+    expect(service.getWatchedWorkspaceIds()).toEqual([]);
   });
 });

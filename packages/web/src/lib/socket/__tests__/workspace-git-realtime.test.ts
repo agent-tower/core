@@ -3,11 +3,11 @@ import { QueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/hooks/query-keys'
 import {
   invalidateAllGitRealtimeQueries,
-  invalidateWorkspaceGitQueries,
+  syncVisibleWorkspaceGitQueries,
 } from '../hooks/useWorkspaceGitRealtimeSync'
 
-describe('invalidateWorkspaceGitQueries', () => {
-  it('invalidates scoped git queries for a workspace git change payload', () => {
+describe('syncVisibleWorkspaceGitQueries', () => {
+  it('invalidates only changes/status when the changed workspace is visible on the Changes tab', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity } },
     })
@@ -18,29 +18,67 @@ describe('invalidateWorkspaceGitQueries', () => {
     queryClient.setQueryData(queryKeys.workspaces.gitStatus('workspace-1'), { operation: 'idle' })
     queryClient.setQueryData(queryKeys.workspaces.diff('workspace-1'), { diff: 'old' })
 
-    invalidateWorkspaceGitQueries(queryClient, {
+    syncVisibleWorkspaceGitQueries(queryClient, {
       workspaceId: 'workspace-1',
       workingDir: '/tmp/workspace-1',
+    }, {
+      workspaceId: 'workspace-1',
+      workingDir: '/tmp/workspace-1',
+      tab: 'changes',
     })
 
     expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-1'))?.isInvalidated).toBe(true)
-    expect(queryClient.getQueryState(queryKeys.git.diff('/tmp/workspace-1', 'file.txt', 'uncommitted'))?.isInvalidated).toBe(true)
-    expect(queryClient.getQueryState(queryKeys.git.log('/tmp/workspace-1'))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(queryKeys.git.diff('/tmp/workspace-1', 'file.txt', 'uncommitted'))?.isInvalidated).toBe(false)
+    expect(queryClient.getQueryState(queryKeys.git.log('/tmp/workspace-1'))?.isInvalidated).toBe(false)
     expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-2'))?.isInvalidated).toBe(false)
     expect(queryClient.getQueryState(queryKeys.workspaces.gitStatus('workspace-1'))?.isInvalidated).toBe(true)
-    expect(queryClient.getQueryState(queryKeys.workspaces.diff('workspace-1'))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(queryKeys.workspaces.diff('workspace-1'))?.isInvalidated).toBe(false)
   })
 
-  it('falls back to all git queries when the payload cannot be scoped', () => {
-    const queryClient = new QueryClient()
+  it('invalidates only log when the changed workspace is visible on the History tab', () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity } },
+    })
+    queryClient.setQueryData(queryKeys.git.changes('/tmp/workspace-1'), { uncommitted: [], committed: [] })
+    queryClient.setQueryData(queryKeys.git.log('/tmp/workspace-1'), { commits: [] })
+    queryClient.setQueryData(queryKeys.workspaces.gitStatus('workspace-1'), { operation: 'idle' })
+
+    syncVisibleWorkspaceGitQueries(queryClient, {
+      workspaceId: 'workspace-1',
+      workingDir: '/tmp/workspace-1',
+    }, {
+      workspaceId: 'workspace-1',
+      workingDir: '/tmp/workspace-1',
+      tab: 'history',
+    })
+
+    expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-1'))?.isInvalidated).toBe(false)
+    expect(queryClient.getQueryState(queryKeys.git.log('/tmp/workspace-1'))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(queryKeys.workspaces.gitStatus('workspace-1'))?.isInvalidated).toBe(false)
+  })
+
+  it('does not invalidate when there is no visible matching git tab', () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity } },
+    })
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    queryClient.setQueryData(queryKeys.git.changes('/tmp/workspace-1'), { uncommitted: [], committed: [] })
 
-    invalidateWorkspaceGitQueries(queryClient, null)
+    syncVisibleWorkspaceGitQueries(queryClient, {
+      workspaceId: 'workspace-1',
+      workingDir: '/tmp/workspace-1',
+    }, {
+      workspaceId: 'workspace-2',
+      workingDir: '/tmp/workspace-2',
+      tab: 'changes',
+    })
+    syncVisibleWorkspaceGitQueries(queryClient, {
+      workspaceId: 'workspace-1',
+      workingDir: '/tmp/workspace-1',
+    }, null)
 
-    expect(invalidateSpy).toHaveBeenCalledTimes(3)
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.git.all })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['workspaces', 'gitStatus'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['workspaces', 'diff'] })
+    expect(invalidateSpy).not.toHaveBeenCalled()
+    expect(queryClient.getQueryState(queryKeys.git.changes('/tmp/workspace-1'))?.isInvalidated).toBe(false)
   })
 
   it('invalidates workspace git status and diff queries for reconnect fallback', () => {

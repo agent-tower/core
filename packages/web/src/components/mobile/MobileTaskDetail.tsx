@@ -50,6 +50,7 @@ import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { useI18n } from '@/lib/i18n'
 import { streamdownComponents } from '@/lib/streamdown-components'
+import { useGitVisibilityStore, type VisibleGitTab } from '@/stores/git-visibility-store'
 import 'streamdown/styles.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -157,6 +158,7 @@ function MobileAutoStartStatus({
 
 export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoStartState, onAutoStartRecovered }: MobileTaskDetailProps) {
   const { t } = useI18n()
+  const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
   const [activeTab, setActiveTab] = useState<MobileTab>('chat')
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
@@ -251,11 +253,37 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
     () => getWorkspaceMergeTargetBranch(selectedWorkspace, workspaces, task?.mainBranch ?? ''),
     [selectedWorkspace, task?.mainBranch, workspaces],
   )
-  const { data: gitStatus } = useGitStatus(selectedWorkspaceOperationId ?? '')
-  const { data: gitChangesData } = useGitChanges(workingDir)
+  const { data: gitStatus } = useGitStatus(selectedWorkspaceOperationId ?? '', {
+    enabled: activeTab === 'changes',
+  })
+  const { data: gitChangesData } = useGitChanges(workingDir, {
+    enabled: activeTab === 'changes',
+  })
   const committedFileCount = gitChangesData?.committed?.length
   const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
   const [pendingConflictDetails, setPendingConflictDetails] = useState<ConflictDetails | null>(null)
+
+  useEffect(() => {
+    const gitTab: VisibleGitTab | null = activeTab === 'changes'
+      ? 'changes'
+      : activeTab === 'history'
+        ? 'history'
+        : null
+
+    if (!selectedWorkspaceOperationId || !workingDir || !gitTab) {
+      setVisibleGitContext(null)
+      return
+    }
+
+    setVisibleGitContext({
+      workspaceId: selectedWorkspaceOperationId,
+      workingDir,
+      tab: gitTab,
+    })
+    return () => {
+      setVisibleGitContext(null)
+    }
+  }, [activeTab, selectedWorkspaceOperationId, setVisibleGitContext, workingDir])
 
   const conflictDetails = useMemo<ConflictDetails | null>(() => {
     if (gitStatus?.conflictOp && gitStatus.conflictedFiles.length > 0) {

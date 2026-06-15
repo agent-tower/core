@@ -206,6 +206,7 @@ export interface WorkspaceGitChangedPayload {
   taskId: string;
   projectId: string;
   workingDir: string;
+  /** Lightweight filesystem/git metadata signal; the watcher does not verify that Git state changed. */
   reason: WorkspaceGitChangeReason;
 }
 
