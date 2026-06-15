@@ -29,6 +29,12 @@ import { getWorkspaceBranchLabel } from '@/components/workspace/team-workspace-v
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
 type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
+type BackgroundStartStatus = 'creating-workspace' | 'creating-session' | 'starting-session' | 'failed'
+
+interface BackgroundStartState {
+  status: BackgroundStartStatus
+  error?: string
+}
 
 // === rendering-hoist-jsx: 静态顶部栏标题文字 ===
 const HEADER_TITLE = (
@@ -154,6 +160,22 @@ interface PaginatedResponse<T> {
   limit: number
 }
 
+function upsertTaskIntoPage(page: PaginatedResponse<Task> | undefined, task: Task): PaginatedResponse<Task> | undefined {
+  if (!page) return page
+  const existingIndex = page.data.findIndex(item => item.id === task.id)
+  if (existingIndex >= 0) {
+    return {
+      ...page,
+      data: page.data.map(item => item.id === task.id ? { ...item, ...task } : item),
+    }
+  }
+  return {
+    ...page,
+    data: [task, ...page.data],
+    total: page.total + 1,
+  }
+}
+
 export function ProjectKanbanPage() {
   const { t, locale } = useI18n()
   // === 状态 ===
@@ -164,6 +186,7 @@ export function ProjectKanbanPage() {
   // Modal 状态
   const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false)
   const [createStep, setCreateStep] = useState<CreateStep>('idle')
+  const [backgroundStarts, setBackgroundStarts] = useState<Record<string, BackgroundStartState>>({})
 
   // === rerender-use-ref-transient-values: resize 过程中的 mouse position 使用 ref ===
   const isDraggingRef = useRef(false)
@@ -205,7 +228,7 @@ export function ProjectKanbanPage() {
   const isAllTasksLoading = !effectiveFilterProjectId && allProjectTaskQueries.some(q => q.isLoading)
 
   // 合并任务数据（同时保留原始 Task 用于 session 匹配）
-  const rawTasks = useMemo<Task[]>(() => {
+  const fetchedTasks = useMemo<Task[]>(() => {
     if (effectiveFilterProjectId) {
       return filteredTasksData?.data ?? []
     }
@@ -217,6 +240,16 @@ export function ProjectKanbanPage() {
     }
     return allTasks
   }, [effectiveFilterProjectId, filteredTasksData, allProjectTaskQueries])
+  const [optimisticCreatedTasks, setOptimisticCreatedTasks] = useState<Task[]>([])
+  const rawTasks = useMemo<Task[]>(() => {
+    if (optimisticCreatedTasks.length === 0) return fetchedTasks
+
+    const fetchedIds = new Set(fetchedTasks.map(task => task.id))
+    return [
+      ...optimisticCreatedTasks.filter(task => !fetchedIds.has(task.id)),
+      ...fetchedTasks,
+    ]
+  }, [fetchedTasks, optimisticCreatedTasks])
   const [pendingCreatedTaskId, setPendingCreatedTaskId] = useState<string | null>(null)
   const effectiveSelectedTaskId = useMemo(() => {
     if (selectedTaskId && rawTasks.some(task => task.id === selectedTaskId)) return selectedTaskId
@@ -229,6 +262,14 @@ export function ProjectKanbanPage() {
       setPendingCreatedTaskId(null)
     }
   }, [pendingCreatedTaskId, rawTasks])
+
+  useEffect(() => {
+    if (optimisticCreatedTasks.length === 0) return
+    const fetchedIds = new Set(fetchedTasks.map(task => task.id))
+    if (optimisticCreatedTasks.some(task => fetchedIds.has(task.id))) {
+      setOptimisticCreatedTasks(current => current.filter(task => !fetchedIds.has(task.id)))
+    }
+  }, [fetchedTasks, optimisticCreatedTasks])
 
   // 按活跃度排序 projects：根据最近创建的任务时间
   const sortedProjects = useMemo(() => {
@@ -318,6 +359,82 @@ export function ProjectKanbanPage() {
   const createTaskTeamRun = useCreateTaskTeamRun()
   const deleteTask = useDeleteTask()
   const updateTaskStatus = useUpdateTaskStatus()
+  const startSession = useStartSession()
+
+  const revealCreatedTask = useCallback((task: Task) => {
+    setOptimisticCreatedTasks(current => {
+      if (current.some(item => item.id === task.id)) {
+        return current.map(item => item.id === task.id ? { ...item, ...task } : item)
+      }
+      return [task, ...current]
+    })
+    queryClient.setQueryData<PaginatedResponse<Task>>(
+      queryKeys.tasks.list(task.projectId, { limit: TASK_LIST_LIMIT }),
+      current => upsertTaskIntoPage(current, task),
+    )
+    queryClient.setQueryData(queryKeys.tasks.detail(task.id), task)
+    setPendingCreatedTaskId(task.id)
+    setSelectedTaskId(task.id)
+  }, [queryClient])
+
+  const startTaskInBackground = useCallback((task: Task, providerId: string, workspaceMode: WorkspaceMode) => {
+    const taskId = task.id
+    const prompt = [task.title, task.description].filter(Boolean).join('\n\n')
+
+    setBackgroundStarts(current => ({
+      ...current,
+      [taskId]: { status: 'creating-workspace' },
+    }))
+
+    void (async () => {
+      try {
+        const workspace = await apiClient.post<{ id: string }>(
+          `/tasks/${taskId}/workspaces`,
+          { workspaceKind: workspaceMode },
+        )
+        setBackgroundStarts(current => ({
+          ...current,
+          [taskId]: { status: 'creating-session' },
+        }))
+
+        const session = await apiClient.post<{ id: string }>(
+          `/workspaces/${workspace.id}/sessions`,
+          { providerId, prompt },
+        )
+        setBackgroundStarts(current => ({
+          ...current,
+          [taskId]: { status: 'starting-session' },
+        }))
+
+        await startSession.mutateAsync(session.id)
+        await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
+        await queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+
+        setBackgroundStarts(current => {
+          const { [taskId]: _done, ...rest } = current
+          return rest
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('启动 Agent 失败')
+        setBackgroundStarts(current => ({
+          ...current,
+          [taskId]: { status: 'failed', error: message },
+        }))
+        toast.error(t('任务已创建，但启动 Agent 失败，可在详情中重试'))
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      }
+    })()
+  }, [queryClient, startSession, t])
+
+  const handleAutoStartRecovered = useCallback((taskId: string) => {
+    setBackgroundStarts(current => {
+      const { [taskId]: _recovered, ...rest } = current
+      return rest
+    })
+    queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
+    queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+  }, [queryClient])
 
   const handleDeleteTask = useCallback((taskId: string) => {
     deleteTask.mutate(taskId, {
@@ -326,6 +443,11 @@ export function ProjectKanbanPage() {
         if (effectiveSelectedTaskId === taskId) {
           setSelectedTaskId(null)
         }
+        setBackgroundStarts(current => {
+          const { [taskId]: _removed, ...rest } = current
+          return rest
+        })
+        setOptimisticCreatedTasks(current => current.filter(task => task.id !== taskId))
         // 刷新所有任务列表
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       },
@@ -400,8 +522,6 @@ export function ProjectKanbanPage() {
     setIsCreateProjectOpen(false)
   }, [])
 
-  const startSession = useStartSession()
-
   const handleSubmitTask = useCallback(async (data: {
     title: string
     description: string
@@ -444,31 +564,13 @@ export function ProjectKanbanPage() {
           ...(memberPresetIds.length > 0 ? { memberPresetIds } : {}),
         })
       } else if (providerId) {
-        const prompt = [createdTask.title, createdTask.description].filter(Boolean).join('\n\n')
-
-        setCreateStep('creating-workspace')
-        const workspace = await apiClient.post<{ id: string }>(
-          `/tasks/${createdTask.id}/workspaces`,
-          { workspaceKind: workspaceMode },
-        )
-
-        setCreateStep('creating-session')
-        const session = await apiClient.post<{ id: string }>(
-          `/workspaces/${workspace.id}/sessions`,
-          { providerId, prompt },
-        )
-
-        setCreateStep('starting-session')
-        await startSession.mutateAsync(session.id)
-
-        await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(createdTask.id) })
+        startTaskInBackground(createdTask, providerId, workspaceMode)
       }
 
       if (effectiveFilterProjectId && projectId !== effectiveFilterProjectId) {
         setFilterProjectId(null)
       }
-      setPendingCreatedTaskId(createdTask.id)
-      setSelectedTaskId(createdTask.id)
+      revealCreatedTask(createdTask)
       setCreateStep('idle')
 
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
@@ -481,21 +583,18 @@ export function ProjectKanbanPage() {
         toast.error(t('TeamRun 创建失败，请检查团队配置后重试'))
         throw error
       } else if (createdTask) {
-        // SOLO partial success: task exists but agent start failed — navigate to detail
         if (effectiveFilterProjectId && projectId !== effectiveFilterProjectId) {
           setFilterProjectId(null)
         }
-        setPendingCreatedTaskId(createdTask.id)
-        setSelectedTaskId(createdTask.id)
+        revealCreatedTask(createdTask)
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
         queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
-        toast.error(t('任务已创建，但启动 Agent 失败，可在详情中重试'))
       } else {
         toast.error(error instanceof Error ? error.message : t('Failed to create task'))
         throw error
       }
     }
-  }, [createTaskTeamRun, startSession, deleteTask, queryClient, t, effectiveFilterProjectId])
+  }, [createTaskTeamRun, startTaskInBackground, deleteTask, queryClient, t, effectiveFilterProjectId, revealCreatedTask])
 
 
   const isLoading = isProjectsLoading || isFilteredTasksLoading || isAllTasksLoading
@@ -604,6 +703,8 @@ export function ProjectKanbanPage() {
             onBack={() => setSelectedTaskId(null)}
             onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
             isDeleting={deleteTask.isPending}
+            autoStartState={backgroundStarts[taskDetailData.id] ?? null}
+            onAutoStartRecovered={handleAutoStartRecovered}
           />
           {/* Modals 在移动端也需要 */}
           <CreateProjectModal
@@ -730,6 +831,8 @@ export function ProjectKanbanPage() {
               onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
               isDeleting={deleteTask.isPending}
               onTaskStatusChange={taskDetailData.projectArchivedAt ? undefined : handleTaskStatusChange}
+              autoStartState={backgroundStarts[taskDetailData.id] ?? null}
+              onAutoStartRecovered={handleAutoStartRecovered}
             />
           ) : effectiveSelectedTaskId && !taskDetailData ? (
             <div className="flex-1 flex items-center justify-center bg-background min-w-0">

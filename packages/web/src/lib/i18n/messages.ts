@@ -260,6 +260,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Creating Workspace...': '正在创建工作区...',
     'Creating Session...': '正在创建会话...',
     'Starting Agent...': '正在启动 Agent...',
+    '启动 Agent 失败': 'Failed to start Agent',
+    '重试启动 Agent': 'Retry Start Agent',
     'Create New Project': '创建新项目',
     'Creating...': '创建中...',
     'Checking...': '检查中...',

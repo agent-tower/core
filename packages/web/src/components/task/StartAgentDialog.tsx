@@ -14,6 +14,7 @@ import { WorkspaceKind } from '@agent-tower/shared'
 interface StartAgentDialogProps {
   isOpen: boolean
   onClose: () => void
+  onStarted?: () => void
   taskId: string
   taskTitle: string
   taskDescription: string
@@ -26,6 +27,7 @@ type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 export function StartAgentDialog({
   isOpen,
   onClose,
+  onStarted,
   taskId,
   taskTitle,
   taskDescription,
@@ -92,6 +94,7 @@ export function StartAgentDialog({
 
       // 关闭对话框
       setStep('idle')
+      onStarted?.()
       onClose()
     } catch (err) {
       setStep('idle')

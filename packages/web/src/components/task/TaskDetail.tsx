@@ -83,6 +83,13 @@ interface TaskDetailProps {
   isDeleting?: boolean
   /** 状态变更回调 */
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
+  /** 自动启动后台状态。创建 task 成功后不阻塞 UI，只在详情区展示后续启动进度。 */
+  autoStartState?: {
+    status: 'creating-workspace' | 'creating-session' | 'starting-session' | 'failed'
+    error?: string
+  } | null
+  /** 自动启动失败后，用户手动重试成功时通知父级清理后台失败状态。 */
+  onAutoStartRecovered?: (taskId: string) => void
 }
 
 // ============ Layout Constants ============
@@ -192,9 +199,53 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
   )
 }
 
+function AutoStartStatus({
+  state,
+  onRetry,
+}: {
+  state: NonNullable<TaskDetailProps['autoStartState']>
+  onRetry?: () => void
+}) {
+  const { t } = useI18n()
+  const label = state.status === 'creating-workspace'
+    ? t('Creating Workspace...')
+    : state.status === 'creating-session'
+      ? t('Creating Session...')
+      : state.status === 'starting-session'
+        ? t('Starting Agent...')
+        : t('启动 Agent 失败')
+
+  if (state.status === 'failed') {
+    return (
+      <div className="mb-6 max-w-sm rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-left">
+        <p className="text-sm font-medium text-destructive">{label}</p>
+        {state.error ? (
+          <p className="mt-1 text-xs text-destructive/80 break-words">{state.error}</p>
+        ) : null}
+        {onRetry ? (
+          <Button size="sm" variant="outline" className="mt-3" onClick={onRetry}>
+            <Play size={14} className="mr-1.5" />
+            {t('重试启动 Agent')}
+          </Button>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="mb-6 flex items-center gap-2 rounded-full border border-border bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground">
+      <svg className="h-3.5 w-3.5 animate-spin shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+      <span>{label}</span>
+    </div>
+  )
+}
+
 // ============ TaskDetail Component ============
 
-export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange }: TaskDetailProps) {
+export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange, autoStartState, onAutoStartRecovered }: TaskDetailProps) {
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
@@ -1082,6 +1133,15 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                 </div>
               )}
 
+              {!isProjectReadOnly && autoStartState && (isLoadingWorkspaces || sessionId) ? (
+                <div className="flex justify-center py-3">
+                  <AutoStartStatus
+                    state={autoStartState}
+                    onRetry={autoStartState.status === 'failed' ? handleOpenStartDialog : undefined}
+                  />
+                </div>
+              ) : null}
+
               {isLoadingWorkspaces ? (
                 <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground/70">
                   <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1119,11 +1179,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
                       ? projectReadOnlyMessage
                       : t('选择一个 Agent 来执行此任务，Agent 将自动创建工作空间并开始工作。')}
                   </p>
+                  {!isProjectReadOnly && autoStartState ? (
+                    <AutoStartStatus state={autoStartState} />
+                  ) : null}
                   {!isProjectReadOnly && (
                     <div className="flex flex-wrap items-center justify-center gap-3">
-                      <Button onClick={handleOpenStartDialog}>
+                      <Button onClick={handleOpenStartDialog} disabled={Boolean(autoStartState && autoStartState.status !== 'failed')}>
                         <Play size={16} className="mr-1.5" />
-                        {t('启动 Agent')}
+                        {autoStartState?.status === 'failed' ? t('重试启动 Agent') : t('启动 Agent')}
                       </Button>
                       {showCreateTeamRunEntry && (
                         <Button variant="outline" onClick={() => setIsCreateTeamRunDialogOpen(true)}>
@@ -1355,6 +1418,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange 
           taskTitle={taskBody?.title ?? task.title}
           taskDescription={taskBody?.body ?? ''}
           taskPrompt={taskBody?.prompt}
+          onStarted={() => onAutoStartRecovered?.(task.id)}
         />
       )}
 

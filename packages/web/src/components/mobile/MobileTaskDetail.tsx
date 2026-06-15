@@ -71,6 +71,11 @@ interface MobileTaskDetailProps {
   onBack: () => void
   onDeleteTask?: (taskId: string) => void
   isDeleting?: boolean
+  autoStartState?: {
+    status: 'creating-workspace' | 'creating-session' | 'starting-session' | 'failed'
+    error?: string
+  } | null
+  onAutoStartRecovered?: (taskId: string) => void
 }
 
 type MobileTab = 'chat' | 'team-status' | 'changes' | 'history' | 'workspace'
@@ -104,9 +109,53 @@ const TEAM_RUN_TAB_CONFIG: { key: MobileTab; label: string; icon: typeof Message
   { key: 'workspace', label: 'Workspace', icon: FolderOpen },
 ]
 
+function MobileAutoStartStatus({
+  state,
+  onRetry,
+}: {
+  state: NonNullable<MobileTaskDetailProps['autoStartState']>
+  onRetry?: () => void
+}) {
+  const { t } = useI18n()
+  const label = state.status === 'creating-workspace'
+    ? t('Creating Workspace...')
+    : state.status === 'creating-session'
+      ? t('Creating Session...')
+      : state.status === 'starting-session'
+        ? t('Starting Agent...')
+        : t('启动 Agent 失败')
+
+  if (state.status === 'failed') {
+    return (
+      <div className="mb-5 w-full max-w-[280px] rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-left">
+        <p className="text-xs font-medium text-red-600">{label}</p>
+        {state.error ? (
+          <p className="mt-1 text-[11px] text-red-500 break-words">{state.error}</p>
+        ) : null}
+        {onRetry ? (
+          <Button size="sm" variant="outline" className="mt-3" onClick={onRetry}>
+            <Play size={14} className="mr-1.5" />
+            {t('重试启动 Agent')}
+          </Button>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="mb-5 flex items-center gap-2 rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-500">
+      <svg className="h-3.5 w-3.5 animate-spin shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+      <span>{label}</span>
+    </div>
+  )
+}
+
 // ============ Main Component ============
 
-export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: MobileTaskDetailProps) {
+export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoStartState, onAutoStartRecovered }: MobileTaskDetailProps) {
   const { t } = useI18n()
   const [activeTab, setActiveTab] = useState<MobileTab>('chat')
   const [input, setInput] = useState('')
@@ -738,6 +787,15 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
               )}
             </div>
 
+            {!isProjectReadOnly && autoStartState && (isLoadingWorkspaces || sessionId) ? (
+              <div className="flex justify-center py-2">
+                <MobileAutoStartStatus
+                  state={autoStartState}
+                  onRetry={autoStartState.status === 'failed' ? async () => { await ensureTaskBody(); setIsStartDialogOpen(true) } : undefined}
+                />
+              </div>
+            ) : null}
+
             {isLoadingWorkspaces ? (
               <LoadingSpinner label="Loading..." />
             ) : sessionId ? (
@@ -760,10 +818,16 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
                 <p className="text-xs text-neutral-500 mb-5 max-w-[240px]">
                   {isProjectReadOnly ? projectReadOnlyMessage : t('选择一个 Agent 来执行此任务')}
                 </p>
+                {!isProjectReadOnly && autoStartState ? (
+                  <MobileAutoStartStatus state={autoStartState} />
+                ) : null}
                 {!isProjectReadOnly && (
-                  <Button onClick={async () => { await ensureTaskBody(); setIsStartDialogOpen(true) }}>
+                  <Button
+                    onClick={async () => { await ensureTaskBody(); setIsStartDialogOpen(true) }}
+                    disabled={Boolean(autoStartState && autoStartState.status !== 'failed')}
+                  >
                     <Play size={16} className="mr-1.5" />
-                    {t('启动 Agent')}
+                    {autoStartState?.status === 'failed' ? t('重试启动 Agent') : t('启动 Agent')}
                   </Button>
                 )}
               </div>
@@ -989,6 +1053,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting }: Mob
           taskTitle={taskBody?.title ?? task.title}
           taskDescription={taskBody?.body ?? ''}
           taskPrompt={taskBody?.prompt}
+          onStarted={() => onAutoStartRecovered?.(task.id)}
         />
       )}
 
