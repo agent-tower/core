@@ -36,14 +36,14 @@ export type GitCommitFilesResponse = {
   files: GitChangeEntry[]
 }
 
-export function useGitChanges(workingDir: string | undefined) {
+export function useGitChanges(workingDir: string | undefined, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: queryKeys.git.changes(workingDir || ''),
     queryFn: () =>
       apiClient.get<GitChangesResponse>('/git/changes', {
         params: { workingDir: workingDir || '' },
       }),
-    enabled: !!workingDir,
+    enabled: !!workingDir && (options.enabled ?? true),
   })
 }
 

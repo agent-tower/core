@@ -119,11 +119,11 @@ export function useOpenInEditor() {
 // ============ Git Operations ============
 
 /** 获取 workspace 的 Git 操作状态 */
-export function useGitStatus(workspaceId: string) {
+export function useGitStatus(workspaceId: string, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: queryKeys.workspaces.gitStatus(workspaceId),
     queryFn: () => apiClient.get<GitOperationStatus>(`/workspaces/${workspaceId}/git-status`),
-    enabled: !!workspaceId,
+    enabled: !!workspaceId && (options.enabled ?? true),
   })
 }
 

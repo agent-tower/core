@@ -2,11 +2,8 @@ import { useEffect } from 'react'
 import { type QueryClient, useQueryClient } from '@tanstack/react-query'
 import { ServerEvents, type WorkspaceGitChangedPayload } from '@agent-tower/shared/socket'
 import { queryKeys } from '@/hooks/query-keys'
+import { useGitVisibilityStore, type VisibleGitContext } from '@/stores/git-visibility-store'
 import { socketManager } from '../manager.js'
-
-function isGitQueryForWorkingDir(queryKey: readonly unknown[], workingDir: string) {
-  return queryKey[0] === 'git' && queryKey[2] === workingDir
-}
 
 export function invalidateAllGitRealtimeQueries(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: queryKeys.git.all })
@@ -14,24 +11,34 @@ export function invalidateAllGitRealtimeQueries(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['workspaces', 'diff'] })
 }
 
-export function invalidateWorkspaceGitQueries(
+export function syncVisibleWorkspaceGitQueries(
   queryClient: QueryClient,
   payload?: Partial<WorkspaceGitChangedPayload> | null,
+  visibleContext?: VisibleGitContext | null,
 ) {
-  if (!payload?.workspaceId || !payload?.workingDir) {
-    invalidateAllGitRealtimeQueries(queryClient)
+  if (!payload?.workspaceId || !payload?.workingDir || !visibleContext) {
     return
   }
 
-  queryClient.invalidateQueries({
-    predicate: (query) => isGitQueryForWorkingDir(query.queryKey, payload.workingDir!),
-  })
-  queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId) })
-  queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.diff(payload.workspaceId) })
+  if (
+    visibleContext.workspaceId !== payload.workspaceId
+    || visibleContext.workingDir !== payload.workingDir
+  ) {
+    return
+  }
+
+  if (visibleContext.tab === 'changes') {
+    queryClient.invalidateQueries({ queryKey: queryKeys.git.changes(payload.workingDir) })
+    queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId) })
+    return
+  }
+
+  queryClient.invalidateQueries({ queryKey: queryKeys.git.log(payload.workingDir) })
 }
 
 export function useWorkspaceGitRealtimeSync() {
   const queryClient = useQueryClient()
+  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
 
   useEffect(() => {
     const socket = socketManager.connect()
@@ -41,7 +48,7 @@ export function useWorkspaceGitRealtimeSync() {
     }
 
     const handleWorkspaceGitChanged = (payload: WorkspaceGitChangedPayload) => {
-      invalidateWorkspaceGitQueries(queryClient, payload)
+      syncVisibleWorkspaceGitQueries(queryClient, payload, visibleContext)
     }
 
     socket.on('connect', handleConnect)
@@ -51,5 +58,5 @@ export function useWorkspaceGitRealtimeSync() {
       socket.off('connect', handleConnect)
       socket.off(ServerEvents.WORKSPACE_GIT_CHANGED, handleWorkspaceGitChanged)
     }
-  }, [queryClient])
+  }, [queryClient, visibleContext])
 }

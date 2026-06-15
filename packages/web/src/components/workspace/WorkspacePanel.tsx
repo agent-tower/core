@@ -12,6 +12,7 @@ import { PreviewPanel } from "./PreviewPanel"
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { buildWorkspaceViews } from "./team-workspace-view"
 import { useProject } from "@/hooks/use-projects"
+import { useGitVisibilityStore, type VisibleGitTab } from "@/stores/git-visibility-store"
 import type { QuickCommand } from "@agent-tower/shared"
 
 export type WorkspaceTab = "editor" | "terminal" | "preview" | "review" | "history"
@@ -118,6 +119,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     tabRef,
   }) {
     const { t } = useI18n()
+    const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
     const tabs = useMemo(() => {
       const baseTabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
       const availableTabs = readOnly
@@ -164,6 +166,24 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
       if (teamRun || activeTab !== 'team-status') return
       setActiveTab(hideChanges ? 'history' : 'review')
     }, [activeTab, hideChanges, teamRun])
+
+    useEffect(() => {
+      const gitTab: VisibleGitTab | null = activeTab === 'review'
+        ? 'changes'
+        : activeTab === 'history'
+          ? 'history'
+          : null
+
+      if (!workspaceId || !workingDir || !gitTab) {
+        setVisibleGitContext(null)
+        return
+      }
+
+      setVisibleGitContext({ workspaceId, workingDir, tab: gitTab })
+      return () => {
+        setVisibleGitContext(null)
+      }
+    }, [activeTab, setVisibleGitContext, workingDir, workspaceId])
 
     const showSwitcher = !!onSelectWorkspace && buildWorkspaceViews(workspaces, teamRun).length > 1
 

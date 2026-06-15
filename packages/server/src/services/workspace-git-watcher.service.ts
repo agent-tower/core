@@ -12,8 +12,6 @@ import { WorkspaceKind, WorkspaceStatus } from '../types/index.js';
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_DEBOUNCE_MS = 250;
-const DEFAULT_MIN_CHECK_INTERVAL_MS = 1_500;
-const DEFAULT_MAX_FINGERPRINT_CONCURRENCY = 1;
 const WATCHER_RETRY_MS = 1_000;
 const IGNORED_PATH_SEGMENTS = new Set(['node_modules', '.agent-tower']);
 
@@ -37,10 +35,6 @@ type WatchTarget = {
   kind: WatchTargetKind;
 };
 
-type FingerprintQueueItem = {
-  resolve: (acquired: boolean) => void;
-};
-
 type WorkspaceRegistrationToken = {
   serviceGeneration: number;
   workspaceGeneration: number;
@@ -55,10 +49,6 @@ type ManagedWorkspaceWatcher = {
   timers: Set<ReturnType<typeof setTimeout>>;
   changeTimer: ReturnType<typeof setTimeout> | null;
   pendingReason: GitWatchReason;
-  fingerprint: string | null;
-  fingerprintInFlight: boolean;
-  fingerprintPending: boolean;
-  lastFingerprintStartedAt: number;
   stopped: boolean;
 };
 
@@ -66,8 +56,6 @@ type ActiveWorkspaceQuery = () => Promise<WatchableWorkspace[]>;
 
 export interface WorkspaceGitWatcherOptions {
   debounceMs?: number;
-  minCheckIntervalMs?: number;
-  maxConcurrentFingerprints?: number;
   retryMs?: number;
   loadActiveWorkspaces?: ActiveWorkspaceQuery;
 }
@@ -98,10 +86,6 @@ function isNotFoundLike(error: unknown): boolean {
 export class WorkspaceGitWatcherService {
   private watchers = new Map<string, ManagedWorkspaceWatcher>();
   private debounceMs: number;
-  private minCheckIntervalMs: number;
-  private maxConcurrentFingerprints: number;
-  private activeFingerprintChecks = 0;
-  private fingerprintQueue: FingerprintQueueItem[] = [];
   private retryMs: number;
   private startupGeneration = 0;
   private startupActive = false;
@@ -114,11 +98,6 @@ export class WorkspaceGitWatcherService {
     options: WorkspaceGitWatcherOptions = {},
   ) {
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
-    this.minCheckIntervalMs = options.minCheckIntervalMs ?? DEFAULT_MIN_CHECK_INTERVAL_MS;
-    this.maxConcurrentFingerprints = Math.max(
-      1,
-      options.maxConcurrentFingerprints ?? DEFAULT_MAX_FINGERPRINT_CONCURRENCY,
-    );
     this.retryMs = options.retryMs ?? WATCHER_RETRY_MS;
     this.loadActiveWorkspaces = options.loadActiveWorkspaces ?? (() => this.findActiveWorkspaces());
   }
@@ -141,7 +120,6 @@ export class WorkspaceGitWatcherService {
     for (const workspaceId of [...this.watchers.keys()]) {
       this.unwatchWorkspace(workspaceId);
     }
-    this.cancelQueuedFingerprints();
   }
 
   async refreshWorkspace(workspaceId: string): Promise<void> {
@@ -203,12 +181,6 @@ export class WorkspaceGitWatcherService {
 
     const targets = await this.buildWatchTargets(normalizedWorkspace.workingDir);
     if (!canContinueRegistration()) return;
-    const fingerprint = await this.runFingerprint(
-      normalizedWorkspace.workingDir,
-      canContinueRegistration,
-    );
-    if (fingerprint === null) return;
-    if (!canContinueRegistration()) return;
 
     const managed: ManagedWorkspaceWatcher = {
       workspace: normalizedWorkspace,
@@ -218,10 +190,6 @@ export class WorkspaceGitWatcherService {
       timers: new Set(),
       changeTimer: null,
       pendingReason: 'unknown',
-      fingerprint,
-      fingerprintInFlight: false,
-      fingerprintPending: false,
-      lastFingerprintStartedAt: 0,
       stopped: false,
     };
 
@@ -514,74 +482,29 @@ export class WorkspaceGitWatcherService {
   private scheduleChange(managed: ManagedWorkspaceWatcher, reason: GitWatchReason): void {
     if (managed.stopped) return;
     managed.pendingReason = reason;
-    managed.fingerprintPending = true;
-    this.schedulePendingFingerprint(managed, this.debounceMs);
+    this.scheduleMaybeChanged(managed);
   }
 
-  private schedulePendingFingerprint(
-    managed: ManagedWorkspaceWatcher,
-    requestedDelayMs: number,
-  ): void {
-    if (managed.stopped || managed.fingerprintInFlight) return;
+  private scheduleMaybeChanged(managed: ManagedWorkspaceWatcher): void {
+    if (managed.stopped) return;
     if (managed.changeTimer) {
       clearTimeout(managed.changeTimer);
     }
 
-    const elapsedSinceLastCheck = managed.lastFingerprintStartedAt > 0
-      ? Date.now() - managed.lastFingerprintStartedAt
-      : Number.POSITIVE_INFINITY;
-    const intervalDelay = Math.max(0, this.minCheckIntervalMs - elapsedSinceLastCheck);
-    const delay = Math.max(requestedDelayMs, intervalDelay);
-
     const timer = setTimeout(() => {
       managed.changeTimer = null;
-      this.processPendingFingerprint(managed).catch((error) => {
-        console.warn(
-          `[WorkspaceGitWatcher] failed to process change for ${managed.workspace.id}:`,
-          error instanceof Error ? error.message : error,
-        );
-      });
-    }, delay);
+      this.emitMaybeChanged(managed, managed.pendingReason);
+    }, this.debounceMs);
     managed.changeTimer = timer;
     timer.unref?.();
   }
 
-  private async processPendingFingerprint(
+  private emitMaybeChanged(
     managed: ManagedWorkspaceWatcher,
-  ): Promise<void> {
-    if (managed.stopped) return;
-    if (managed.fingerprintInFlight || !managed.fingerprintPending) return;
-
-    const initialReason = managed.pendingReason;
-    managed.fingerprintPending = false;
-    managed.fingerprintInFlight = true;
-    managed.lastFingerprintStartedAt = Date.now();
-
-    try {
-      const nextFingerprint = await this.runFingerprint(
-        managed.workspace.workingDir,
-        () => !managed.stopped,
-      );
-      if (managed.stopped || nextFingerprint === null) return;
-
-      const reason = managed.fingerprintPending ? managed.pendingReason : initialReason;
-      this.emitIfChanged(managed, nextFingerprint, reason);
-    } finally {
-      managed.fingerprintInFlight = false;
-      if (!managed.stopped && managed.fingerprintPending) {
-        this.schedulePendingFingerprint(managed, 0);
-      }
-    }
-  }
-
-  private emitIfChanged(
-    managed: ManagedWorkspaceWatcher,
-    nextFingerprint: string,
     reason: GitWatchReason,
   ): void {
-    if (nextFingerprint === managed.fingerprint) return;
+    if (managed.stopped) return;
 
-    managed.fingerprint = nextFingerprint;
     this.eventBus.emit('workspace:git_changed', {
       workspaceId: managed.workspace.id,
       taskId: managed.workspace.taskId,
@@ -589,92 +512,6 @@ export class WorkspaceGitWatcherService {
       workingDir: managed.workspace.workingDir,
       reason,
     });
-  }
-
-  private async runFingerprint(
-    workingDir: string,
-    shouldContinue?: () => boolean,
-  ): Promise<string | null> {
-    if (shouldContinue && !shouldContinue()) return null;
-    const acquired = await this.acquireFingerprintSlot();
-    if (!acquired) return null;
-    try {
-      if (shouldContinue && !shouldContinue()) return null;
-      return await this.getFingerprint(workingDir);
-    } finally {
-      this.releaseFingerprintSlot();
-    }
-  }
-
-  private acquireFingerprintSlot(): Promise<boolean> {
-    if (this.activeFingerprintChecks < this.maxConcurrentFingerprints) {
-      this.activeFingerprintChecks += 1;
-      return Promise.resolve(true);
-    }
-
-    return new Promise((resolve) => {
-      this.fingerprintQueue.push({ resolve });
-    });
-  }
-
-  private releaseFingerprintSlot(): void {
-    const next = this.fingerprintQueue.shift();
-    if (next) {
-      next.resolve(true);
-      return;
-    }
-    this.activeFingerprintChecks = Math.max(0, this.activeFingerprintChecks - 1);
-  }
-
-  private cancelQueuedFingerprints(): void {
-    const queue = this.fingerprintQueue.splice(0);
-    for (const item of queue) {
-      item.resolve(false);
-    }
-  }
-
-  private async getFingerprint(workingDir: string): Promise<string> {
-    const [status, head, heads, staged, dirtyFiles] = await Promise.all([
-      this.execGit(workingDir, ['status', '--porcelain=v1', '-b', '--untracked-files=all'])
-        .catch((error) => `status-error:${String(error)}`),
-      this.execGit(workingDir, ['rev-parse', 'HEAD']).catch((error) => `head-error:${String(error)}`),
-      this.execGit(workingDir, ['show-ref', '--heads']).catch((error) => `heads-error:${String(error)}`),
-      this.execGit(workingDir, ['diff', '--cached', '--raw', '--no-abbrev', 'HEAD'])
-        .catch((error) => `staged-error:${String(error)}`),
-      this.execGit(workingDir, ['ls-files', '--modified', '--others', '--exclude-standard', '-z'])
-        .catch(() => ''),
-    ]);
-    const dirtyStats = await this.buildDirtyFileStats(workingDir, dirtyFiles);
-    return [
-      status.trim(),
-      head.trim(),
-      heads.trim(),
-      staged.trim(),
-      dirtyStats,
-    ].join('\n');
-  }
-
-  private async buildDirtyFileStats(workingDir: string, filesOutput: string): Promise<string> {
-    const files = filesOutput
-      .split('\0')
-      .map((file) => file.trim())
-      .filter(Boolean)
-      .sort();
-
-    const stats: string[] = [];
-    for (const file of files) {
-      const absolutePath = path.resolve(workingDir, file);
-      if (!this.isPathInside(workingDir, absolutePath)) continue;
-      const stat = await fsPromises.stat(absolutePath).catch(() => null);
-      if (!stat?.isFile()) continue;
-      stats.push(`${file}\0${stat.size}\0${stat.mtimeMs}`);
-    }
-    return stats.join('\n');
-  }
-
-  private isPathInside(root: string, targetPath: string): boolean {
-    const relative = path.relative(root, targetPath);
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   }
 
   private async execGit(workingDir: string, args: string[]): Promise<string> {
