@@ -178,10 +178,12 @@ describe('WorkspaceGitWatcherService', () => {
 describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
   let service: WorkspaceGitWatcherService;
   let eventBus: EventBus;
+  let testDir = '';
   let events: Array<{ workspaceId: string; reason: string; workingDir: string }> = [];
 
   beforeEach(() => {
     vi.useFakeTimers();
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-git-watcher-scheduling-'));
     eventBus = new EventBus();
     events = [];
     eventBus.on('workspace:git_changed', (payload) => {
@@ -198,6 +200,7 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
     service.stop();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    fs.rmSync(testDir, { recursive: true, force: true });
   });
 
   it('coalesces pending fingerprint checks while one is already running', async () => {
@@ -256,5 +259,133 @@ describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
       workingDir: '/tmp/workspace-1',
       reason: 'worktree',
     });
+  });
+
+  it('does not register a watcher if stop happens during initial fingerprint', async () => {
+    const worktreePath = path.join(testDir, 'workspace-stop-race');
+    fs.mkdirSync(worktreePath, { recursive: true });
+
+    let fingerprintStarted!: () => void;
+    const fingerprintStartedPromise = new Promise<void>((resolve) => {
+      fingerprintStarted = resolve;
+    });
+    let releaseFingerprint!: (fingerprint: string) => void;
+    const fingerprintPromise = new Promise<string>((resolve) => {
+      releaseFingerprint = resolve;
+    });
+
+    const serviceInternals = service as unknown as {
+      buildWatchTargets: (workingDir: string) => Promise<Array<{
+        path: string;
+        recursive: boolean;
+        kind: 'worktree';
+      }>>;
+      getFingerprint: (workingDir: string) => Promise<string>;
+      openWatcher: (managed: unknown, target: unknown) => void;
+    };
+    vi.spyOn(serviceInternals, 'buildWatchTargets').mockImplementation(async (workingDir) => [{
+      path: workingDir,
+      recursive: true,
+      kind: 'worktree',
+    }]);
+    vi.spyOn(serviceInternals, 'getFingerprint').mockImplementation(async () => {
+      fingerprintStarted();
+      return fingerprintPromise;
+    });
+    const openWatcherSpy = vi.spyOn(serviceInternals, 'openWatcher').mockImplementation(() => undefined);
+
+    const watchPromise = service.watchWorkspace({
+      id: 'workspace-stop-race',
+      taskId: 'task-1',
+      worktreePath,
+      workingDir: worktreePath,
+      task: { projectId: 'project-1' },
+    });
+    await fingerprintStartedPromise;
+
+    service.stop();
+    releaseFingerprint('fingerprint-1');
+    await watchPromise;
+
+    expect(openWatcherSpy).not.toHaveBeenCalled();
+    expect(service.getWatchedWorkspaceIds()).toEqual([]);
+  });
+
+  it('does not register a queued initial watcher after unwatchWorkspace invalidates it', async () => {
+    const firstWorktreePath = path.join(testDir, 'workspace-first');
+    const queuedWorktreePath = path.join(testDir, 'workspace-queued');
+    fs.mkdirSync(firstWorktreePath, { recursive: true });
+    fs.mkdirSync(queuedWorktreePath, { recursive: true });
+
+    let firstFingerprintStarted!: () => void;
+    const firstFingerprintStartedPromise = new Promise<void>((resolve) => {
+      firstFingerprintStarted = resolve;
+    });
+    let releaseFirstFingerprint!: (fingerprint: string) => void;
+    const firstFingerprintPromise = new Promise<string>((resolve) => {
+      releaseFirstFingerprint = resolve;
+    });
+    let queuedTargetsBuilt!: () => void;
+    const queuedTargetsBuiltPromise = new Promise<void>((resolve) => {
+      queuedTargetsBuilt = resolve;
+    });
+    const openedWorkspaceIds: string[] = [];
+
+    const serviceInternals = service as unknown as {
+      buildWatchTargets: (workingDir: string) => Promise<Array<{
+        path: string;
+        recursive: boolean;
+        kind: 'worktree';
+      }>>;
+      getFingerprint: (workingDir: string) => Promise<string>;
+      openWatcher: (managed: unknown, target: unknown) => void;
+    };
+    vi.spyOn(serviceInternals, 'buildWatchTargets').mockImplementation(async (workingDir) => {
+      if (workingDir === queuedWorktreePath) {
+        queuedTargetsBuilt();
+      }
+      return [{
+        path: workingDir,
+        recursive: true,
+        kind: 'worktree',
+      }];
+    });
+    const getFingerprintSpy = vi.spyOn(serviceInternals, 'getFingerprint')
+      .mockImplementationOnce(async () => {
+        firstFingerprintStarted();
+        return firstFingerprintPromise;
+      })
+      .mockResolvedValue('queued-fingerprint');
+    vi.spyOn(serviceInternals, 'openWatcher').mockImplementation((managed) => {
+      openedWorkspaceIds.push((managed as { workspace: { id: string } }).workspace.id);
+    });
+
+    const firstWatchPromise = service.watchWorkspace({
+      id: 'workspace-first',
+      taskId: 'task-1',
+      worktreePath: firstWorktreePath,
+      workingDir: firstWorktreePath,
+      task: { projectId: 'project-1' },
+    });
+    await firstFingerprintStartedPromise;
+
+    const queuedWatchPromise = service.watchWorkspace({
+      id: 'workspace-queued',
+      taskId: 'task-2',
+      worktreePath: queuedWorktreePath,
+      workingDir: queuedWorktreePath,
+      task: { projectId: 'project-1' },
+    });
+    await queuedTargetsBuiltPromise;
+    await Promise.resolve();
+
+    service.unwatchWorkspace('workspace-queued');
+    releaseFirstFingerprint('first-fingerprint');
+    await firstWatchPromise;
+    await queuedWatchPromise;
+
+    expect(getFingerprintSpy).toHaveBeenCalledTimes(1);
+    expect(openedWorkspaceIds).toEqual(['workspace-first']);
+    expect(service.getWatchedWorkspaceIds()).toEqual(['workspace-first']);
   });
 });

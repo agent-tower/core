@@ -41,6 +41,12 @@ type FingerprintQueueItem = {
   resolve: (acquired: boolean) => void;
 };
 
+type WorkspaceRegistrationToken = {
+  serviceGeneration: number;
+  workspaceGeneration: number;
+  startupGeneration?: number;
+};
+
 type ManagedWorkspaceWatcher = {
   workspace: WatchableWorkspace;
   targets: WatchTarget[];
@@ -99,6 +105,8 @@ export class WorkspaceGitWatcherService {
   private retryMs: number;
   private startupGeneration = 0;
   private startupActive = false;
+  private serviceGeneration = 0;
+  private workspaceGenerations = new Map<string, number>();
   private readonly loadActiveWorkspaces: ActiveWorkspaceQuery;
 
   constructor(
@@ -129,6 +137,7 @@ export class WorkspaceGitWatcherService {
   stop(): void {
     this.startupActive = false;
     this.startupGeneration += 1;
+    this.serviceGeneration += 1;
     for (const workspaceId of [...this.watchers.keys()]) {
       this.unwatchWorkspace(workspaceId);
     }
@@ -167,13 +176,16 @@ export class WorkspaceGitWatcherService {
     workspace: WatchableWorkspace,
     startupGeneration?: number,
   ): Promise<void> {
-    if (!this.canContinueStartup(startupGeneration)) return;
+    const registration = this.beginWorkspaceRegistration(workspace.id, startupGeneration);
+    const canContinueRegistration = () => this.isRegistrationCurrent(workspace.id, registration);
+
+    if (!canContinueRegistration()) return;
     const workingDir = workspace.workingDir || workspace.worktreePath;
     if (!workingDir || !await pathExists(workingDir)) {
       this.unwatchWorkspace(workspace.id);
       return;
     }
-    if (!this.canContinueStartup(startupGeneration)) return;
+    if (!canContinueRegistration()) return;
 
     const normalizedWorkspace: WatchableWorkspace = {
       ...workspace,
@@ -186,17 +198,17 @@ export class WorkspaceGitWatcherService {
       return;
     }
     if (existing) {
-      this.unwatchWorkspace(workspace.id);
+      this.closeManagedWorkspace(workspace.id, existing);
     }
 
     const targets = await this.buildWatchTargets(normalizedWorkspace.workingDir);
-    if (!this.canContinueStartup(startupGeneration)) return;
+    if (!canContinueRegistration()) return;
     const fingerprint = await this.runFingerprint(
       normalizedWorkspace.workingDir,
-      () => this.canContinueStartup(startupGeneration),
+      canContinueRegistration,
     );
     if (fingerprint === null) return;
-    if (!this.canContinueStartup(startupGeneration)) return;
+    if (!canContinueRegistration()) return;
 
     const managed: ManagedWorkspaceWatcher = {
       workspace: normalizedWorkspace,
@@ -220,9 +232,14 @@ export class WorkspaceGitWatcherService {
   }
 
   unwatchWorkspace(workspaceId: string): void {
+    this.invalidateWorkspaceRegistration(workspaceId);
     const managed = this.watchers.get(workspaceId);
     if (!managed) return;
 
+    this.closeManagedWorkspace(workspaceId, managed);
+  }
+
+  private closeManagedWorkspace(workspaceId: string, managed: ManagedWorkspaceWatcher): void {
     managed.stopped = true;
     for (const watcher of managed.watchers) {
       watcher.close();
@@ -246,6 +263,40 @@ export class WorkspaceGitWatcherService {
 
   private canContinueStartup(generation?: number): boolean {
     return generation === undefined || this.isStartupCurrent(generation);
+  }
+
+  private beginWorkspaceRegistration(
+    workspaceId: string,
+    startupGeneration?: number,
+  ): WorkspaceRegistrationToken {
+    const workspaceGeneration = this.nextWorkspaceGeneration(workspaceId);
+    const token: WorkspaceRegistrationToken = {
+      serviceGeneration: this.serviceGeneration,
+      workspaceGeneration,
+    };
+    if (startupGeneration !== undefined) {
+      token.startupGeneration = startupGeneration;
+    }
+    return token;
+  }
+
+  private invalidateWorkspaceRegistration(workspaceId: string): void {
+    this.nextWorkspaceGeneration(workspaceId);
+  }
+
+  private nextWorkspaceGeneration(workspaceId: string): number {
+    const nextGeneration = (this.workspaceGenerations.get(workspaceId) ?? 0) + 1;
+    this.workspaceGenerations.set(workspaceId, nextGeneration);
+    return nextGeneration;
+  }
+
+  private isRegistrationCurrent(
+    workspaceId: string,
+    token: WorkspaceRegistrationToken,
+  ): boolean {
+    return this.serviceGeneration === token.serviceGeneration
+      && this.workspaceGenerations.get(workspaceId) === token.workspaceGeneration
+      && this.canContinueStartup(token.startupGeneration);
   }
 
   private async findActiveWorkspaces(): Promise<WatchableWorkspace[]> {
