@@ -63,6 +63,8 @@ describe('WorkspaceGitWatcherService', () => {
 
   afterEach(() => {
     service.stop();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
@@ -170,5 +172,89 @@ describe('WorkspaceGitWatcherService', () => {
     expect(loadActiveWorkspaces).toHaveBeenCalledTimes(1);
     expect(watchWorkspaceSpy).not.toHaveBeenCalled();
     expect(service.getWatchedWorkspaceIds()).toEqual([]);
+  });
+});
+
+describe('WorkspaceGitWatcherService fingerprint scheduling', () => {
+  let service: WorkspaceGitWatcherService;
+  let eventBus: EventBus;
+  let events: Array<{ workspaceId: string; reason: string; workingDir: string }> = [];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    eventBus = new EventBus();
+    events = [];
+    eventBus.on('workspace:git_changed', (payload) => {
+      events.push(payload);
+    });
+    service = new WorkspaceGitWatcherService(eventBus, {
+      debounceMs: 10,
+      minCheckIntervalMs: 100,
+      retryMs: 50,
+    });
+  });
+
+  afterEach(() => {
+    service.stop();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('coalesces pending fingerprint checks while one is already running', async () => {
+    let releaseFirstFingerprint!: (value: string) => void;
+    const getFingerprintSpy = vi.spyOn(
+      service as unknown as { getFingerprint: (workingDir: string) => Promise<string> },
+      'getFingerprint',
+    );
+    getFingerprintSpy
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        releaseFirstFingerprint = resolve;
+      }))
+      .mockResolvedValue('fingerprint-1');
+
+    const managed = {
+      workspace: {
+        id: 'workspace-1',
+        taskId: 'task-1',
+        worktreePath: '/tmp/workspace-1',
+        workingDir: '/tmp/workspace-1',
+        task: { projectId: 'project-1' },
+      },
+      targets: [],
+      watchers: [],
+      watchedPaths: new Set<string>(),
+      timers: new Set<ReturnType<typeof setTimeout>>(),
+      changeTimer: null,
+      pendingReason: 'unknown',
+      fingerprint: 'fingerprint-0',
+      fingerprintInFlight: false,
+      fingerprintPending: false,
+      lastFingerprintStartedAt: 0,
+      stopped: false,
+    };
+    const scheduleChange = (
+      service as unknown as { scheduleChange: (managed: unknown, reason: string) => void }
+    ).scheduleChange.bind(service);
+
+    scheduleChange(managed, 'worktree');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(getFingerprintSpy).toHaveBeenCalledTimes(1);
+
+    scheduleChange(managed, 'git-dir');
+    scheduleChange(managed, 'worktree');
+    await vi.advanceTimersByTimeAsync(90);
+    expect(getFingerprintSpy).toHaveBeenCalledTimes(1);
+
+    releaseFirstFingerprint('fingerprint-1');
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(getFingerprintSpy).toHaveBeenCalledTimes(2);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      workspaceId: 'workspace-1',
+      workingDir: '/tmp/workspace-1',
+      reason: 'worktree',
+    });
   });
 });
