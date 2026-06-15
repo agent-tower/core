@@ -135,6 +135,83 @@ describe('WorktreeManager.remove', () => {
   });
 });
 
+describe('WorktreeManager.getWorktreeStatus', () => {
+  let tempDir: string;
+  let repoPath: string;
+  let manager: WorktreeManager;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-worktree-manager-'));
+    repoPath = path.join(tempDir, 'repo');
+    fs.mkdirSync(repoPath, { recursive: true });
+    manager = new WorktreeManager(repoPath);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('runs read-only status queries without optional locks', async () => {
+    const fakeBin = path.join(tempDir, 'bin');
+    const capturePath = path.join(tempDir, 'git-capture.json');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeGitPath = path.join(fakeBin, 'git');
+    fs.writeFileSync(
+      fakeGitPath,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const capturePath = process.env.AGENT_TOWER_GIT_CAPTURE_PATH;
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify({
+    optionalLocks: process.env.GIT_OPTIONAL_LOCKS ?? null,
+    args: process.argv.slice(2),
+  }));
+}
+process.stdout.write(' M changed.txt\\n?? untracked.txt\\n');
+`
+    );
+    fs.chmodSync(fakeGitPath, 0o755);
+
+    const originalPath = process.env.PATH;
+    const originalCapturePath = process.env.AGENT_TOWER_GIT_CAPTURE_PATH;
+    const originalOptionalLocks = process.env.GIT_OPTIONAL_LOCKS;
+    process.env.PATH = `${fakeBin}${path.delimiter}${originalPath ?? ''}`;
+    process.env.AGENT_TOWER_GIT_CAPTURE_PATH = capturePath;
+    process.env.GIT_OPTIONAL_LOCKS = '1';
+
+    try {
+      await expect(manager.getWorktreeStatus(repoPath)).resolves.toEqual({
+        changedFiles: 1,
+        untrackedFiles: 1,
+      });
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf-8')) as {
+        optionalLocks: string | null;
+        args: string[];
+      };
+      expect(capture).toEqual({
+        optionalLocks: '0',
+        args: ['status', '--porcelain'],
+      });
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      if (originalCapturePath === undefined) {
+        delete process.env.AGENT_TOWER_GIT_CAPTURE_PATH;
+      } else {
+        process.env.AGENT_TOWER_GIT_CAPTURE_PATH = originalCapturePath;
+      }
+      if (originalOptionalLocks === undefined) {
+        delete process.env.GIT_OPTIONAL_LOCKS;
+      } else {
+        process.env.GIT_OPTIONAL_LOCKS = originalOptionalLocks;
+      }
+    }
+  });
+});
+
 describe('WorktreeManager.deleteBranchIfSafe', () => {
   let tempDir: string;
   let repoPath: string;

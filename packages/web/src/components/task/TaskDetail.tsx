@@ -34,6 +34,7 @@ import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
 import { socketManager } from '@/lib/socket/manager'
+import { useGitVisibilityStore } from '@/stores/git-visibility-store'
 import { useSendMessage, useStopSession, useStartSession } from '@/hooks/use-sessions'
 import { useRetryTask, useTaskBody } from '@/hooks/use-tasks'
 import { useProviders } from '@/hooks/use-providers'
@@ -465,7 +466,17 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
 
   // ============ Git Status ============
 
-  const { data: gitStatus } = useGitStatus(canRunSelectedWorkspaceGitOperations ? selectedWorkspaceOperationId ?? '' : '')
+  const visibleGitContext = useGitVisibilityStore((state) => state.visibleContext)
+  const shouldLoadTaskDetailGitStatus = Boolean(
+    isWorkspaceOpen
+    && canRunSelectedWorkspaceGitOperations
+    && selectedWorkspaceOperationId
+    && visibleGitContext?.workspaceId === selectedWorkspaceOperationId
+    && visibleGitContext.tab === 'changes'
+  )
+  const { data: gitStatus } = useGitStatus(selectedWorkspaceOperationId ?? '', {
+    enabled: shouldLoadTaskDetailGitStatus,
+  })
 
   // Collect sessions from active workspace for ResolveConflictsDialog
   const selectedWorkspaceSessions = selectedWorkspace?.sessions ?? []

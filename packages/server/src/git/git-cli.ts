@@ -129,6 +129,11 @@ export class BranchesDivergedError extends GitError {
 
 // ─── Git CLI Wrapper ──────────────────────────────────────────────────────────
 
+export interface ExecGitOptions {
+  timeout?: number;
+  optionalLocks?: boolean;
+}
+
 /**
  * Execute a git command in the given repository path.
  * All git operations go through this single entry point for uniform error handling.
@@ -136,7 +141,7 @@ export class BranchesDivergedError extends GitError {
 export async function execGit(
   repoPath: string,
   args: string[],
-  options?: { timeout?: number }
+  options?: ExecGitOptions
 ): Promise<string> {
   try {
     const { stdout } = await execFileAsync('git', args, {
@@ -144,6 +149,9 @@ export async function execGit(
       maxBuffer: 10 * 1024 * 1024, // 10 MB
       timeout: options?.timeout ?? 30_000,
       encoding: 'utf-8',
+      env: options?.optionalLocks === false
+        ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+        : undefined,
     });
     return stdout;
   } catch (err: unknown) {

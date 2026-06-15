@@ -129,7 +129,7 @@ export class WorktreeManager {
    * Get the working tree status of a worktree (changed + untracked file counts).
    */
   async getWorktreeStatus(worktreePath: string): Promise<WorktreeStatus> {
-    const output = await execGit(worktreePath, ['status', '--porcelain']);
+    const output = await execGit(worktreePath, ['status', '--porcelain'], { optionalLocks: false });
     const lines = output.split('\n').filter((l) => l.length > 0);
 
     let changedFiles = 0;
