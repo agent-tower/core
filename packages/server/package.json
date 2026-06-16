@@ -31,6 +31,7 @@
     "cloudflared": "^0.7.1",
     "fast-json-patch": "^3.1.1",
     "fastify": "^4.26.0",
+    "prisma": "^5.9.1",
     "simple-git": "^3.22.0",
     "smol-toml": "^1.6.0",
     "socket.io": "^4.8.3",
@@ -38,7 +39,6 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.16",
-    "prisma": "^5.9.1",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   }

@@ -145,8 +145,8 @@ console.log(`Bundled cloudflared@${cloudflaredVersion} with binary`);
 const deps = { ...serverPkg.dependencies };
 // 替换 workspace 协议为真实版本
 deps['@agent-tower/shared'] = sharedPkg.version;
-// prisma 从 devDependencies 提升到 dependencies（bundledDependencies 需要在 deps 中声明）
-deps['prisma'] = serverPkg.devDependencies.prisma;
+// prisma 是 CLI 启动期依赖：server CLI 用它执行 db push。
+deps['prisma'] = serverPkg.dependencies.prisma;
 // node-pty 保留在 dependencies 中（bundledDependencies 要求包必须同时在 dependencies 中声明）
 // bundled 的预编译版本会优先使用，npm 不会再触发远程安装/node-gyp
 

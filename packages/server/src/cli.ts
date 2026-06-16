@@ -6,23 +6,28 @@
  *   agent-tower                     # 默认端口 3000，数据目录 ~/.agent-tower
  *   agent-tower --port 8080         # 指定端口
  *   agent-tower --data-dir /path    # 指定数据目录
+ *   agent-tower --host 127.0.0.1    # 指定监听地址
+ *   agent-tower --web-dir web       # 指定前端静态目录（相对 dist/）
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { getBundledPrismaCommand } from './utils/process-launch.js';
+import { resolveDataDir } from './utils/data-dir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_PORT = 12580;
-const DEFAULT_DATA_DIR = path.join(homedir(), '.agent-tower');
+const DEFAULT_HOST = '0.0.0.0';
+const DEFAULT_WEB_DIR = 'web';
 
-function parseArgs(): { port: number; dataDir: string } {
+function parseArgs(): { port: number; host: string; dataDir: string; webDir: string } {
   const args = process.argv.slice(2);
   let port: number | undefined;
+  let host: string | undefined;
   let dataDir: string | undefined;
+  let webDir: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -34,9 +39,27 @@ function parseArgs(): { port: number; dataDir: string } {
           process.exit(1);
         }
         break;
+      case '--host':
+        host = args[++i];
+        if (!host) {
+          console.error('Error: --host requires a valid hostname or IP address');
+          process.exit(1);
+        }
+        break;
       case '--data-dir':
       case '-d':
         dataDir = args[++i];
+        if (!dataDir) {
+          console.error('Error: --data-dir requires a path');
+          process.exit(1);
+        }
+        break;
+      case '--web-dir':
+        webDir = args[++i];
+        if (!webDir) {
+          console.error('Error: --web-dir requires a path');
+          process.exit(1);
+        }
         break;
       case '--help':
       case '-h':
@@ -55,7 +78,9 @@ function parseArgs(): { port: number; dataDir: string } {
 
   return {
     port: port ?? (process.env.AGENT_TOWER_PORT ? parseInt(process.env.AGENT_TOWER_PORT, 10) : DEFAULT_PORT),
-    dataDir: dataDir ?? (process.env.AGENT_TOWER_DATA_DIR || DEFAULT_DATA_DIR),
+    host: host ?? process.env.AGENT_TOWER_HOST ?? DEFAULT_HOST,
+    dataDir: resolveDataDir(dataDir),
+    webDir: webDir ?? (process.env.AGENT_TOWER_WEB_DIR || DEFAULT_WEB_DIR),
   };
 }
 
@@ -67,7 +92,10 @@ Usage: agent-tower [options]
 
 Options:
   -p, --port <port>      Server port (default: 12580, env: AGENT_TOWER_PORT)
+  --host <host>          Listen host (default: 0.0.0.0, env: AGENT_TOWER_HOST)
   -d, --data-dir <path>  Data directory (default: ~/.agent-tower, env: AGENT_TOWER_DATA_DIR)
+  --web-dir <path>       Web dist directory, resolved relative to dist/ unless absolute
+                         (default: web, env: AGENT_TOWER_WEB_DIR)
   -h, --help             Show this help
   -v, --version          Show version
 `);
@@ -100,7 +128,7 @@ function ensureDatabase(dbPath: string, schemaPath: string) {
 }
 
 async function main() {
-  const { port, dataDir } = parseArgs();
+  const { port, host, dataDir, webDir } = parseArgs();
 
   // 确保数据目录存在
   if (!existsSync(dataDir)) {
@@ -112,7 +140,8 @@ async function main() {
   const dbPath = path.join(dataDir, 'data.db');
   process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
   process.env.AGENT_TOWER_DATA_DIR = dataDir;
-  process.env.AGENT_TOWER_WEB_DIR = 'web'; // 相对于 __dirname (dist/)，即 dist/web/
+  process.env.AGENT_TOWER_WEB_DIR = webDir;
+  process.env.AGENT_TOWER_HOST = host;
   process.env.AGENT_TOWER_PORT = String(port);
   process.env.AGENT_TOWER_URL = `http://127.0.0.1:${port}`;
 
@@ -144,7 +173,7 @@ async function main() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  await app.listen({ port, host: '0.0.0.0' });
+  await app.listen({ port, host });
 
   // 写入端口文件，供 MCP 等外部进程发现
   const portFile = path.join(dataDir, 'port');
@@ -155,7 +184,8 @@ async function main() {
   };
   process.on('exit', cleanupPortFile);
 
-  console.log(`Agent Tower is running on http://localhost:${port}`);
+  const printableHost = host === '0.0.0.0' ? 'localhost' : host;
+  console.log(`Agent Tower is running on http://${printableHost}:${port}`);
 }
 
 main().catch((err) => {

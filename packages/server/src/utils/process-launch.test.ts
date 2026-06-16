@@ -7,6 +7,7 @@ import {
   buildPtyCommand,
   buildPtyCommandWithStdin,
   getDefaultTerminalShell,
+  getNodeRuntimeCommand,
   normalizeCommandLookupOutput,
 } from './process-launch.js'
 
@@ -82,6 +83,22 @@ describe('process-launch', () => {
 
     expect(stdout).toBe('{"message":"hello"}')
     expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  it('should allow overriding the node-like runtime command', () => {
+    const original = process.env.AGENT_TOWER_NODE_RUNTIME
+    process.env.AGENT_TOWER_NODE_RUNTIME = '/tmp/agent-tower-node-runtime'
+
+    try {
+      expect(getNodeRuntimeCommand()).toBe('/tmp/agent-tower-node-runtime')
+      expect(buildPtyCommand('echo', ['ok']).command).toBe('/tmp/agent-tower-node-runtime')
+    } finally {
+      if (original === undefined) {
+        delete process.env.AGENT_TOWER_NODE_RUNTIME
+      } else {
+        process.env.AGENT_TOWER_NODE_RUNTIME = original
+      }
+    }
   })
 
   it('should normalize Windows command lookup output', () => {

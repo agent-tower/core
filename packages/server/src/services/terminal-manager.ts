@@ -14,7 +14,13 @@ const TTL_CHECK_INTERVAL_MS = 60 * 1000; // check every 60 seconds
 const DEFAULT_TERMINAL_SHELL = getDefaultTerminalShell();
 
 /** agent-tower 内部注入的环境变量，不应泄漏到用户终端 */
-const INTERNAL_ENV_KEYS = ['AGENT_TOWER_DATABASE_URL', 'AGENT_TOWER_DATA_DIR', 'AGENT_TOWER_WEB_DIR'];
+const INTERNAL_ENV_KEYS = [
+  'AGENT_TOWER_DATABASE_URL',
+  'AGENT_TOWER_DATA_DIR',
+  'AGENT_TOWER_WEB_DIR',
+  'AGENT_TOWER_NODE_RUNTIME',
+  'ELECTRON_RUN_AS_NODE',
+];
 
 function cleanInternalEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const cleaned = { ...env };

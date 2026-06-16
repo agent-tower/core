@@ -577,3 +577,23 @@ export interface NotificationSettings {
   taskInReviewTitleTemplate: string
   taskInReviewBodyTemplate: string
 }
+
+// ============ MCP 配置 ============
+
+export type McpConfigRuntimeMode = 'desktop-packaged' | 'workspace'
+
+export interface McpConfigResponse {
+  serverName: string
+  runtimeMode: McpConfigRuntimeMode
+  command: string
+  args: string[]
+  env: Record<string, string>
+  config: {
+    mcpServers: Record<string, {
+      command: string
+      args: string[]
+      env?: Record<string, string>
+    }>
+  }
+  configJson: string
+}

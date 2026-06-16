@@ -1,0 +1,121 @@
+{
+  "name": "@agent-tower/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Desktop app for Agent Tower.",
+  "author": "Agent Tower <noreply@agent-tower.dev>",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:deps": "pnpm --filter @agent-tower/shared build && pnpm --filter @agent-tower/server build && pnpm --filter web build",
+    "clean": "rm -rf dist",
+    "runtime:prepare": "node scripts/prepare-runtime.mjs",
+    "package:prepare": "pnpm run build:deps && pnpm run build && pnpm run runtime:prepare",
+    "package:dir": "pnpm run package:prepare && electron-builder --dir --publish never",
+    "package:mac": "pnpm run package:prepare && electron-builder --mac dmg --arm64 --publish never",
+    "package:win": "pnpm run package:prepare && electron-builder --win nsis portable --x64 --publish never",
+    "package:linux": "pnpm run package:prepare && electron-builder --linux AppImage deb --x64 --publish never",
+    "package:mac:publish": "pnpm run package:prepare && electron-builder --mac dmg --arm64 --publish always",
+    "package:win:publish": "pnpm run package:prepare && electron-builder --win nsis portable --x64 --publish always",
+    "package:linux:publish": "pnpm run package:prepare && electron-builder --linux AppImage deb --x64 --publish always",
+    "package:acceptance": "node scripts/start-packaged-isolated.mjs",
+    "package:smoke": "node scripts/smoke-packaged.mjs",
+    "spike": "pnpm run build:deps && pnpm run build && electron .",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "^26.15.2"
+  },
+  "build": {
+    "appId": "dev.agent-tower.desktop",
+    "productName": "Agent Tower",
+    "asar": true,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "agent-tower",
+      "repo": "core",
+      "releaseType": "release"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to": "runtime"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-${os}-${arch}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${os}-${arch}-portable.${ext}"
+    },
+    "linux": {
+      "category": "Development",
+      "description": "Desktop app for Agent Tower.",
+      "executableName": "agent-tower",
+      "icon": "build/icon.png",
+      "maintainer": "Agent Tower <noreply@agent-tower.dev>",
+      "synopsis": "Agent Tower desktop app",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "deb": {
+      "packageName": "agent-tower"
+    }
+  }
+}

@@ -5,10 +5,10 @@
  */
 import path from 'node:path';
 import fs from 'node:fs';
-import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createMcpServer } from './server.js';
+import { resolveDataDir } from '../utils/data-dir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,7 +18,7 @@ async function main() {
 
   if (!process.env.AGENT_TOWER_PORT && !process.env.AGENT_TOWER_URL) {
     // 1. 尝试读取主服务写入的 port 文件
-    const portFile = path.join(process.env.AGENT_TOWER_DATA_DIR || path.join(homedir(), '.agent-tower'), 'port');
+    const portFile = path.join(resolveDataDir(), 'port');
     try {
       const saved = parseInt(fs.readFileSync(portFile, 'utf-8').trim(), 10);
       if (!isNaN(saved)) port = saved;

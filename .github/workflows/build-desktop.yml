@@ -1,0 +1,147 @@
+name: Build Desktop
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-latest
+            package-script: package:mac
+            artifact-name: agent-tower-macos-arm64
+            artifact-path: |
+              packages/desktop/release/*.dmg
+              packages/desktop/release/*.dmg.blockmap
+              packages/desktop/release/latest-mac.yml
+          - name: Windows x64
+            os: windows-latest
+            package-script: package:win
+            artifact-name: agent-tower-windows-x64
+            artifact-path: |
+              packages/desktop/release/*.exe
+              packages/desktop/release/*.exe.blockmap
+              packages/desktop/release/latest.yml
+          - name: Linux x64
+            os: ubuntu-latest
+            package-script: package:linux
+            artifact-name: agent-tower-linux-x64
+            artifact-path: |
+              packages/desktop/release/*.AppImage
+              packages/desktop/release/*.AppImage.blockmap
+              packages/desktop/release/*.deb
+              packages/desktop/release/latest-linux.yml
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools rpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Use tag version for desktop package
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const tag = process.env.GITHUB_REF_NAME || '';
+          const version = tag.replace(/^v/, '');
+
+          if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+            throw new Error(`Tag ${tag} does not look like a semver release tag`);
+          }
+
+          const packageFile = 'packages/desktop/package.json';
+          const packageJson = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+          packageJson.version = version;
+          fs.writeFileSync(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
+          console.log(`Desktop package version set to ${version}`);
+          NODE
+
+      - name: Build desktop package
+        run: pnpm --filter @agent-tower/desktop run ${{ matrix.package-script }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: 'true'
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Create draft desktop release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: desktop-artifacts
+
+      - name: Create draft GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          mapfile -d '' assets < <(find desktop-artifacts -type f -print0)
+
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No desktop release assets found."
+            exit 1
+          fi
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --draft \
+              --title "Agent Tower ${TAG_NAME}" \
+              --notes "Desktop packages for Agent Tower ${TAG_NAME}. This draft is created after all platform builds complete."
+          else
+            gh release create "$TAG_NAME" \
+              --draft \
+              --verify-tag \
+              --title "Agent Tower ${TAG_NAME}" \
+              --notes "Desktop packages for Agent Tower ${TAG_NAME}. This draft is created after all platform builds complete."
+          fi
+
+          gh release upload "$TAG_NAME" --clobber "${assets[@]}"

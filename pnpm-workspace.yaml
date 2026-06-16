@@ -1,2 +1,11 @@
 packages:
   - 'packages/*'
+
+onlyBuiltDependencies:
+  - '@prisma/client'
+  - '@prisma/engines'
+  - '@shitiandmw/node-pty'
+  - cloudflared
+  - electron
+  - esbuild
+  - prisma

@@ -14,7 +14,7 @@ function RouteLoadingFallback() {
   return <div className="p-8">{t('Loading...')}</div>
 }
 
-const VALID_SETTINGS_TABS = new Set<string>(['general', 'agents', 'team', 'projects', 'notifications', 'agents-legacy'])
+const VALID_SETTINGS_TABS = new Set<string>(['general', 'agents', 'team', 'projects', 'notifications', 'mcp', 'agents-legacy'])
 
 function SettingsRedirect() {
   const navigate = useNavigate()

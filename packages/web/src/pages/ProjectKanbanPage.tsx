@@ -25,6 +25,7 @@ import { CreateProjectModal } from '@/components/project/CreateProjectModal'
 import { BrandLogo } from '@/components/BrandLogo'
 import { CreateTaskInput } from '@/components/task/CreateTaskInput'
 import { getWorkspaceBranchLabel } from '@/components/workspace/team-workspace-view'
+import { cn } from '@/lib/utils'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -49,11 +50,13 @@ function ProjectSwitcher({
   filterProjectId,
   setFilterProjectId,
   onCreateProject,
+  className,
 }: {
   projects: ReturnType<typeof adaptProject>[]
   filterProjectId: string | null
   setFilterProjectId: (id: string | null) => void
   onCreateProject: () => void
+  className?: string
 }) {
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
@@ -61,7 +64,7 @@ function ProjectSwitcher({
   const current = filterProjectId ? projects.find(p => p.id === filterProjectId) ?? null : null
 
   return (
-    <div className="relative flex items-center min-w-0">
+    <div className={cn('relative flex items-center min-w-0', className)}>
       <span className="mx-1.5 text-muted-foreground/40 select-none">/</span>
       <button
         onClick={() => setIsOpen(prev => !prev)}
@@ -649,6 +652,11 @@ export function ProjectKanbanPage() {
 
   const isMobile = useIsMobile()
   const [mobileCreateOpen, setMobileCreateOpen] = useState(false)
+  const usesDesktopIntegratedTitlebar = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    const params = new URLSearchParams(window.location.search)
+    return params.get('desktop') === '1' && params.get('desktopTitlebar') === 'integrated'
+  }, [])
 
   const handleMobileCreateTask = useCallback(() => {
     if (activeProjects.length === 0) {
@@ -769,8 +777,16 @@ export function ProjectKanbanPage() {
   return (
     <div ref={containerRef} className="flex flex-col h-screen bg-sidebar overflow-hidden text-sm">
       {/* === 顶部栏 === */}
-      <header className="h-12 bg-sidebar flex items-center px-4 justify-between flex-shrink-0 z-20 relative">
-        <div className="flex items-center gap-2 min-w-0">
+      <header
+        className={cn(
+          'h-12 bg-sidebar flex items-center px-4 justify-between flex-shrink-0 z-20 relative',
+          usesDesktopIntegratedTitlebar && 'app-region-drag',
+        )}
+      >
+        <div className={cn(
+          'flex items-center gap-2 min-w-0',
+          usesDesktopIntegratedTitlebar && 'pl-[72px]',
+        )}>
           <BrandLogo />
           {HEADER_TITLE}
           <ProjectSwitcher
@@ -778,11 +794,23 @@ export function ProjectKanbanPage() {
             filterProjectId={effectiveFilterProjectId}
             setFilterProjectId={setFilterProjectId}
             onCreateProject={handleCreateProject}
+            className={usesDesktopIntegratedTitlebar ? 'app-region-no-drag' : undefined}
           />
         </div>
-        <div className="flex items-center gap-1">
-          <TunnelButton />
-          <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-muted-foreground/70 hover:text-foreground hover:bg-accent rounded-md transition-colors">
+        <div className={cn(
+          'flex items-center gap-1',
+          usesDesktopIntegratedTitlebar && 'app-region-no-drag',
+        )}>
+          <div className={usesDesktopIntegratedTitlebar ? 'app-region-no-drag' : undefined}>
+            <TunnelButton />
+          </div>
+          <button
+            onClick={() => useUIStore.getState().openSettings()}
+            className={cn(
+              'p-1.5 text-muted-foreground/70 hover:text-foreground hover:bg-accent rounded-md transition-colors',
+              usesDesktopIntegratedTitlebar && 'app-region-no-drag',
+            )}
+          >
             <Settings size={16} />
           </button>
         </div>

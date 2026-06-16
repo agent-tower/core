@@ -8,6 +8,10 @@
     "setup": "pnpm install && pnpm --filter @agent-tower/shared build",
     "dev": "pnpm -r --parallel --filter '!@agent-tower/docs-site' run dev",
     "dev:all": "pnpm -r --parallel run dev",
+    "desktop:spike": "pnpm --filter @agent-tower/desktop spike",
+    "desktop:package:dir": "pnpm --filter @agent-tower/desktop package:dir",
+    "desktop:package:acceptance": "pnpm --filter @agent-tower/desktop package:acceptance",
+    "desktop:package:smoke": "pnpm --filter @agent-tower/desktop package:smoke",
     "build": "pnpm -r run build",
     "docs:dev": "pnpm --filter @agent-tower/docs-site dev",
     "docs:build": "pnpm --filter @agent-tower/docs-site build",
@@ -27,15 +31,5 @@
   "engines": {
     "node": ">=18.0.0",
     "pnpm": ">=8.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@prisma/client",
-      "@prisma/engines",
-      "@shitiandmw/node-pty",
-      "cloudflared",
-      "esbuild",
-      "prisma"
-    ]
   }
 }

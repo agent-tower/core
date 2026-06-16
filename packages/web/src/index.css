@@ -166,6 +166,14 @@
 
 /* Safe area utilities for notched mobile devices */
 @layer utilities {
+  .app-region-drag {
+    -webkit-app-region: drag;
+  }
+
+  .app-region-no-drag {
+    -webkit-app-region: no-drag;
+  }
+
   .active-work-dots {
     display: inline-block;
     width: 1.5em;

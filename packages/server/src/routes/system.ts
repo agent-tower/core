@@ -1,12 +1,18 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AgentType } from '../types/index.js';
 import { stripAnsiSequences } from '../output/utils/ansi.js';
 import { discoverSkillCatalog, discoverSlashCommandCatalog } from '../services/slash-command-catalog.service.js';
+import { buildMcpConfigResponse } from '../services/mcp-config.service.js';
 import { prisma } from '../utils/index.js';
 
 const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const serverPackageRoot = path.resolve(__dirname, '../..');
+const serverDistDir = path.join(serverPackageRoot, 'dist');
 
 /** 解析 `cursor-agent --list-models`  stdout（strip ANSI 后按行解析） */
 export function parseCursorAgentListModelsOutput(stdout: string): Array<{ id: string; label: string }> {
@@ -79,6 +85,10 @@ export async function systemRoutes(app: FastifyInstance) {
   app.get('/system/skill-catalog', async (request) => {
     const { agentType, workingDir } = request.query as { agentType?: string; workingDir?: string };
     return discoverSkillCatalog(agentType, workingDir);
+  });
+
+  app.get('/system/mcp-config', async () => {
+    return buildMcpConfigResponse({ serverDistDir });
   });
 
   // MCP 上下文检测：优先根据 sessionId 精确定位，fallback 到 cwd 路径匹配活跃工作空间。

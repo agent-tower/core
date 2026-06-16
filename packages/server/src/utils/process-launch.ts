@@ -6,6 +6,10 @@ export interface CommandInvocation {
   args: string[];
 }
 
+export function getNodeRuntimeCommand(): string {
+  return process.env.AGENT_TOWER_NODE_RUNTIME || process.execPath;
+}
+
 const PTY_WRAPPER_SCRIPT = String.raw`
 const { spawn } = require('node:child_process');
 const { createReadStream, unlink } = require('node:fs');
@@ -13,11 +17,20 @@ const { createReadStream, unlink } = require('node:fs');
 const [mode, programPath, ...rest] = process.argv.slice(1);
 const isWin = process.platform === 'win32';
 const isCmdBat = isWin && /\.(cmd|bat)$/i.test(programPath);
+const internalEnvKeys = ['AGENT_TOWER_NODE_RUNTIME', 'ELECTRON_RUN_AS_NODE'];
 
 let child;
 let cleanupTarget = null;
 const sentSignals = new Set();
 let forceKillTimer = null;
+
+function getChildEnv() {
+  const env = { ...process.env };
+  for (const key of internalEnvKeys) {
+    delete env[key];
+  }
+  return env;
+}
 
 function cleanup() {
   if (!cleanupTarget) return;
@@ -90,6 +103,7 @@ function spawnCmd(args, stdioOpt) {
   const cmdLine = [programPath, ...args].map(escapeArgForCmd).join(' ');
   return spawn(process.env.ComSpec || 'cmd.exe', ['/s', '/c', '"' + cmdLine + '"'], {
     stdio: stdioOpt,
+    env: getChildEnv(),
     windowsVerbatimArguments: true,
   });
 }
@@ -99,7 +113,7 @@ function spawnCmd(args, stdioOpt) {
 // 本 wrapper 经 killTree 显式转发。Windows 下 detached 会脱离 ConPTY，
 // 保持默认行为。
 function spawnChild(args, stdioOpt) {
-  return spawn(programPath, args, { stdio: stdioOpt, detached: !isWin });
+  return spawn(programPath, args, { stdio: stdioOpt, detached: !isWin, env: getChildEnv() });
 }
 
 if (mode === 'pipe-file') {
@@ -142,14 +156,14 @@ if (mode === 'pipe-file') {
 
 export function getBundledPrismaCommand(moduleDir: string): CommandInvocation {
   return {
-    command: process.execPath,
+    command: getNodeRuntimeCommand(),
     args: [path.resolve(moduleDir, '../node_modules/prisma/build/index.js')],
   };
 }
 
 export function buildPtyCommand(programPath: string, args: string[]): CommandInvocation {
   return {
-    command: process.execPath,
+    command: getNodeRuntimeCommand(),
     args: ['-e', PTY_WRAPPER_SCRIPT, 'spawn', programPath, ...args],
   };
 }
@@ -160,7 +174,7 @@ export function buildPtyCommandWithStdin(
   stdinFile: string
 ): CommandInvocation {
   return {
-    command: process.execPath,
+    command: getNodeRuntimeCommand(),
     args: ['-e', PTY_WRAPPER_SCRIPT, 'pipe-file', programPath, stdinFile, ...args],
   };
 }

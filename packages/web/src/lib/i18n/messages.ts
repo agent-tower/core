@@ -380,6 +380,18 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Agent 配置': 'Agent Settings',
     '项目配置': 'Project Settings',
     '通知': 'Notifications',
+    'MCP 配置': 'MCP Config',
+    '复制下面的 JSON 到支持 MCP 的客户端配置中。桌面打包版使用 App 内置 runtime，不需要全局安装 agent-tower。':
+      'Copy this JSON into an MCP-capable client config. The packaged desktop app uses the bundled runtime and does not require a global agent-tower install.',
+    '复制配置': 'Copy Config',
+    'MCP 配置已复制': 'MCP config copied',
+    '复制 MCP 配置失败': 'Failed to copy MCP config',
+    'MCP 配置加载失败': 'Failed to load MCP config',
+    '无需全局 CLI': 'No global CLI needed',
+    '桌面打包 runtime': 'Desktop packaged runtime',
+    '工作区 runtime': 'Workspace runtime',
+    '当前版本只生成通用 MCP 配置，不会自动修改 Claude、Codex 或其他第三方客户端配置文件。':
+      'This version only generates generic MCP config and does not modify Claude, Codex, or other third-party client config files automatically.',
     '暂无项目，请先创建项目': 'No projects yet. Create one first.',
     '选择项目': 'Select Project',
     '选择项目...': 'Select project...',

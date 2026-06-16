@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Settings, X, Languages, Cpu, Users, FolderGit2, Bell } from 'lucide-react'
+import { Settings, X, Languages, Cpu, Users, FolderGit2, Bell, Cable } from 'lucide-react'
 import { useUIStore, type SettingsTab } from '@/stores/ui-store'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
@@ -21,6 +21,9 @@ const ProjectSettingsPage = lazy(() =>
 const NotificationSettingsPage = lazy(() =>
   import('@/pages/NotificationSettingsPage').then(m => ({ default: m.NotificationSettingsPage })),
 )
+const McpSettingsPage = lazy(() =>
+  import('@/pages/McpSettingsPage').then(m => ({ default: m.McpSettingsPage })),
+)
 const ProfileSettingsPage = lazy(() =>
   import('@/pages/ProfileSettingsPage').then(m => ({ default: m.ProfileSettingsPage })),
 )
@@ -31,6 +34,7 @@ const NAV_ITEMS: Array<{ id: SettingsTab; label: string; icon: typeof Languages 
   { id: 'team', label: '团队协作', icon: Users },
   { id: 'projects', label: '项目配置', icon: FolderGit2 },
   { id: 'notifications', label: '通知', icon: Bell },
+  { id: 'mcp', label: 'MCP 配置', icon: Cable },
 ]
 
 function TabContent({ tab }: { tab: SettingsTab }) {
@@ -45,6 +49,8 @@ function TabContent({ tab }: { tab: SettingsTab }) {
       return <ProjectSettingsPage />
     case 'notifications':
       return <NotificationSettingsPage />
+    case 'mcp':
+      return <McpSettingsPage />
     case 'agents-legacy':
       return <ProfileSettingsPage />
   }
