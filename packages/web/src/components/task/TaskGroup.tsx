@@ -188,20 +188,13 @@ function DraggableTaskCard({
         )}
         {task.updatedAt && (
           <span
-            className="shrink-0 text-[11px] text-muted-foreground/50 tabular-nums group-hover:hidden"
+            className="shrink-0 text-[11px] text-muted-foreground/50 tabular-nums"
           >
             {timeAgo(task.updatedAt)}
           </span>
         )}
         {project && (
-          <span
-            className="shrink-0 hidden group-hover:inline-flex items-center gap-1 max-w-[120px]"
-          >
-            <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${project.color.replace('text-', 'bg-')}`} />
-            <span className="truncate text-[11px] text-muted-foreground/60">
-              {project.name}
-            </span>
-          </span>
+          <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${project.color.replace('text-', 'bg-')}`} />
         )}
       </button>
 
@@ -283,6 +276,7 @@ export const TaskGroup = memo(function TaskGroup({
   useTick()
 
   const isEmpty = tasks.length === 0
+
   const isSourceGroup = isGlobalDragging && dragFromStatus === status
   const isTargetGroup = isGlobalDragging && dragFromStatus !== status
 
@@ -346,10 +340,9 @@ export const TaskGroup = memo(function TaskGroup({
             <span className="text-xs text-muted-foreground/50 py-2 px-4">{t('No tasks')}</span>
           ) : (
             tasks.map(task => {
-              const project = projects.find(p => p.id === task.projectId)
               const isSelected = selectedTaskId === task.id
               const isAgentActive = activeTaskIds?.has(task.id) ?? false
-
+              const project = task.projectId ? projects.find(p => p.id === task.projectId) : undefined
               return (
                 <DraggableTaskCard
                   key={task.id}
