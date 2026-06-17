@@ -34,6 +34,9 @@ mkdirSync(runtimeDir, { recursive: true });
 
 run('pnpm', ['--filter', '@agent-tower/server', 'deploy', '--legacy', '--prod', serverRuntimeDir]);
 
+const selfWorkspaceLink = path.join(serverRuntimeDir, 'node_modules/.pnpm/node_modules/@agent-tower/server');
+rmSync(selfWorkspaceLink, { force: true });
+
 requirePath(path.join(serverRuntimeDir, 'dist/cli.js'), 'server CLI build output');
 requirePath(path.join(serverRuntimeDir, 'prisma/schema.prisma'), 'Prisma schema');
 requirePath(path.join(serverRuntimeDir, 'node_modules/prisma/build/index.js'), 'Prisma CLI runtime');
