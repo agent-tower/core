@@ -3,6 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "description": "Desktop app for Agent Tower.",
+  "homepage": "https://github.com/agent-tower/core",
+  "desktopName": "agent-tower.desktop",
   "author": "Agent Tower <noreply@agent-tower.dev>",
   "license": "Apache-2.0",
   "type": "module",
@@ -99,6 +101,7 @@
       "icon": "build/icon.png",
       "maintainer": "Agent Tower <noreply@agent-tower.dev>",
       "synopsis": "Agent Tower desktop app",
+      "syncDesktopName": true,
       "target": [
         {
           "target": "AppImage",
