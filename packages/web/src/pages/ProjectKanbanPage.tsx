@@ -686,7 +686,7 @@ export function ProjectKanbanPage() {
             </button>
           </header>
           <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[8vh]">
-            <h1 className="max-w-full text-center text-2xl tracking-tight leading-tight text-foreground mb-6 break-words">{createTaskTitle}</h1>
+            <h1 className="max-w-full text-center text-[20px] font-medium tracking-tight leading-snug text-foreground mb-5 break-words">{createTaskTitle}</h1>
             <CreateTaskInput
               projects={createTaskProjectOptions}
               providers={createTaskProviderOptions}
@@ -869,7 +869,7 @@ export function ProjectKanbanPage() {
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center bg-background min-w-0 px-8 pb-[10vh]">
               <div className="w-full max-w-2xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
-                <h1 className="max-w-full text-center text-3xl tracking-tight leading-tight text-foreground mb-8 break-words">{createTaskTitle}</h1>
+                <h1 className="max-w-full text-center text-[26px] font-medium tracking-tight leading-snug text-foreground mb-6 break-words">{createTaskTitle}</h1>
                 <CreateTaskInput
                   projects={createTaskProjectOptions}
                   providers={createTaskProviderOptions}
