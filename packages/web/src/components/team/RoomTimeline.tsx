@@ -55,6 +55,7 @@ interface RoomTimelineProps {
   readOnlyMessage?: string
   onSendMessage: (input: PostRoomMessageInput) => Promise<unknown>
   onViewInvocationSession?: (sessionId: string) => void
+  changeSummaryBar?: ReactNode
   compactComposer?: boolean
   /** Constrain content width and center horizontally (e.g. when side panel is hidden) */
   centered?: boolean
@@ -847,6 +848,7 @@ export function RoomTimeline({
   readOnlyMessage,
   onSendMessage,
   onViewInvocationSession,
+  changeSummaryBar,
   compactComposer,
   centered,
 }: RoomTimelineProps) {
@@ -1154,7 +1156,7 @@ export function RoomTimeline({
             compactComposer ? 'px-3 py-3' : 'px-4 py-4',
           )}
         >
-          <div ref={contentRef} className={cn(compactComposer ? 'space-y-2.5' : 'space-y-3', centered && 'max-w-5xl mx-auto')}>
+          <div ref={contentRef} className={cn(compactComposer ? 'space-y-2.5' : 'space-y-3', centered && 'max-w-4xl mx-auto')}>
             {timelineItems.length === 0 ? (
               <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-200 bg-white text-neutral-500">
                 <Users size={24} className="text-neutral-400" />
@@ -1235,7 +1237,7 @@ export function RoomTimeline({
         'shrink-0 border-t border-transparent bg-white',
         compactComposer ? 'px-3 pb-2 pt-1.5' : 'px-6 pb-6 pt-2',
       )}>
-        <div className={cn(centered && 'max-w-5xl mx-auto')}>
+        <div className={cn(centered && 'max-w-4xl mx-auto')}>
         <ActiveWorkList
           invocations={activeInvocations}
           memberById={memberById}
@@ -1247,6 +1249,7 @@ export function RoomTimeline({
           stopPromptInvocationId={stopPromptInvocationId}
           onToggleStopConfirm={(invocationId) => setStopPromptInvocationId((current) => current === invocationId ? null : invocationId)}
         />
+        {!readOnly && changeSummaryBar}
         {readOnly ? (
           <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-500">
             {readOnlyMessage ?? t('This project is read-only')}

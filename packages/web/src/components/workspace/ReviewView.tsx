@@ -632,7 +632,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   const isLoadingMain = viewMode.kind === 'commit' ? commitFilesLoading : changesLoading
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex h-full w-full min-w-0 flex-col bg-background">
       {showGitBar && onConflict && onResolveConflicts && (
         <GitStatusBar
           workspaceId={workspaceId}
@@ -778,7 +778,10 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         </div>
 
         {/* 右侧栏：筛选 + 文件树 + 提交时间线 */}
-        <aside className="w-60 shrink-0 border-l border-border flex flex-col min-h-0">
+        <aside
+          className="shrink-0 border-l border-border flex flex-col min-h-0"
+          style={{ width: 'clamp(15rem, 24%, 22rem)' }}
+        >
           <div className="p-2 shrink-0">
             <div className="relative">
               <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/60" />

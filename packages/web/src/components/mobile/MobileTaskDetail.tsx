@@ -36,6 +36,7 @@ import {
   resolveDefaultWorkspaceId,
 } from '@/components/workspace/team-workspace-view'
 import { GitStatusBar } from '@/components/workspace/GitStatusBar'
+import { WorkspaceChangeSummaryBar } from '@/components/workspace/WorkspaceChangeSummaryBar'
 import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsDialog'
 import type { ConflictDetails } from '@/components/workspace/GitOperationsDialog'
 import { useGitStatus } from '@/hooks/use-workspaces'
@@ -199,6 +200,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const tabConfig = teamRun ? TEAM_RUN_TAB_CONFIG : SOLO_TAB_CONFIG
   const shouldLoadTaskBody = taskTeamRun === null
   const { data: taskBody, isLoading: isLoadingTaskBody } = useTaskBody(task.id, shouldLoadTaskBody)
+  const isProjectReadOnly = Boolean(task.projectArchivedAt)
+  const isProjectRepoDeleted = Boolean(task.projectRepoDeletedAt)
+  const projectReadOnlyMessage = isProjectRepoDeleted
+    ? t('项目已删除，本地仓库文件也已清理。恢复项目并重新绑定仓库后才能继续操作。')
+    : t('项目已删除。恢复项目后才能继续创建会话或修改任务。')
 
   useEffect(() => {
     setExplicitWorkspaceId(undefined)
@@ -253,18 +259,26 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
     () => getWorkspaceMergeTargetBranch(selectedWorkspace, workspaces, task?.mainBranch ?? ''),
     [selectedWorkspace, task?.mainBranch, workspaces],
   )
-  const { data: gitStatus } = useGitStatus(selectedWorkspaceOperationId ?? '', {
-    enabled: activeTab === 'changes',
+  const shouldLoadGitData = Boolean(
+    canRunGit
+    && selectedWorkspaceOperationId
+    && workingDir
+    && !isProjectReadOnly
+  )
+  const { data: gitStatus, isLoading: isGitStatusLoading } = useGitStatus(selectedWorkspaceOperationId ?? '', {
+    enabled: shouldLoadGitData,
   })
-  const { data: gitChangesData } = useGitChanges(workingDir, {
-    enabled: activeTab === 'changes',
+  const {
+    data: gitChangesData,
+  } = useGitChanges(workingDir, {
+    enabled: shouldLoadGitData,
   })
   const committedFileCount = gitChangesData?.committed?.length
   const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
   const [pendingConflictDetails, setPendingConflictDetails] = useState<ConflictDetails | null>(null)
 
   useEffect(() => {
-    const gitTab: VisibleGitTab | null = activeTab === 'changes'
+    const gitTab: VisibleGitTab | null = activeTab === 'changes' || (activeTab === 'chat' && shouldLoadGitData)
       ? 'changes'
       : activeTab === 'history'
         ? 'history'
@@ -283,7 +297,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
     return () => {
       setVisibleGitContext(null)
     }
-  }, [activeTab, selectedWorkspaceOperationId, setVisibleGitContext, workingDir])
+  }, [activeTab, selectedWorkspaceOperationId, setVisibleGitContext, shouldLoadGitData, workingDir])
 
   const conflictDetails = useMemo<ConflictDetails | null>(() => {
     if (gitStatus?.conflictOp && gitStatus.conflictedFiles.length > 0) {
@@ -385,11 +399,6 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   }, [focusedInvocation?.memberId, teamRun?.members])
   const displayedSession = focusedInvocationSessionId ? focusedSession : activeSession ?? null
   const isSessionActive = displayedSession?.status === SessionStatus.RUNNING || displayedSession?.status === SessionStatus.PENDING
-  const isProjectReadOnly = Boolean(task.projectArchivedAt)
-  const isProjectRepoDeleted = Boolean(task.projectRepoDeletedAt)
-  const projectReadOnlyMessage = isProjectRepoDeleted
-    ? t('项目已删除，本地仓库文件也已清理。恢复项目并重新绑定仓库后才能继续操作。')
-    : t('项目已删除。恢复项目后才能继续创建会话或修改任务。')
   const isReadOnlySession = useMemo(() => {
     if (!activeSession || !workspaces) return false
     const hasActiveWorkspace = workspaces.some((workspace) =>
@@ -523,6 +532,27 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const handleBackToTeamRoom = useCallback(() => {
     setFocusedInvocationSessionId(null)
   }, [])
+
+  const handleOpenChanges = useCallback(() => {
+    setActiveTab('changes')
+  }, [])
+
+  const workspaceChangeSummaryBar = shouldLoadGitData && selectedWorkspaceOperationId ? (
+    <WorkspaceChangeSummaryBar
+      workspaceId={selectedWorkspaceOperationId}
+      branchName={selectedWorkspaceBranch}
+      targetBranch={selectedWorkspaceMergeTargetBranch}
+      commitMessage={selectedWorkspaceCommitMessage}
+      changes={gitChangesData}
+      gitStatus={gitStatus}
+      isGitStatusLoading={isGitStatusLoading}
+      canRunGitOperations={canRunGit}
+      onOpenChanges={handleOpenChanges}
+      onRefreshCommitMessage={refreshWorkspaces}
+      onConflict={handleOpenResolveConflicts}
+      className="mb-2"
+    />
+  ) : null
 
   // ============ File Upload Handlers ============
 
@@ -790,6 +820,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                 readOnlyMessage={projectReadOnlyMessage}
                 onSendMessage={handlePostRoomMessage}
                 onViewInvocationSession={handleViewInvocationSession}
+                changeSummaryBar={workspaceChangeSummaryBar}
                 compactComposer
               />
             )}
@@ -902,6 +933,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
             </div>
           ) : sessionId && (
             <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
+              {workspaceChangeSummaryBar}
               <div
                 ref={inputContainerRef}
                 className="relative bg-white rounded-xl border border-neutral-200 shadow-sm focus-within:border-neutral-300"

@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo, useImperativeHandle } from "react"
-import { Code2, Terminal, Globe, GitGraph, History, Users } from "lucide-react"
+import React, { useState, useRef, useEffect, useMemo, useImperativeHandle, useCallback } from "react"
+import { Code2, Terminal, Globe, GitGraph, History, PanelRightClose, Users } from "lucide-react"
 import type { TeamRun, Workspace } from "@agent-tower/shared"
 
 import { cn } from "@/lib/utils"
@@ -47,6 +47,11 @@ export interface WorkspacePanelProps {
   workspaces?: Workspace[]
   selectedWorkspaceId?: string | null
   onSelectWorkspace?: (workspaceId: string) => void
+  /** Desktop side panel style: persistent icon rail + expandable content */
+  variant?: 'tabs' | 'rail'
+  expanded?: boolean
+  onExpandedChange?: (expanded: boolean) => void
+  minContentWidth?: number
   /** Imperative ref to switch tabs from parent */
   tabRef?: React.RefObject<{ setTab: (tab: WorkspaceTab) => void } | null>
 }
@@ -87,9 +92,10 @@ const TabButton: React.FC<{
   label: string
 }> = ({ active, onClick, icon, label }) => (
   <button
+    type="button"
     onClick={onClick}
     className={cn(
-      "flex items-center gap-2 px-4 py-2 text-xs font-medium transition-all rounded-t-md border-t border-x -mb-px",
+      "flex shrink-0 items-center gap-2 px-4 py-2 text-xs font-medium transition-all rounded-t-md border-t border-x -mb-px whitespace-nowrap",
       active
         ? "bg-white border-neutral-200 text-neutral-900 shadow-[0_-2px_6px_rgba(0,0,0,0.02)] z-10"
         : "bg-transparent border-transparent text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200/50"
@@ -97,6 +103,29 @@ const TabButton: React.FC<{
   >
     {icon}
     <span>{label}</span>
+  </button>
+)
+
+const RailTabButton: React.FC<{
+  active: boolean
+  onClick: () => void
+  icon: React.ReactNode
+  label: string
+}> = ({ active, onClick, icon, label }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    title={label}
+    aria-label={label}
+    aria-pressed={active}
+    className={cn(
+      "flex h-9 w-9 items-center justify-center rounded-lg border text-muted-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+      active
+        ? "border-neutral-900 bg-neutral-900 text-white shadow-sm"
+        : "border-transparent hover:border-border hover:bg-background hover:text-foreground"
+    )}
+  >
+    {icon}
   </button>
 )
 
@@ -116,10 +145,25 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     workspaces,
     selectedWorkspaceId,
     onSelectWorkspace,
+    variant = 'tabs',
+    expanded,
+    onExpandedChange,
+    minContentWidth = 520,
     tabRef,
   }) {
     const { t } = useI18n()
     const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
+    const isRailVariant = variant === 'rail'
+    const [internalExpanded, setInternalExpanded] = useState(false)
+    const isExpanded = isRailVariant ? expanded ?? internalExpanded : true
+
+    const setPanelExpanded = useCallback((nextExpanded: boolean) => {
+      if (expanded === undefined) {
+        setInternalExpanded(nextExpanded)
+      }
+      onExpandedChange?.(nextExpanded)
+    }, [expanded, onExpandedChange])
+
     const tabs = useMemo(() => {
       const baseTabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
       const availableTabs = readOnly
@@ -132,9 +176,16 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     }, [hideChanges, readOnly, teamRun])
     const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(hideChanges ? "history" : "review")
 
+    const selectTab = useCallback((tab: WorkspaceTabWithTeam) => {
+      setActiveTab(tab)
+      if (isRailVariant) {
+        setPanelExpanded(true)
+      }
+    }, [isRailVariant, setPanelExpanded])
+
     useImperativeHandle(tabRef, () => ({
-      setTab: (tab: WorkspaceTab) => setActiveTab(tab),
-    }), [])
+      setTab: (tab: WorkspaceTab) => selectTab(tab),
+    }), [selectTab])
 
     // Fetch project to get quickCommands
     const { data: project } = useProject(projectId ?? '')
@@ -156,18 +207,15 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     }, [workingDir])
 
     useEffect(() => {
-      if (!readOnly) return
-      if (activeTab === 'terminal') {
-        setActiveTab(hideChanges ? 'history' : 'review')
+      if (tabs.some((tab) => tab.key === activeTab)) return
+      setActiveTab(tabs[0]?.key ?? (hideChanges ? 'history' : 'review'))
+    }, [activeTab, hideChanges, tabs])
+
+    useEffect(() => {
+      if (isRailVariant && !isExpanded) {
+        return
       }
-    }, [activeTab, hideChanges, readOnly])
 
-    useEffect(() => {
-      if (teamRun || activeTab !== 'team-status') return
-      setActiveTab(hideChanges ? 'history' : 'review')
-    }, [activeTab, hideChanges, teamRun])
-
-    useEffect(() => {
       const gitTab: VisibleGitTab | null = activeTab === 'review'
         ? 'changes'
         : activeTab === 'history'
@@ -183,92 +231,146 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
       return () => {
         setVisibleGitContext(null)
       }
-    }, [activeTab, setVisibleGitContext, workingDir, workspaceId])
+    }, [activeTab, isExpanded, isRailVariant, setVisibleGitContext, workingDir, workspaceId])
 
     const showSwitcher = !!onSelectWorkspace && buildWorkspaceViews(workspaces, teamRun).length > 1
+    const activeTabConfig = tabs.find((tab) => tab.key === activeTab) ?? tabs[0]
+    const translatedActiveLabel = activeTabConfig ? t(activeTabConfig.label) : ''
 
-    return (
-      <div className={cn("flex flex-col h-full bg-white", className)}>
-        {readOnly && (
-          <div className="mx-2 mt-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
-            {repoDeleted
-              ? t('项目已删除且本地仓库文件已清理。这里只保留历史视图。')
-              : t('项目已删除。Workspace 以只读模式展示历史内容。')}
+    const readOnlyNotice = readOnly ? (
+      <div className="mx-2 mt-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
+        {repoDeleted
+          ? t('项目已删除且本地仓库文件已清理。这里只保留历史视图。')
+          : t('项目已删除。Workspace 以只读模式展示历史内容。')}
+      </div>
+    ) : null
+
+    const content = (
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        {showSwitcher && (
+          <div className="shrink-0 px-3 py-1.5 border-b border-neutral-100 bg-neutral-50/60">
+            <WorkspaceSwitcher
+              workspaces={workspaces}
+              teamRun={teamRun}
+              selectedWorkspaceId={selectedWorkspaceId}
+              onSelectWorkspace={onSelectWorkspace!}
+              buttonClassName="h-7 text-[11px]"
+            />
           </div>
         )}
+
+        {/* Tab body — fills remaining space; absolute children stay within */}
+        <div className="relative flex-1 min-h-0 overflow-hidden">
+          {activeTab === "team-status" && teamRun && (
+            teamStatus
+          )}
+
+          {activeTab === "editor" && (
+            <EditorView workingDir={workingDir} readOnly={readOnly} />
+          )}
+
+          {terminalDirs.map(dir => {
+            const visible = activeTab === "terminal" && workingDir === dir
+            return (
+              <div
+                key={dir}
+                className="h-full absolute inset-0"
+                style={{ display: visible ? 'block' : 'none' }}
+              >
+                <TerminalTabs cwd={dir} isVisible={visible} quickCommands={quickCommands} />
+              </div>
+            )
+          })}
+
+          {activeTab === "preview" && (
+            <PreviewPanel workspaceId={workspaceId} readOnly={readOnly} />
+          )}
+
+          {activeTab === "review" && (
+            <ReviewView
+              workingDir={workingDir}
+              workspaceId={workspaceId}
+              branchName={gitProps?.branchName}
+              targetBranch={gitProps?.targetBranch}
+              commitMessage={gitProps?.commitMessage}
+              canRunGitOperations={gitProps?.canRunGitOperations}
+              onRefreshCommitMessage={gitProps?.onRefreshCommitMessage}
+              onConflict={gitProps?.onConflict}
+              onResolveConflicts={gitProps?.onResolveConflicts}
+            />
+          )}
+
+          {activeTab === "history" && (
+            <HistoryView workingDir={workingDir} />
+          )}
+        </div>
+      </div>
+    )
+
+    if (isRailVariant) {
+      return (
+        <div className={cn("flex h-full w-full min-w-0 bg-white", className)}>
+          <div className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-l border-border bg-muted/35 px-1.5 py-2">
+            {tabs.map((tab) => (
+              <RailTabButton
+                key={tab.key}
+                active={isExpanded && activeTab === tab.key}
+                onClick={() => selectTab(tab.key)}
+                icon={tab.icon}
+                label={t(tab.label)}
+              />
+            ))}
+          </div>
+
+          {isExpanded && (
+            <div
+              className="flex h-full min-w-0 flex-1 flex-col border-l border-border bg-background"
+              style={{ minWidth: minContentWidth }}
+            >
+              {readOnlyNotice}
+              <div className="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-3">
+                <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/35 text-muted-foreground">
+                    {activeTabConfig?.icon}
+                  </span>
+                  <span className="truncate">{translatedActiveLabel}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPanelExpanded(false)}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                  title={t('收起')}
+                  aria-label={t('收起')}
+                >
+                  <PanelRightClose size={15} />
+                </button>
+              </div>
+              {content}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    return (
+      <div className={cn("flex h-full w-full min-w-0 flex-col bg-white", className)}>
+        {readOnly && (
+          readOnlyNotice
+        )}
         {/* Tab 栏 — folder style */}
-        <div className="flex items-center px-2 pt-2 border-b border-neutral-200 bg-neutral-100/80 shrink-0 gap-1 select-none">
+        <div className="flex items-center overflow-x-auto scrollbar-app-thin px-2 pt-2 border-b border-neutral-200 bg-neutral-100/80 shrink-0 gap-1 select-none">
           {tabs.map((tab) => (
             <TabButton
               key={tab.key}
               active={activeTab === tab.key}
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => selectTab(tab.key)}
               icon={tab.icon}
               label={t(tab.label)}
             />
           ))}
         </div>
 
-        {/* Content area: flex column so switcher toolbar + tab body stack properly */}
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          {showSwitcher && (
-            <div className="shrink-0 px-3 py-1.5 border-b border-neutral-100 bg-neutral-50/60">
-              <WorkspaceSwitcher
-                workspaces={workspaces}
-                teamRun={teamRun}
-                selectedWorkspaceId={selectedWorkspaceId}
-                onSelectWorkspace={onSelectWorkspace!}
-                buttonClassName="h-7 text-[11px]"
-              />
-            </div>
-          )}
-
-          {/* Tab body — fills remaining space; absolute children stay within */}
-          <div className="relative flex-1 min-h-0 overflow-hidden">
-            {activeTab === "team-status" && teamRun && (
-              teamStatus
-            )}
-
-            {activeTab === "editor" && (
-              <EditorView workingDir={workingDir} readOnly={readOnly} />
-            )}
-
-            {terminalDirs.map(dir => {
-              const visible = activeTab === "terminal" && workingDir === dir
-              return (
-                <div
-                  key={dir}
-                  className="h-full absolute inset-0"
-                  style={{ display: visible ? 'block' : 'none' }}
-                >
-                  <TerminalTabs cwd={dir} isVisible={visible} quickCommands={quickCommands} />
-                </div>
-              )
-            })}
-
-            {activeTab === "preview" && (
-              <PreviewPanel workspaceId={workspaceId} readOnly={readOnly} />
-            )}
-
-            {activeTab === "review" && (
-              <ReviewView
-                workingDir={workingDir}
-                workspaceId={workspaceId}
-                branchName={gitProps?.branchName}
-                targetBranch={gitProps?.targetBranch}
-                commitMessage={gitProps?.commitMessage}
-                canRunGitOperations={gitProps?.canRunGitOperations}
-                onRefreshCommitMessage={gitProps?.onRefreshCommitMessage}
-                onConflict={gitProps?.onConflict}
-                onResolveConflicts={gitProps?.onResolveConflicts}
-              />
-            )}
-
-            {activeTab === "history" && (
-              <HistoryView workingDir={workingDir} />
-            )}
-          </div>
-        </div>
+        {content}
       </div>
     )
   }

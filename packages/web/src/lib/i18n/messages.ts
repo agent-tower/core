@@ -757,6 +757,10 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '中止中...': 'Aborting...',
     '正在检查工作区状态...': 'Checking workspace status...',
     '当前分支还没有任何变更': 'No changes on this branch yet',
+    '调整工作区宽度': 'Resize workspace panel',
+    '{files} 个文件 · {lines} 行': '{files} files · {lines} lines',
+    '更新': 'Update',
+    '合并': 'Merge',
     '{count} 个本地改动未处理，需要先整理后再继续':
       '{count} local changes pending — clean them up before continuing',
     '{count} 个文件存在冲突，需要处理后继续':

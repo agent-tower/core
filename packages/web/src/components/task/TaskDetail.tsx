@@ -15,7 +15,7 @@ import { LogStream } from '@/components/agent'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
-import { Paperclip, ArrowUp, ArrowDown, ArrowLeft, PanelRightClose, PanelRightOpen, Play, Square, Code2, Trash2, MoreVertical, RotateCcw, Plus } from 'lucide-react'
+import { Paperclip, ArrowUp, ArrowDown, ArrowLeft, Play, Square, Code2, Trash2, MoreVertical, RotateCcw, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
@@ -29,6 +29,7 @@ import {
 } from '@/components/workspace/team-workspace-view'
 import { teamRunQueryKeys, useTaskTeamRun, useRoomMessages, usePostRoomMessage } from '@/hooks/use-team-run'
 import { useWorkspaces, useOpenInEditor, useGitStatus, useCreateWorkspace, useReactivateWorkspace } from '@/hooks/use-workspaces'
+import { useGitChanges } from '@/hooks/use-git'
 import { queryKeys } from '@/hooks/query-keys'
 import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
@@ -51,6 +52,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { ConflictBanner } from '@/components/workspace/ConflictBanner'
 import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsDialog'
+import { WorkspaceChangeSummaryBar } from '@/components/workspace/WorkspaceChangeSummaryBar'
 import { type ConflictDetails } from '@/components/workspace/GitOperationsDialog'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
@@ -95,9 +97,10 @@ interface TaskDetailProps {
 
 // ============ Layout Constants ============
 
-const CHAT_WIDTH_DEFAULT = 675
-const CHAT_WIDTH_MIN = 320
-const CHAT_WIDTH_MAX = 1200
+const WORKSPACE_PANEL_MIN_WIDTH = 520
+const WORKSPACE_PANEL_RAIL_WIDTH = 48
+const WORKSPACE_RESIZER_WIDTH = 4
+const CHAT_PANEL_MIN_WIDTH = 420
 
 // ============ Empty State (hoisted JSX) ============
 
@@ -272,14 +275,12 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   })
 
   // Layout state
-  const [chatWidth, setChatWidth] = useState(CHAT_WIDTH_DEFAULT)
-  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(true)
-  const [isResizing, setIsResizing] = useState(false)
-
-  // Transient refs for resize — avoid re-renders during drag (rerender-use-ref-transient-values)
-  const startXRef = useRef<number>(0)
-  const startWidthRef = useRef<number>(0)
-  const chatPanelRef = useRef<HTMLDivElement>(null)
+  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(false)
+  const [workspaceContentWidth, setWorkspaceContentWidth] = useState(WORKSPACE_PANEL_MIN_WIDTH)
+  const [isWorkspaceResizing, setIsWorkspaceResizing] = useState(false)
+  const startResizeXRef = useRef<number>(0)
+  const startWorkspaceWidthRef = useRef<number>(WORKSPACE_PANEL_MIN_WIDTH)
+  const mainAreaRef = useRef<HTMLDivElement>(null)
 
   // ============ Session Discovery ============
 
@@ -466,17 +467,37 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
 
   // ============ Git Status ============
 
-  const visibleGitContext = useGitVisibilityStore((state) => state.visibleContext)
-  const shouldLoadTaskDetailGitStatus = Boolean(
-    isWorkspaceOpen
-    && canRunSelectedWorkspaceGitOperations
+  const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
+  const shouldLoadTaskDetailGitData = Boolean(
+    canRunSelectedWorkspaceGitOperations
     && selectedWorkspaceOperationId
-    && visibleGitContext?.workspaceId === selectedWorkspaceOperationId
-    && visibleGitContext.tab === 'changes'
+    && workingDir
+    && !isProjectReadOnly
   )
-  const { data: gitStatus } = useGitStatus(selectedWorkspaceOperationId ?? '', {
-    enabled: shouldLoadTaskDetailGitStatus,
+  const { data: gitStatus, isLoading: isGitStatusLoading } = useGitStatus(selectedWorkspaceOperationId ?? '', {
+    enabled: shouldLoadTaskDetailGitData,
   })
+  const {
+    data: gitChangesData,
+  } = useGitChanges(workingDir, {
+    enabled: shouldLoadTaskDetailGitData,
+  })
+
+  useEffect(() => {
+    if (isWorkspaceOpen || !shouldLoadTaskDetailGitData || !selectedWorkspaceOperationId || !workingDir) {
+      return
+    }
+
+    setVisibleGitContext({
+      workspaceId: selectedWorkspaceOperationId,
+      workingDir,
+      tab: 'changes',
+    })
+
+    return () => {
+      setVisibleGitContext(null)
+    }
+  }, [isWorkspaceOpen, selectedWorkspaceOperationId, setVisibleGitContext, shouldLoadTaskDetailGitData, workingDir])
 
   // Collect sessions from active workspace for ResolveConflictsDialog
   const selectedWorkspaceSessions = selectedWorkspace?.sessions ?? []
@@ -828,55 +849,75 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
     }
   }, [addFiles])
 
-  // Resize event handlers (useCallback)
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    const deltaX = e.clientX - startXRef.current
-    const newWidth = Math.max(CHAT_WIDTH_MIN, Math.min(startWidthRef.current + deltaX, CHAT_WIDTH_MAX))
-    // Write directly to DOM via ref for smooth drag — no re-render until mouseup
-    if (chatPanelRef.current) {
-      chatPanelRef.current.style.width = `${newWidth}px`
-    }
+  const clampWorkspaceContentWidth = useCallback((width: number) => {
+    const availableWidth = mainAreaRef.current?.getBoundingClientRect().width
+      ?? (typeof window !== 'undefined' ? window.innerWidth : undefined)
+    const maxWidth = availableWidth
+      ? Math.max(
+          WORKSPACE_PANEL_MIN_WIDTH,
+          availableWidth - WORKSPACE_PANEL_RAIL_WIDTH - WORKSPACE_RESIZER_WIDTH - CHAT_PANEL_MIN_WIDTH,
+        )
+      : WORKSPACE_PANEL_MIN_WIDTH
+    return Math.max(WORKSPACE_PANEL_MIN_WIDTH, Math.min(Math.round(width), maxWidth))
   }, [])
 
-  const handleMouseUp = useCallback(() => {
-    setIsResizing(false)
-    // Commit final width from DOM to state
-    if (chatPanelRef.current) {
-      const finalWidth = chatPanelRef.current.getBoundingClientRect().width
-      setChatWidth(Math.max(CHAT_WIDTH_MIN, Math.min(Math.round(finalWidth), CHAT_WIDTH_MAX)))
-    }
+  const handleWorkspaceResizeMove = useCallback((e: MouseEvent) => {
+    const deltaX = e.clientX - startResizeXRef.current
+    setWorkspaceContentWidth(clampWorkspaceContentWidth(startWorkspaceWidthRef.current - deltaX))
+  }, [clampWorkspaceContentWidth])
+
+  const handleWorkspaceResizeEnd = useCallback(() => {
+    setIsWorkspaceResizing(false)
     document.body.style.cursor = ''
     document.body.style.userSelect = ''
   }, [])
 
-  // Attach/detach global listeners when resizing
   useEffect(() => {
-    if (!isResizing) return
+    if (!isWorkspaceResizing) return
 
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
+    document.addEventListener('mousemove', handleWorkspaceResizeMove)
+    document.addEventListener('mouseup', handleWorkspaceResizeEnd)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
 
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
+      document.removeEventListener('mousemove', handleWorkspaceResizeMove)
+      document.removeEventListener('mouseup', handleWorkspaceResizeEnd)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
-  }, [isResizing, handleMouseMove, handleMouseUp])
+  }, [handleWorkspaceResizeEnd, handleWorkspaceResizeMove, isWorkspaceResizing])
 
-  const handleMouseDownResize = useCallback((e: React.MouseEvent) => {
+  const handleWorkspaceResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    startXRef.current = e.clientX
-    startWidthRef.current = chatWidth
-    setIsResizing(true)
-  }, [chatWidth])
+    startResizeXRef.current = e.clientX
+    startWorkspaceWidthRef.current = workspaceContentWidth
+    setIsWorkspaceResizing(true)
+  }, [workspaceContentWidth])
 
-  // Toggle workspace panel
-  const handleToggleWorkspace = useCallback(() => {
-    setIsWorkspaceOpen((prev) => !prev)
-  }, [])
+  useEffect(() => {
+    if (!isWorkspaceOpen || isWorkspaceResizing) return
+    setWorkspaceContentWidth((current) => clampWorkspaceContentWidth(current))
+  }, [clampWorkspaceContentWidth, isWorkspaceOpen, isWorkspaceResizing])
+
+  useEffect(() => {
+    if (!isWorkspaceOpen) return
+
+    const handleResize = () => {
+      setWorkspaceContentWidth((current) => clampWorkspaceContentWidth(current))
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [clampWorkspaceContentWidth, isWorkspaceOpen])
+
+  const handleOpenWorkspaceChanges = useCallback(() => {
+    setWorkspaceContentWidth((current) => clampWorkspaceContentWidth(current))
+    setIsWorkspaceOpen(true)
+    requestAnimationFrame(() => {
+      workspacePanelTabRef.current?.setTab('review')
+    })
+  }, [clampWorkspaceContentWidth])
 
   // textarea auto-resize in onChange handler (not useEffect)
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -887,6 +928,22 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
     el.style.height = `${Math.max(60, Math.min(scrollHeight, 300))}px`
   }, [])
 
+  const workspaceChangeSummaryBar = shouldLoadTaskDetailGitData && selectedWorkspaceOperationId ? (
+    <WorkspaceChangeSummaryBar
+      workspaceId={selectedWorkspaceOperationId}
+      branchName={selectedWorkspaceBranch}
+      targetBranch={selectedWorkspaceMergeTargetBranch}
+      commitMessage={selectedWorkspaceCommitMessage}
+      changes={gitChangesData}
+      gitStatus={gitStatus}
+      isGitStatusLoading={isGitStatusLoading}
+      canRunGitOperations={canRunSelectedWorkspaceGitOperations}
+      onOpenChanges={handleOpenWorkspaceChanges}
+      onRefreshCommitMessage={refreshWorkspaces}
+      onConflict={handleOpenResolveConflicts}
+      className="mb-1.5"
+    />
+  ) : null
 
   // Early return for null task
   if (!task) {
@@ -929,15 +986,6 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
               title={t('Open in IDE')}
             >
               <Code2 size={16} />
-            </button>
-
-            {/* Toggle Workspace */}
-            <button
-              onClick={handleToggleWorkspace}
-              className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
-              title={t('Toggle Workspace')}
-            >
-              {isWorkspaceOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
             </button>
 
             {/* More Actions — 创建 TeamRun / 重新开始 / 删除任务 */}
@@ -1007,14 +1055,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
       )}
 
       {/* Main Area — two-column layout */}
-      <div className="flex-1 flex overflow-hidden">
+      <div ref={mainAreaRef} className="flex-1 flex overflow-hidden">
         {/* Chat Panel (LogStream + Input) */}
         <div
-          ref={chatPanelRef}
-          className={`flex flex-col bg-background relative ${
-            isWorkspaceOpen ? 'flex-shrink-0' : 'flex-1'
-          }`}
-          style={{ width: isWorkspaceOpen ? chatWidth : '100%' }}
+          className="flex min-w-0 flex-1 flex-col bg-background relative"
         >
           {isTeamRunMode && teamRun ? (
             focusedInvocationSessionId ? (
@@ -1049,7 +1093,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 </div>
                 <div className="relative flex-1 min-h-0">
                   <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
-                    <div ref={contentRef} className={`w-full ${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+                    <div ref={contentRef} className="w-full max-w-4xl mx-auto">
                       {isLoadingSnapshot ? (
                         <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground/70">
                           <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1081,7 +1125,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 </div>
                 {todos.length > 0 && (
                   <div className="px-6 pt-2 pb-1 bg-background flex-shrink-0 border-t border-border/60">
-                    <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+                    <div className="max-w-4xl mx-auto">
                       <TodoPanel todos={todos} />
                     </div>
                   </div>
@@ -1095,7 +1139,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 readOnlyMessage={projectReadOnlyMessage}
                 onSendMessage={handlePostRoomMessage}
                 onViewInvocationSession={handleViewInvocationSession}
-                centered={!isWorkspaceOpen}
+                changeSummaryBar={workspaceChangeSummaryBar}
+                centered
               />
             )
           ) : (
@@ -1103,7 +1148,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           {/* Scrollable Logs */}
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
-            <div ref={contentRef} className={`w-full min-w-0 ${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+            <div ref={contentRef} className="w-full min-w-0 max-w-4xl mx-auto">
               {/* Task Description */}
               {(isLoadingTaskBody || taskBody?.body) && (
                 <div className="mb-4 pb-4 border-b border-border/60 min-w-0">
@@ -1228,7 +1273,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           {/* Todo Panel — fixed between logs and input */}
           {todos.length > 0 && (
             <div className="px-6 pt-2 pb-1 bg-background flex-shrink-0 border-t border-border/60">
-              <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+              <div className="max-w-4xl mx-auto">
                 <TodoPanel todos={todos} />
               </div>
             </div>
@@ -1237,7 +1282,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           {/* Input Area */}
           {isProjectReadOnly ? (
             <div className="p-6 pt-3 bg-background flex-shrink-0 w-full z-10 pb-6 border-t border-border/60">
-              <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+              <div className="max-w-4xl mx-auto">
                 <div className="bg-muted/50 rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground">
                   {projectReadOnlyMessage}
                 </div>
@@ -1245,7 +1290,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
             </div>
           ) : isReadOnlySession ? (
             <div className="p-6 pt-3 bg-background flex-shrink-0 w-full z-10 pb-6 border-t border-border/60">
-              <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
+              <div className="max-w-4xl mx-auto">
                 <div className="flex items-center justify-between bg-muted/50 rounded-xl border border-border px-4 py-3">
                   <span className="text-sm text-muted-foreground">{t('代码已合并，以上为历史沟通记录')}</span>
                   <Button size="sm" onClick={handleOpenStartDialog}>
@@ -1262,13 +1307,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
-            <div className={`${!isWorkspaceOpen ? 'max-w-5xl mx-auto' : ''}`}>
-            <div
-              ref={inputContainerRef}
-              className={`relative bg-background rounded-xl border hover:border-ring/40 focus-within:border-ring/60 transition-colors duration-200 ${
-              isDragOver ? 'border-info bg-info/5' : 'border-border'
-            }`}
-            >
+            <div className="max-w-4xl mx-auto">
+              {workspaceChangeSummaryBar}
+              <div
+                ref={inputContainerRef}
+                className={`relative bg-background rounded-xl border hover:border-ring/40 focus-within:border-ring/60 transition-colors duration-200 ${
+                isDragOver ? 'border-info bg-info/5' : 'border-border'
+              }`}
+              >
               {/* Attachment Preview */}
               <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
 
@@ -1374,50 +1420,67 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           )}
         </div>
 
-        {/* Resizer — only visible when WorkspacePanel is open */}
         {isWorkspaceOpen && (
           <div
-            className="w-1 cursor-col-resize hover:bg-border active:bg-ring/50 transition-colors z-30 flex-shrink-0 border-l border-border"
-            onMouseDown={handleMouseDownResize}
+            className="w-1 cursor-col-resize hover:bg-border active:bg-ring/40 transition-colors z-50 -ml-[2px] flex-shrink-0 h-full"
+            onMouseDown={handleWorkspaceResizeStart}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t('调整工作区宽度')}
           />
         )}
 
-        {/* Right: WorkspacePanel — takes remaining space */}
-        {isWorkspaceOpen && (
-          <div className="flex-1 flex flex-col min-w-0 bg-background">
-            <WorkspacePanel
-              sessionId={sessionId || undefined}
-              workspaceId={resolvedWorkspaceId}
-              workingDir={workingDir}
-              projectId={task.projectId}
-              readOnly={isProjectReadOnly}
-              repoDeleted={isProjectRepoDeleted}
-              teamRun={teamRun}
-              teamStatus={teamRun ? (
-                <TeamStatusPanel
-                  teamRun={teamRun}
-                  workspaces={workspaces}
-                  selectedWorkspaceId={resolvedWorkspaceId}
-                  onSelectWorkspace={setExplicitWorkspaceId}
-                  onViewInvocationSession={handleViewInvocationSession}
-                />
-              ) : undefined}
-              workspaces={workspaces}
-              selectedWorkspaceId={resolvedWorkspaceId}
-              onSelectWorkspace={setExplicitWorkspaceId}
-              tabRef={workspacePanelTabRef}
-              gitProps={canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId ? {
-                branchName: selectedWorkspaceBranch,
-                targetBranch: selectedWorkspaceMergeTargetBranch,
-                commitMessage: selectedWorkspaceCommitMessage,
-                canRunGitOperations: true,
-                onRefreshCommitMessage: refreshWorkspaces,
-                onConflict: handleOpenResolveConflicts,
-                onResolveConflicts: () => handleOpenResolveConflicts(),
-              } : undefined}
-            />
-          </div>
-        )}
+        {/* Right: WorkspacePanel — rail is always visible, content expands on demand */}
+        <div
+          className="flex h-full flex-shrink-0 bg-background"
+          style={{
+            width: isWorkspaceOpen
+              ? WORKSPACE_PANEL_RAIL_WIDTH + workspaceContentWidth
+              : WORKSPACE_PANEL_RAIL_WIDTH,
+          }}
+        >
+          <WorkspacePanel
+            sessionId={sessionId || undefined}
+            workspaceId={resolvedWorkspaceId}
+            workingDir={workingDir}
+            projectId={task.projectId}
+            readOnly={isProjectReadOnly}
+            repoDeleted={isProjectRepoDeleted}
+            teamRun={teamRun}
+            teamStatus={teamRun ? (
+              <TeamStatusPanel
+                teamRun={teamRun}
+                workspaces={workspaces}
+                selectedWorkspaceId={resolvedWorkspaceId}
+                onSelectWorkspace={setExplicitWorkspaceId}
+                onViewInvocationSession={handleViewInvocationSession}
+              />
+            ) : undefined}
+            workspaces={workspaces}
+            selectedWorkspaceId={resolvedWorkspaceId}
+            onSelectWorkspace={setExplicitWorkspaceId}
+            variant="rail"
+            expanded={isWorkspaceOpen}
+            onExpandedChange={(expanded) => {
+              if (expanded) {
+                setWorkspaceContentWidth((current) => clampWorkspaceContentWidth(current))
+              }
+              setIsWorkspaceOpen(expanded)
+            }}
+            minContentWidth={WORKSPACE_PANEL_MIN_WIDTH}
+            tabRef={workspacePanelTabRef}
+            gitProps={canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId ? {
+              branchName: selectedWorkspaceBranch,
+              targetBranch: selectedWorkspaceMergeTargetBranch,
+              commitMessage: selectedWorkspaceCommitMessage,
+              canRunGitOperations: true,
+              onRefreshCommitMessage: refreshWorkspaces,
+              onConflict: handleOpenResolveConflicts,
+              onResolveConflicts: () => handleOpenResolveConflicts(),
+            } : undefined}
+          />
+        </div>
+
       </div>
 
       {/* Start Agent Dialog */}
