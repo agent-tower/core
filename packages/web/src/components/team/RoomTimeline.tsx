@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
-import type { UrlTransform } from 'streamdown'
+import type { StreamdownProps, UrlTransform } from 'streamdown'
 import type { AgentInvocation, Attachment, RoomMessage, StructuredMention, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
 import type { PostRoomMessageInput } from '@/hooks/use-team-run'
 import { useAttachmentMetadata, useAttachments } from '@/hooks/use-attachments'
@@ -45,7 +45,10 @@ import {
 } from './room-mentions'
 import { ACTIVE_ROOM_INVOCATION_STATUSES, buildRoomTimelineItems } from './room-timeline-items'
 import { ActiveWorkList } from './ActiveWorkList'
-import { streamdownComponents } from '@/lib/streamdown-components'
+import {
+  streamdownComponents,
+  streamdownMermaidControls,
+} from '@/lib/streamdown-components'
 import 'streamdown/styles.css'
 
 interface RoomTimelineProps {
@@ -63,6 +66,46 @@ interface RoomTimelineProps {
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 const INLINE_PREVIEW_MAX_LENGTH = 240
+const MERMAID_CODE_BLOCK_PATTERN = /(^|\n)(```|~~~)[^\S\r\n]*mermaid(?:[\s\r\n]|$)/i
+
+let streamdownMermaidPluginsPromise: Promise<StreamdownProps['plugins']> | null = null
+
+export function hasMermaidCodeBlock(content: string) {
+  return MERMAID_CODE_BLOCK_PATTERN.test(content)
+}
+
+function loadStreamdownMermaidPlugins() {
+  streamdownMermaidPluginsPromise ??= import('@streamdown/mermaid').then(({ mermaid }) => ({ mermaid }))
+  return streamdownMermaidPluginsPromise
+}
+
+function useStreamdownMermaidPlugins(content: string) {
+  const shouldLoadMermaid = hasMermaidCodeBlock(content)
+  const [plugins, setPlugins] = useState<StreamdownProps['plugins']>()
+
+  useEffect(() => {
+    if (!shouldLoadMermaid) {
+      setPlugins(undefined)
+      return
+    }
+
+    let isActive = true
+    loadStreamdownMermaidPlugins()
+      .then((loadedPlugins) => {
+        if (isActive) setPlugins(loadedPlugins)
+      })
+      .catch(() => {
+        streamdownMermaidPluginsPromise = null
+        if (isActive) setPlugins(undefined)
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [shouldLoadMermaid])
+
+  return shouldLoadMermaid ? plugins : undefined
+}
 
 type PendingRoomMessageStatus = 'sending' | 'failed'
 type PendingRoomMessage = RoomMessage & {
@@ -228,6 +271,8 @@ function RoomMessageMarkdown({
   content: string
   isUser?: boolean
 }) {
+  const mermaidPlugins = useStreamdownMermaidPlugins(content)
+
   return (
     <div
       className={cn(
@@ -249,7 +294,12 @@ function RoomMessageMarkdown({
           : 'text-neutral-800 prose-strong:text-neutral-900',
       )}
     >
-      <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
+      <Streamdown
+        urlTransform={attachmentUrlTransform}
+        components={streamdownComponents}
+        plugins={mermaidPlugins}
+        controls={mermaidPlugins ? streamdownMermaidControls : undefined}
+      >
         {content}
       </Streamdown>
     </div>

@@ -1,5 +1,5 @@
 import type { ImgHTMLAttributes, LiHTMLAttributes } from 'react'
-import type { Components, ExtraProps } from 'streamdown'
+import type { Components, ExtraProps, StreamdownProps } from 'streamdown'
 import { cn } from '@/lib/utils'
 
 const MarkdownImage = ({
@@ -36,4 +36,13 @@ const MarkdownListItem = ({
 export const streamdownComponents: Components = {
   img: MarkdownImage,
   li: MarkdownListItem,
+}
+
+export const streamdownMermaidControls: StreamdownProps['controls'] = {
+  mermaid: {
+    download: true,
+    copy: true,
+    fullscreen: true,
+    panZoom: true,
+  },
 }
