@@ -8,6 +8,7 @@ import { queryKeys } from '@/hooks/query-keys'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
+import { AgentLogo } from '@/components/agent'
 import { useI18n } from '@/lib/i18n'
 import { WorkspaceKind } from '@agent-tower/shared'
 
@@ -113,6 +114,7 @@ export function StartAgentDialog({
     return {
       value: provider.id,
       label: isAvailable ? provider.name : `${provider.name}${t(' (不可用)')}`,
+      icon: <AgentLogo agentType={provider.agentType} className="size-4" />,
       disabled: !isAvailable,
     }
   })

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { Cpu, ChevronDown, Check } from 'lucide-react'
+import { ChevronDown, Check } from 'lucide-react'
+import { AgentLogo } from '@/components/agent'
 import { truncateMiddle } from '@/lib/utils'
 import type { ProviderWithAvailability } from '@/hooks/use-providers'
 import { useI18n } from '@/lib/i18n'
@@ -49,8 +50,8 @@ export function ProviderSelector({
     // 如果只有一个或没有 provider，显示静态文本
     return (
       <div className="flex items-center gap-1 text-xs text-neutral-400 px-2 py-1.5 select-none cursor-default">
-        <Cpu size={14} className="shrink-0" />
-        <span>{currentProvider?.provider.name ? truncateMiddle(currentProvider.provider.name, 12) : agentType}</span>
+        <AgentLogo agentType={currentProvider?.provider.agentType ?? agentType} className="size-3.5" />
+        <span className="min-w-0 truncate">{currentProvider?.provider.name ? truncateMiddle(currentProvider.provider.name, 12) : agentType}</span>
       </div>
     )
   }
@@ -62,8 +63,8 @@ export function ProviderSelector({
         className="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg transition-colors cursor-pointer hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600"
         title={`Provider: ${currentProvider?.provider.name ?? agentType} (click to change)`}
       >
-        <Cpu size={14} className="shrink-0" />
-        <span>{currentProvider?.provider.name ? truncateMiddle(currentProvider.provider.name, 12) : agentType}</span>
+        <AgentLogo agentType={currentProvider?.provider.agentType ?? agentType} className="size-3.5" />
+        <span className="min-w-0 truncate">{currentProvider?.provider.name ? truncateMiddle(currentProvider.provider.name, 12) : agentType}</span>
         <ChevronDown size={12} className={`shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
@@ -83,7 +84,8 @@ export function ProviderSelector({
                 item.provider.id === currentProviderId ? 'bg-blue-50 text-blue-600' : 'text-neutral-700'
               }`}
             >
-                <span className="flex items-center gap-2">
+                <span className="flex min-w-0 items-center gap-2">
+                  <AgentLogo agentType={item.provider.agentType} className="size-4" />
                   <span className="truncate max-w-[120px]">{item.provider.name}</span>
                   {item.provider.isDefault && (
                   <span className="text-xs text-neutral-400">{t('(默认)')}</span>

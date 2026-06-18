@@ -25,8 +25,10 @@ import {
   type ProviderImportPreview,
 } from '@agent-tower/shared'
 import { toast } from 'sonner'
+import { AgentLogo } from '@/components/agent'
 import { CursorAgentModelField } from '@/components/provider/CursorAgentModelField'
 import { translate, useI18n } from '@/lib/i18n'
+import { getAgentLabel } from '@/lib/agent-meta'
 import { cn } from '@/lib/utils'
 import {
   SettingsEmptyState,
@@ -36,13 +38,6 @@ import {
   SettingsSectionTitle,
 } from '@/components/settings/SettingsSection'
 import { SettingsMasterDetail } from '@/components/settings/SettingsMasterDetail'
-
-const AGENT_TYPE_LABELS: Record<string, string> = {
-  CLAUDE_CODE: 'Claude Code',
-  GEMINI_CLI: 'Gemini CLI',
-  CURSOR_AGENT: 'Cursor Agent',
-  CODEX: 'Codex',
-}
 
 interface ConfigFieldMeta {
   key: string
@@ -472,10 +467,20 @@ function ProviderFormModal({
                 onChange={value => handleAgentTypeChange(value as AgentType)}
                 options={Object.values(AgentType).map(type => ({
                   value: type,
-                  label: AGENT_TYPE_LABELS[type] ?? type,
+                  label: getAgentLabel(type),
+                  icon: <AgentLogo agentType={type} className="size-4" />,
                 }))}
                 placeholder={t('选择 Agent 类型')}
               />
+            </div>
+          )}
+          {initialData && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-foreground">{t('Agent 类型')}</label>
+              <div className="flex h-9 items-center gap-2 rounded-lg border border-neutral-200 bg-muted/30 px-3 text-sm text-muted-foreground">
+                <AgentLogo agentType={formData.agentType} className="size-4" />
+                <span className="min-w-0 truncate">{getAgentLabel(formData.agentType)}</span>
+              </div>
             </div>
           )}
         </div>
@@ -719,8 +724,9 @@ function ImportPreviewModal({
                         {t(meta.label)}
                       </span>
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {AGENT_TYPE_LABELS[item.incoming.agentType] ?? item.incoming.agentType}
+                    <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                      <AgentLogo agentType={item.incoming.agentType} className="size-3.5" />
+                      <span className="min-w-0 truncate">{getAgentLabel(item.incoming.agentType)}</span>
                       {' · '}
                       <code className="rounded bg-muted px-1 py-0.5">{item.incoming.id}</code>
                     </div>
@@ -769,13 +775,16 @@ function ProviderDetailPanel({
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h3 className="text-base font-semibold text-foreground">{provider.name}</h3>
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <h3 className="min-w-0 truncate text-base font-semibold text-foreground">{provider.name}</h3>
             <AvailabilityBadge type={availability.type} />
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>{AGENT_TYPE_LABELS[provider.agentType] ?? provider.agentType}</span>
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <AgentLogo agentType={provider.agentType} className="size-3.5" />
+              <span className="truncate">{getAgentLabel(provider.agentType)}</span>
+            </span>
             {provider.isDefault && (
               <span className="rounded-full bg-primary/[0.06] px-2 py-0.5 text-[11px] font-medium text-primary">
                 {t('默认')}
@@ -1069,8 +1078,13 @@ export function ProviderSettingsPage() {
                 <AvailabilityDot type={item.availability.type} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13px] font-medium">{p.name}</div>
-                  <div className={cn('truncate text-[11px]', isActive ? 'text-primary-foreground/60' : 'text-muted-foreground')}>
-                    {AGENT_TYPE_LABELS[p.agentType] ?? p.agentType}
+                  <div className={cn('flex min-w-0 items-center gap-1.5 text-[11px]', isActive ? 'text-primary-foreground/60' : 'text-muted-foreground')}>
+                    <AgentLogo
+                      agentType={p.agentType}
+                      className="size-3.5"
+                      fallbackClassName={isActive ? 'text-primary-foreground/70' : 'text-muted-foreground'}
+                    />
+                    <span className="min-w-0 truncate">{getAgentLabel(p.agentType)}</span>
                   </div>
                 </div>
                 {p.isDefault && (

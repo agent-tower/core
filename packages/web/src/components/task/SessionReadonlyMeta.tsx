@@ -1,6 +1,5 @@
-import { Code2 } from 'lucide-react'
 import type { Session } from '@agent-tower/shared'
-import { TokenUsageIndicator } from '@/components/agent'
+import { AgentLogo, TokenUsageIndicator } from '@/components/agent'
 import type { TooltipSide } from '@/components/ui/tooltip'
 import type { TokenUsageInfo } from '@/hooks/useTokenUsage'
 import type { ProviderWithAvailability } from '@/hooks/use-providers'
@@ -27,12 +26,13 @@ export function resolveSessionProviderDisplay(
     : null
   const label = provider?.name ?? providerId ?? session?.agentType ?? fallback?.agentType ?? null
   if (!label) return null
+  const agentType = session?.agentType ?? provider?.agentType ?? fallback?.agentType ?? null
 
   const title = providerId && provider?.name && providerId !== provider.name
     ? `${provider.name} (${providerId})`
     : label
 
-  return { label, title }
+  return { label, title, agentType }
 }
 
 interface SessionReadonlyMetaProps {
@@ -72,7 +72,7 @@ export function SessionReadonlyMeta({
           }`}
           title={`${t('Provider')}: ${provider.title}`}
         >
-          <Code2 size={compact ? 12 : 14} className="shrink-0 text-neutral-400" />
+          <AgentLogo agentType={provider.agentType} className={compact ? 'size-3' : 'size-3.5'} />
           <span className="min-w-0 truncate">{truncateMiddle(provider.label, compact ? 12 : 18)}</span>
         </div>
       )}

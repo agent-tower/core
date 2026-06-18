@@ -69,6 +69,18 @@ describe('SessionReadonlyMeta helpers', () => {
       session({ providerId: 'provider-focused' }),
       [provider('provider-active', 'Active Provider'), provider('provider-focused', 'Focused Provider')],
     )).toEqual({
+      agentType: AgentType.CODEX,
+      label: 'Focused Provider',
+      title: 'Focused Provider (provider-focused)',
+    })
+  })
+
+  it('keeps session agentType when matched provider agentType has changed', () => {
+    expect(resolveSessionProviderDisplay(
+      session({ agentType: AgentType.CLAUDE_CODE, providerId: 'provider-focused' }),
+      [provider('provider-focused', 'Focused Provider')],
+    )).toEqual({
+      agentType: AgentType.CLAUDE_CODE,
       label: 'Focused Provider',
       title: 'Focused Provider (provider-focused)',
     })
@@ -76,6 +88,7 @@ describe('SessionReadonlyMeta helpers', () => {
 
   it('falls back to providerId when provider metadata is unavailable', () => {
     expect(resolveSessionProviderDisplay(session({ providerId: 'missing-provider' }), [])).toEqual({
+      agentType: AgentType.CODEX,
       label: 'missing-provider',
       title: 'missing-provider',
     })
@@ -87,6 +100,7 @@ describe('SessionReadonlyMeta helpers', () => {
       [provider('member-provider', 'Member Provider')],
       { providerId: 'member-provider', agentType: AgentType.CODEX },
     )).toEqual({
+      agentType: AgentType.CODEX,
       label: 'Member Provider',
       title: 'Member Provider (member-provider)',
     })
@@ -94,6 +108,7 @@ describe('SessionReadonlyMeta helpers', () => {
 
   it('falls back to agentType when session and providerId metadata are unavailable', () => {
     expect(resolveSessionProviderDisplay(null, [], { agentType: AgentType.CLAUDE_CODE })).toEqual({
+      agentType: AgentType.CLAUDE_CODE,
       label: AgentType.CLAUDE_CODE,
       title: AgentType.CLAUDE_CODE,
     })

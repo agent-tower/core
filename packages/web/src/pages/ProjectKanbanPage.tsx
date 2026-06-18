@@ -608,6 +608,7 @@ export function ProjectKanbanPage() {
     sortedProviders.map(({ provider, availability }) => ({
       id: provider.id,
       name: provider.name,
+      agentType: provider.agentType,
       available: availability.type !== 'NOT_FOUND',
     })),
     [sortedProviders],

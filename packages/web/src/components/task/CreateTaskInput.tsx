@@ -1,11 +1,12 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { ArrowUp, Bot, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users } from 'lucide-react'
-import { WorkspaceKind, type TeamRunMode } from '@agent-tower/shared'
+import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users } from 'lucide-react'
+import { WorkspaceKind, type AgentType, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
+import { AgentLogo } from '@/components/agent'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -21,6 +22,7 @@ interface ProjectOption {
 interface ProviderOption {
   id: string
   name: string
+  agentType?: AgentType | string | null
   available: boolean
 }
 
@@ -415,7 +417,7 @@ export function CreateTaskInput({
                 selectedProvider ? 'text-foreground' : 'text-muted-foreground',
               )}
             >
-              <Bot size={14} className="text-muted-foreground" />
+              <AgentLogo agentType={selectedProvider?.agentType} className="size-3.5" />
               <span className="max-w-[120px] truncate">{selectedProvider?.name ?? (isProvidersLoading ? t('Loading...') : t('Agent'))}</span>
               <ChevronDown size={12} className={cn('text-muted-foreground transition-transform', showProviderMenu && 'rotate-180')} />
             </button>
@@ -434,7 +436,8 @@ export function CreateTaskInput({
                     )}
                   >
                     <Check size={14} className={cn('mr-2 shrink-0 text-foreground', p.id === providerId ? 'opacity-100' : 'opacity-0')} />
-                    <span className={cn('truncate', p.id === providerId ? 'text-foreground font-medium' : 'text-muted-foreground')}>
+                    <AgentLogo agentType={p.agentType} className="mr-2 size-3.5" />
+                    <span className={cn('min-w-0 truncate', p.id === providerId ? 'text-foreground font-medium' : 'text-muted-foreground')}>
                       {p.name}{!p.available ? t(' (unavailable)') : ''}
                     </span>
                   </button>

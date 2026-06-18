@@ -8,6 +8,7 @@ export interface SelectOption {
   value: string
   label: string
   disabled?: boolean
+  icon?: React.ReactNode
 }
 
 export interface SelectProps {
@@ -60,7 +61,7 @@ export function Select({
         disabled={disabled}
         onClick={() => setOpen(prev => !prev)}
         className={cn(
-          "flex items-center justify-between w-full h-9 px-3 border rounded-lg text-sm transition-colors",
+          "flex items-center justify-between gap-2 w-full h-9 px-3 border rounded-lg text-sm transition-colors",
           "bg-white border-neutral-200 hover:border-neutral-300",
           "focus:outline-none focus:border-neutral-400",
           "disabled:opacity-50 disabled:cursor-not-allowed",
@@ -68,8 +69,11 @@ export function Select({
           !selectedOption && "text-neutral-400",
         )}
       >
-        <span className="truncate">
-          {selectedOption ? selectedOption.label : t(placeholder)}
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          {selectedOption?.icon}
+          <span className="truncate">
+            {selectedOption ? selectedOption.label : t(placeholder)}
+          </span>
         </span>
         <ChevronDown
           size={14}
@@ -110,6 +114,9 @@ export function Select({
                     option.value === value ? "opacity-100" : "opacity-0"
                   )}
                 />
+                {option.icon ? (
+                  <span className="mr-2 flex shrink-0 items-center">{option.icon}</span>
+                ) : null}
                 <span className="truncate">{option.label}</span>
               </button>
             ))
