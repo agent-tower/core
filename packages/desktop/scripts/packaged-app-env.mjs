@@ -16,6 +16,15 @@ const cleanupOptions = {
   retryDelay: 250,
 };
 
+function cleanupTempPath(target) {
+  try {
+    rmSync(target, cleanupOptions);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[desktop:test-env] Failed to remove temporary path ${target}: ${message}`);
+  }
+}
+
 export function findPackagedAppExecutable() {
   if (process.platform === 'darwin') {
     for (const outputDir of ['mac-arm64', 'mac']) {
@@ -71,8 +80,8 @@ export function createIsolatedDesktopTestEnv({
     tempUserData,
     dataDir,
     cleanup() {
-      rmSync(tempHome, cleanupOptions);
-      rmSync(tempUserData, cleanupOptions);
+      cleanupTempPath(tempHome);
+      cleanupTempPath(tempUserData);
     },
   };
 }

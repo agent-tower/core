@@ -99,6 +99,24 @@ function terminate(child) {
   }, 5_000).unref();
 }
 
+async function terminateAndWait(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 8_000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off('exit', cleanup);
+      child.off('error', cleanup);
+      resolve();
+    };
+
+    child.once('exit', cleanup);
+    child.once('error', cleanup);
+    terminate(child);
+  });
+}
+
 const executable = findPackagedAppExecutable();
 const isolated = createIsolatedDesktopTestEnv({
   prefix: 'agent-tower-desktop-smoke',
@@ -172,6 +190,6 @@ try {
   console.log('[desktop:smoke] MCP config verification passed');
   console.log('[desktop:smoke] Packaged smoke passed');
 } finally {
-  terminate(child);
+  await terminateAndWait(child);
   isolated.cleanup();
 }
