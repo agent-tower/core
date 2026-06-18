@@ -20,7 +20,7 @@ import {
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { StreamdownProps, UrlTransform } from 'streamdown'
-import type { AgentInvocation, Attachment, RoomMessage, StructuredMention, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
+import type { AgentInvocation, Attachment, Provider, RoomMessage, StructuredMention, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
 import type { PostRoomMessageInput } from '@/hooks/use-team-run'
 import { useAttachmentMetadata, useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
@@ -30,6 +30,8 @@ import {
   useRoomMessageDetail,
   useStopMemberWork,
 } from '@/hooks/use-team-run'
+import { useProviders } from '@/hooks/use-providers'
+import { AgentLogo } from '@/components/agent'
 import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
@@ -749,10 +751,20 @@ function RoomMessageRow({
   )
 }
 
+function ProviderBadge({ provider }: { provider: Provider }) {
+  return (
+    <span className="ml-0.5 inline-flex max-w-[10rem] shrink items-center gap-1 rounded-full bg-neutral-900/5 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-500">
+      <AgentLogo agentType={provider.agentType} className="size-2.5" />
+      <span className="truncate">{provider.name}</span>
+    </span>
+  )
+}
+
 function RoomChatMessage({
   message,
   senderName,
   senderMember,
+  senderProvider,
   memberById,
   displayContent,
   onOpenImage,
@@ -760,6 +772,7 @@ function RoomChatMessage({
   message: RoomMessage
   senderName: string
   senderMember?: TeamMember | null
+  senderProvider?: Provider | null
   memberById: Map<string, TeamMember>
   displayContent: string
   onOpenImage: (attachments: Attachment[], index: number) => void
@@ -774,6 +787,9 @@ function RoomChatMessage({
   const recipientLabels = isPrivate ? getPrivateRecipientLabels(message, memberById) : []
   const headerAddon = (
     <>
+      {!isUser && !isSystem && senderProvider && (
+        <ProviderBadge provider={senderProvider} />
+      )}
       {isPrivate && (
         <span
           className="ml-0.5 inline-flex max-w-[18rem] shrink items-center gap-1 rounded-full bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sky-700"
@@ -934,6 +950,16 @@ export function RoomTimeline({
     resize: 'smooth',
     initial: 'instant',
   })
+
+  const { data: providersList } = useProviders()
+
+  const providerById = useMemo(() => {
+    const map = new Map<string, Provider>()
+    for (const item of providersList ?? []) {
+      map.set(item.provider.id, item.provider)
+    }
+    return map
+  }, [providersList])
 
   const memberById = useMemo(() => {
     return new Map((teamRun.members ?? []).map((member) => [member.id, member]))
@@ -1243,6 +1269,9 @@ export function RoomTimeline({
                       ? t('System')
                       : senderMember?.name ?? t('Agent')
                 const displayContent = getDisplayContent(message, memberById)
+                const senderProvider = senderMember?.providerId
+                  ? providerById.get(senderMember.providerId) ?? null
+                  : null
 
                 return (
                   <RoomChatMessage
@@ -1250,6 +1279,7 @@ export function RoomTimeline({
                     message={message}
                     senderName={senderName}
                     senderMember={senderMember}
+                    senderProvider={senderProvider}
                     memberById={memberById}
                     displayContent={displayContent}
                     onOpenImage={(images, index) => setLightboxState({ images, index })}

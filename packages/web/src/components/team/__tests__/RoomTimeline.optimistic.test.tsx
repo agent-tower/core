@@ -17,6 +17,10 @@ vi.mock('@/hooks/use-app-settings', () => ({
   useUpdateAppSettings: () => ({ mutate: vi.fn() }),
 }));
 
+vi.mock('@/hooks/use-providers', () => ({
+  useProviders: () => ({ data: [], isLoading: false }),
+}));
+
 vi.mock('@/hooks/use-team-run', async (importOriginal) => {
   const ReactModule = await import('react');
   const actual = await importOriginal<typeof import('@/hooks/use-team-run')>();
