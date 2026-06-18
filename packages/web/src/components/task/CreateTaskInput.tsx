@@ -247,12 +247,11 @@ export function CreateTaskInput({
       {/* Input box — matches session input style */}
       <div
         className={cn(
-          'relative bg-background rounded-xl border transition-all duration-200',
-          'shadow-[0_1px_2px_rgba(0,0,0,0.04)]',
-          'hover:border-foreground/15 hover:shadow-[0_2px_6px_rgba(0,0,0,0.05)]',
-          'focus-within:border-foreground/25 focus-within:shadow-[0_2px_8px_rgba(0,0,0,0.06)]',
+          'relative bg-background rounded-xl border transition-colors duration-200',
+          'shadow-[0_1px_2px_rgba(0,0,0,0.05)]',
+          'hover:border-ring/40 focus-within:border-ring/60',
           isDragOver
-            ? 'border-info/40 bg-info/5 ring-2 ring-info/15'
+            ? 'border-info bg-info/5'
             : 'border-border',
           isSubmitting && 'opacity-80',
         )}
@@ -368,7 +367,7 @@ export function CreateTaskInput({
               className={cn(
                 'flex items-center gap-1.5 px-2 h-7 rounded-md text-xs font-medium transition-colors',
                 'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
-                selectedProject ? 'text-foreground' : 'text-muted-foreground',
+                selectedProject ? 'text-foreground/80' : 'text-muted-foreground',
               )}
             >
               <Folder
@@ -414,7 +413,7 @@ export function CreateTaskInput({
               className={cn(
                 'flex items-center gap-1.5 px-2 h-7 rounded-md text-xs font-medium transition-colors',
                 'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
-                selectedProvider ? 'text-foreground' : 'text-muted-foreground',
+                selectedProvider ? 'text-foreground/80' : 'text-muted-foreground',
               )}
             >
               <AgentLogo agentType={selectedProvider?.agentType} className="size-3.5" />
@@ -456,7 +455,7 @@ export function CreateTaskInput({
               disabled={isSubmitting}
               className={cn(
                 'flex items-center gap-1.5 px-2 h-7 rounded-md text-xs font-medium transition-colors',
-                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed text-foreground',
+                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed text-foreground/80',
               )}
             >
               <GitBranch size={14} className="text-muted-foreground" />
@@ -514,11 +513,11 @@ export function CreateTaskInput({
               'ml-auto flex items-center gap-2 h-7 pl-2 pr-2 rounded-md text-xs font-medium transition-colors',
               'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              mode === 'TEAM' ? 'text-foreground' : 'text-muted-foreground',
+              mode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground',
             )}
             title={t('启用团队模式')}
           >
-            <Users size={14} className={mode === 'TEAM' ? 'text-foreground' : 'text-muted-foreground'} />
+            <Users size={14} className={mode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground'} />
             <span>{t('团队模式')}</span>
             <span
               className={cn(
