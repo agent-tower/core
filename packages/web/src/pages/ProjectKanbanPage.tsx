@@ -621,9 +621,21 @@ export function ProjectKanbanPage() {
     return activeProjects[0]?.id ?? ''
   }, [activeProjects, effectiveFilterProjectId])
 
+  const [createTaskProjectId, setCreateTaskProjectId] = useState(defaultProjectId)
+
+  useEffect(() => {
+    setCreateTaskProjectId(defaultProjectId)
+  }, [defaultProjectId])
+
+  const createTaskProjectName = useMemo(() => {
+    return activeProjects.find(p => p.id === createTaskProjectId)?.name
+      ?? activeProjects.find(p => p.id === defaultProjectId)?.name
+      ?? t('Project')
+  }, [activeProjects, createTaskProjectId, defaultProjectId, t])
+
   const createTaskTitle = locale === 'zh-CN'
-    ? '我可以为你做点什么？'
-    : 'What can I do for you?'
+    ? `你需要在 ${createTaskProjectName} 中做点什么？`
+    : `What do you need to do in ${createTaskProjectName}?`
 
   const defaultProviderId = useMemo(() => {
     const lastProviderId = localStorage.getItem('lastSelectedProviderId')
@@ -676,6 +688,7 @@ export function ProjectKanbanPage() {
               onSubmit={handleMobileSubmitTask}
               defaultProjectId={defaultProjectId}
               defaultProviderId={defaultProviderId}
+              onProjectChange={setCreateTaskProjectId}
               createStep={createStep}
             />
           </div>
@@ -858,6 +871,7 @@ export function ProjectKanbanPage() {
                   onSubmit={handleSubmitTask}
                   defaultProjectId={defaultProjectId}
                   defaultProviderId={defaultProviderId}
+                  onProjectChange={setCreateTaskProjectId}
                   createStep={createStep}
                 />
               </div>

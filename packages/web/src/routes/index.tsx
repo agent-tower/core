@@ -1,19 +1,15 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { createBrowserRouter, RouterProvider, useNavigate, useParams } from 'react-router-dom'
 import { RootLayout } from '@/layouts/RootLayout'
-import { useI18n } from '@/lib/i18n'
 import { useUIStore, type SettingsTab } from '@/stores/ui-store'
+import { FullscreenLoading } from '@/components/loading/FullscreenLoading'
 
 // Lazy load pages
 const ProjectKanbanPage = lazy(() => import('@/pages/ProjectKanbanPage').then(m => ({ default: m.ProjectKanbanPage })))
 const ConversationPage = lazy(() => import('@/pages/ConversationPage').then(m => ({ default: m.ConversationPage })))
 const DemoPage = lazy(() => import('@/pages/DemoPage').then(m => ({ default: m.DemoPage })))
 const AgentDemoPage = lazy(() => import('@/pages/AgentDemoPage').then(m => ({ default: m.AgentDemoPage })))
-
-function RouteLoadingFallback() {
-  const { t } = useI18n()
-  return <div className="p-8">{t('Loading...')}</div>
-}
+const LoadingPreviewPage = lazy(() => import('@/pages/LoadingPreviewPage').then(m => ({ default: m.LoadingPreviewPage })))
 
 const VALID_SETTINGS_TABS = new Set<string>(['general', 'agents', 'team', 'projects', 'notifications', 'mcp', 'agents-legacy'])
 
@@ -38,7 +34,7 @@ const router = createBrowserRouter([
       {
         index: true,
         element: (
-          <Suspense fallback={<RouteLoadingFallback />}>
+          <Suspense fallback={<FullscreenLoading />}>
             <ProjectKanbanPage />
           </Suspense>
         ),
@@ -46,7 +42,7 @@ const router = createBrowserRouter([
       {
         path: 'conversations',
         element: (
-          <Suspense fallback={<RouteLoadingFallback />}>
+          <Suspense fallback={<FullscreenLoading />}>
             <ConversationPage />
           </Suspense>
         ),
@@ -54,7 +50,7 @@ const router = createBrowserRouter([
       {
         path: 'conversations/:conversationId',
         element: (
-          <Suspense fallback={<RouteLoadingFallback />}>
+          <Suspense fallback={<FullscreenLoading />}>
             <ConversationPage />
           </Suspense>
         ),
@@ -62,7 +58,7 @@ const router = createBrowserRouter([
       {
         path: 'demo',
         element: (
-          <Suspense fallback={<RouteLoadingFallback />}>
+          <Suspense fallback={<FullscreenLoading />}>
             <DemoPage />
           </Suspense>
         ),
@@ -70,8 +66,16 @@ const router = createBrowserRouter([
       {
         path: 'agent-demo',
         element: (
-          <Suspense fallback={<RouteLoadingFallback />}>
+          <Suspense fallback={<FullscreenLoading />}>
             <AgentDemoPage />
+          </Suspense>
+        ),
+      },
+      {
+        path: 'loading-preview',
+        element: (
+          <Suspense fallback={<FullscreenLoading />}>
+            <LoadingPreviewPage />
           </Suspense>
         ),
       },

@@ -707,7 +707,7 @@ export function ConversationPage() {
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 pb-[10vh] md:px-8">
               <div className="w-full max-w-2xl animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
                 <h1 className="mb-8 max-w-full break-words text-center text-3xl leading-tight tracking-tight text-foreground">
-                  {t('New Conversation')}
+                  {t('需要我帮你做点什么？')}
                 </h1>
                 <CreateTaskInput
                   variant="conversation"
