@@ -165,7 +165,8 @@ try {
   if (!mcpConfig.env || mcpConfig.env.ELECTRON_RUN_AS_NODE !== '1') {
     throw new Error('Packaged MCP config is missing ELECTRON_RUN_AS_NODE=1');
   }
-  if (!String(mcpConfig.args?.[0] || '').includes('runtime/server/dist/mcp/index.js')) {
+  const mcpEntryArg = String(mcpConfig.args?.[0] || '').replaceAll('\\', '/');
+  if (!mcpEntryArg.includes('runtime/server/dist/mcp/index.js')) {
     throw new Error(`Packaged MCP config does not point at bundled MCP entry: ${mcpConfig.args?.[0]}`);
   }
   console.log('[desktop:smoke] MCP config verification passed');
