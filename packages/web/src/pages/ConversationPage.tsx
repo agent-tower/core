@@ -363,6 +363,7 @@ export function ConversationPage() {
   const startProviderOptions = availableProviders.map(({ provider }) => ({
     id: provider.id,
     name: provider.name,
+    agentType: provider.agentType,
     available: true,
   }))
   const isDetailRoute = Boolean(conversationId)
