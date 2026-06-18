@@ -10,6 +10,7 @@ import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
 type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
+type CreateInputVariant = 'task' | 'conversation'
 
 interface ProjectOption {
   id: string
@@ -24,6 +25,7 @@ interface ProviderOption {
 }
 
 export interface CreateTaskInputProps {
+  variant?: CreateInputVariant
   projects: ProjectOption[]
   providers: ProviderOption[]
   isProvidersLoading?: boolean
@@ -38,11 +40,16 @@ export interface CreateTaskInputProps {
     teamTemplateId: string | null
     memberPresetIds: string[]
     attachmentLinks: string
+    attachmentIds: string[]
   }) => Promise<void>
   defaultProjectId?: string
   defaultProviderId?: string
   onProjectChange?: (projectId: string) => void
   createStep: CreateStep
+  placeholder?: string
+  submitLabel?: string
+  pendingLabel?: string
+  submitTitle?: string
 }
 
 const CREATE_STEP_LABEL: Record<CreateStep, string> = {
@@ -55,6 +62,7 @@ const CREATE_STEP_LABEL: Record<CreateStep, string> = {
 }
 
 export function CreateTaskInput({
+  variant = 'task',
   projects,
   providers,
   isProvidersLoading,
@@ -63,6 +71,10 @@ export function CreateTaskInput({
   defaultProviderId = '',
   onProjectChange,
   createStep,
+  placeholder,
+  submitLabel,
+  pendingLabel,
+  submitTitle,
 }: CreateTaskInputProps) {
   const { t } = useI18n()
   const [title, setTitle] = useState('')
@@ -85,7 +97,10 @@ export function CreateTaskInput({
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, isUploading } = useAttachments()
+  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, getDoneAttachments, isUploading } = useAttachments()
+  const isConversationMode = variant === 'conversation'
+  const supportsAttachments = variant === 'task' || variant === 'conversation'
+  const effectiveSubmitLabel = submitLabel ?? (isConversationMode ? t('开始') : t('创建'))
 
   useEffect(() => {
     setProjectId(defaultProjectId)
@@ -132,30 +147,37 @@ export function CreateTaskInput({
 
   const isSubmitting = createStep !== 'idle'
   const hasTeamMembers = !!teamTemplateId || memberPresetIds.length > 0
-  const canSubmit = !isSubmitting && !isUploading && title.trim().length > 0 && !!projectId && (mode === 'TEAM' ? hasTeamMembers : !!providerId)
+  const canSubmit = !isSubmitting
+    && !isUploading
+    && title.trim().length > 0
+    && (isConversationMode
+      ? !!providerId
+      : !!projectId && (mode === 'SOLO' ? !!providerId : hasTeamMembers))
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return
-    const attachmentLinks = buildMarkdownLinks()
+    const attachmentLinks = supportsAttachments ? buildMarkdownLinks() : ''
+    const attachmentIds = supportsAttachments ? getDoneAttachments().map((attachment) => attachment.id) : []
     try {
       await onSubmit({
         title: title.trim(),
         description: '',
-        projectId,
+        projectId: isConversationMode ? '' : projectId,
         providerId,
-        mode,
-        workspaceMode: mode === 'SOLO' ? workspaceMode : WorkspaceKind.WORKTREE,
-        teamRunMode,
-        teamTemplateId,
-        memberPresetIds,
+        mode: isConversationMode ? 'SOLO' : mode,
+        workspaceMode: !isConversationMode && mode === 'SOLO' ? workspaceMode : WorkspaceKind.WORKTREE,
+        teamRunMode: isConversationMode ? 'AUTO' : teamRunMode,
+        teamTemplateId: isConversationMode ? null : teamTemplateId,
+        memberPresetIds: isConversationMode ? [] : memberPresetIds,
         attachmentLinks,
+        attachmentIds,
       })
       setTitle('')
-      clearAttachments()
+      if (supportsAttachments) clearAttachments()
     } catch {
       // Complete failure — preserve input for retry
     }
-  }, [canSubmit, title, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, onSubmit, buildMarkdownLinks, clearAttachments])
+  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, clearAttachments])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
@@ -179,6 +201,7 @@ export function CreateTaskInput({
   }, [onProjectChange])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (!supportsAttachments) return
     const items = e.clipboardData.items
     const files: File[] = []
     for (const item of items) {
@@ -191,28 +214,31 @@ export function CreateTaskInput({
       e.preventDefault()
       addFiles(files)
     }
-  }, [addFiles])
+  }, [addFiles, supportsAttachments])
 
   const [isDragOver, setIsDragOver] = useState(false)
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!supportsAttachments) return
     e.preventDefault()
     setIsDragOver(true)
-  }, [])
+  }, [supportsAttachments])
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!supportsAttachments) return
     e.preventDefault()
     setIsDragOver(false)
-  }, [])
+  }, [supportsAttachments])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
+    if (!supportsAttachments) return
     e.preventDefault()
     setIsDragOver(false)
     const fileList = e.dataTransfer.files
     if (fileList.length > 0) {
       addFiles(Array.from(fileList))
     }
-  }, [addFiles])
+  }, [addFiles, supportsAttachments])
 
   return (
     <div className="w-full">
@@ -228,12 +254,12 @@ export function CreateTaskInput({
             : 'border-border',
           isSubmitting && 'opacity-80',
         )}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
+        onDragOver={supportsAttachments ? handleDragOver : undefined}
+        onDragLeave={supportsAttachments ? handleDragLeave : undefined}
+        onDrop={supportsAttachments ? handleDrop : undefined}
       >
         {/* Attachment preview */}
-        {attachmentFiles.length > 0 && (
+        {supportsAttachments && attachmentFiles.length > 0 && (
           <div className="px-4 pt-3">
             <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
           </div>
@@ -245,8 +271,8 @@ export function CreateTaskInput({
           value={title}
           onChange={e => setTitle(e.target.value)}
           onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={t('Describe your task...')}
+          onPaste={supportsAttachments ? handlePaste : undefined}
+          placeholder={placeholder ? t(placeholder) : t('Describe your task...')}
           disabled={isSubmitting}
           autoFocus
           rows={1}
@@ -255,7 +281,7 @@ export function CreateTaskInput({
         />
 
         {/* Drag overlay */}
-        {isDragOver && (
+        {supportsAttachments && isDragOver && (
           <div className="px-4 pb-2">
             <div className="flex items-center justify-center py-3 border border-dashed border-info/40 rounded-lg text-xs font-medium text-info">
               {t('Drop files here')}
@@ -266,26 +292,30 @@ export function CreateTaskInput({
         {/* Toolbar — attach + submit */}
         <div className="flex items-center justify-between px-2 pb-2 pt-1">
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isSubmitting || isUploading}
-              className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title={t('Attach files')}
-            >
-              <Paperclip size={18} />
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              onChange={handleFileInputChange}
-              className="hidden"
-            />
+            {supportsAttachments ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isSubmitting || isUploading}
+                  className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={t('Attach files')}
+                >
+                  <Paperclip size={18} />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={handleFileInputChange}
+                  className="hidden"
+                />
+              </>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-2">
-            {isUploading && (
+            {supportsAttachments && isUploading && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 size={14} className="animate-spin" />
                 {t('Uploading...')}
@@ -294,16 +324,16 @@ export function CreateTaskInput({
             {isSubmitting && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 size={14} className="animate-spin" />
-                {t(CREATE_STEP_LABEL[createStep])}
+                {t(pendingLabel ?? CREATE_STEP_LABEL[createStep])}
               </span>
             )}
-            {!isSubmitting && !isUploading && mode === 'TEAM' && !hasTeamMembers && title.trim().length > 0 && (
+            {!isConversationMode && !isSubmitting && !isUploading && mode === 'TEAM' && !hasTeamMembers && title.trim().length > 0 && (
               <span className="text-[11px] text-warning">{t('请选择团队模板或追加成员')}</span>
             )}
             {canSubmit && (
               <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-muted-foreground/80 select-none">
                 <kbd className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded border border-border bg-muted/60 text-[10px] font-medium text-muted-foreground leading-none">⏎</kbd>
-                {t('创建')}
+                {effectiveSubmitLabel}
               </span>
             )}
             <button
@@ -316,7 +346,7 @@ export function CreateTaskInput({
                   ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm'
                   : 'bg-muted text-muted-foreground/40 cursor-not-allowed',
               )}
-              title={t('Create & Start')}
+              title={submitTitle ? t(submitTitle) : t('Create & Start')}
             >
               <ArrowUp size={16} strokeWidth={2.5} />
             </button>
@@ -327,51 +357,53 @@ export function CreateTaskInput({
       {/* Control row — chips aligned to card edges */}
       <div className="flex items-center flex-wrap gap-1.5 mt-2.5 px-0.5">
         {/* Project selector */}
-        <div className="relative" ref={projectMenuRef}>
-          <button
-            type="button"
-            onClick={() => { if (!isSubmitting) setShowProjectMenu(v => !v) }}
-            disabled={isSubmitting}
-            className={cn(
-              'flex items-center gap-1.5 px-2 h-7 rounded-md text-xs font-medium transition-colors',
-              'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
-              selectedProject ? 'text-foreground' : 'text-muted-foreground',
-            )}
-          >
-            <Folder
-              size={14}
-              className="shrink-0"
-              style={{ color: selectedProject?.color ?? 'var(--muted-foreground)' }}
-            />
-            <span className="max-w-[120px] truncate">{selectedProject?.name ?? t('Project')}</span>
-            <ChevronDown size={12} className={cn('text-muted-foreground transition-transform', showProjectMenu && 'rotate-180')} />
-          </button>
+        {!isConversationMode && (
+          <div className="relative" ref={projectMenuRef}>
+            <button
+              type="button"
+              onClick={() => { if (!isSubmitting) setShowProjectMenu(v => !v) }}
+              disabled={isSubmitting}
+              className={cn(
+                'flex items-center gap-1.5 px-2 h-7 rounded-md text-xs font-medium transition-colors',
+                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
+                selectedProject ? 'text-foreground' : 'text-muted-foreground',
+              )}
+            >
+              <Folder
+                size={14}
+                className="shrink-0"
+                style={{ color: selectedProject?.color ?? 'var(--muted-foreground)' }}
+              />
+              <span className="max-w-[120px] truncate">{selectedProject?.name ?? t('Project')}</span>
+              <ChevronDown size={12} className={cn('text-muted-foreground transition-transform', showProjectMenu && 'rotate-180')} />
+            </button>
 
-          {showProjectMenu && (
-            <div className="absolute top-full left-0 mt-1.5 w-56 bg-popover border border-border rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.06)] py-1 max-h-[240px] overflow-y-auto z-50">
-              {projects.map(p => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => handleProjectSelect(p.id)}
-                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors"
-                >
-                  <span
-                    className="size-2 rounded-full shrink-0 mr-2"
-                    style={{ backgroundColor: p.color ?? 'var(--muted-foreground)' }}
-                  />
-                  <span className={cn('truncate flex-1', p.id === projectId ? 'text-foreground font-medium' : 'text-muted-foreground')}>
-                    {p.name}
-                  </span>
-                  <Check size={14} className={cn('ml-2 shrink-0 text-foreground', p.id === projectId ? 'opacity-100' : 'opacity-0')} />
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+            {showProjectMenu && (
+              <div className="absolute top-full left-0 mt-1.5 w-56 bg-popover border border-border rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.06)] py-1 max-h-[240px] overflow-y-auto z-50">
+                {projects.map(p => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => handleProjectSelect(p.id)}
+                    className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors"
+                  >
+                    <span
+                      className="size-2 rounded-full shrink-0 mr-2"
+                      style={{ backgroundColor: p.color ?? 'var(--muted-foreground)' }}
+                    />
+                    <span className={cn('truncate flex-1', p.id === projectId ? 'text-foreground font-medium' : 'text-muted-foreground')}>
+                      {p.name}
+                    </span>
+                    <Check size={14} className={cn('ml-2 shrink-0 text-foreground', p.id === projectId ? 'opacity-100' : 'opacity-0')} />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Provider selector (Solo mode only) */}
-        {mode === 'SOLO' && (
+        {(isConversationMode || mode === 'SOLO') && (
           <div className="relative" ref={providerMenuRef}>
             <button
               type="button"
@@ -413,7 +445,7 @@ export function CreateTaskInput({
         )}
 
         {/* Workspace mode selector (Solo mode only) */}
-        {mode === 'SOLO' && (
+        {!isConversationMode && mode === 'SOLO' && (
           <div className="relative" ref={workspaceModeMenuRef}>
             <button
               type="button"
@@ -457,50 +489,52 @@ export function CreateTaskInput({
         )}
 
         {/* Team mode toggle */}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={mode === 'TEAM'}
-          onClick={() => {
-            if (isSubmitting) return
-            if (mode === 'TEAM') {
-              setMode('SOLO')
-              setShowTeamConfig(false)
-            } else {
-              setMode('TEAM')
-              setShowWorkspaceModeMenu(false)
-              setWorkspaceMode(WorkspaceKind.WORKTREE)
-              setShowTeamConfig(true)
-            }
-          }}
-          disabled={isSubmitting}
-          className={cn(
-            'ml-auto flex items-center gap-2 h-7 pl-2 pr-2 rounded-md text-xs font-medium transition-colors',
-            'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            mode === 'TEAM' ? 'text-foreground' : 'text-muted-foreground',
-          )}
-          title={t('启用团队模式')}
-        >
-          <Users size={14} className={mode === 'TEAM' ? 'text-foreground' : 'text-muted-foreground'} />
-          <span>{t('团队模式')}</span>
-          <span
+        {!isConversationMode && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={mode === 'TEAM'}
+            onClick={() => {
+              if (isSubmitting) return
+              if (mode === 'TEAM') {
+                setMode('SOLO')
+                setShowTeamConfig(false)
+              } else {
+                setMode('TEAM')
+                setShowWorkspaceModeMenu(false)
+                setWorkspaceMode(WorkspaceKind.WORKTREE)
+                setShowTeamConfig(true)
+              }
+            }}
+            disabled={isSubmitting}
             className={cn(
-              'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors',
-              mode === 'TEAM' ? 'bg-primary' : 'bg-border',
+              'ml-auto flex items-center gap-2 h-7 pl-2 pr-2 rounded-md text-xs font-medium transition-colors',
+              'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              mode === 'TEAM' ? 'text-foreground' : 'text-muted-foreground',
             )}
+            title={t('启用团队模式')}
           >
+            <Users size={14} className={mode === 'TEAM' ? 'text-foreground' : 'text-muted-foreground'} />
+            <span>{t('团队模式')}</span>
             <span
               className={cn(
-                'inline-block size-3 rounded-full bg-background shadow-sm transition-transform',
-                mode === 'TEAM' ? 'translate-x-3.5' : 'translate-x-0.5',
+                'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors',
+                mode === 'TEAM' ? 'bg-primary' : 'bg-border',
               )}
-            />
-          </span>
-        </button>
+            >
+              <span
+                className={cn(
+                  'inline-block size-3 rounded-full bg-background shadow-sm transition-transform',
+                  mode === 'TEAM' ? 'translate-x-3.5' : 'translate-x-0.5',
+                )}
+              />
+            </span>
+          </button>
+        )}
       </div>
 
-      {mode === 'SOLO' && workspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
+      {!isConversationMode && mode === 'SOLO' && workspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
         <div className="mt-2.5">
           <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2 text-xs leading-relaxed text-warning/90">
             {t('Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。')}
@@ -509,7 +543,7 @@ export function CreateTaskInput({
       )}
 
       {/* TeamRun configuration panel — muted secondary area below input */}
-      {mode === 'TEAM' && showTeamConfig && (
+      {!isConversationMode && mode === 'TEAM' && showTeamConfig && (
         <div className="mt-2.5 rounded-xl border border-border/60 bg-muted/40 p-3 animate-[fadeInUp_0.25s_cubic-bezier(0.16,1,0.3,1)]">
           <TeamRunCreateForm
             mode={teamRunMode}

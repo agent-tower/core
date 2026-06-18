@@ -38,6 +38,13 @@ export const queryKeys = {
     detail: (id: string) => ['sessions', 'detail', id] as const,
   },
 
+  conversations: {
+    all: ['conversations'] as const,
+    list: (params?: Record<string, unknown>) =>
+      ['conversations', 'list', params] as const,
+    detail: (id: string) => ['conversations', 'detail', id] as const,
+  },
+
   files: {
     all: ['files'] as const,
     tree: (workingDir: string, dirPath: string) =>

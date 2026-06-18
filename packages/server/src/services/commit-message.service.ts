@@ -150,6 +150,10 @@ export class CommitMessageService {
     });
 
     if (!session || session.purpose !== SessionPurpose.COMMIT_MSG) return;
+    if (!session.workspaceId || !session.workspace) {
+      console.warn(`[CommitMessageService] COMMIT_MSG session ${sessionId} has no workspace, skipping cache`);
+      return;
+    }
 
     const commitMessage = this.extractCommitMessage(sessionId, session.logSnapshot);
     if (!commitMessage) {

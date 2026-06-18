@@ -6,6 +6,7 @@ import { useUIStore, type SettingsTab } from '@/stores/ui-store'
 
 // Lazy load pages
 const ProjectKanbanPage = lazy(() => import('@/pages/ProjectKanbanPage').then(m => ({ default: m.ProjectKanbanPage })))
+const ConversationPage = lazy(() => import('@/pages/ConversationPage').then(m => ({ default: m.ConversationPage })))
 const DemoPage = lazy(() => import('@/pages/DemoPage').then(m => ({ default: m.DemoPage })))
 const AgentDemoPage = lazy(() => import('@/pages/AgentDemoPage').then(m => ({ default: m.AgentDemoPage })))
 
@@ -39,6 +40,22 @@ const router = createBrowserRouter([
         element: (
           <Suspense fallback={<RouteLoadingFallback />}>
             <ProjectKanbanPage />
+          </Suspense>
+        ),
+      },
+      {
+        path: 'conversations',
+        element: (
+          <Suspense fallback={<RouteLoadingFallback />}>
+            <ConversationPage />
+          </Suspense>
+        ),
+      },
+      {
+        path: 'conversations/:conversationId',
+        element: (
+          <Suspense fallback={<RouteLoadingFallback />}>
+            <ConversationPage />
           </Suspense>
         ),
       },

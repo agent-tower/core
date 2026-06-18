@@ -153,7 +153,7 @@ function DraggableTaskCard({
         onTouchMove={clearLongPress}
         title={projectLabel}
         aria-label={projectLabel ? `${task.title} — ${projectLabel}` : task.title}
-        className={`flex items-center gap-2.5 mx-2 px-2 py-2 rounded-md text-sm text-left transition-colors group animate-task-enter
+        className={`flex items-center gap-2.5 ml-4 mr-2 px-2 py-2 rounded-md text-sm text-left transition-colors group animate-task-enter
           ${isDragging ? 'opacity-30' : ''}
           ${isSelected ? 'bg-accent' : 'hover:bg-accent/50'}`}
         {...(dragDisabled ? {} : listeners)}

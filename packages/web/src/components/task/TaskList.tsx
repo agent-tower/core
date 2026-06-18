@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useMemo, useEffect, useLayoutEffect } from 'react'
-import { SquarePen, FolderPlus, Search, Layers } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { SquarePen, FolderPlus, Search, Layers, MessageSquare } from 'lucide-react'
 import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core'
 import { useI18n } from '@/lib/i18n'
@@ -303,6 +304,14 @@ export function TaskList({
           <Search size={16} className="text-muted-foreground" />
           <span>{t('Search')}</span>
         </button>
+        <Link
+          to="/conversations"
+          className="w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm text-foreground/80 hover:bg-accent/50 transition-colors"
+          title={t('对话')}
+        >
+          <MessageSquare size={16} className="text-muted-foreground" />
+          <span>{t('对话')}</span>
+        </Link>
       </div>
 
       {/* 空状态：当前视图下没有任何任务 */}

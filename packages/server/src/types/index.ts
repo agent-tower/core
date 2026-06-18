@@ -46,6 +46,12 @@ export enum SessionPurpose {
   COMMIT_MSG = 'COMMIT_MSG',
 }
 
+// 会话执行上下文
+export enum SessionContext {
+  WORKSPACE = 'WORKSPACE',
+  CONVERSATION = 'CONVERSATION',
+}
+
 // 代理可用性检查结果
 export interface AgentAvailability {
   available: boolean;

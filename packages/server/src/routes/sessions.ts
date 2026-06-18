@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getSessionManager } from '../core/container.js';
-import { AgentType } from '../types/index.js';
+import { AgentType, SessionContext } from '../types/index.js';
 import { sessionMsgStoreManager } from '../output/index.js';
 import { prisma } from '../utils/index.js';
 import { getProviderById } from '../executors/index.js';
@@ -52,6 +52,43 @@ const sendMessageSchema = z.object({
   message: z.string().min(1),
   providerId: z.string().optional(),
 });
+
+function isConversationSession(session: { context?: string | null; conversationId?: string | null }) {
+  return session.context === SessionContext.CONVERSATION || Boolean(session.conversationId);
+}
+
+function validateWorkspaceBackedSession(existing: {
+  context?: string | null;
+  conversationId?: string | null;
+  workspace?: {
+    task: {
+      deletedAt?: Date | null;
+      project: { name: string; archivedAt: Date | null; repoDeletedAt: Date | null };
+    };
+  } | null;
+}, reply: any): null | Record<string, string> {
+  if (isConversationSession(existing)) {
+    return null;
+  }
+
+  if (!existing.workspace) {
+    reply.code(404);
+    return { error: 'Workspace not found', code: 'NOT_FOUND' };
+  }
+
+  if (existing.workspace.task.deletedAt) {
+    reply.code(404);
+    return { error: 'Task not found', code: 'NOT_FOUND' };
+  }
+
+  const projectError = buildProjectReadOnlyError(existing.workspace.task.project);
+  if (projectError) {
+    reply.code(400);
+    return projectError;
+  }
+
+  return null;
+}
 
 export async function sessionRoutes(app: FastifyInstance) {
   const sessionService = getSessionManager();
@@ -127,22 +164,17 @@ export async function sessionRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const existing = await prisma.session.findUnique({
         where: { id: request.params.id },
-        include: { workspace: { include: { task: { include: { project: true } } } } },
+        include: {
+          workspace: { include: { task: { include: { project: true } } } },
+          conversation: true,
+        },
       });
       if (!existing) {
         reply.code(404);
         return { error: 'Session not found' };
       }
-      if (existing.workspace.task.deletedAt) {
-        reply.code(404);
-        return { error: 'Task not found', code: 'NOT_FOUND' };
-      }
-
-      const projectError = buildProjectReadOnlyError(existing.workspace.task.project);
-      if (projectError) {
-        reply.code(400);
-        return projectError;
-      }
+      const workspaceError = validateWorkspaceBackedSession(existing, reply);
+      if (workspaceError) return workspaceError;
 
       const result = await sessionService.start(request.params.id);
       if (!result) {
@@ -174,22 +206,17 @@ export async function sessionRoutes(app: FastifyInstance) {
       try {
         const existing = await prisma.session.findUnique({
           where: { id: request.params.id },
-          include: { workspace: { include: { task: { include: { project: true } } } } },
+          include: {
+            workspace: { include: { task: { include: { project: true } } } },
+            conversation: true,
+          },
         });
         if (!existing) {
           reply.code(404);
           return { error: 'Session not found' };
         }
-        if (existing.workspace.task.deletedAt) {
-          reply.code(404);
-          return { error: 'Task not found', code: 'NOT_FOUND' };
-        }
-
-        const projectError = buildProjectReadOnlyError(existing.workspace.task.project);
-        if (projectError) {
-          reply.code(400);
-          return projectError;
-        }
+        const workspaceError = validateWorkspaceBackedSession(existing, reply);
+        if (workspaceError) return workspaceError;
 
         const result = await sessionService.sendMessage(
           request.params.id,

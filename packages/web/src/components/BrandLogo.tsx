@@ -4,6 +4,10 @@ interface BrandLogoProps {
   className?: string
 }
 
+interface BrandLogoTitleProps {
+  className?: string
+}
+
 export function BrandLogo({ className = 'h-7 w-7' }: BrandLogoProps) {
   return (
     <img
@@ -11,5 +15,13 @@ export function BrandLogo({ className = 'h-7 w-7' }: BrandLogoProps) {
       alt="Agent Tower"
       className={`block shrink-0 object-contain ${className}`}
     />
+  )
+}
+
+export function BrandLogoTitle({ className = '' }: BrandLogoTitleProps) {
+  return (
+    <span className={`font-semibold text-foreground tracking-tight text-base ${className}`}>
+      Agent Tower
+    </span>
   )
 }

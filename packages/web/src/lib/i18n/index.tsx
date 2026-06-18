@@ -39,7 +39,7 @@ function interpolate(template: string, values?: TranslationValues) {
 let currentLocale: AppLocale = 'zh-CN'
 
 export function translateForLocale(locale: AppLocale, source: string, values?: TranslationValues) {
-  const template = messages[locale][source] ?? source
+  const template = messages[locale]?.[source] ?? source
   return interpolate(template, values)
 }
 

@@ -22,7 +22,7 @@ import { useI18n } from '@/lib/i18n'
 import type { TeamRunMode } from '@agent-tower/shared'
 import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
 import { CreateProjectModal } from '@/components/project/CreateProjectModal'
-import { BrandLogo } from '@/components/BrandLogo'
+import { BrandLogo, BrandLogoTitle } from '@/components/BrandLogo'
 import { CreateTaskInput } from '@/components/task/CreateTaskInput'
 import { getWorkspaceBranchLabel } from '@/components/workspace/team-workspace-view'
 import { cn } from '@/lib/utils'
@@ -36,13 +36,6 @@ interface BackgroundStartState {
   status: BackgroundStartStatus
   error?: string
 }
-
-// === rendering-hoist-jsx: 静态顶部栏标题文字 ===
-const HEADER_TITLE = (
-  <span className="font-semibold text-foreground tracking-tight text-base">
-    Agent Tower
-  </span>
-)
 
 /** 顶栏项目切换器：面包屑式「Agent Tower / 项目 ▾」，侧栏空间全部留给任务 */
 function ProjectSwitcher({
@@ -627,21 +620,9 @@ export function ProjectKanbanPage() {
     return activeProjects[0]?.id ?? ''
   }, [activeProjects, effectiveFilterProjectId])
 
-  const [createTaskProjectId, setCreateTaskProjectId] = useState(defaultProjectId)
-
-  useEffect(() => {
-    setCreateTaskProjectId(defaultProjectId)
-  }, [defaultProjectId])
-
-  const createTaskProjectName = useMemo(() => {
-    return activeProjects.find(p => p.id === createTaskProjectId)?.name
-      ?? activeProjects.find(p => p.id === defaultProjectId)?.name
-      ?? t('Project')
-  }, [activeProjects, createTaskProjectId, defaultProjectId, t])
-
   const createTaskTitle = locale === 'zh-CN'
-    ? `你需要在 ${createTaskProjectName} 中做点什么？`
-    : `What do you need to do in ${createTaskProjectName}?`
+    ? '我可以为你做点什么？'
+    : 'What can I do for you?'
 
   const defaultProviderId = useMemo(() => {
     const lastProviderId = localStorage.getItem('lastSelectedProviderId')
@@ -694,7 +675,6 @@ export function ProjectKanbanPage() {
               onSubmit={handleMobileSubmitTask}
               defaultProjectId={defaultProjectId}
               defaultProviderId={defaultProviderId}
-              onProjectChange={setCreateTaskProjectId}
               createStep={createStep}
             />
           </div>
@@ -731,7 +711,7 @@ export function ProjectKanbanPage() {
           <header className="h-12 bg-sidebar flex items-center px-4 justify-between shrink-0 z-20">
             <div className="flex items-center gap-2 min-w-0">
               <BrandLogo />
-              {HEADER_TITLE}
+              <BrandLogoTitle />
               <ProjectSwitcher
                 projects={uiProjects}
                 filterProjectId={effectiveFilterProjectId}
@@ -788,7 +768,7 @@ export function ProjectKanbanPage() {
           usesDesktopIntegratedTitlebar && 'pl-[72px]',
         )}>
           <BrandLogo />
-          {HEADER_TITLE}
+          <BrandLogoTitle />
           <ProjectSwitcher
             projects={uiProjects}
             filterProjectId={effectiveFilterProjectId}
@@ -877,7 +857,6 @@ export function ProjectKanbanPage() {
                   onSubmit={handleSubmitTask}
                   defaultProjectId={defaultProjectId}
                   defaultProviderId={defaultProviderId}
-                  onProjectChange={setCreateTaskProjectId}
                   createStep={createStep}
                 />
               </div>

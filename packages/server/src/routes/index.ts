@@ -17,6 +17,7 @@ import { appSettingsRoutes } from './app-settings.js';
 import { notificationRoutes } from './notifications.js';
 import { teamRunRoutes } from './team-runs.js';
 import { previewRoutes } from './previews.js';
+import { conversationRoutes } from './conversations.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // 系统路由
@@ -69,6 +70,9 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // TeamRun 路由
   await app.register(teamRunRoutes, { prefix: '/api' });
+
+  // 独立对话路由
+  await app.register(conversationRoutes, { prefix: '/api' });
 
   // Preview 同源反向代理路由（同时注册 /api/previews 和 /view）
   await app.register(previewRoutes);

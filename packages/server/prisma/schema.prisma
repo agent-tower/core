@@ -264,14 +264,33 @@ model Workspace {
   @@unique([parentWorkspaceId, ownerMemberId])
 }
 
+// 独立对话：不绑定 Project/Task/Workspace，仅复用 Session 执行链路
+model Conversation {
+  id            String    @id @default(uuid())
+  title         String
+  directoryName String    @unique
+  workingDir    String
+  session       Session?
+  deletedAt     DateTime?
+  lastActiveAt  DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([deletedAt])
+  @@index([lastActiveAt])
+}
+
 // 会话 (一次 AI 代理执行)
 // AgentType: CLAUDE_CODE, GEMINI_CLI, CURSOR_AGENT
 // SessionStatus: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
 // SessionPurpose: CHAT, COMMIT_MSG
 model Session {
   id           String             @id @default(uuid())
-  workspaceId  String
-  workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId  String?
+  workspace    Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversationId String?          @unique
+  conversation Conversation?      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  context      String             @default("WORKSPACE") // WORKSPACE: 项目工作区, CONVERSATION: 独立对话
   agentType    String
   variant      String             @default("DEFAULT")
   providerId   String?
@@ -285,6 +304,7 @@ model Session {
   updatedAt    DateTime           @updatedAt
 
   @@index([workspaceId])
+  @@index([context])
 }
 
 // 执行进程

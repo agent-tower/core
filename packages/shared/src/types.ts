@@ -55,6 +55,14 @@ export enum SessionPurpose {
   COMMIT_MSG = 'COMMIT_MSG',
 }
 
+/** 会话执行上下文 */
+export enum SessionContext {
+  /** 项目任务工作区 */
+  WORKSPACE = 'WORKSPACE',
+  /** 独立对话目录 */
+  CONVERSATION = 'CONVERSATION',
+}
+
 /** 团队运行模式 */
 export type TeamRunMode = 'CONFIRM' | 'AUTO'
 
@@ -330,7 +338,9 @@ export interface Workspace {
 /** 会话 */
 export interface Session {
   id: string
-  workspaceId: string
+  workspaceId?: string | null
+  conversationId?: string | null
+  context?: SessionContext | string
   agentType: AgentType
   status: SessionStatus
   /** 会话用途 */
@@ -340,6 +350,37 @@ export interface Session {
   tokenUsage?: { totalTokens: number; modelContextWindow?: number } | null
   startedAt?: string
   endedAt?: string
+}
+
+/** 独立对话 */
+export interface Conversation {
+  id: string
+  title: string
+  directoryName: string
+  workingDir: string
+  sessionId: string
+  agentType: AgentType
+  status: SessionStatus
+  providerId?: string | null
+  variant?: string | null
+  tokenUsage?: { totalTokens: number; modelContextWindow?: number } | null
+  deletedAt?: string | null
+  lastActiveAt?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface ConversationCreateInput {
+  prompt: string
+  providerId: string
+  variant?: string
+  attachmentIds?: string[]
+}
+
+export interface ConversationMessageInput {
+  message: string
+  providerId?: string
+  attachmentIds?: string[]
 }
 
 /** 团队成员预设 */
