@@ -278,8 +278,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Creating Workspace...': '正在创建工作区...',
     'Creating Session...': '正在创建会话...',
     'Starting Agent...': '正在启动 Agent...',
-    '启动 Agent 失败': 'Failed to start Agent',
-    '重试启动 Agent': 'Retry Start Agent',
+    '启动 Agent 失败': '启动 Agent 失败',
+    '重试启动 Agent': '重试启动 Agent',
     'Create New Project': '创建新项目',
     'Creating...': '创建中...',
     'Checking...': '检查中...',
@@ -376,6 +376,76 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Capabilities': '能力',
     'Comma separated': '用逗号分隔',
     'No member presets': '暂无成员预设',
+    '...': '...',
+    'alice, a, reviewer': 'alice, a, reviewer',
+    'Checking preview target...': '正在检查预览目标...',
+    'Configure a local preview target to display it here.': '配置本地预览目标后将在此显示。',
+    'Delete Project': '删除项目',
+    'Deleted projects are read-only': '已删除项目为只读',
+    'Deleting...': '删除中...',
+    'Enter a local preview URL on the Agent Tower machine.': '输入 Agent Tower 所在机器上的本地预览 URL。',
+    'Failed to delete project': '删除项目失败',
+    'Failed to load full message': '加载完整消息失败',
+    'Failed to restore project': '恢复项目失败',
+    'Failed to save preview target': '保存预览目标失败',
+    'Git Commit Message': 'Git Commit Message',
+    'Loading': '加载中',
+    'Loopback only': '仅限本机回环地址',
+    'Mention members': '提及成员',
+    'Message the team room...': '向 Team Room 发送消息...',
+    'No active workspace.': '暂无活动工作区。',
+    'Open preview in new tab': '在新标签页打开预览',
+    'Preview target is not reachable': '预览目标不可访问',
+    'Preview target saved': '预览目标已保存',
+    'Private': '私密',
+    'Proxying': '代理中',
+    'Read-only': '只读',
+    'Refresh': '刷新',
+    'Refresh preview': '刷新预览',
+    'Remove mention': '移除提及',
+    'Restore Project': '恢复项目',
+    'Restoring...': '恢复中...',
+    'Save': '保存',
+    'Save preview target': '保存预览目标',
+    'Start the preview server, then refresh.': '启动预览服务后刷新。',
+    'Team members': '团队成员',
+    'this project': '此项目',
+    'This project is read-only': '此项目为只读',
+    '10 个首屏加载动画候选 · 颜色遵循 Agent Tower 设计规范 · 点击卡片查看全屏效果':
+      '10 个首屏加载动画候选 · 颜色遵循 Agent Tower 设计规范 · 点击卡片查看全屏效果',
+    '设计推荐': '设计推荐',
+    '首选：Charcoal Breathe (#10)': '首选：Charcoal Breathe (#10)',
+    '备选A：Tower Pulse (#1)': '备选A：Tower Pulse (#1)',
+    '备选B：Terminal Cursor (#4)': '备选B：Terminal Cursor (#4)',
+    '品牌感最强，Charcoal 色块+Tower 图标呼吸，用户对产品的第一印象即品牌本身。':
+      '品牌感最强，Charcoal 色块+Tower 图标呼吸，用户对产品的第一印象即品牌本身。',
+    '品牌图标直接出现，脉冲节奏稳定，不浮夸，适合工作台场景。':
+      '品牌图标直接出现，脉冲节奏稳定，不浮夸，适合工作台场景。',
+    '终端光标闪烁，贴合 Agent/终端协作的核心场景，开发者亲切感强。':
+      '终端光标闪烁，贴合 Agent/终端协作的核心场景，开发者亲切感强。',
+    '全屏预览：{name}': '全屏预览：{name}',
+    '关闭预览': '关闭预览',
+    '按 Esc 或点击关闭按钮退出': '按 Esc 或点击关闭按钮退出',
+    'Agent Tower 品牌图标配合脉冲光点，传达「系统就绪中」的品牌感。':
+      'Agent Tower 品牌图标配合脉冲光点，传达「系统就绪中」的品牌感。',
+    '五根柱状条交错升降，暗喻任务编排队列，节奏感强。':
+      '五根柱状条交错升降，暗喻任务编排队列，节奏感强。',
+    '双层同心圆环反向旋转，精密工具质感，不浮夸。':
+      '双层同心圆环反向旋转，精密工具质感，不浮夸。',
+    '终端风格光标闪烁，与 Agent Tower 终端协作场景直接呼应。':
+      '终端风格光标闪烁，与 Agent Tower 终端协作场景直接呼应。',
+    '三点波浪脉动，极简克制，适合工具型产品的默认加载。':
+      '三点波浪脉动，极简克制，适合工具型产品的默认加载。',
+    '三层卡片微幅浮动，模拟看板层叠翻页，呼应任务管理语境。':
+      '三层卡片微幅浮动，模拟看板层叠翻页，呼应任务管理语境。',
+    '水平光束往复滑过进度条，线性进度隐喻，不阻断视线。':
+      '水平光束往复滑过进度条，线性进度隐喻，不阻断视线。',
+    '三列骨架屏微闪，预示看板布局，减少布局跳变。':
+      '三列骨架屏微闪，预示看板布局，减少布局跳变。',
+    '圆环进度弧 + 中心菱形符号呼吸，兼具进度指示与品牌印记。':
+      '圆环进度弧 + 中心菱形符号呼吸，兼具进度指示与品牌印记。',
+    'Charcoal 圆角色块呼吸缩放，内嵌 Tower 图标，品牌存在感最强。':
+      'Charcoal 圆角色块呼吸缩放，内嵌 Tower 图标，品牌存在感最强。',
     'active': '活跃',
     'working': '工作中',
   },
@@ -557,6 +627,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '追加到每次 prompt 末尾的文本': 'Text appended to the end of every prompt.',
     '跳过权限确认': 'Skip Permission Confirmation',
     '模型': 'Model',
+    '推理强度': 'Reasoning Effort',
     '强制执行': 'Force Execution',
     '跳过所有确认和沙盒': 'Skip All Confirmations and Sandbox',
     'Profile': 'Profile',
@@ -831,6 +902,167 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '正在加载提交记录...': 'Loading commits...',
     '暂无提交记录': 'No commits yet',
     '加载更多提交': 'Load more commits',
+    '{count} 个成员预设': '{count} member preset(s)',
+    '{count} 个团队模板': '{count} team template(s)',
+    '本地模式': 'Main directory mode',
+    '编辑模板': 'Edit template',
+    '编辑预设': 'Edit preset',
+    '标题': 'Title',
+    '测试': 'Test',
+    '测试消息发送成功': 'Test message sent successfully',
+    '触发': 'Trigger',
+    '创建 Provider 失败': 'Failed to create provider',
+    '创建 worktree 后自动执行的命令，每行一条。在 worktree 目录下执行，单条超时 5 分钟。':
+      'Commands to run automatically after creating a worktree, one per line. Commands run inside the worktree directory and time out after 5 minutes each.',
+    '创建 worktree 时自动从主仓库复制的文件或目录，适用于 .env、node_modules 等不在 git 管理中的文件。支持 glob。':
+      'Files or directories to copy from the main repository when creating a worktree, such as .env or node_modules files not tracked by git. Glob patterns are supported.',
+    '创建新模板': 'Create new template',
+    '创建新预设': 'Create new preset',
+    '当前没有可配置的项目': 'No configurable projects yet',
+    '导出': 'Export',
+    '导入': 'Import',
+    '队列': 'Queue',
+    '发送失败，请检查 Webhook 地址': 'Failed to send. Check the webhook URL.',
+    '发送失败: {message}': 'Send failed: {message}',
+    '返回列表': 'Back to list',
+    '飞书 Webhook': 'Feishu Webhook',
+    '该 Provider 未配置额外参数。点击"编辑"添加运行配置、环境变量或 CLI 配置。':
+      'This provider has no extra parameters configured. Click "Edit" to add runtime configuration, environment variables, or CLI configuration.',
+    '个变体': 'variants',
+    '个文件': 'files',
+    '更新 Provider 失败': 'Failed to update provider',
+    '工作区': 'Workspace',
+    '工作树模式': 'Worktree mode',
+    '勾选后会连项目文件一起删除，请谨慎选择。':
+      'When checked, project files will also be deleted. Choose carefully.',
+    '勾选后会删除 repoPath 指向的本地仓库目录，并禁用代码/Git 相关能力。':
+      'When checked, the local repository directory pointed to by repoPath will be deleted, and code/Git capabilities will be disabled.',
+    '关闭': 'Off',
+    '管理 Agent 执行器的配置变体。每个变体定义一组运行参数。':
+      'Manage configuration variants for agent executors. Each variant defines a set of runtime parameters.',
+    '合并到 {targetBranch}': 'Merge into {targetBranch}',
+    '恢复该项目时需要重新绑定一个有效的 Git 仓库路径。':
+      'Restoring this project requires rebinding a valid Git repository path.',
+    '恢复后，项目会重新出现在默认项目列表中。':
+      'After restore, the project will appear in the default project list again.',
+    '恢复项目': 'Restore project',
+    '会话': 'Session',
+    '加载失败': 'Failed to load',
+    '将归档当前工作区并自动在新 Worktree 中重新启动 Agent，旧工作区内容保留供参考。':
+      'The current workspace will be archived and the agent will restart automatically in a new worktree. The old workspace content is kept for reference.',
+    '界面语言会保存到本地数据库，重启后继续生效。':
+      'The interface language is saved to the local database and remains active after restart.',
+    '仅支持 PNG、JPG、WebP 头像。': 'Only PNG, JPG, and WebP avatars are supported.',
+    '可用预设': 'Available presets',
+    '模板名称': 'Template name',
+    '内容': 'Content',
+    '能力': 'capabilities',
+    '启动 Agent 失败': 'Failed to start Agent',
+    '启用团队模式': 'Enable team mode',
+    '清除': 'Clear',
+    '确认重试': 'Confirm retry',
+    '人': ' members',
+    '任务完成时弹出系统通知': 'Show a system notification when a task finishes.',
+    '删除 Provider': 'Delete Provider',
+    '删除任务失败': 'Failed to delete task',
+    '删除项目': 'Delete project',
+    '上传': 'Upload',
+    '尚未选择': 'Nothing selected yet',
+    '跳转地址': 'Link target',
+    '通知卡片中的"查看任务"按钮跳转地址前缀':
+      'URL prefix for the "View Task" button in notification cards',
+    '通知设置': 'Notification Settings',
+    '同时删除本地项目文件': 'Also delete local project files',
+    '头像上传失败': 'Avatar upload failed',
+    '头像图片不能超过 2MB。': 'Avatar image must be 2 MB or smaller.',
+    '头像已上传': 'Avatar uploaded',
+    '团队模式': 'Team mode',
+    '推送到外部渠道（飞书群机器人等）':
+      'Push to external channels such as Feishu bot webhooks.',
+    '我已确认这会删除本地项目文件': 'I understand this will delete local project files',
+    '先创建成员预设': 'Create member presets first',
+    '项目「{title}」的本地仓库文件已删除。恢复前需要重新绑定一个有效的 Git 仓库路径。':
+      'Local repository files for project "{title}" have been deleted. Rebind a valid Git repository path before restoring it.',
+    '项目「{title}」将从默认项目列表隐藏，但历史任务、workspace 和会话记录仍会保留。':
+      'Project "{title}" will be hidden from the default project list, but historical tasks, workspaces, and sessions will be kept.',
+    '项目将从默认列表隐藏，历史记录保留。可选同时删除本地文件。':
+      'The project will be hidden from the default list while history is kept. You can also delete local files.',
+    '项目为只读历史': 'Project is read-only history',
+    '项目已恢复': 'Project restored',
+    '项目已删除': 'Project deleted',
+    '项目已删除，本地仓库文件也已清理。恢复项目并重新绑定仓库后才能继续操作。':
+      'The project was deleted and local repository files were removed. Restore the project and rebind a repository before continuing.',
+    '项目已删除，并清理了本地文件': 'Project deleted and local files removed',
+    '项目已删除。恢复项目后才能继续创建会话或修改任务。':
+      'The project was deleted. Restore it before creating sessions or editing tasks.',
+    '项目已删除。Workspace 以只读模式展示历史内容。':
+      'The project was deleted. The workspace shows historical content in read-only mode.',
+    '项目已删除且本地仓库文件已清理。这里只保留历史视图。':
+      'The project was deleted and local repository files were removed. Only the historical view remains here.',
+    '新建': 'New',
+    '新建配置': 'New configuration',
+    '新增模板': 'New template',
+    '新增预设': 'New preset',
+    '选择': 'Select',
+    '选择 {name} 头像': 'Select {name} avatar',
+    '选择...': 'Select...',
+    '选择一个 Provider 查看详情': 'Select a provider to view details',
+    '选择一个项目查看配置': 'Select a project to view configuration',
+    '选择预设头像': 'Select preset avatar',
+    '已删除': 'Deleted',
+    '源码已删除': 'Source deleted',
+    '暂无 Agent 配置': 'No agent configuration yet',
+    '暂无 Profile 配置': 'No profile configuration yet',
+    '暂无变体': 'No variants yet',
+    '暂无成员预设': 'No member presets yet',
+    '暂无团队模板': 'No team templates yet',
+    '重试启动 Agent': 'Retry starting Agent',
+    '重新开始': 'Restart',
+    '重新开始任务': 'Restart task',
+    '追加独立成员': 'Add standalone members',
+    '桌面通知': 'Desktop notifications',
+    'Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。':
+      'The agent will modify the project main directory directly. Auto-commit, Merge, Rebase, and conflict resolution flows are unavailable.',
+    'Agent Tower 会尽量校验仓库 identity；如果 remote URL 或目录名不同，会给出警告但允许继续。':
+      'Agent Tower will try to verify repository identity. If the remote URL or directory name differs, it will show a warning but still allow restore.',
+    'CLI 配置': 'CLI Config',
+    'Profile 配置': 'Profile Configuration',
+    'Provider 列表加载失败。': 'Failed to load provider list.',
+    '10 个首屏加载动画候选 · 颜色遵循 Agent Tower 设计规范 · 点击卡片查看全屏效果':
+      '10 first-screen loading animation candidates. Colors follow the Agent Tower design system. Click a card to view it fullscreen.',
+    '设计推荐': 'Design recommendation',
+    '首选：Charcoal Breathe (#10)': 'Top choice: Charcoal Breathe (#10)',
+    '备选A：Tower Pulse (#1)': 'Alternative A: Tower Pulse (#1)',
+    '备选B：Terminal Cursor (#4)': 'Alternative B: Terminal Cursor (#4)',
+    '品牌感最强，Charcoal 色块+Tower 图标呼吸，用户对产品的第一印象即品牌本身。':
+      'Strongest brand presence: a breathing Charcoal block with the Tower icon, making the product brand the first impression.',
+    '品牌图标直接出现，脉冲节奏稳定，不浮夸，适合工作台场景。':
+      'The brand icon appears directly with a steady pulse. It stays restrained and fits a workspace product.',
+    '终端光标闪烁，贴合 Agent/终端协作的核心场景，开发者亲切感强。':
+      'A blinking terminal cursor matches the core agent and terminal collaboration flow and feels familiar to developers.',
+    '全屏预览：{name}': 'Fullscreen preview: {name}',
+    '关闭预览': 'Close preview',
+    '按 Esc 或点击关闭按钮退出': 'Press Esc or click the close button to exit',
+    'Agent Tower 品牌图标配合脉冲光点，传达「系统就绪中」的品牌感。':
+      'Agent Tower brand icon with a pulsing dot, conveying a branded "system is getting ready" state.',
+    '五根柱状条交错升降，暗喻任务编排队列，节奏感强。':
+      'Five bars rise in sequence, suggesting an orchestration queue with a strong rhythm.',
+    '双层同心圆环反向旋转，精密工具质感，不浮夸。':
+      'Two concentric rings rotate in opposite directions for a precise tool feel without excess.',
+    '终端风格光标闪烁，与 Agent Tower 终端协作场景直接呼应。':
+      'A terminal-style cursor blink that directly echoes Agent Tower terminal collaboration.',
+    '三点波浪脉动，极简克制，适合工具型产品的默认加载。':
+      'A minimal three-dot wave, restrained enough for a default loading state in a tool product.',
+    '三层卡片微幅浮动，模拟看板层叠翻页，呼应任务管理语境。':
+      'Three cards float subtly, suggesting stacked kanban pages and task management.',
+    '水平光束往复滑过进度条，线性进度隐喻，不阻断视线。':
+      'A horizontal beam sweeps across a progress bar, implying linear progress without distraction.',
+    '三列骨架屏微闪，预示看板布局，减少布局跳变。':
+      'Three shimmering skeleton columns preview the kanban layout and reduce layout shift.',
+    '圆环进度弧 + 中心菱形符号呼吸，兼具进度指示与品牌印记。':
+      'A ring progress arc and breathing center diamond combine progress feedback with a brand mark.',
+    'Charcoal 圆角色块呼吸缩放，内嵌 Tower 图标，品牌存在感最强。':
+      'A breathing Charcoal rounded block with the Tower icon embedded, giving the strongest brand presence.',
     '正在加载...': 'Loading...',
   },
 }

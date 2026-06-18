@@ -49,17 +49,17 @@ export function DemoPage() {
   const handleExit = useCallback((exitCode: number) => {
     setMessages(prev => [
       ...prev,
-      { role: 'agent', content: `\n[进程退出，退出码: ${exitCode}]`, timestamp: new Date() },
+      { role: 'agent', content: `\n[${t('Process exited with code {code}', { code: exitCode })}]`, timestamp: new Date() },
     ])
     setSessionId(null)
-  }, [])
+  }, [t])
 
   const handleError = useCallback((message: string) => {
     setMessages(prev => [
       ...prev,
-      { role: 'agent', content: `\n[错误: ${message}]`, timestamp: new Date() },
+      { role: 'agent', content: `\n[${t('Error: {message}', { message })}]`, timestamp: new Date() },
     ])
-  }, [])
+  }, [t])
 
   // 使用 terminal hook
   const { isConnected, isAttached, attach } = useTerminal({

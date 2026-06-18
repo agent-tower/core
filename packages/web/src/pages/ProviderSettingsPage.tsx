@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ChangeEvent } from 'react'
+import { useState, useRef, type ChangeEvent } from 'react'
 import { parse as parseToml } from 'smol-toml'
 import {
   useProviders,
@@ -20,6 +20,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Plus, Pencil, Trash2, CheckCircle2, XCircle, ChevronDown, Download, Upload, RotateCcw, AlertTriangle, Cpu } from 'lucide-react'
 import {
   AgentType,
+  type AppLocale,
   type ProviderBackupFile,
   type ProviderImportAction,
   type ProviderImportPreview,
@@ -112,7 +113,7 @@ const CLAUDE_CODE_SETTINGS_TEMPLATE = JSON.stringify(
   2
 )
 
-const CODEX_SETTINGS_TEMPLATE = `# Codex config.toml 配置片段 — 通过 -c 参数注入，不会修改 ~/.codex/config.toml
+const CODEX_SETTINGS_TEMPLATE_ZH = `# Codex config.toml 配置片段 — 通过 -c 参数注入，不会修改 ~/.codex/config.toml
 # 参考: https://developers.openai.com/codex/config-sample
 
 # ─── 模型与推理 ─────────────────────────────────────────────
@@ -146,9 +147,43 @@ const CODEX_SETTINGS_TEMPLATE = `# Codex config.toml 配置片段 — 通过 -c 
 # wire_api = "responses"
 `
 
-function getSettingsTemplate(agentType: AgentType): string {
+const CODEX_SETTINGS_TEMPLATE_EN = `# Codex config.toml snippet — injected through -c; ~/.codex/config.toml is not modified.
+# Reference: https://developers.openai.com/codex/config-sample
+
+# ─── Model and reasoning ────────────────────────────────────
+# model_reasoning_effort = "medium"     # minimal | low | medium | high | xhigh
+# model_reasoning_summary = "auto"      # auto | concise | detailed | none
+# model_verbosity = "medium"            # low | medium | high
+# service_tier = "flex"                 # fast | flex
+
+# ─── Custom Model Provider ──────────────────────────────────
+# model_provider = "azure"
+#
+# [model_providers.azure]
+# name = "Azure OpenAI"
+# base_url = "https://YOUR_PROJECT.openai.azure.com/openai"
+# env_key = "AZURE_OPENAI_API_KEY"
+# env_key_instructions = "Set AZURE_OPENAI_API_KEY in Provider env"
+# wire_api = "responses"
+# query_params = { api-version = "2025-04-01-preview" }
+
+# ─── OpenAI data residency ──────────────────────────────────
+# [model_providers.openai-us]
+# name = "OpenAI US"
+# base_url = "https://us.api.openai.com/v1"
+# wire_api = "responses"
+# requires_openai_auth = true
+
+# ─── Local OSS (Ollama) ─────────────────────────────────────
+# [model_providers.ollama]
+# name = "Ollama"
+# base_url = "http://localhost:11434/v1"
+# wire_api = "responses"
+`
+
+function getSettingsTemplate(agentType: AgentType, locale: AppLocale): string {
   if (agentType === AgentType.CLAUDE_CODE) return CLAUDE_CODE_SETTINGS_TEMPLATE
-  if (agentType === AgentType.CODEX) return CODEX_SETTINGS_TEMPLATE
+  if (agentType === AgentType.CODEX) return locale === 'zh-CN' ? CODEX_SETTINGS_TEMPLATE_ZH : CODEX_SETTINGS_TEMPLATE_EN
   return ''
 }
 
@@ -175,7 +210,8 @@ const CONFIG_FIELD_OPTION_LABELS: Record<string, Record<string, string>> = Objec
 function formatConfigValue(key: string, value: unknown): string {
   if (typeof value === 'boolean') return value ? translate('是') : translate('否')
   if (typeof value === 'string' && value) {
-    return CONFIG_FIELD_OPTION_LABELS[key]?.[value] ?? value
+    const optionLabel = CONFIG_FIELD_OPTION_LABELS[key]?.[value]
+    return optionLabel ? translate(optionLabel) : value
   }
   return String(value)
 }
@@ -342,7 +378,10 @@ function ConfigFieldsForm({
               <Select
                 value={(config[field.key] as string) ?? ''}
                 onChange={value => updateField(field.key, value || undefined)}
-                options={field.options}
+                options={field.options.map(option => ({
+                  ...option,
+                  label: t(option.label),
+                }))}
                 placeholder={t('选择...')}
               />
             )}
@@ -364,34 +403,25 @@ function ProviderFormModal({
   initialData?: ProviderFormData
   onSave: (data: CreateProviderInput | UpdateProviderInput) => void
 }) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const [formData, setFormData] = useState<ProviderFormData>(
     initialData ?? {
       name: '',
       agentType: AgentType.CLAUDE_CODE,
       config: getDefaultConfigForAgentType(),
-      settings: '',
+      settings: getSettingsTemplate(AgentType.CLAUDE_CODE, locale),
       env: [],
       isDefault: false,
     }
   )
   const [settingsError, setSettingsError] = useState('')
 
-  useEffect(() => {
-    if (!initialData && !formData.settings) {
-      const template = getSettingsTemplate(formData.agentType)
-      if (template) {
-        setFormData(prev => ({ ...prev, settings: template }))
-      }
-    }
-  }, [])
-
   const handleAgentTypeChange = (type: AgentType) => {
     setFormData(prev => ({
       ...prev,
       agentType: type,
       config: getDefaultConfigForAgentType(),
-      settings: getSettingsTemplate(type),
+      settings: getSettingsTemplate(type, locale),
     }))
   }
 
@@ -578,7 +608,7 @@ function ProviderFormModal({
               }}
               rows={10}
               className="font-mono"
-              placeholder={getSettingsTemplate(formData.agentType)}
+              placeholder={getSettingsTemplate(formData.agentType, locale)}
               aria-invalid={!!settingsError}
             />
             {settingsError && (
@@ -885,12 +915,7 @@ export function ProviderSettingsPage() {
   const [mobileShowDetail, setMobileShowDetail] = useState(false)
 
   const providers = providersData ?? []
-
-  useEffect(() => {
-    if (!selectedId && providers.length > 0) {
-      setSelectedId(providers[0].provider.id)
-    }
-  }, [providers, selectedId])
+  const effectiveSelectedId = selectedId ?? providers[0]?.provider.id ?? null
 
   const handleCreate = (data: CreateProviderInput) => {
     createProvider.mutate(data, {
@@ -923,7 +948,7 @@ export function ProviderSettingsPage() {
     deleteProvider.mutate(deleteConfirm.id, {
       onSuccess: () => {
         toast.success(deleteConfirm.builtIn ? t('已恢复默认 Provider 配置') : t('Provider 已删除'))
-        if (selectedId === deleteConfirm.id) setSelectedId(null)
+        if (effectiveSelectedId === deleteConfirm.id) setSelectedId(null)
         setDeleteConfirm(null)
         setMobileShowDetail(false)
       },
@@ -1063,7 +1088,7 @@ export function ProviderSettingsPage() {
       ) : (
         <SettingsMasterDetail
           items={providers}
-          selectedId={selectedId}
+          selectedId={effectiveSelectedId}
           onSelectItem={(id) => {
             setSelectedId(id)
             setMobileShowDetail(true)
