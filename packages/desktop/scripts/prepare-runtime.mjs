@@ -1,4 +1,4 @@
-import { rmSync, mkdirSync, cpSync, existsSync, readdirSync, chmodSync, realpathSync } from 'node:fs';
+import { rmSync, mkdirSync, cpSync, existsSync, readdirSync, chmodSync, realpathSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -29,19 +29,42 @@ function requirePath(target, label) {
   }
 }
 
+function assertNoRuntimeSymlinks(target, root = target) {
+  for (const entry of readdirSync(target, { withFileTypes: true })) {
+    const entryPath = path.join(target, entry.name);
+    const relative = path.relative(root, entryPath);
+    if (relative.startsWith(`.bin${path.sep}`)) {
+      continue;
+    }
+
+    const stat = lstatSync(entryPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Desktop runtime must not contain dependency symlinks: ${path.relative(monorepoRoot, entryPath)}`);
+    }
+    if (entry.isDirectory()) {
+      assertNoRuntimeSymlinks(entryPath, root);
+    }
+  }
+}
+
 rmSync(runtimeDir, { recursive: true, force: true });
 mkdirSync(runtimeDir, { recursive: true });
 
-run('pnpm', ['--filter', '@agent-tower/server', 'deploy', '--legacy', '--prod', serverRuntimeDir]);
+run('pnpm', ['--filter', '@agent-tower/server', '--config.node-linker=hoisted', 'deploy', '--legacy', '--prod', serverRuntimeDir]);
 
 const selfWorkspaceLink = path.join(serverRuntimeDir, 'node_modules/.pnpm/node_modules/@agent-tower/server');
-rmSync(selfWorkspaceLink, { force: true });
+rmSync(selfWorkspaceLink, { recursive: true, force: true });
+if (existsSync(selfWorkspaceLink)) {
+  throw new Error(`Failed to remove self workspace entry: ${selfWorkspaceLink}`);
+}
 
 requirePath(path.join(serverRuntimeDir, 'dist/cli.js'), 'server CLI build output');
 requirePath(path.join(serverRuntimeDir, 'prisma/schema.prisma'), 'Prisma schema');
 requirePath(path.join(serverRuntimeDir, 'node_modules/prisma/build/index.js'), 'Prisma CLI runtime');
 requirePath(path.join(serverRuntimeDir, 'node_modules/@prisma/client'), 'Prisma client runtime');
 requirePath(path.join(serverRuntimeDir, 'node_modules/@shitiandmw/node-pty'), 'node-pty runtime');
+requirePath(path.join(serverRuntimeDir, 'node_modules/@modelcontextprotocol/sdk'), 'MCP SDK runtime');
+assertNoRuntimeSymlinks(path.join(serverRuntimeDir, 'node_modules'));
 
 const workspacePrismaClientPackage = realpathSync(path.join(monorepoRoot, 'packages/server/node_modules/@prisma/client'));
 const generatedPrismaClientSrc = path.resolve(workspacePrismaClientPackage, '../../.prisma/client');
@@ -62,6 +85,34 @@ for (const target of [generatedPrismaClientDest, rootGeneratedPrismaClientDest, 
 const prismaEngineFiles = readdirSync(generatedPrismaClientDest).filter((name) => name.includes('query_engine') || name.includes('libquery_engine'));
 if (prismaEngineFiles.length === 0) {
   throw new Error(`Generated Prisma client has no query engine files: ${generatedPrismaClientDest}`);
+}
+
+const runtimeCheck = spawnSync(process.execPath, [
+  '--input-type=module',
+  '-e',
+  [
+    "import { createRequire } from 'node:module'",
+    "const require = createRequire(import.meta.url)",
+    "require('fastify')",
+    "require('@prisma/client')",
+    "require.resolve('@prisma/engines')",
+    "require.resolve('@prisma/debug')",
+    "require.resolve('@prisma/fetch-engine')",
+    "require.resolve('@prisma/get-platform')",
+    "await import('@modelcontextprotocol/sdk/server/mcp.js')",
+    "await import('./dist/mcp/server.js')",
+  ].join(';'),
+], {
+  cwd: serverRuntimeDir,
+  encoding: 'utf-8',
+  env: process.env,
+});
+if (runtimeCheck.status !== 0) {
+  throw new Error([
+    'Packaged server runtime module resolution check failed.',
+    runtimeCheck.stdout.trim(),
+    runtimeCheck.stderr.trim(),
+  ].filter(Boolean).join('\n'));
 }
 
 const nodePtyPrebuildRoot = path.join(serverRuntimeDir, 'node_modules/@shitiandmw/node-pty/prebuilds');

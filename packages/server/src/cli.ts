@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import type { SpawnSyncReturns } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { getBundledPrismaCommand } from './utils/process-launch.js';
 import { resolveDataDir } from './utils/data-dir.js';
@@ -112,6 +113,12 @@ function printVersion() {
   }
 }
 
+function getCommandOutput(error: unknown, key: 'stdout' | 'stderr'): string {
+  const output = (error as Partial<SpawnSyncReturns<Buffer>> | null)?.[key];
+  if (!output) return '';
+  return Buffer.isBuffer(output) ? output.toString('utf-8').trim() : String(output).trim();
+}
+
 /** 确保数据库 schema 与当前版本一致 */
 function ensureDatabase(dbPath: string, schemaPath: string) {
   const prisma = getBundledPrismaCommand(__dirname);
@@ -123,6 +130,14 @@ function ensureDatabase(dbPath: string, schemaPath: string) {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('Failed to initialize database:', msg);
+    const stderr = getCommandOutput(err, 'stderr');
+    const stdout = getCommandOutput(err, 'stdout');
+    if (stderr) {
+      console.error(stderr);
+    }
+    if (stdout) {
+      console.error(stdout);
+    }
     process.exit(1);
   }
 }

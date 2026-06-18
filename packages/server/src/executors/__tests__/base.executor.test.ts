@@ -90,6 +90,10 @@ describe('ExecutionEnv.getFullEnv', () => {
     process.env.AGENT_TOWER_DATABASE_URL = 'file:/prod/agent-tower.db';
     process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
     process.env.AGENT_TOWER_WEB_DIR = '/prod/agent-tower-web';
+    process.env.AGENT_TOWER_NODE_RUNTIME = '/prod/Agent Tower.exe';
+    process.env.AGENT_TOWER_DESKTOP_RUNTIME_MODE = 'packaged';
+    process.env.AGENT_TOWER_MCP_ENTRY = '/prod/runtime/server/dist/mcp/index.js';
+    process.env.ELECTRON_RUN_AS_NODE = '1';
     process.env.DATA_DIR = '/prod/data-dir';
     process.env.AGENT_TOWER_SESSION_ID = 'inherited-session';
     process.env.AGENT_TOWER_INVOCATION_ID = 'inherited-invocation';
@@ -104,6 +108,10 @@ describe('ExecutionEnv.getFullEnv', () => {
       AGENT_TOWER_DATABASE_URL: 'file:/provider/agent-tower.db',
       AGENT_TOWER_DATA_DIR: '/provider/agent-tower-data',
       AGENT_TOWER_WEB_DIR: '/provider/agent-tower-web',
+      AGENT_TOWER_NODE_RUNTIME: '/provider/Agent Tower.exe',
+      AGENT_TOWER_DESKTOP_RUNTIME_MODE: 'packaged',
+      AGENT_TOWER_MCP_ENTRY: '/provider/runtime/server/dist/mcp/index.js',
+      ELECTRON_RUN_AS_NODE: '1',
       DATA_DIR: '/provider/data-dir',
       AGENT_TOWER_SESSION_ID: 'session-1',
       AGENT_TOWER_INVOCATION_ID: 'invocation-1',
@@ -274,6 +282,10 @@ describe('BaseExecutor subprocess env', () => {
     process.env.AGENT_TOWER_DATABASE_URL = 'file:/prod/agent-tower.db';
     process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
     process.env.AGENT_TOWER_WEB_DIR = '/prod/agent-tower-web';
+    process.env.AGENT_TOWER_NODE_RUNTIME = '/prod/Agent Tower.exe';
+    process.env.AGENT_TOWER_DESKTOP_RUNTIME_MODE = 'packaged';
+    process.env.AGENT_TOWER_MCP_ENTRY = '/prod/runtime/server/dist/mcp/index.js';
+    process.env.ELECTRON_RUN_AS_NODE = '1';
     process.env.DATA_DIR = '/prod/data-dir';
     process.env.AGENT_TOWER_SESSION_ID = 'inherited-session';
     process.env.AGENT_TOWER_INVOCATION_ID = 'inherited-invocation';

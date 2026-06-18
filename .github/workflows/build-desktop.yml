@@ -92,6 +92,17 @@ jobs:
           console.log(`Desktop package version set to ${version}`);
           NODE
 
+      - name: Smoke test packaged Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pnpm --filter @agent-tower/desktop run package:dir
+          pnpm --filter @agent-tower/desktop run package:smoke
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: 'true'
+          AGENT_TOWER_DESKTOP_STARTUP_TIMEOUT_MS: '120000'
+
       - name: Build desktop package
         run: pnpm --filter @agent-tower/desktop run ${{ matrix.package-script }}
         env:

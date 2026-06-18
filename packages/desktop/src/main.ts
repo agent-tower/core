@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const HOST = '127.0.0.1';
 const DEFAULT_STARTUP_TIMEOUT_MS = 90_000;
 const HEALTH_POLL_INTERVAL_MS = 500;
+const BACKEND_OUTPUT_TAIL_LIMIT = 12_000;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, '..');
@@ -114,6 +115,14 @@ function getBackendNodeCommand(): string {
   return process.env.AGENT_TOWER_DESKTOP_NODE || 'node';
 }
 
+function appendOutputTail(current: string, chunk: Buffer): string {
+  const next = current + chunk.toString();
+  if (next.length <= BACKEND_OUTPUT_TAIL_LIMIT) {
+    return next;
+  }
+  return next.slice(next.length - BACKEND_OUTPUT_TAIL_LIMIT);
+}
+
 function getIsolatedDataDir(): string {
   return path.join(app.getPath('userData'), 'data');
 }
@@ -158,10 +167,6 @@ async function waitForHealth(baseUrl: string): Promise<void> {
   let lastError: unknown;
 
   while (Date.now() - startedAt < startupTimeoutMs) {
-    if (backendProcess?.exitCode !== null) {
-      throw new Error(`Backend exited before becoming healthy (code ${backendProcess?.exitCode})`);
-    }
-
     try {
       const health = await fetchJson<{ status?: string }>(`${baseUrl}/api/health`, {}, 2_000);
       if (health.status === 'ok') return;
@@ -240,11 +245,15 @@ async function startBackend(): Promise<string> {
   });
   backendProcess = child;
   let backendReady = false;
+  let backendStdoutTail = '';
+  let backendStderrTail = '';
 
   child.stdout?.on('data', (chunk: Buffer) => {
+    backendStdoutTail = appendOutputTail(backendStdoutTail, chunk);
     process.stdout.write(`[desktop:server] ${chunk.toString()}`);
   });
   child.stderr?.on('data', (chunk: Buffer) => {
+    backendStderrTail = appendOutputTail(backendStderrTail, chunk);
     process.stderr.write(`[desktop:server] ${chunk.toString()}`);
   });
 
@@ -255,6 +264,18 @@ async function startBackend(): Promise<string> {
         backendProcess = null;
       }
       reject(error);
+    });
+  });
+
+  const backendExit = new Promise<never>((_, reject) => {
+    child.once('exit', (code, signal) => {
+      if (backendReady) return;
+      const detail = [
+        `code=${code ?? 'null'} signal=${signal ?? 'null'}`,
+        backendStderrTail.trim() ? `stderr:\n${backendStderrTail.trim()}` : null,
+        backendStdoutTail.trim() ? `stdout:\n${backendStdoutTail.trim()}` : null,
+      ].filter(Boolean).join('\n\n');
+      reject(new Error(`Backend exited before becoming healthy (${detail})`));
     });
   });
 
@@ -288,7 +309,7 @@ async function startBackend(): Promise<string> {
   });
 
   const baseUrl = `http://${HOST}:${port}`;
-  await Promise.race([waitForHealth(baseUrl), startupError]);
+  await Promise.race([waitForHealth(baseUrl), startupError, backendExit]);
   backendReady = true;
   log(`Backend health check passed: ${baseUrl}/api/health`);
 
