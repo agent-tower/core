@@ -9,6 +9,7 @@ import { useTodos } from '@/hooks/use-todos'
 import { Link } from 'react-router-dom'
 import { Send, Square, Paperclip, AtSign, Hash, Globe, ChevronDown, ChevronUp, Settings } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
+import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 
 // Debug 日志开关
 const DEBUG_PAGE = true;
@@ -25,6 +26,7 @@ type SessionStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'error'
 
 export function AgentDemoPage() {
   const { t } = useI18n()
+  const { preserveDesktopSearch } = useDesktopTitlebar()
   const [agents, setAgents] = useState<Agent[]>([])
   const [selectedAgent, setSelectedAgent] = useState<string>('')
   const [selectedVariant, setSelectedVariant] = useState<string>('DEFAULT')
@@ -293,7 +295,7 @@ export function AgentDemoPage() {
             </Button>
           )}
           <Link
-            to="/settings/profiles"
+            to={preserveDesktopSearch('/settings/profiles')}
             className={`flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors ${hasSession ? '' : 'ml-auto'}`}
           >
             <Settings size={14} />

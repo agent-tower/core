@@ -5,6 +5,7 @@ import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors } from '@
 import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core'
 import { useI18n } from '@/lib/i18n'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 import { TaskGroup, FlipContext } from './TaskGroup'
 import type { FlipHandle } from './TaskGroup'
 import { TaskSearchModal } from './TaskSearchModal'
@@ -80,6 +81,7 @@ export function TaskList({
   onDeleteTask,
 }: TaskListProps) {
   const { t } = useI18n()
+  const { preserveDesktopSearch } = useDesktopTitlebar()
   const isMobile = useIsMobile()
   const [activeDragTask, setActiveDragTask] = useState<UITask | null>(null)
   const [activeDragFromStatus, setActiveDragFromStatus] = useState<UITaskStatus | null>(null)
@@ -305,7 +307,7 @@ export function TaskList({
           <span>{t('Search')}</span>
         </button>
         <Link
-          to="/conversations"
+          to={preserveDesktopSearch('/conversations')}
           className="w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm text-foreground/80 hover:bg-accent/50 transition-colors"
           title={t('对话')}
         >

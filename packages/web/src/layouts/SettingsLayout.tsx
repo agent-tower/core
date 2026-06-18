@@ -1,7 +1,8 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router-dom'
 import { ArrowLeft, Cpu, Bell, FolderGit2, Languages, Users, Cable } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { BrandLogo } from '@/components/BrandLogo'
+import { useDesktopNavigate, useDesktopTitlebar } from '@/lib/desktop-titlebar'
 
 const NAV_ITEMS = [
   { to: '/settings/general', label: '通用', icon: Languages },
@@ -13,7 +14,8 @@ const NAV_ITEMS = [
 ]
 
 export function SettingsLayout() {
-  const navigate = useNavigate()
+  const navigate = useDesktopNavigate()
+  const { preserveDesktopSearch } = useDesktopTitlebar()
   const { t } = useI18n()
 
   return (
@@ -42,7 +44,7 @@ export function SettingsLayout() {
           {NAV_ITEMS.map(item => (
             <NavLink
               key={item.to}
-              to={item.to}
+              to={preserveDesktopSearch(item.to)}
               className={({ isActive }) =>
                 `flex items-center gap-2 px-3 py-1.5 rounded-md text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
                   isActive

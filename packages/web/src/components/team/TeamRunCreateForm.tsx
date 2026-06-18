@@ -8,6 +8,7 @@ import { useProviders } from '@/hooks/use-providers'
 import { useMemberPresets, useTeamTemplates } from '@/hooks/use-team-run'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
+import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 
 interface TeamRunCreateFormProps {
   mode: TeamRunMode
@@ -43,6 +44,7 @@ export function TeamRunCreateForm({
   compact = false,
 }: TeamRunCreateFormProps) {
   const { t } = useI18n()
+  const { preserveDesktopSearch } = useDesktopTitlebar()
   const [showMembers, setShowMembers] = useState(false)
   const { data: providersData } = useProviders()
   const {
@@ -140,7 +142,7 @@ export function TeamRunCreateForm({
       ) : (teamTemplatesData ?? []).length === 0 ? (
         <div className="rounded-lg border border-dashed border-border bg-background px-3 py-3 text-xs text-muted-foreground">
           {t('当前没有团队模板')}
-          <Link to="/settings/team" className="ml-1.5 text-info hover:underline">
+          <Link to={preserveDesktopSearch('/settings/team')} className="ml-1.5 text-info hover:underline">
             {t('去创建')}
           </Link>
         </div>
@@ -235,7 +237,7 @@ export function TeamRunCreateForm({
   ) : (memberPresetsData ?? []).length === 0 ? (
     <div className="rounded-lg border border-dashed border-border bg-background px-3 py-3 text-xs text-muted-foreground">
       {t('当前没有成员预设')}
-      <Link to="/settings/team" className="ml-1.5 text-info hover:underline">
+      <Link to={preserveDesktopSearch('/settings/team')} className="ml-1.5 text-info hover:underline">
         {t('去创建')}
       </Link>
     </div>

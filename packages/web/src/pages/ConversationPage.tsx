@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { ArrowLeft, LayoutList, MessageSquare, Search, Settings, SquarePen, Trash2 } from 'lucide-react'
 import { SessionStatus } from '@agent-tower/shared'
 import type { Conversation } from '@agent-tower/shared'
@@ -23,6 +23,7 @@ import { translate, useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/ui-store'
 import { useQueryClient } from '@tanstack/react-query'
+import { useDesktopNavigate, useDesktopTitlebar } from '@/lib/desktop-titlebar'
 
 type StartStep = 'idle' | 'starting-session'
 const TICK_INTERVAL = 30_000
@@ -330,7 +331,8 @@ function ConversationSearchModal({
 export function ConversationPage() {
   const { t } = useI18n()
   useTick()
-  const navigate = useNavigate()
+  const navigate = useDesktopNavigate()
+  const { usesIntegratedTitlebar } = useDesktopTitlebar()
   const { conversationId } = useParams<{ conversationId: string }>()
   const queryClient = useQueryClient()
 
@@ -563,8 +565,16 @@ export function ConversationPage() {
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-sidebar text-sm text-foreground">
-      <header className="flex h-12 shrink-0 items-center justify-between bg-sidebar px-4">
-        <div className="flex min-w-0 items-center gap-2">
+      <header
+        className={cn(
+          'flex h-12 shrink-0 items-center justify-between bg-sidebar px-4',
+          usesIntegratedTitlebar && 'app-region-drag',
+        )}
+      >
+        <div className={cn(
+          'flex min-w-0 items-center gap-2',
+          usesIntegratedTitlebar && 'pl-[72px]',
+        )}>
           <BrandLogo />
           <BrandLogoTitle />
           <span className="mx-1.5 select-none text-muted-foreground/40">/</span>
@@ -573,7 +583,10 @@ export function ConversationPage() {
         <button
           type="button"
           onClick={() => useUIStore.getState().openSettings()}
-          className="rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+          className={cn(
+            'rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground',
+            usesIntegratedTitlebar && 'app-region-no-drag',
+          )}
           title={t('Settings')}
         >
           <Settings size={16} />

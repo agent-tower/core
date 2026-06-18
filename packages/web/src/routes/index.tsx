@@ -1,8 +1,9 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { createBrowserRouter, RouterProvider, useNavigate, useParams } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider, useParams } from 'react-router-dom'
 import { RootLayout } from '@/layouts/RootLayout'
 import { useUIStore, type SettingsTab } from '@/stores/ui-store'
 import { FullscreenLoading } from '@/components/loading/FullscreenLoading'
+import { useDesktopNavigate } from '@/lib/desktop-titlebar'
 
 // Lazy load pages
 const ProjectKanbanPage = lazy(() => import('@/pages/ProjectKanbanPage').then(m => ({ default: m.ProjectKanbanPage })))
@@ -14,7 +15,7 @@ const LoadingPreviewPage = lazy(() => import('@/pages/LoadingPreviewPage').then(
 const VALID_SETTINGS_TABS = new Set<string>(['general', 'agents', 'team', 'projects', 'notifications', 'mcp', 'agents-legacy'])
 
 function SettingsRedirect() {
-  const navigate = useNavigate()
+  const navigate = useDesktopNavigate()
   const { tab } = useParams<{ tab: string }>()
 
   useEffect(() => {

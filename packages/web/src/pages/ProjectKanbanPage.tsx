@@ -26,6 +26,7 @@ import { BrandLogo, BrandLogoTitle } from '@/components/BrandLogo'
 import { CreateTaskInput } from '@/components/task/CreateTaskInput'
 import { getWorkspaceBranchLabel } from '@/components/workspace/team-workspace-view'
 import { cn } from '@/lib/utils'
+import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -646,11 +647,7 @@ export function ProjectKanbanPage() {
 
   const isMobile = useIsMobile()
   const [mobileCreateOpen, setMobileCreateOpen] = useState(false)
-  const usesDesktopIntegratedTitlebar = useMemo(() => {
-    if (typeof window === 'undefined') return false
-    const params = new URLSearchParams(window.location.search)
-    return params.get('desktop') === '1' && params.get('desktopTitlebar') === 'integrated'
-  }, [])
+  const { usesIntegratedTitlebar } = useDesktopTitlebar()
 
   const handleMobileCreateTask = useCallback(() => {
     if (activeProjects.length === 0) {
@@ -774,12 +771,12 @@ export function ProjectKanbanPage() {
       <header
         className={cn(
           'h-12 bg-sidebar flex items-center px-4 justify-between flex-shrink-0 z-20 relative',
-          usesDesktopIntegratedTitlebar && 'app-region-drag',
+          usesIntegratedTitlebar && 'app-region-drag',
         )}
       >
         <div className={cn(
           'flex items-center gap-2 min-w-0',
-          usesDesktopIntegratedTitlebar && 'pl-[72px]',
+          usesIntegratedTitlebar && 'pl-[72px]',
         )}>
           <BrandLogo />
           <BrandLogoTitle />
@@ -788,21 +785,21 @@ export function ProjectKanbanPage() {
             filterProjectId={effectiveFilterProjectId}
             setFilterProjectId={setFilterProjectId}
             onCreateProject={handleCreateProject}
-            className={usesDesktopIntegratedTitlebar ? 'app-region-no-drag' : undefined}
+            className={usesIntegratedTitlebar ? 'app-region-no-drag' : undefined}
           />
         </div>
         <div className={cn(
           'flex items-center gap-1',
-          usesDesktopIntegratedTitlebar && 'app-region-no-drag',
+          usesIntegratedTitlebar && 'app-region-no-drag',
         )}>
-          <div className={usesDesktopIntegratedTitlebar ? 'app-region-no-drag' : undefined}>
+          <div className={usesIntegratedTitlebar ? 'app-region-no-drag' : undefined}>
             <TunnelButton />
           </div>
           <button
             onClick={() => useUIStore.getState().openSettings()}
             className={cn(
               'p-1.5 text-muted-foreground/70 hover:text-foreground hover:bg-accent rounded-md transition-colors',
-              usesDesktopIntegratedTitlebar && 'app-region-no-drag',
+              usesIntegratedTitlebar && 'app-region-no-drag',
             )}
           >
             <Settings size={16} />
