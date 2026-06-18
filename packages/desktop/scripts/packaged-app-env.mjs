@@ -9,6 +9,12 @@ export const packageRoot = path.resolve(__dirname, '..');
 export const releaseDir = path.join(packageRoot, 'release');
 const productName = 'Agent Tower';
 const macAppName = `${productName}.app`;
+const cleanupOptions = {
+  recursive: true,
+  force: true,
+  maxRetries: process.platform === 'win32' ? 20 : 3,
+  retryDelay: 250,
+};
 
 export function findPackagedAppExecutable() {
   if (process.platform === 'darwin') {
@@ -65,8 +71,8 @@ export function createIsolatedDesktopTestEnv({
     tempUserData,
     dataDir,
     cleanup() {
-      rmSync(tempHome, { recursive: true, force: true });
-      rmSync(tempUserData, { recursive: true, force: true });
+      rmSync(tempHome, cleanupOptions);
+      rmSync(tempUserData, cleanupOptions);
     },
   };
 }
