@@ -82,7 +82,7 @@ cpSync(atPrismaClientSrc, atPrismaDest, {
     return !rel.includes('node_modules');
   },
 });
-// .prisma/client 同时放到 @prisma/client 包内和包根 node_modules 下
+// 将生成好的 Prisma Client 放到 bundled @prisma/client 包内
 const generatedPrismaClientSrc = resolve(prismaClientSrc, '.prisma/client');
 const atPrismaPackageClientDest = resolve(atPrismaDest, '.prisma/client');
 mkdirSync(atPrismaPackageClientDest, { recursive: true });
@@ -90,10 +90,44 @@ cpSync(generatedPrismaClientSrc, atPrismaPackageClientDest, { recursive: true })
 const atPrismaPkgPath = resolve(atPrismaDest, 'package.json');
 const atPrismaPkg = JSON.parse(readFileSync(atPrismaPkgPath, 'utf-8'));
 atPrismaPkg.files = [...new Set([...(atPrismaPkg.files ?? []), '.prisma'])];
+if (atPrismaPkg.scripts) {
+  // The generated client is bundled below. Running @prisma/client postinstall
+  // during global installs can leave node_modules/.prisma/client as the default
+  // uninitialized stub when Prisma cannot find this package's schema.
+  delete atPrismaPkg.scripts.generate;
+  delete atPrismaPkg.scripts.postinstall;
+}
 writeFileSync(atPrismaPkgPath, JSON.stringify(atPrismaPkg, null, 2) + '\n');
-const rootDotPrismaDest = resolve(publishDir, 'node_modules/.prisma/client');
-mkdirSync(rootDotPrismaDest, { recursive: true });
-cpSync(generatedPrismaClientSrc, rootDotPrismaDest, { recursive: true });
+
+// @prisma/client's published proxy files normally import ".prisma/client/*",
+// which resolves to packageRoot/node_modules/.prisma. npm does not preserve that
+// package-root hidden directory from our assembled node_modules unless it is a
+// bundled dependency, so point the proxies at the generated client copied inside
+// the bundled @prisma/client package instead.
+for (const file of [
+  'default.js',
+  'index.js',
+  'edge.js',
+  'wasm.js',
+  'index-browser.js',
+  'react-native.js',
+  'sql.js',
+  'sql.mjs',
+  'default.d.ts',
+  'index.d.ts',
+  'edge.d.ts',
+  'wasm.d.ts',
+  'react-native.d.ts',
+  'sql.d.ts',
+]) {
+  const proxyPath = resolve(atPrismaDest, file);
+  if (!existsSync(proxyPath)) continue;
+  const content = readFileSync(proxyPath, 'utf-8')
+    .replaceAll("require('.prisma/client", "require('./.prisma/client")
+    .replaceAll("from '.prisma/client", "from './.prisma/client")
+    .replaceAll("from '../../.prisma/client", "from './.prisma/client");
+  writeFileSync(proxyPath, content);
+}
 
 // 7. 将 prisma CLI 和 @prisma/engines 预打包（避免全局安装时 postinstall 脚本失败）
 const prismaSrc = resolve(root, 'node_modules/.pnpm/prisma@5.22.0/node_modules');
@@ -199,7 +233,6 @@ const publishPkg = {
     'dist/',
     'prisma/',
     'scripts/',
-    'node_modules/.prisma/',
     'node_modules/@agent-tower/',
     'node_modules/@prisma/',
     'node_modules/@shitiandmw/',
