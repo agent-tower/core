@@ -35,9 +35,10 @@ describe('filesystem routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        valid: false,
+        valid: true,
         path: tempDir,
         reason: 'no_git',
+        isGitRepo: false,
         isEmpty: true,
       });
     } finally {
@@ -57,9 +58,10 @@ describe('filesystem routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        valid: false,
+        valid: true,
         path: tempDir,
         reason: 'no_git',
+        isGitRepo: false,
         isEmpty: false,
       });
     } finally {
@@ -81,6 +83,7 @@ describe('filesystem routes', () => {
       expect(response.json()).toMatchObject({
         valid: true,
         path: tempDir,
+        isGitRepo: true,
       });
     } finally {
       await app.close();

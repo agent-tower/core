@@ -5,7 +5,7 @@ import { prisma } from '../utils/index.js';
 import { NotFoundError, ValidationError } from '../errors.js';
 import { execGit } from '../git/git-cli.js';
 import { getWorkspaceGitWatcherService } from '../core/container.js';
-import { ensureProjectIsMutable } from './project-guards.js';
+import { ensureProjectIsMutable, hasGitMetadata } from './project-guards.js';
 import type { WorkspaceGitWatcherService } from './workspace-git-watcher.service.js';
 import {
   TaskStatus,
@@ -83,29 +83,14 @@ async function getRepoRemoteUrl(repoPath: string): Promise<string | null> {
 function assertDirectoryPathExists(resolvedPath: string): void {
   if (!fs.existsSync(resolvedPath)) {
     throw new ValidationError(
-      `repoPath does not exist: ${resolvedPath}`
+      `Project path does not exist: ${resolvedPath}`
     );
   }
 
   const stat = fs.statSync(resolvedPath);
   if (!stat.isDirectory()) {
     throw new ValidationError(
-      `repoPath is not a directory: ${resolvedPath}`
-    );
-  }
-}
-
-function hasGitMetadata(resolvedPath: string): boolean {
-  const gitPath = path.join(resolvedPath, '.git');
-  return fs.existsSync(gitPath);
-}
-
-function assertRepoPathExists(resolvedPath: string): void {
-  assertDirectoryPathExists(resolvedPath);
-
-  if (!hasGitMetadata(resolvedPath)) {
-    throw new ValidationError(
-      `repoPath is not a valid Git repository (no .git found): ${resolvedPath}`
+      `Project path is not a directory: ${resolvedPath}`
     );
   }
 }
@@ -114,7 +99,7 @@ async function assertDirectoryIsEmpty(resolvedPath: string): Promise<void> {
   const entries = await fsPromises.readdir(resolvedPath);
   if (entries.length > 0) {
     throw new ValidationError(
-      `repoPath is not a Git repository and is not empty: ${resolvedPath}`
+      `Project path is not a Git repository and is not empty: ${resolvedPath}`
     );
   }
 }
@@ -157,12 +142,12 @@ async function removeGitMetadata(repoPath: string): Promise<void> {
   await fsPromises.rm(path.join(repoPath, '.git'), { recursive: true, force: true }).catch(() => {});
 }
 
-async function resolveAndValidateRepoPath(repoPath: string): Promise<{
+async function resolveProjectPath(repoPath: string): Promise<{
   resolvedPath: string;
   repoRemoteUrl: string | null;
 }> {
   const resolvedPath = path.resolve(repoPath);
-  assertRepoPathExists(resolvedPath);
+  assertDirectoryPathExists(resolvedPath);
 
   return {
     resolvedPath,
@@ -184,9 +169,11 @@ async function prepareRepoForProjectCreate(
   let initialized = false;
   if (!hasGitMetadata(resolvedPath)) {
     if (!initEmptyRepo) {
-      throw new ValidationError(
-        `repoPath is not a valid Git repository (no .git found): ${resolvedPath}`
-      );
+      return {
+        resolvedPath,
+        repoRemoteUrl: null,
+        initialized,
+      };
     }
 
     await assertDirectoryIsEmpty(resolvedPath);
@@ -215,9 +202,9 @@ async function prepareRepoForProjectCreate(
   };
 }
 
-async function isValidGitRepo(repoPath: string): Promise<boolean> {
+async function isValidProjectDirectory(repoPath: string): Promise<boolean> {
   try {
-    assertRepoPathExists(path.resolve(repoPath));
+    assertDirectoryPathExists(path.resolve(repoPath));
     return true;
   } catch {
     return false;
@@ -234,7 +221,7 @@ function buildRepoIdentityWarnings(
   const nextBaseName = path.basename(nextRepo.resolvedPath);
   if (previousBaseName && nextBaseName && previousBaseName !== nextBaseName) {
     warnings.push(
-      `Repository folder name changed from "${previousBaseName}" to "${nextBaseName}".`
+      `Project folder name changed from "${previousBaseName}" to "${nextBaseName}".`
     );
   }
 
@@ -278,7 +265,7 @@ export class ProjectService {
     ]);
 
     return {
-      data,
+      data: data.map((project) => this.withGitMetadata(project)),
       total,
       page,
       limit,
@@ -325,12 +312,13 @@ export class ProjectService {
       }
     }
 
-    return { ...project, taskStats };
+    return { ...this.withGitMetadata(project), taskStats };
   }
 
   /**
    * 创建项目
-   * - 校验 repoPath 是否存在且为有效的 Git 仓库
+   * - 校验项目路径是否存在且为目录
+   * - 允许非 Git 目录作为本地项目打开
    * - 允许对空目录执行 Git 初始化
    */
   async create(input: CreateProjectInput) {
@@ -350,7 +338,7 @@ export class ProjectService {
     );
 
     try {
-      return await prisma.project.create({
+      const created = await prisma.project.create({
         data: {
           name: input.name,
           description: input.description,
@@ -362,6 +350,7 @@ export class ProjectService {
           quickCommands: input.quickCommands,
         },
       });
+      return this.withGitMetadata(created);
     } catch (error) {
       if (initialized) {
         await removeGitMetadata(resolvedPath);
@@ -495,17 +484,17 @@ export class ProjectService {
     }
 
     const wantsNewRepoPath = Boolean(input.repoPath?.trim());
-    const currentRepoIsValid = await isValidGitRepo(project.repoPath);
-    const requiresRepoPath = Boolean(project.repoDeletedAt) || !currentRepoIsValid;
+    const currentPathIsValid = await isValidProjectDirectory(project.repoPath);
+    const requiresRepoPath = Boolean(project.repoDeletedAt) || !currentPathIsValid;
 
     if (requiresRepoPath && !wantsNewRepoPath) {
       throw new ValidationError(
-        `Project "${project.name}" needs a valid repoPath before it can be restored.`
+        `Project "${project.name}" needs a valid project path before it can be restored.`
       );
     }
 
     const nextRepo = wantsNewRepoPath
-      ? await resolveAndValidateRepoPath(input.repoPath!.trim())
+      ? await resolveProjectPath(input.repoPath!.trim())
       : {
           resolvedPath: project.repoPath,
           repoRemoteUrl: project.repoRemoteUrl,
@@ -524,7 +513,7 @@ export class ProjectService {
     });
 
     return {
-      project: restored,
+      project: this.withGitMetadata(restored),
       warnings,
     };
   }
@@ -541,5 +530,12 @@ export class ProjectService {
     for (const workspaceId of workspaceIds) {
       this.workspaceGitWatcher.unwatchWorkspace(workspaceId);
     }
+  }
+
+  private withGitMetadata<T extends { repoPath: string }>(project: T): T & { isGitRepo: boolean } {
+    return {
+      ...project,
+      isGitRepo: hasGitMetadata(project.repoPath),
+    };
   }
 }

@@ -44,6 +44,7 @@ import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import { buildTextPreview, TASK_TITLE_MAX_LENGTH } from './task.service.js';
+import { ensureProjectSupportsGit } from './project-guards.js';
 
 export interface CreateMemberPresetInput {
   name: string;
@@ -614,11 +615,15 @@ export class TeamRunService {
   }
 
   async createTeamRun(taskId: string, input: CreateTeamRunInput): Promise<TeamRun> {
-    const task = await prisma.task.findUnique({ where: { id: taskId } });
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      include: { project: true },
+    });
     if (!task) {
       throw new NotFoundError('Task', taskId);
     }
     ensureTaskNotDeleted(task);
+    ensureProjectSupportsGit(task.project, 'create TeamRun');
     buildInitialTaskRoomMessageContent(task);
 
     const existing = await prisma.teamRun.findUnique({ where: { taskId } });
@@ -693,11 +698,15 @@ export class TeamRunService {
 
     try {
       createdTeamRun = await prisma.$transaction(async (tx) => {
-        const task = await tx.task.findUnique({ where: { id: taskId } });
+        const task = await tx.task.findUnique({
+          where: { id: taskId },
+          include: { project: true },
+        });
         if (!task) {
           throw new NotFoundError('Task', taskId);
         }
         ensureTaskNotDeleted(task);
+        ensureProjectSupportsGit(task.project, 'create TeamRun');
         projectId = task.projectId;
         const initialContent = buildInitialTaskRoomMessageContent(task);
         const initialMentionSource = buildInitialTaskMentionSource(task);

@@ -120,6 +120,7 @@ export function adaptProject(project: SharedProject): UIProject {
     id: project.id,
     name: project.name,
     color: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],
+    isGitRepo: project.isGitRepo,
     archivedAt: project.archivedAt ?? null,
     repoDeletedAt: project.repoDeletedAt ?? null,
   }
@@ -160,7 +161,7 @@ function extractActiveWorkspaceInfo(workspaces?: SharedWorkspace[]): {
 export function adaptTaskForList(task: SharedTask): UITask {
   const { agent, branch } = extractActiveWorkspaceInfo(task.workspaces)
   const project = (task as SharedTask & {
-    project?: Pick<SharedProject, 'archivedAt' | 'repoDeletedAt'>
+    project?: Pick<SharedProject, 'archivedAt' | 'repoDeletedAt' | 'isGitRepo'>
   }).project
 
   return {
@@ -172,6 +173,7 @@ export function adaptTaskForList(task: SharedTask): UITask {
     branch,
     description: task.contentPreview ?? task.description ?? '',
     updatedAt: task.updatedAt,
+    isGitRepo: project?.isGitRepo,
     projectArchivedAt: project?.archivedAt ?? null,
     projectRepoDeletedAt: project?.repoDeletedAt ?? null,
   }
@@ -203,6 +205,7 @@ export function adaptTaskForDetail(
     branch,
     mainBranch: activeWorkspace?.baseBranch ?? project.mainBranch ?? 'main',
     description: task.description ?? '',
+    isGitRepo: project.isGitRepo,
     projectArchivedAt: project.archivedAt ?? null,
     projectRepoDeletedAt: project.repoDeletedAt ?? null,
   }

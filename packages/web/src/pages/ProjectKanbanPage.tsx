@@ -173,6 +173,11 @@ function upsertTaskIntoPage(page: PaginatedResponse<Task> | undefined, task: Tas
   }
 }
 
+function attachTaskProjectMetadata(task: Task, projects: Task['project'][]): Task {
+  const project = projects.find(item => item?.id === task.projectId)
+  return project ? { ...task, project } : task
+}
+
 export function ProjectKanbanPage() {
   const { t, locale } = useI18n()
   // === 状态 ===
@@ -344,6 +349,7 @@ export function ProjectKanbanPage() {
         branch,
         mainBranch: 'main',
         description: task.description ?? '',
+        isGitRepo: false,
         projectArchivedAt: null,
         projectRepoDeletedAt: null,
       }
@@ -533,18 +539,23 @@ export function ProjectKanbanPage() {
   }) => {
     const { title, description, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks } = data
     const fullDescription = [description, attachmentLinks].filter(Boolean).join('\n\n')
+    const selectedProject = activeProjects.find(project => project.id === projectId)
+    const isGitProject = selectedProject?.isGitRepo !== false
+    const effectiveMode: CreateTaskMode = isGitProject ? mode : 'SOLO'
+    const effectiveWorkspaceMode: WorkspaceMode = isGitProject ? workspaceMode : WorkspaceKind.MAIN_DIRECTORY
 
     let createdTask: Task | null = null
 
     try {
       setCreateStep('creating-task')
-      createdTask = await apiClient.post<Task>(`/projects/${projectId}/tasks`, {
+      const created = await apiClient.post<Task>(`/projects/${projectId}/tasks`, {
         title,
         description: fullDescription || undefined,
       })
+      createdTask = attachTaskProjectMetadata(created, activeProjects)
 
       localStorage.setItem('lastSelectedProjectId', projectId)
-      if (mode === 'SOLO' && providerId) {
+      if (effectiveMode === 'SOLO' && providerId) {
         localStorage.setItem('lastSelectedProviderId', providerId)
         const usageCountStr = localStorage.getItem('providerUsageCount')
         const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
@@ -552,7 +563,7 @@ export function ProjectKanbanPage() {
         localStorage.setItem('providerUsageCount', JSON.stringify(usageCount))
       }
 
-      if (mode === 'TEAM') {
+      if (effectiveMode === 'TEAM') {
         setCreateStep('creating-teamrun')
         await createTaskTeamRun.mutateAsync({
           taskId: createdTask.id,
@@ -561,7 +572,7 @@ export function ProjectKanbanPage() {
           ...(memberPresetIds.length > 0 ? { memberPresetIds } : {}),
         })
       } else if (providerId) {
-        startTaskInBackground(createdTask, providerId, workspaceMode)
+        startTaskInBackground(createdTask, providerId, effectiveWorkspaceMode)
       }
 
       if (effectiveFilterProjectId && projectId !== effectiveFilterProjectId) {
@@ -574,7 +585,7 @@ export function ProjectKanbanPage() {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
     } catch (error) {
       setCreateStep('idle')
-      if (createdTask && mode === 'TEAM') {
+      if (createdTask && effectiveMode === 'TEAM') {
         // TeamRun creation failed — clean up orphan task and treat as complete failure
         try { await deleteTask.mutateAsync(createdTask.id) } catch { /* best-effort cleanup */ }
         toast.error(t('TeamRun 创建失败，请检查团队配置后重试'))
@@ -591,7 +602,7 @@ export function ProjectKanbanPage() {
         throw error
       }
     }
-  }, [createTaskTeamRun, startTaskInBackground, deleteTask, queryClient, t, effectiveFilterProjectId, revealCreatedTask])
+  }, [activeProjects, createTaskTeamRun, startTaskInBackground, deleteTask, queryClient, t, effectiveFilterProjectId, revealCreatedTask])
 
 
   const isLoading = isProjectsLoading || isFilteredTasksLoading || isAllTasksLoading
@@ -601,6 +612,7 @@ export function ProjectKanbanPage() {
       id: p.id,
       name: p.name,
       color: uiProjects.find(u => u.id === p.id)?.color,
+      isGitRepo: p.isGitRepo,
     })),
     [activeProjects, uiProjects],
   )

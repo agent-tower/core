@@ -91,14 +91,21 @@ const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let prisma: PrismaClient;
 let WorkspaceService: typeof import('../workspace.service.js').WorkspaceService;
+let gitRepoCounter = 0;
+
+function createGitRepoPath(label: string) {
+  const repoPath = path.join(testDir, 'repos', `${label}-${gitRepoCounter++}`);
+  fs.mkdirSync(path.join(repoPath, '.git'), { recursive: true });
+  return repoPath;
+}
 
 async function createTask(title = 'Workspace service task') {
-  const project = await prisma.project.create({
-    data: {
-      name: `${title} project`,
-      repoPath: testDir,
-    },
-  });
+    const project = await prisma.project.create({
+      data: {
+        name: `${title} project`,
+        repoPath: createGitRepoPath(title.replace(/\W+/g, '-')),
+      },
+    });
   const task = await prisma.task.create({
     data: {
       title,
@@ -287,6 +294,52 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
       ahead: 0,
       behind: 0,
       hasUncommittedChanges: false,
+    });
+  });
+
+  it('rejects worktree workspace creation for non-git projects', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'local-only-project-'));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Local-only project',
+        repoPath,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Local-only task',
+        projectId: project.id,
+      },
+    });
+
+    await expect(service.create(task.id, {
+      workspaceKind: WorkspaceKind.WORKTREE,
+    })).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+    });
+    expect(createWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects git-status for non-git main-directory workspaces', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'local-git-status-project-'));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Local git-status project',
+        repoPath,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Local git-status task',
+        projectId: project.id,
+      },
+    });
+    const workspace = await service.create(task.id, {
+      workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+    });
+
+    await expect(service.getGitStatus(workspace.id)).rejects.toMatchObject({
+      code: 'WORKSPACE_GIT_UNAVAILABLE',
     });
   });
 

@@ -131,6 +131,21 @@ describe('TaskService', () => {
     expect(task.title).toBe('Ship TeamRun startup');
   });
 
+  it('returns project Git metadata when creating a task', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const projectPath = fs.mkdtempSync(path.join(testDir, 'local-task-create-project-'));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Local task create project',
+        repoPath: projectPath,
+      },
+    });
+
+    const task = await service.create(project.id, { title: 'Create local task' });
+
+    expect(task.project?.isGitRepo).toBe(false);
+  });
+
   it('splits long single-input task content into a short title and full description', async () => {
     const service = new TaskService(new EventBus(), {} as SessionManager);
     const project = await prisma.project.create({
@@ -222,6 +237,48 @@ describe('TaskService', () => {
     expect('description' in list.data[0]!).toBe(false);
     expect(list.data[0]?.contentPreview).toBeUndefined();
     expect(list.data[0]?.isTruncated).toBe(true);
+  });
+
+  it('includes project Git metadata in task lists', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const projectPath = fs.mkdtempSync(path.join(testDir, 'local-task-project-'));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Local task list project',
+        repoPath: projectPath,
+      },
+    });
+    await prisma.task.create({
+      data: {
+        title: 'Local-only task',
+        projectId: project.id,
+      },
+    });
+
+    const list = await service.findByProjectId(project.id);
+
+    expect(list.data[0]?.project?.isGitRepo).toBe(false);
+  });
+
+  it('includes project Git metadata in task detail', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const projectPath = fs.mkdtempSync(path.join(testDir, 'local-task-detail-project-'));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Local task detail project',
+        repoPath: projectPath,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Local detail task',
+        projectId: project.id,
+      },
+    });
+
+    const detail = await service.findById(task.id);
+
+    expect(detail.project?.isGitRepo).toBe(false);
   });
 
   it('returns summary detail without full description and full body on demand', async () => {
@@ -640,6 +697,7 @@ describe('TaskService', () => {
     const updated = await service.retry(task.id);
 
     expect(updated.status).toBe('TODO');
+    expect(updated.project?.isGitRepo).toBe(false);
     expect(stopSessionMock).toHaveBeenCalledWith(runningSession.id);
     expect(unwatchWorkspaceMock).toHaveBeenCalledTimes(1);
     expect(unwatchWorkspaceMock).toHaveBeenCalledWith(workspace.id);

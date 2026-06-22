@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { ValidationError } from '../errors.js';
 
 type ProjectGuardInput = {
@@ -31,5 +33,20 @@ export function ensureProjectHasRepository(
 
   throw new ValidationError(
     `Project "${project.name}" no longer has local repository files. Rebind repoPath and restore it before trying to ${action}.`
+  );
+}
+
+export function hasGitMetadata(projectPath: string): boolean {
+  return fs.existsSync(path.join(projectPath, '.git'));
+}
+
+export function ensureProjectSupportsGit(
+  project: Pick<ProjectGuardInput, 'name'> & { repoPath: string },
+  action: string
+): void {
+  if (hasGitMetadata(project.repoPath)) return;
+
+  throw new ValidationError(
+    `Project "${project.name}" is not a Git repository. Initialize Git before trying to ${action}.`
   );
 }

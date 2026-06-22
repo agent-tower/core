@@ -4,10 +4,26 @@ import { execFile } from 'node:child_process';
 import * as path from 'node:path';
 import { prisma } from '../utils/index.js';
 
+class GitUnavailableError extends Error {
+  constructor(public readonly workingDir: string) {
+    super(`Git is not available for workingDir: ${workingDir}`);
+    this.name = 'GitUnavailableError';
+  }
+}
+
 function handleError(error: unknown, reply: any) {
   if (error instanceof ZodError) {
     reply.code(400);
     return { error: 'Validation failed', code: 'VALIDATION_ERROR', details: error.errors };
+  }
+
+  if (error instanceof GitUnavailableError) {
+    reply.code(400);
+    return {
+      error: 'Git is not available for this working directory',
+      code: 'GIT_UNAVAILABLE',
+      workingDir: error.workingDir,
+    };
   }
 
   console.error('[git] Unhandled error:', error);
@@ -38,6 +54,17 @@ function execGit(cwd: string, args: string[]): Promise<string> {
 }
 
 type ChangeEntry = { status: string; path: string; additions?: number; deletions?: number };
+
+async function ensureGitAvailable(workingDir: string): Promise<void> {
+  try {
+    const output = await execGit(workingDir, ['rev-parse', '--is-inside-work-tree']);
+    if (output.trim() === 'true') return;
+  } catch {
+    // Fall through to the structured API error below.
+  }
+
+  throw new GitUnavailableError(workingDir);
+}
 
 async function resolveBaseBranch(workingDir: string): Promise<string | null> {
   const workspace = await prisma.workspace.findFirst({
@@ -169,6 +196,7 @@ export async function gitRoutes(app: FastifyInstance) {
   app.get('/changes', async (request, reply) => {
     try {
       const { workingDir } = changesQuerySchema.parse(request.query);
+      await ensureGitAvailable(workingDir);
       const baseBranch = await resolveBaseBranch(workingDir);
 
       // Uncommitted changes (staged + unstaged vs HEAD)
@@ -252,6 +280,7 @@ export async function gitRoutes(app: FastifyInstance) {
   app.get('/diff', async (request, reply) => {
     try {
       const { workingDir, path: filePath, type } = diffQuerySchema.parse(request.query);
+      await ensureGitAvailable(workingDir);
       const baseBranch = type === 'committed' ? await resolveBaseBranch(workingDir) : null;
 
       const committedBaseBranch = baseBranch || 'main';
@@ -292,6 +321,7 @@ export async function gitRoutes(app: FastifyInstance) {
   app.get('/log', async (request, reply) => {
     try {
       const { workingDir, limit, skip } = logQuerySchema.parse(request.query);
+      await ensureGitAvailable(workingDir);
 
       // NUL (\x00) as field separator; %x01 as record separator (body may contain newlines)
       const format = '%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x01';
@@ -338,6 +368,7 @@ export async function gitRoutes(app: FastifyInstance) {
   app.get('/commit-files', async (request, reply) => {
     try {
       const { workingDir, hash } = commitFilesQuerySchema.parse(request.query);
+      await ensureGitAvailable(workingDir);
 
       let files: ChangeEntry[] = [];
       try {
@@ -365,6 +396,7 @@ export async function gitRoutes(app: FastifyInstance) {
   app.get('/commit-diff', async (request, reply) => {
     try {
       const { workingDir, hash, path: filePath } = commitDiffQuerySchema.parse(request.query);
+      await ensureGitAvailable(workingDir);
 
       let diff = '';
       try {

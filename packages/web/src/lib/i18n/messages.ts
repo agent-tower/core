@@ -23,6 +23,14 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Browse and select a Git repository, or type a path and press Enter': '浏览并选择一个 Git 仓库，或输入路径后按 Enter',
     'Browse and select a directory, or type a path and press Enter': '浏览并选择一个目录，或输入路径后按 Enter',
     'Select Current': '选择当前目录',
+    'Project Path': '项目路径',
+    'Create Local Project': '创建本地项目',
+    'Local project': '本地项目',
+    'Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.':
+      '本地项目仅支持本地 Solo 任务。初始化 Git 后可使用工作树和 TeamRun。',
+    'You can also create it as a local project now. Local projects only support local Solo tasks until Git is initialized.':
+      '你也可以现在将其创建为本地项目。初始化 Git 前，本地项目仅支持本地 Solo 任务。',
+    'This setting applies only to Git worktree projects.': '此设置仅适用于 Git 工作树项目。',
     'Agent 配置': 'Agent 配置',
     '项目配置': '项目配置',
     '通知': '通知',
@@ -293,6 +301,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
       '所选目录不是 Git 仓库且不为空。请手动初始化 Git 并完成首次提交，然后再创建项目。',
     'Selected path is not a valid directory': '所选路径不是有效目录',
     'Could not check repository path': '无法检查仓库路径',
+    'Could not check project path': '无法检查项目路径',
     'Project Name': '项目名称',
     'e.g., Agent Tower': '例如：Agent Tower',
     'Repository Path': '仓库路径',
@@ -937,12 +946,16 @@ export const messages: Record<AppLocale, Record<string, string>> = {
       'When checked, project files will also be deleted. Choose carefully.',
     '勾选后会删除 repoPath 指向的本地仓库目录，并禁用代码/Git 相关能力。':
       'When checked, the local repository directory pointed to by repoPath will be deleted, and code/Git capabilities will be disabled.',
+    '勾选后会删除项目路径指向的本地目录，并禁用代码/Git 相关能力。':
+      'When checked, the local directory at the project path will be deleted, and code/Git capabilities will be disabled.',
     '关闭': 'Off',
     '管理 Agent 执行器的配置变体。每个变体定义一组运行参数。':
       'Manage configuration variants for agent executors. Each variant defines a set of runtime parameters.',
     '合并到 {targetBranch}': 'Merge into {targetBranch}',
     '恢复该项目时需要重新绑定一个有效的 Git 仓库路径。':
       'Restoring this project requires rebinding a valid Git repository path.',
+    '恢复该项目时需要重新绑定一个有效的项目路径。':
+      'Restoring this project requires rebinding a valid project path.',
     '恢复后，项目会重新出现在默认项目列表中。':
       'After restore, the project will appear in the default project list again.',
     '恢复项目': 'Restore project',
@@ -983,6 +996,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '先创建成员预设': 'Create member presets first',
     '项目「{title}」的本地仓库文件已删除。恢复前需要重新绑定一个有效的 Git 仓库路径。':
       'Local repository files for project "{title}" have been deleted. Rebind a valid Git repository path before restoring it.',
+    '项目「{title}」的本地项目文件已删除。恢复前需要重新绑定一个有效的项目路径。':
+      'Local project files for project "{title}" have been deleted. Rebind a valid project path before restoring it.',
     '项目「{title}」将从默认项目列表隐藏，但历史任务、workspace 和会话记录仍会保留。':
       'Project "{title}" will be hidden from the default project list, but historical tasks, workspaces, and sessions will be kept.',
     '项目将从默认列表隐藏，历史记录保留。可选同时删除本地文件。':
@@ -1025,6 +1040,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
       'The agent will modify the project main directory directly. Auto-commit, Merge, Rebase, and conflict resolution flows are unavailable.',
     'Agent Tower 会尽量校验仓库 identity；如果 remote URL 或目录名不同，会给出警告但允许继续。':
       'Agent Tower will try to verify repository identity. If the remote URL or directory name differs, it will show a warning but still allow restore.',
+    'Agent Tower 会尽量校验项目 identity；如果 remote URL 或目录名不同，会给出警告但允许继续。':
+      'Agent Tower will try to verify project identity. If the remote URL or directory name differs, it will show a warning but still allow restore.',
     'CLI 配置': 'CLI Config',
     'Profile 配置': 'Profile Configuration',
     'Provider 列表加载失败。': 'Failed to load provider list.',

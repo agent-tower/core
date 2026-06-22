@@ -17,6 +17,7 @@ interface ProjectOption {
   id: string
   name: string
   color?: string
+  isGitRepo?: boolean
 }
 
 interface ProviderOption {
@@ -145,7 +146,11 @@ export function CreateTaskInput({
 
   const selectedProject = useMemo(() => projects.find(p => p.id === projectId), [projects, projectId])
   const selectedProvider = useMemo(() => providers.find(p => p.id === providerId), [providers, providerId])
-  const selectedWorkspaceModeLabel = workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? t('本地模式') : t('工作树模式')
+  const selectedProjectSupportsGit = selectedProject?.isGitRepo !== false
+  const localProjectOnly = !isConversationMode && !selectedProjectSupportsGit
+  const effectiveCreateMode: CreateTaskMode = localProjectOnly ? 'SOLO' : mode
+  const effectiveWorkspaceMode: WorkspaceMode = localProjectOnly ? WorkspaceKind.MAIN_DIRECTORY : workspaceMode
+  const selectedWorkspaceModeLabel = effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? t('本地模式') : t('工作树模式')
 
   const isSubmitting = createStep !== 'idle'
   const hasTeamMembers = !!teamTemplateId || memberPresetIds.length > 0
@@ -154,7 +159,15 @@ export function CreateTaskInput({
     && title.trim().length > 0
     && (isConversationMode
       ? !!providerId
-      : !!projectId && (mode === 'SOLO' ? !!providerId : hasTeamMembers))
+      : !!projectId && (effectiveCreateMode === 'SOLO' ? !!providerId : hasTeamMembers))
+
+  useEffect(() => {
+    if (!localProjectOnly) return
+    setMode('SOLO')
+    setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY)
+    setShowTeamConfig(false)
+    setShowWorkspaceModeMenu(false)
+  }, [localProjectOnly])
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return
@@ -166,11 +179,11 @@ export function CreateTaskInput({
         description: '',
         projectId: isConversationMode ? '' : projectId,
         providerId,
-        mode: isConversationMode ? 'SOLO' : mode,
-        workspaceMode: !isConversationMode && mode === 'SOLO' ? workspaceMode : WorkspaceKind.WORKTREE,
+        mode: isConversationMode ? 'SOLO' : effectiveCreateMode,
+        workspaceMode: !isConversationMode && effectiveCreateMode === 'SOLO' ? effectiveWorkspaceMode : WorkspaceKind.WORKTREE,
         teamRunMode: isConversationMode ? 'AUTO' : teamRunMode,
-        teamTemplateId: isConversationMode ? null : teamTemplateId,
-        memberPresetIds: isConversationMode ? [] : memberPresetIds,
+        teamTemplateId: isConversationMode || localProjectOnly ? null : teamTemplateId,
+        memberPresetIds: isConversationMode || localProjectOnly ? [] : memberPresetIds,
         attachmentLinks,
         attachmentIds,
       })
@@ -179,7 +192,7 @@ export function CreateTaskInput({
     } catch {
       // Complete failure — preserve input for retry
     }
-  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, clearAttachments])
+  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, clearAttachments])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
@@ -328,7 +341,7 @@ export function CreateTaskInput({
                 {t(pendingLabel ?? CREATE_STEP_LABEL[createStep])}
               </span>
             )}
-            {!isConversationMode && !isSubmitting && !isUploading && mode === 'TEAM' && !hasTeamMembers && title.trim().length > 0 && (
+            {!isConversationMode && !isSubmitting && !isUploading && effectiveCreateMode === 'TEAM' && !hasTeamMembers && title.trim().length > 0 && (
               <span className="text-[11px] text-warning">{t('请选择团队模板或追加成员')}</span>
             )}
             {canSubmit && (
@@ -404,7 +417,7 @@ export function CreateTaskInput({
         )}
 
         {/* Provider selector (Solo mode only) */}
-        {(isConversationMode || mode === 'SOLO') && (
+        {(isConversationMode || effectiveCreateMode === 'SOLO') && (
           <div className="relative" ref={providerMenuRef}>
             <button
               type="button"
@@ -447,7 +460,7 @@ export function CreateTaskInput({
         )}
 
         {/* Workspace mode selector (Solo mode only) */}
-        {!isConversationMode && mode === 'SOLO' && (
+        {!isConversationMode && effectiveCreateMode === 'SOLO' && (
           <div className="relative" ref={workspaceModeMenuRef}>
             <button
               type="button"
@@ -468,7 +481,11 @@ export function CreateTaskInput({
                 <button
                   type="button"
                   onClick={() => { setWorkspaceMode(WorkspaceKind.WORKTREE); setShowWorkspaceModeMenu(false) }}
-                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors"
+                  disabled={localProjectOnly}
+                  className={cn(
+                    'flex items-center w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors',
+                    localProjectOnly && 'opacity-40 cursor-not-allowed',
+                  )}
                 >
                   <Check size={14} className={cn('mr-2 shrink-0 text-foreground', workspaceMode === WorkspaceKind.WORKTREE ? 'opacity-100' : 'opacity-0')} />
                   <span className={cn('truncate', workspaceMode === WorkspaceKind.WORKTREE ? 'text-foreground font-medium' : 'text-muted-foreground')}>
@@ -495,9 +512,10 @@ export function CreateTaskInput({
           <button
             type="button"
             role="switch"
-            aria-checked={mode === 'TEAM'}
+            aria-checked={effectiveCreateMode === 'TEAM'}
             onClick={() => {
               if (isSubmitting) return
+              if (localProjectOnly) return
               if (mode === 'TEAM') {
                 setMode('SOLO')
                 setShowTeamConfig(false)
@@ -508,27 +526,27 @@ export function CreateTaskInput({
                 setShowTeamConfig(true)
               }
             }}
-            disabled={isSubmitting}
+            disabled={isSubmitting || localProjectOnly}
             className={cn(
               'ml-auto flex items-center gap-2 h-7 pl-2 pr-2 rounded-md text-xs font-medium transition-colors',
               'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              mode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground',
+              effectiveCreateMode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground',
             )}
-            title={t('启用团队模式')}
+            title={localProjectOnly ? t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.') : t('启用团队模式')}
           >
-            <Users size={14} className={mode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground'} />
+            <Users size={14} className={effectiveCreateMode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground'} />
             <span>{t('团队模式')}</span>
             <span
               className={cn(
                 'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors',
-                mode === 'TEAM' ? 'bg-primary' : 'bg-border',
+                effectiveCreateMode === 'TEAM' ? 'bg-primary' : 'bg-border',
               )}
             >
               <span
                 className={cn(
                   'inline-block size-3 rounded-full bg-background shadow-sm transition-transform',
-                  mode === 'TEAM' ? 'translate-x-3.5' : 'translate-x-0.5',
+                  effectiveCreateMode === 'TEAM' ? 'translate-x-3.5' : 'translate-x-0.5',
                 )}
               />
             </span>
@@ -536,7 +554,15 @@ export function CreateTaskInput({
         )}
       </div>
 
-      {!isConversationMode && mode === 'SOLO' && workspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
+      {localProjectOnly && (
+        <div className="mt-2.5">
+          <div className="rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-xs leading-relaxed text-info/90">
+            {t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.')}
+          </div>
+        </div>
+      )}
+
+      {!isConversationMode && effectiveCreateMode === 'SOLO' && effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
         <div className="mt-2.5">
           <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2 text-xs leading-relaxed text-warning/90">
             {t('Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。')}
@@ -545,7 +571,7 @@ export function CreateTaskInput({
       )}
 
       {/* TeamRun configuration panel — muted secondary area below input */}
-      {!isConversationMode && mode === 'TEAM' && showTeamConfig && (
+      {!isConversationMode && effectiveCreateMode === 'TEAM' && showTeamConfig && (
         <div className="mt-2.5 rounded-xl border border-border/60 bg-muted/40 p-3 animate-[fadeInUp_0.25s_cubic-bezier(0.16,1,0.3,1)]">
           <TeamRunCreateForm
             mode={teamRunMode}

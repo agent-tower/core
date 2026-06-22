@@ -9,4 +9,8 @@ describe('FolderPicker directory click behavior', () => {
   it('browses non-Git directories without selecting them', () => {
     expect(getDirectoryClickAction({ isGitRepo: false })).toBe('browse')
   })
+
+  it('selects non-Git directories in directory mode before browsing into them', () => {
+    expect(getDirectoryClickAction({ isGitRepo: false }, 'directory')).toBe('select-and-browse')
+  })
 })

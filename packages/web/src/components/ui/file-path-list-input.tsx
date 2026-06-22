@@ -14,9 +14,11 @@ export interface FilePathListInputProps {
   onChange: (paths: string[]) => void
   repoPath: string
   placeholder?: string
+  disabled?: boolean
+  disabledMessage?: string
 }
 
-export function FilePathListInput({ value, onChange, repoPath, placeholder }: FilePathListInputProps) {
+export function FilePathListInput({ value, onChange, repoPath, placeholder, disabled, disabledMessage }: FilePathListInputProps) {
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [completions, setCompletions] = useState<CompletionItem[]>([])
@@ -27,7 +29,7 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const fetchCompletions = useCallback(async (prefix: string) => {
-    if (!repoPath || !prefix) {
+    if (disabled || !repoPath || !prefix) {
       setCompletions([])
       setShowDropdown(false)
       return
@@ -44,7 +46,7 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
       setCompletions([])
       setShowDropdown(false)
     }
-  }, [repoPath])
+  }, [disabled, repoPath])
 
   // Debounced fetch on input change
   useEffect(() => {
@@ -70,6 +72,7 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
   }, [])
 
   const addPath = (p: string) => {
+    if (disabled) return
     const trimmed = p.trim()
     if (!trimmed || value.includes(trimmed)) return
     onChange([...value, trimmed])
@@ -79,10 +82,12 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
   }
 
   const removePath = (index: number) => {
+    if (disabled) return
     onChange(value.filter((_, i) => i !== index))
   }
 
   const handleSelect = (item: CompletionItem) => {
+    if (disabled) return
     if (item.type === 'directory') {
       // 选择目录：填入输入框继续深入浏览
       setInput(item.path)
@@ -94,6 +99,7 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
   }
 
   const handleAddDir = (item: CompletionItem, e: React.MouseEvent) => {
+    if (disabled) return
     e.stopPropagation()
     // 去掉末尾 / 后添加目录路径
     addPath(item.path.replace(/\/$/, ''))
@@ -101,6 +107,7 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
+    if (disabled) return
     if (showDropdown && completions.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -138,7 +145,8 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
               <span className="text-sm font-mono text-neutral-700 truncate flex-1">{p}</span>
               <button
                 onClick={() => removePath(i)}
-                className="p-0.5 text-neutral-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                disabled={disabled}
+                className="p-0.5 text-neutral-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:cursor-not-allowed disabled:hover:text-neutral-300"
               >
                 <X size={14} />
               </button>
@@ -158,11 +166,12 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
             onKeyDown={handleKeyDown}
             onFocus={() => { if (input && completions.length > 0) setShowDropdown(true) }}
             placeholder={placeholder ?? t('输入文件路径...')}
-            className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-neutral-300"
+            disabled={disabled}
+            className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-neutral-300 disabled:cursor-not-allowed disabled:bg-neutral-50 disabled:text-neutral-400"
           />
           <button
             onClick={() => addPath(input)}
-            disabled={!input.trim()}
+            disabled={disabled || !input.trim()}
             className="flex items-center gap-1 px-3 py-2 text-sm bg-neutral-900 text-white rounded-lg hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <Plus size={14} />
@@ -203,6 +212,9 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder }: Fi
           </div>
         )}
       </div>
+      {disabled && disabledMessage && (
+        <p className="mt-2 text-xs text-muted-foreground">{disabledMessage}</p>
+      )}
     </div>
   )
 }

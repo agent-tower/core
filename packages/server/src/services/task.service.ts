@@ -11,7 +11,7 @@ import type { SessionManager } from './session-manager.js';
 import type { TaskCleanupService, TaskCleanupSnapshot } from './task-cleanup.service.js';
 import type { WorkspaceGitWatcherService } from './workspace-git-watcher.service.js';
 import { getWorkspaceGitWatcherService } from '../core/container.js';
-import { ensureProjectIsMutable } from './project-guards.js';
+import { ensureProjectIsMutable, hasGitMetadata } from './project-guards.js';
 import { defaultTeamLockService } from './team-lock.service.js';
 
 interface CreateTaskInput {
@@ -214,6 +214,22 @@ function withTaskPreviews<T extends { title: string; description?: string | null
   return base;
 }
 
+function withProjectGitMetadata<T extends { project: { repoPath: string } }>(
+  task: T
+): Omit<T, 'project'> & { project: T['project'] & { isGitRepo: boolean } } {
+  return {
+    ...task,
+    project: {
+      ...task.project,
+      isGitRepo: hasGitMetadata(task.project.repoPath),
+    },
+  };
+}
+
+function buildProjectGitMetadata(project: { repoPath: string }): { isGitRepo: boolean } {
+  return { isGitRepo: hasGitMetadata(project.repoPath) };
+}
+
 function buildTaskPrompt(task: { title: string; description?: string | null }): string {
   const title = task.title.trim();
   const description = task.description;
@@ -291,7 +307,7 @@ export class TaskService {
     });
 
     return {
-      data: data.map((task) => withTaskPreviews(task, { omitDescription: true })),
+      data: data.map((task) => withTaskPreviews(withProjectGitMetadata(task), { omitDescription: true })),
       total,
       page,
       limit,
@@ -308,6 +324,7 @@ export class TaskService {
       select: {
         id: true,
         projectId: true,
+        project: true,
         title: true,
         status: true,
         priority: true,
@@ -322,7 +339,7 @@ export class TaskService {
       throw new NotFoundError('Task', id);
     }
 
-    return withTaskPreviews(task, { omitDescription: true });
+    return withTaskPreviews(withProjectGitMetadata(task), { omitDescription: true });
   }
 
   async findBodyById(id: string) {
@@ -389,7 +406,7 @@ export class TaskService {
       _max: { position: true },
     });
 
-    return prisma.task.create({
+    const created = await prisma.task.create({
       data: {
         title: normalizedInput.title,
         description: normalizedInput.description,
@@ -398,6 +415,14 @@ export class TaskService {
         projectId,
       },
     });
+
+    return {
+      ...created,
+      project: {
+        ...project,
+        ...buildProjectGitMetadata(project),
+      },
+    };
   }
 
   /**
@@ -414,10 +439,18 @@ export class TaskService {
     ensureProjectIsMutable(task.project, 'update tasks');
     const normalizedInput = normalizeUpdateTaskInput(task, input);
 
-    return prisma.task.update({
+    const updated = await prisma.task.update({
       where: { id },
       data: normalizedInput,
     });
+
+    return {
+      ...updated,
+      project: {
+        ...task.project,
+        ...buildProjectGitMetadata(task.project),
+      },
+    };
   }
 
   /**
@@ -438,7 +471,7 @@ export class TaskService {
 
     // 如果状态没有变化，直接返回
     if (currentStatus === status) {
-      return task;
+      return withProjectGitMetadata(task);
     }
 
     // 校验状态流转是否合法
@@ -464,7 +497,13 @@ export class TaskService {
     // 通知前端
     this.emitTaskUpdated(id, task.projectId, status);
 
-    return updated;
+    return {
+      ...updated,
+      project: {
+        ...task.project,
+        ...buildProjectGitMetadata(task.project),
+      },
+    };
   }
 
   /**
@@ -500,7 +539,13 @@ export class TaskService {
       this.emitTaskUpdated(id, task.projectId, status);
     }
 
-    return updated;
+    return {
+      ...updated,
+      project: {
+        ...task.project,
+        ...buildProjectGitMetadata(task.project),
+      },
+    };
   }
 
   /**
@@ -751,7 +796,13 @@ export class TaskService {
 
     this.emitTaskUpdated(id, task.projectId, TaskStatus.TODO);
 
-    return updated;
+    return {
+      ...updated,
+      project: {
+        ...task.project,
+        ...buildProjectGitMetadata(task.project),
+      },
+    };
   }
 
   // ── 内部方法 ────────────────────────────────────────────────────────────────

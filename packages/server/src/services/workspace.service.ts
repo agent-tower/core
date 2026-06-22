@@ -14,7 +14,7 @@ import path from 'node:path';
 import type { Prisma } from '@prisma/client';
 import type { EventBus } from '../core/event-bus.js';
 import type { GitOperationStatus } from '@agent-tower/shared';
-import { ensureProjectIsMutable } from './project-guards.js';
+import { ensureProjectIsMutable, ensureProjectSupportsGit, hasGitMetadata } from './project-guards.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import {
   getWorkspaceWorkingDir,
@@ -226,6 +226,8 @@ export class WorkspaceService {
       return this.createMainDirectoryWorkspace(taskId, task, options);
     }
 
+    ensureProjectSupportsGit(task.project, 'create a worktree workspace');
+
     const worktreeManager = new WorktreeManager(task.project.repoPath);
 
     // 查找可复用的 MERGED 或 HIBERNATED workspace
@@ -426,6 +428,7 @@ export class WorkspaceService {
     }
     ensureTaskNotDeleted(teamRun.task);
     ensureProjectIsMutable(teamRun.task.project, 'create workspaces');
+    ensureProjectSupportsGit(teamRun.task.project, 'create TeamRun workspaces');
 
     if (
       teamRun.mainWorkspace
@@ -493,6 +496,7 @@ export class WorkspaceService {
       throw new NotFoundError('TeamMember', memberId);
     }
     ensureProjectIsMutable(teamRun.task.project, 'create workspaces');
+    ensureProjectSupportsGit(teamRun.task.project, 'create TeamRun workspaces');
 
     const existing = await this.findDedicatedWorkspace(mainWorkspace.id, memberId);
     if (existing) {
@@ -756,6 +760,13 @@ export class WorkspaceService {
       throw new NotFoundError('Workspace', id);
     }
     if (isMainDirectoryWorkspace(workspace)) {
+      if (!hasGitMetadata(workspace.task.project.repoPath)) {
+        throw new ServiceError(
+          'Workspace git status is unavailable because the project is not a Git repository',
+          'WORKSPACE_GIT_UNAVAILABLE',
+          400,
+        );
+      }
       return mainDirectoryGitStatus();
     }
 
@@ -1454,6 +1465,7 @@ export class WorkspaceService {
     const projects = await prisma.project.findMany();
 
     for (const project of projects) {
+      if (!hasGitMetadata(project.repoPath)) continue;
       try {
         const worktreeManager = new WorktreeManager(project.repoPath);
         await worktreeManager.prune();

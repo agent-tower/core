@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { useQueryClient } from '@tanstack/react-query'
-import { SessionStatus, WorkspaceStatus, type Session, type TaskBody } from '@agent-tower/shared'
+import { SessionStatus, WorkspaceKind, WorkspaceStatus, type Session, type TaskBody } from '@agent-tower/shared'
 import type { ConflictOp } from '@agent-tower/shared'
 import {
   ServerEvents,
@@ -291,7 +291,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
   const teamRun = taskTeamRun ?? null
   const isTeamRunMode = Boolean(teamRun)
-  const showCreateTeamRunEntry = taskTeamRun === null
+  const taskSupportsGit = task?.isGitRepo !== false
+  const showCreateTeamRunEntry = taskTeamRun === null && taskSupportsGit
   const shouldLoadTaskBody = Boolean(task?.id && taskTeamRun === null)
   const { data: taskBody, isLoading: isLoadingTaskBody } = useTaskBody(task?.id ?? '', shouldLoadTaskBody)
 
@@ -321,7 +322,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const selectedWorkspaceOperationId = selectedWorkspace?.status === WorkspaceStatus.ACTIVE
     ? selectedWorkspace.id
     : undefined
-  const canRunSelectedWorkspaceGitOperations = canRunWorkspaceGitOperations(selectedWorkspace, teamRun)
+  const canRunSelectedWorkspaceGitOperations = taskSupportsGit && canRunWorkspaceGitOperations(selectedWorkspace, teamRun)
 
   // 新 ACTIVE workspace session 出现后自动解除 retry 锁定
   useEffect(() => {
@@ -594,7 +595,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
       await retryTaskMutation.mutateAsync(task.id)
       setIsJustRetried(true)
 
-      const workspace = await createWorkspaceMutation.mutateAsync({})
+      const workspace = await createWorkspaceMutation.mutateAsync({
+        workspaceKind: taskSupportsGit ? undefined : WorkspaceKind.MAIN_DIRECTORY,
+      })
 
       const session = await apiClient.post<{ id: string }>(
         `/workspaces/${workspace.id}/sessions`,
@@ -610,7 +613,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
     } finally {
       setIsRetrying(false)
     }
-  }, [task?.id, task?.title, activeSession?.providerId, providers, ensureTaskBody,
+  }, [task?.id, task?.title, taskSupportsGit, activeSession?.providerId, providers, ensureTaskBody,
       retryTaskMutation, createWorkspaceMutation, startSessionMutation, queryClient])
 
   const handleOpenStartDialog = useCallback(async () => {
@@ -1469,6 +1472,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
             }}
             minContentWidth={WORKSPACE_PANEL_MIN_WIDTH}
             tabRef={workspacePanelTabRef}
+            gitAvailable={taskSupportsGit}
             gitProps={canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId ? {
               branchName: selectedWorkspaceBranch,
               targetBranch: selectedWorkspaceMergeTargetBranch,
@@ -1492,6 +1496,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           taskTitle={taskBody?.title ?? task.title}
           taskDescription={taskBody?.body ?? ''}
           taskPrompt={taskBody?.prompt}
+          projectIsGitRepo={taskSupportsGit}
           onStarted={() => onAutoStartRecovered?.(task.id)}
         />
       )}

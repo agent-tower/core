@@ -76,6 +76,71 @@ describe('ProjectService', () => {
     });
   });
 
+  it('creates a non-git project directory as a local project', async () => {
+    const service = new ProjectService();
+    const projectPath = fs.mkdtempSync(path.join(testDir, 'local-project-'));
+    fs.writeFileSync(path.join(projectPath, 'README.md'), 'local project\n', 'utf-8');
+
+    const project = await service.create({
+      name: 'Local project',
+      repoPath: projectPath,
+    });
+
+    expect(project).toMatchObject({
+      name: 'Local project',
+      repoPath: projectPath,
+      repoRemoteUrl: null,
+      isGitRepo: false,
+    });
+    expect(fs.existsSync(path.join(projectPath, '.git'))).toBe(false);
+  });
+
+  it('initializes an empty directory as Git when requested', async () => {
+    const service = new ProjectService();
+    const projectPath = fs.mkdtempSync(path.join(testDir, 'initializable-project-'));
+
+    const project = await service.create({
+      name: 'Initializable project',
+      repoPath: projectPath,
+      initEmptyRepo: true,
+    });
+
+    expect(project).toMatchObject({
+      name: 'Initializable project',
+      repoPath: projectPath,
+      isGitRepo: true,
+    });
+    expect(fs.existsSync(path.join(projectPath, '.git'))).toBe(true);
+  });
+
+  it('restores an archived project to a non-git project directory', async () => {
+    const service = new ProjectService();
+    const oldPath = fs.mkdtempSync(path.join(testDir, 'restore-old-'));
+    const nextPath = fs.mkdtempSync(path.join(testDir, 'restore-local-'));
+    fs.writeFileSync(path.join(nextPath, 'notes.txt'), 'restored local project\n', 'utf-8');
+    const archived = await prisma.project.create({
+      data: {
+        name: 'Restore local project',
+        repoPath: oldPath,
+        archivedAt: new Date(),
+        repoDeletedAt: new Date(),
+      },
+    });
+
+    const result = await service.restore(archived.id, {
+      repoPath: nextPath,
+    });
+
+    expect(result.project).toMatchObject({
+      id: archived.id,
+      repoPath: nextPath,
+      archivedAt: null,
+      repoDeletedAt: null,
+      repoRemoteUrl: null,
+      isGitRepo: false,
+    });
+  });
+
   it('unwatches active workspaces before archiving them', async () => {
     const unwatchWorkspaceMock = vi.fn();
     const service = new ProjectService({ unwatchWorkspace: unwatchWorkspaceMock });

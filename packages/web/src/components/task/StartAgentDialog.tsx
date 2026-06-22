@@ -20,6 +20,7 @@ interface StartAgentDialogProps {
   taskTitle: string
   taskDescription: string
   taskPrompt?: string
+  projectIsGitRepo?: boolean
 }
 
 type StartStep = 'idle' | 'creating-workspace' | 'creating-session' | 'starting-session'
@@ -33,6 +34,7 @@ export function StartAgentDialog({
   taskTitle,
   taskDescription,
   taskPrompt,
+  projectIsGitRepo = true,
 }: StartAgentDialogProps) {
   const { t } = useI18n()
   const [selectedProviderId, setSelectedProviderId] = useState<string>('')
@@ -61,11 +63,17 @@ export function StartAgentDialog({
       const parts = [taskTitle]
       if (taskDescription) parts.push(taskDescription)
       setPrompt(taskPrompt?.trim() || parts.join('\n\n'))
-      setWorkspaceMode(WorkspaceKind.WORKTREE)
+      setWorkspaceMode(projectIsGitRepo ? WorkspaceKind.WORKTREE : WorkspaceKind.MAIN_DIRECTORY)
       setStep('idle')
       setError(null)
     }
-  }, [isOpen, taskTitle, taskDescription, taskPrompt])
+  }, [isOpen, projectIsGitRepo, taskTitle, taskDescription, taskPrompt])
+
+  useEffect(() => {
+    if (!projectIsGitRepo) {
+      setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY)
+    }
+  }, [projectIsGitRepo])
 
   const isStarting = step !== 'idle'
 
@@ -77,7 +85,9 @@ export function StartAgentDialog({
     try {
       // Step 1: 创建 Workspace
       setStep('creating-workspace')
-      const workspace = await createWorkspace.mutateAsync({ workspaceKind: workspaceMode })
+      const workspace = await createWorkspace.mutateAsync({
+        workspaceKind: projectIsGitRepo ? workspaceMode : WorkspaceKind.MAIN_DIRECTORY,
+      })
 
       // Step 2: 创建 Session (使用 providerId)
       setStep('creating-session')
@@ -119,7 +129,7 @@ export function StartAgentDialog({
     }
   })
   const workspaceModeOptions = [
-    { value: WorkspaceKind.WORKTREE, label: t('工作树模式') },
+    { value: WorkspaceKind.WORKTREE, label: t('工作树模式'), disabled: !projectIsGitRepo },
     { value: WorkspaceKind.MAIN_DIRECTORY, label: t('本地模式') },
   ]
 
@@ -165,10 +175,15 @@ export function StartAgentDialog({
                 value={workspaceMode}
                 onChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
                 options={workspaceModeOptions}
-                disabled={isStarting}
+                disabled={isStarting || !projectIsGitRepo}
               />
             </div>
           </div>
+          {!projectIsGitRepo && (
+            <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-800">
+              {t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.')}
+            </div>
+          )}
           {workspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
             <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
               {t('Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。')}

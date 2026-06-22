@@ -25,6 +25,7 @@ interface ValidateResponse {
   valid: boolean
   path: string
   reason?: string
+  isGitRepo?: boolean
   isEmpty?: boolean
   error?: string
 }
@@ -100,6 +101,8 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
 
   // === 验证并选中目录 ===
   const selectDirectory = useCallback(async (dirPath: string) => {
+    setInputValue(dirPath)
+
     if (validationMode === 'directory') {
       onChange(dirPath)
       setValidationError(null)
@@ -112,7 +115,7 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
       const res = await apiClient.get<ValidateResponse>('/filesystem/validate', {
         params: { path: dirPath },
       })
-      if (res.valid) {
+      if (res.valid && res.isGitRepo !== false) {
         onChange(dirPath)
         setValidationError(null)
       } else {
@@ -127,7 +130,7 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
 
   // === 点击目录条目 ===
   const handleDirClick = useCallback((entry: DirEntry) => {
-    if (getDirectoryClickAction(entry) === 'select-and-browse') {
+    if (getDirectoryClickAction(entry, validationMode) === 'select-and-browse') {
       // Git 仓库 → 选中
       selectDirectory(entry.path)
       // 同时也进入该目录方便用户查看子目录
@@ -137,7 +140,7 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
       browsePath(entry.path)
       setValidationError(null)
     }
-  }, [selectDirectory, browsePath])
+  }, [selectDirectory, browsePath, validationMode])
 
   // === 面包屑导航 ===
   const isWindows = pathSep === '\\'
@@ -342,10 +345,19 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
                         Git
                       </span>
                     )}
-                    {!entry.isGitRepo && (
+                    {!entry.isGitRepo && validationMode !== 'directory' && (
                       <ChevronRight
                         size={12}
                         className="ml-auto text-neutral-300 group-hover:text-neutral-400 flex-shrink-0"
+                      />
+                    )}
+                    {!entry.isGitRepo && validationMode === 'directory' && (
+                      <Check
+                        size={12}
+                        className={cn(
+                          'ml-auto flex-shrink-0',
+                          entry.path === value ? 'text-emerald-500' : 'text-neutral-300 group-hover:text-neutral-400',
+                        )}
                       />
                     )}
                   </button>

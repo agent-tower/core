@@ -29,6 +29,7 @@ export interface WorkspacePanelProps {
   projectId?: string
   /** 隐藏 Changes tab（移动端已有独立 Changes 视图时使用） */
   hideChanges?: boolean
+  gitAvailable?: boolean
   readOnly?: boolean
   repoDeleted?: boolean
   teamRun?: TeamRun | null
@@ -137,6 +138,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     workingDir,
     projectId,
     hideChanges,
+    gitAvailable = true,
     readOnly,
     repoDeleted,
     teamRun,
@@ -166,15 +168,18 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
     const tabs = useMemo(() => {
       const baseTabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
+      const gitFilteredTabs = gitAvailable
+        ? baseTabs
+        : baseTabs.filter((tab) => tab.key !== 'review' && tab.key !== 'history')
       const availableTabs = readOnly
-        ? baseTabs.filter((tab) => tab.key !== 'terminal')
-        : baseTabs
+        ? gitFilteredTabs.filter((tab) => tab.key !== 'terminal')
+        : gitFilteredTabs
 
       return teamRun
         ? [{ key: "team-status" as const, label: "Team Status", icon: <Users size={14} /> }, ...availableTabs]
         : availableTabs
-    }, [hideChanges, readOnly, teamRun])
-    const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(hideChanges ? "history" : "review")
+    }, [gitAvailable, hideChanges, readOnly, teamRun])
+    const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(gitAvailable ? (hideChanges ? "history" : "review") : "editor")
 
     const selectTab = useCallback((tab: WorkspaceTabWithTeam) => {
       setActiveTab(tab)
@@ -208,8 +213,8 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
     useEffect(() => {
       if (tabs.some((tab) => tab.key === activeTab)) return
-      setActiveTab(tabs[0]?.key ?? (hideChanges ? 'history' : 'review'))
-    }, [activeTab, hideChanges, tabs])
+      setActiveTab(tabs[0]?.key ?? 'editor')
+    }, [activeTab, tabs])
 
     useEffect(() => {
       if (isRailVariant && !isExpanded) {

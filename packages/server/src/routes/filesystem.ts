@@ -191,7 +191,7 @@ export async function filesystemRoutes(app: FastifyInstance) {
 
   /**
    * GET /validate?path=<dir>
-   * 验证路径是否为有效 Git 仓库
+   * 验证路径是否为有效项目目录，并返回 Git 元数据状态
    */
   app.get('/validate', async (request, reply) => {
     try {
@@ -224,15 +224,16 @@ export async function filesystemRoutes(app: FastifyInstance) {
         }
 
         return {
-          valid: false,
+          valid: true,
           path: dirPath,
           reason: 'no_git',
+          isGitRepo: false,
           isEmpty,
           error: 'Not a Git repository (no .git found)',
         };
       }
 
-      return { valid: true, path: dirPath };
+      return { valid: true, path: dirPath, isGitRepo: true };
     } catch (error) {
       return handleError(error, reply);
     }

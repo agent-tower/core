@@ -32,6 +32,7 @@ let TEAM_ROOM_REPLY_REMINDER: string;
 let createMcpServer: typeof import('../../mcp/server.js').createMcpServer;
 let teamRunRoutes: typeof import('../../routes/team-runs.js').teamRunRoutes;
 let workRequestSequence = 0;
+let gitRepoSequence = 0;
 
 const TEAM_RUN_MISMATCH_ERROR = 'team_run_id does not match the current TeamRun session.';
 const TEAM_RUN_ENV_KEYS = [
@@ -123,6 +124,12 @@ function asAgentInvocations(value: unknown): AgentInvocation[] {
   return value as AgentInvocation[];
 }
 
+function createGitRepoPath() {
+  const repoPath = path.join(testDir, 'repos', `repo-${gitRepoSequence++}`);
+  fs.mkdirSync(path.join(repoPath, '.git'), { recursive: true });
+  return repoPath;
+}
+
 function createRouteSchedulerMock(): RouteSchedulerMock {
   const startedTeamRunIds: string[] = [];
   const scheduler = {
@@ -192,7 +199,7 @@ async function createFixture(options: {
   const project = await prisma.project.create({
     data: {
       name: 'Team reconciler project',
-      repoPath: testDir,
+      repoPath: createGitRepoPath(),
     },
   });
   const task = await prisma.task.create({
@@ -2292,7 +2299,7 @@ describe('TeamReconcilerService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Initial message project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath(),
       },
     });
     const task = await prisma.task.create({
@@ -2376,7 +2383,7 @@ describe('TeamReconcilerService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Title-only project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath(),
       },
     });
     const task = await prisma.task.create({
@@ -2429,7 +2436,7 @@ describe('TeamReconcilerService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Mentioned initial message project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath(),
       },
     });
     const task = await prisma.task.create({
@@ -2497,7 +2504,7 @@ describe('TeamReconcilerService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Mention prefix project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath(),
       },
     });
     const task = await prisma.task.create({
@@ -2553,7 +2560,7 @@ describe('TeamReconcilerService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Ambiguous mention project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath(),
       },
     });
     const task = await prisma.task.create({
@@ -2606,7 +2613,7 @@ describe('TeamReconcilerService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Mixed ambiguous mention project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath(),
       },
     });
     const task = await prisma.task.create({
@@ -2660,7 +2667,7 @@ describe('TeamReconcilerService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Blank title project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath(),
       },
     });
     const task = await prisma.task.create({
@@ -2700,7 +2707,7 @@ describe('TeamReconcilerService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Atomic TeamRun project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath(),
       },
     });
     const task = await prisma.task.create({

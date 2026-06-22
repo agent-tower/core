@@ -27,6 +27,7 @@ const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 let TeamRunService: typeof import('../team-run.service.js').TeamRunService;
 let prisma: PrismaClient;
 type TeamRunServiceInstance = InstanceType<typeof import('../team-run.service.js').TeamRunService>;
+let gitRepoCounter = 0;
 
 const capabilities = {
   readRoom: true,
@@ -63,11 +64,17 @@ function userMessagesPresetInput(name: string, aliases: string[] = [name.toLower
   };
 }
 
+function createGitRepoPath(label: string) {
+  const repoPath = path.join(testDir, 'repos', `${label}-${gitRepoCounter++}`);
+  fs.mkdirSync(path.join(repoPath, '.git'), { recursive: true });
+  return repoPath;
+}
+
 async function createTask(title = 'Team task') {
   const project = await prisma.project.create({
     data: {
       name: `${title} project`,
-      repoPath: testDir,
+      repoPath: createGitRepoPath(title.replace(/\W+/g, '-')),
     },
   });
 
@@ -274,6 +281,26 @@ describe('TeamRunService', () => {
     expect(teamRun.members?.map((member) => member.presetId)).toEqual([null, null]);
   });
 
+  it('rejects creating a TeamRun for a non-git project', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'local-teamrun-project-'));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Local TeamRun project',
+        repoPath,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Local TeamRun task',
+        projectId: project.id,
+      },
+    });
+
+    await expect(service.createTeamRun(task.id, { mode: 'AUTO' })).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+    });
+  });
+
   it('creates stable instance names across TeamTemplate and explicit MemberPreset duplicates', async () => {
     const preset = await service.createMemberPreset(presetInput('Implementer', ['impl']));
     const task = await createTask();
@@ -399,7 +426,7 @@ describe('TeamRunService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Initial preview project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath('initial-preview-project'),
       },
     });
     const longDescription = `Full diagnostic logs\n${'line '.repeat(500)}`;
@@ -440,7 +467,7 @@ describe('TeamRunService', () => {
     const project = await prisma.project.create({
       data: {
         name: 'Initial mention full body project',
-        repoPath: testDir,
+        repoPath: createGitRepoPath('initial-mention-full-body-project'),
       },
     });
     const longDescription = [

@@ -3,7 +3,6 @@ import { toast } from 'sonner'
 import { useCreateProject } from '@/hooks/use-projects'
 import { apiClient } from '@/lib/api-client'
 import { useI18n } from '@/lib/i18n'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { FolderPicker } from '@/components/ui/folder-picker'
 import { Modal } from '@/components/ui/modal'
 
@@ -16,6 +15,7 @@ interface ValidateResponse {
   valid: boolean
   path: string
   reason?: 'not_found' | 'not_directory' | 'no_git' | 'permission_denied' | string
+  isGitRepo?: boolean
   isEmpty?: boolean
   error?: string
 }
@@ -83,7 +83,12 @@ export function CreateProjectModal({ isOpen, onClose }: CreateProjectModalProps)
         params: { path: trimmedRepoPath },
       })
 
-      if (validation.valid) {
+      if (!validation.valid) {
+        setFormError(validation.error ?? t('Selected path is not a valid directory'))
+        return
+      }
+
+      if (validation.isGitRepo) {
         await createWithCurrentValues(false)
         return
       }
@@ -94,17 +99,22 @@ export function CreateProjectModal({ isOpen, onClose }: CreateProjectModalProps)
       }
 
       if (validation.reason === 'no_git') {
-        setFormError(t('The selected directory is not a Git repository and is not empty. Initialize Git manually and make an initial commit, then create the project.'))
+        await createWithCurrentValues(false)
         return
       }
 
-      setFormError(validation.error ?? t('Selected path is not a valid directory'))
+      await createWithCurrentValues(false)
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : t('Could not check repository path'))
+      setFormError(error instanceof Error ? error.message : t('Could not check project path'))
     } finally {
       setIsChecking(false)
     }
   }, [createWithCurrentValues, isBusy, t, trimmedName, trimmedRepoPath])
+
+  const handleCreateLocalProject = useCallback(() => {
+    setShowInitConfirm(false)
+    void createWithCurrentValues(false)
+  }, [createWithCurrentValues])
 
   const handleConfirmInit = useCallback(() => {
     setShowInitConfirm(false)
@@ -157,7 +167,7 @@ export function CreateProjectModal({ isOpen, onClose }: CreateProjectModalProps)
           </div>
           <div>
             <label className="block text-sm font-medium text-neutral-700 mb-1.5">
-              {t('Repository Path')}
+              {t('Project Path')}
             </label>
             <FolderPicker
               value={repoPath}
@@ -173,20 +183,49 @@ export function CreateProjectModal({ isOpen, onClose }: CreateProjectModalProps)
         </div>
       </Modal>
 
-      <ConfirmDialog
+      <Modal
         isOpen={showInitConfirm}
         onClose={() => {
           if (!createProject.isPending) {
             setShowInitConfirm(false)
           }
         }}
-        onConfirm={handleConfirmInit}
         title={t('Initialize Git repository?')}
-        description={t('This directory is empty and does not have Git version control yet. Agent Tower can initialize Git and create the initial commit before creating the project.')}
-        confirmText="Initialize and Create"
-        cancelText="Cancel"
-        isLoading={createProject.isPending}
-      />
+        action={
+          <>
+            <button
+              onClick={() => setShowInitConfirm(false)}
+              disabled={createProject.isPending}
+              className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
+            >
+              {t('Cancel')}
+            </button>
+            <button
+              onClick={handleCreateLocalProject}
+              disabled={createProject.isPending}
+              className="px-4 py-2 text-sm font-medium rounded-lg border border-neutral-200 text-neutral-700 hover:bg-neutral-50 transition-colors disabled:opacity-50"
+            >
+              {t('Create Local Project')}
+            </button>
+            <button
+              onClick={handleConfirmInit}
+              disabled={createProject.isPending}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-neutral-900 text-white hover:bg-black transition-colors disabled:opacity-50"
+            >
+              {createProject.isPending ? t('Creating...') : t('Initialize and Create')}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm text-neutral-600 leading-relaxed">
+          <p>
+            {t('This directory is empty and does not have Git version control yet. Agent Tower can initialize Git and create the initial commit before creating the project.')}
+          </p>
+          <p>
+            {t('You can also create it as a local project now. Local projects only support local Solo tasks until Git is initialized.')}
+          </p>
+        </div>
+      </Modal>
     </>
   )
 }

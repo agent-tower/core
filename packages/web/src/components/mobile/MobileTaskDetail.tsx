@@ -197,7 +197,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const { data: roomMessages } = useRoomMessages(taskTeamRun?.id ?? '')
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
   const teamRun = taskTeamRun ?? null
-  const tabConfig = teamRun ? TEAM_RUN_TAB_CONFIG : SOLO_TAB_CONFIG
+  const taskSupportsGit = task.isGitRepo !== false
+  const tabConfig = useMemo(
+    () => (teamRun ? TEAM_RUN_TAB_CONFIG : SOLO_TAB_CONFIG)
+      .filter((tab) => taskSupportsGit || (tab.key !== 'changes' && tab.key !== 'history')),
+    [taskSupportsGit, teamRun],
+  )
   const shouldLoadTaskBody = taskTeamRun === null
   const { data: taskBody, isLoading: isLoadingTaskBody } = useTaskBody(task.id, shouldLoadTaskBody)
   const isProjectReadOnly = Boolean(task.projectArchivedAt)
@@ -218,7 +223,10 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
     if (!teamRun && activeTab === 'team-status') {
       setActiveTab('chat')
     }
-  }, [activeTab, teamRun])
+    if (!tabConfig.some((tab) => tab.key === activeTab)) {
+      setActiveTab('chat')
+    }
+  }, [activeTab, tabConfig, teamRun])
 
   const resolvedWorkspaceId = useMemo(
     () => resolveDefaultWorkspaceId(workspaces, teamRun, explicitWorkspaceId),
@@ -252,7 +260,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const selectedWorkspaceOperationId = selectedWorkspace?.status === WorkspaceStatus.ACTIVE
     ? selectedWorkspace.id
     : undefined
-  const canRunGit = canRunWorkspaceGitOperations(selectedWorkspace, teamRun)
+  const canRunGit = taskSupportsGit && canRunWorkspaceGitOperations(selectedWorkspace, teamRun)
   const selectedWorkspaceBranch = selectedWorkspace?.branchName ?? ''
   const selectedWorkspaceCommitMessage = selectedWorkspace?.commitMessage
   const selectedWorkspaceMergeTargetBranch = useMemo(
@@ -278,9 +286,9 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const [pendingConflictDetails, setPendingConflictDetails] = useState<ConflictDetails | null>(null)
 
   useEffect(() => {
-    const gitTab: VisibleGitTab | null = activeTab === 'changes' || (activeTab === 'chat' && shouldLoadGitData)
+    const gitTab: VisibleGitTab | null = taskSupportsGit && (activeTab === 'changes' || (activeTab === 'chat' && shouldLoadGitData))
       ? 'changes'
-      : activeTab === 'history'
+      : taskSupportsGit && activeTab === 'history'
         ? 'history'
         : null
 
@@ -297,7 +305,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
     return () => {
       setVisibleGitContext(null)
     }
-  }, [activeTab, selectedWorkspaceOperationId, setVisibleGitContext, shouldLoadGitData, workingDir])
+  }, [activeTab, taskSupportsGit, selectedWorkspaceOperationId, setVisibleGitContext, shouldLoadGitData, workingDir])
 
   const conflictDetails = useMemo<ConflictDetails | null>(() => {
     if (gitStatus?.conflictOp && gitStatus.conflictedFiles.length > 0) {
@@ -1051,7 +1059,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
         </div>
       )}
 
-      {activeTab === 'changes' && (
+      {activeTab === 'changes' && taskSupportsGit && (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {workspaces && workspaces.length > 1 && (
             <div className="shrink-0 border-b border-neutral-100 bg-white px-3 py-2">
@@ -1098,6 +1106,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
             projectId={task.projectId}
             className="h-full"
             hideChanges
+            gitAvailable={taskSupportsGit}
             readOnly={isProjectReadOnly}
             repoDeleted={isProjectRepoDeleted}
           />
@@ -1113,6 +1122,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
           taskTitle={taskBody?.title ?? task.title}
           taskDescription={taskBody?.body ?? ''}
           taskPrompt={taskBody?.prompt}
+          projectIsGitRepo={taskSupportsGit}
           onStarted={() => onAutoStartRecovered?.(task.id)}
         />
       )}

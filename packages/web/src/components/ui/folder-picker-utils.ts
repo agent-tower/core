@@ -4,7 +4,16 @@ type DirectoryClickEntry = {
 
 type DirectoryClickAction = 'browse' | 'select-and-browse'
 
-export function getDirectoryClickAction(entry: DirectoryClickEntry): DirectoryClickAction {
+export type DirectoryClickValidationMode = 'git' | 'directory'
+
+export function getDirectoryClickAction(
+  entry: DirectoryClickEntry,
+  validationMode: DirectoryClickValidationMode = 'git',
+): DirectoryClickAction {
+  if (validationMode === 'directory') {
+    return 'select-and-browse'
+  }
+
   if (entry.isGitRepo) {
     return 'select-and-browse'
   }

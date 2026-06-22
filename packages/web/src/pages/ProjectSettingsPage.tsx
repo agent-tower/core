@@ -196,6 +196,7 @@ export function ProjectSettingsPage() {
 
   const archiveProjectName = selectedProjectForAction?.name ?? t('this project')
   const restoreRequiresRepoPath = Boolean(selectedProjectForAction?.repoDeletedAt)
+  const selectedSupportsGit = selected?.isGitRepo !== false
 
   return (
     <>
@@ -272,8 +273,18 @@ export function ProjectSettingsPage() {
                   <div className="flex items-center gap-2 mb-1">
                     <span className={cn('h-2.5 w-2.5 rounded-full shrink-0', getProjectDotClass(project))} />
                     <h3 className="text-base font-semibold text-foreground">{project.name}</h3>
+                    {project.isGitRepo === false && (
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {t('Local project')}
+                      </span>
+                    )}
                   </div>
                   <p className="text-[11px] text-muted-foreground font-mono mb-5">{project.repoPath}</p>
+                  {project.isGitRepo === false && (
+                    <div className="mb-5 rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-xs leading-relaxed text-info/90">
+                      {t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.')}
+                    </div>
+                  )}
 
                   {/* Config sections */}
                   <div className="divide-y divide-border/60">
@@ -294,6 +305,8 @@ export function ProjectSettingsPage() {
                           setDirty(true)
                         }}
                         repoPath={project.repoPath}
+                        disabled={!selectedSupportsGit}
+                        disabledMessage={t('This setting applies only to Git worktree projects.')}
                       />
                     </div>
 
@@ -313,8 +326,14 @@ export function ProjectSettingsPage() {
                         }}
                         placeholder={'pnpm install\npnpm run setup'}
                         rows={4}
-                        className="w-full rounded-lg border border-input bg-muted/50 px-3 py-2 text-sm font-mono transition-colors focus:border-ring focus:bg-background focus:outline-none resize-none"
+                        disabled={!selectedSupportsGit}
+                        className="w-full rounded-lg border border-input bg-muted/50 px-3 py-2 text-sm font-mono transition-colors focus:border-ring focus:bg-background focus:outline-none resize-none disabled:cursor-not-allowed disabled:opacity-50"
                       />
+                      {!selectedSupportsGit && (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {t('This setting applies only to Git worktree projects.')}
+                        </p>
+                      )}
                     </div>
 
                     {/* Quick Commands */}
@@ -428,7 +447,7 @@ export function ProjectSettingsPage() {
             <div>
               <p className="text-sm font-medium text-foreground">{t('同时删除本地项目文件')}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {t('勾选后会删除 repoPath 指向的本地仓库目录，并禁用代码/Git 相关能力。')}
+                {t('勾选后会删除项目路径指向的本地目录，并禁用代码/Git 相关能力。')}
               </p>
             </div>
           </label>
@@ -438,7 +457,7 @@ export function ProjectSettingsPage() {
                 {t('勾选后会连项目文件一起删除，请谨慎选择。')}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {t('恢复该项目时需要重新绑定一个有效的 Git 仓库路径。')}
+                {t('恢复该项目时需要重新绑定一个有效的项目路径。')}
               </p>
               <label className="mt-3 flex items-start gap-2 text-xs text-foreground">
                 <input
@@ -481,17 +500,17 @@ export function ProjectSettingsPage() {
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground leading-relaxed">
             {restoreRequiresRepoPath
-              ? t('项目「{title}」的本地仓库文件已删除。恢复前需要重新绑定一个有效的 Git 仓库路径。', {
+              ? t('项目「{title}」的本地项目文件已删除。恢复前需要重新绑定一个有效的项目路径。', {
                   title: archiveProjectName,
                 })
               : t('恢复后，项目会重新出现在默认项目列表中。')}
           </p>
           {restoreRequiresRepoPath && (
             <div>
-              <label className="block text-sm font-medium text-foreground mb-1.5">{t('Repository Path')}</label>
-              <FolderPicker value={restoreProjectRepoPath} onChange={setRestoreProjectRepoPath} />
+              <label className="block text-sm font-medium text-foreground mb-1.5">{t('Project Path')}</label>
+              <FolderPicker value={restoreProjectRepoPath} onChange={setRestoreProjectRepoPath} validationMode="directory" />
               <p className="mt-2 text-xs text-muted-foreground">
-                {t('Agent Tower 会尽量校验仓库 identity；如果 remote URL 或目录名不同，会给出警告但允许继续。')}
+                {t('Agent Tower 会尽量校验项目 identity；如果 remote URL 或目录名不同，会给出警告但允许继续。')}
               </p>
             </div>
           )}
