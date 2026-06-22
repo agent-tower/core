@@ -14,7 +14,8 @@ import type {
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Modal } from '@/components/ui/modal'
-import { Select } from '@/components/ui/select'
+import { Select, type SelectOption } from '@/components/ui/select'
+import { AgentLogo } from '@/components/agent'
 import { AVATAR_PRESETS } from '@/components/team/avatar-presets'
 import { MemberAvatar } from '@/components/team/MemberAvatar'
 import { useProviders } from '@/hooks/use-providers'
@@ -198,9 +199,10 @@ export function TeamSettingsPage() {
   const templateById = useMemo(() => new Map(templates.map(t => [t.id, t] as const)), [templates])
 
   const providerOptions = useMemo(() => {
-    const options = providerRows.map(({ provider, availability }) => ({
+    const options: SelectOption[] = providerRows.map(({ provider, availability }) => ({
       value: provider.id,
       label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''),
+      icon: <AgentLogo agentType={provider.agentType} className="size-4" />,
       disabled: availability.type === 'NOT_FOUND',
     }))
     if (presetForm.providerId && !options.some(o => o.value === presetForm.providerId)) {

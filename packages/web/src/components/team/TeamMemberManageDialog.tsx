@@ -24,7 +24,8 @@ import type {
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Modal } from '@/components/ui/modal'
-import { Select } from '@/components/ui/select'
+import { Select, type SelectOption } from '@/components/ui/select'
+import { AgentLogo } from '@/components/agent'
 import {
   useAddTeamRunMember,
   useMemberPresets,
@@ -266,9 +267,10 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
   const workingCount = activeMembers.filter(isMemberWorking).length
 
   const providerOptions = useMemo(() => {
-    const options = providers.map(({ provider, availability }) => ({
+    const options: SelectOption[] = providers.map(({ provider, availability }) => ({
       value: provider.id,
       label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''),
+      icon: <AgentLogo agentType={provider.agentType} className="size-4" />,
       disabled: availability.type === 'NOT_FOUND',
     }))
     if (form.providerId && !options.some((option) => option.value === form.providerId)) {
@@ -574,10 +576,10 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                   className="h-9 w-full rounded-lg border border-neutral-200 px-3 text-sm outline-none transition-colors focus:border-neutral-400"
                 />
               </label>
-              <label className="space-y-1.5">
+              <div className="space-y-1.5">
                 <FieldLabel>{t('Provider')}</FieldLabel>
                 <Select value={form.providerId} onChange={(value) => updateForm('providerId', value)} options={providerOptions} />
-              </label>
+              </div>
               <label className="space-y-1.5">
                 <FieldLabel>{t('Avatar')}</FieldLabel>
                 <input
