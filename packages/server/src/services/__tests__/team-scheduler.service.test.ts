@@ -13,6 +13,7 @@ import type {
   WorkRequestStatus,
 } from '@agent-tower/shared';
 import { AgentType, TaskStatus } from '../../types/index.js';
+import { TEAM_ROOM_SYSTEM_SHARED_PROTOCOL } from '../../prompts/team-room-system-shared-protocol.js';
 import { TeamLockService } from '../team-lock.service.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-team-scheduler-'));
@@ -160,6 +161,10 @@ function createProviderLookup() {
     config: {},
     isDefault: false,
   }));
+}
+
+function buildExpectedSessionPrompt(rolePrompt: string, instruction: string): string {
+  return `${TEAM_ROOM_SYSTEM_SHARED_PROTOCOL}\n\n${rolePrompt}\n\nTask:\n${instruction}`;
 }
 
 function createWorkspaceServiceMock() {
@@ -1244,10 +1249,13 @@ describe('TeamSchedulerService', () => {
     expect(sessionManager.create).toHaveBeenCalledWith(
       invocations[0]!.workspaceId,
       AgentType.CODEX,
-      'Role 1\n\nTask:\nTeam scheduler task\n\nWork request summary:\nImplement the shared work',
+      buildExpectedSessionPrompt('Role 1', 'Team scheduler task\n\nWork request summary:\nImplement the shared work'),
       'DEFAULT',
       members[0]!.providerId
     );
+    const prompt = sessionManager.create.mock.calls[0]?.[2] ?? '';
+    expect(prompt.indexOf(TEAM_ROOM_SYSTEM_SHARED_PROTOCOL)).toBe(0);
+    expect(prompt.indexOf('\n\nRole 1\n\nTask:\n')).toBe(TEAM_ROOM_SYSTEM_SHARED_PROTOCOL.length);
     expect(sessionManager.start).toHaveBeenCalledWith(invocations[0]!.sessionId);
     expect(sessionManager.startFollowUp).not.toHaveBeenCalled();
     expect(invocations).toHaveLength(1);
@@ -1312,7 +1320,10 @@ describe('TeamSchedulerService', () => {
     expect(sessionManager.create).toHaveBeenCalledWith(
       expect.any(String),
       AgentType.CODEX,
-      `Role 1\n\nTask:\nTeam scheduler task\n\nTriggering room message:\nUse this reference\n\nAttachments:\n![reference.png](${attachment.storagePath})`,
+      buildExpectedSessionPrompt(
+        'Role 1',
+        `Team scheduler task\n\nTriggering room message:\nUse this reference\n\nAttachments:\n![reference.png](${attachment.storagePath})`
+      ),
       'DEFAULT',
       members[0]!.providerId
     );
@@ -1406,7 +1417,10 @@ describe('TeamSchedulerService', () => {
     expect(sessionManager.create).toHaveBeenCalledWith(
       expect.any(String),
       AgentType.CODEX,
-      `Role 1\n\nTask:\nTeam scheduler task\n\nTriggering room message:\n${instruction}`,
+      buildExpectedSessionPrompt(
+        'Role 1',
+        `Team scheduler task\n\nTriggering room message:\n${instruction}`
+      ),
       'DEFAULT',
       members[0]!.providerId
     );
@@ -1472,7 +1486,7 @@ describe('TeamSchedulerService', () => {
     expect(sessionManager.create).toHaveBeenCalledWith(
       workspace!.id,
       AgentType.CODEX,
-      'Role 1\n\nTask:\nTeam scheduler task\n\nWork request summary:\nContinue with context',
+      buildExpectedSessionPrompt('Role 1', 'Team scheduler task\n\nWork request summary:\nContinue with context'),
       'DEFAULT',
       members[0]!.providerId
     );
@@ -1481,7 +1495,7 @@ describe('TeamSchedulerService', () => {
     await expect(prisma.session.findUnique({ where: { id: invocations[0]!.sessionId! } })).resolves.toMatchObject({
       workspaceId: workspace!.id,
       providerId: members[0]!.providerId,
-      prompt: 'Role 1\n\nTask:\nTeam scheduler task\n\nWork request summary:\nContinue with context',
+      prompt: buildExpectedSessionPrompt('Role 1', 'Team scheduler task\n\nWork request summary:\nContinue with context'),
       status: 'RUNNING',
     });
   });

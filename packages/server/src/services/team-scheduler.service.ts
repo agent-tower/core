@@ -29,6 +29,7 @@ import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
 import { ensureTaskNotDeleted, isTaskDeleted } from './deleted-task-guard.js';
+import { TEAM_ROOM_SYSTEM_SHARED_PROTOCOL } from '../prompts/team-room-system-shared-protocol.js';
 
 export interface SchedulePlan {
   workRequestId: string;
@@ -1124,7 +1125,7 @@ export class TeamSchedulerService {
     ].filter(Boolean);
     const instruction = await appendAttachmentMarkdownContext(instructionParts.join('\n\n'), attachmentIds);
 
-    return `${member.rolePrompt}\n\nTask:\n${instruction}`;
+    return `${TEAM_ROOM_SYSTEM_SHARED_PROTOCOL}\n\n${member.rolePrompt}\n\nTask:\n${instruction}`;
   }
 
   private async findResumeSourceSessionId(
