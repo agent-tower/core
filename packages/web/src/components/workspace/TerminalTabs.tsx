@@ -99,10 +99,10 @@ export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
     }, [activeTabId])
 
     return (
-      <div className="flex h-full flex-col bg-[#1e1e1e]">
+      <div className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#1e1e1e]">
         {/* Terminal sub-tab bar */}
         <div className="flex items-center bg-[#252526] border-b border-[#333] shrink-0 select-none">
-          <div className="flex items-center overflow-x-auto flex-1 min-w-0">
+          <div className="flex items-center overflow-x-auto scrollbar-app-thin flex-1 min-w-0">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -147,7 +147,7 @@ export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
         </div>
 
         {/* Terminal content area */}
-        <div className="flex-1 overflow-hidden relative">
+        <div className="flex-1 min-h-0 min-w-0 overflow-hidden relative">
           {tabs.length === 0 ? (
             <div className="flex-1 flex items-center justify-center h-full text-neutral-500">
               <div className="flex flex-col items-center gap-2">
@@ -165,8 +165,13 @@ export const TerminalTabs: React.FC<TerminalTabsProps> = React.memo(
             tabs.map((tab) => (
               <div
                 key={tab.id}
-                className="absolute inset-0"
-                style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
+                aria-hidden={tab.id !== activeTabId}
+                className={cn(
+                  "absolute inset-0 h-full w-full min-h-0 min-w-0 overflow-hidden",
+                  tab.id === activeTabId
+                    ? "visible pointer-events-auto"
+                    : "invisible pointer-events-none"
+                )}
               >
                 <StandaloneTerminalView
                   cwd={cwd}

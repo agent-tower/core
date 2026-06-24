@@ -3,9 +3,11 @@ import { Terminal as XTerm } from "xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal, Wifi, WifiOff, Loader2 } from "lucide-react"
 import "xterm/css/xterm.css"
+import "./terminal.css"
 
 import { useI18n } from "@/lib/i18n"
 import { useTerminal } from "@/lib/socket/hooks/useTerminal"
+import { useXtermAutoFit } from "./useXtermAutoFit"
 
 // ============================================================
 // Types
@@ -117,6 +119,12 @@ const TerminalInstance: React.FC<TerminalInstanceProps> = ({ sessionId }) => {
       xtermRef.current?.writeln(`\r\n\x1b[31m[${t('Error: {message}', { message })}]\x1b[0m`)
     }, [t]),
   })
+  const { scheduleFit } = useXtermAutoFit({
+    terminalRef,
+    xtermRef,
+    fitAddonRef,
+    onResize: resize,
+  })
 
   // 计算连接状态
   const connectionStatus: ConnectionStatus = isAttached
@@ -165,42 +173,16 @@ const TerminalInstance: React.FC<TerminalInstanceProps> = ({ sessionId }) => {
 
     xterm.open(terminalRef.current)
 
-    // 使用递归重试机制确保容器尺寸稳定后再 fit
-    const fitAndResize = (attempt = 0) => {
-      const maxAttempts = 5
-      if (attempt >= maxAttempts) return
-
-      try {
-        const terminalEl = terminalRef.current
-        if (!terminalEl || terminalEl.clientWidth === 0 || terminalEl.clientHeight === 0) {
-          // 容器尺寸为 0，延迟重试
-          setTimeout(() => fitAndResize(attempt + 1), 50)
-          return
-        }
-
-        fitAddon.fit()
-
-        // 立即通知后端调整 PTY 尺寸
-        resize(xterm.cols, xterm.rows)
-      } catch {
-        // fit 失败时重试
-        setTimeout(() => fitAndResize(attempt + 1), 50)
-      }
-    }
-
-    // 立即尝试一次，然后延迟重试确保容器渲染完成
-    fitAndResize(0)
-    setTimeout(() => fitAndResize(1), 100)
-
     xtermRef.current = xterm
     fitAddonRef.current = fitAddon
+    scheduleFit(8)
 
     return () => {
       xterm.dispose()
       xtermRef.current = null
       fitAddonRef.current = null
     }
-  }, [resize])
+  }, [scheduleFit])
 
   // 键盘输入转发到 PTY
   useEffect(() => {
@@ -219,36 +201,13 @@ const TerminalInstance: React.FC<TerminalInstanceProps> = ({ sessionId }) => {
     if (isConnected && !isAttached) {
       attach()
     }
-  }, [isConnected, isAttached, attach])
-
-  // 容器尺寸变化自适应
-  useEffect(() => {
-    if (!terminalRef.current) return
-
-    const observer = new ResizeObserver(() => {
-      // 使用 rAF 确保浏览器完成布局计算后再 fit
-      requestAnimationFrame(() => {
-        try {
-          const fitAddon = fitAddonRef.current
-          const xterm = xtermRef.current
-          const el = terminalRef.current
-          if (fitAddon && xterm && el && el.clientWidth > 0 && el.clientHeight > 0) {
-            fitAddon.fit()
-            resize(xterm.cols, xterm.rows)
-          }
-        } catch {
-          // 忽略 fit 错误
-        }
-      })
-    })
-
-    observer.observe(terminalRef.current)
-
-    return () => observer.disconnect()
-  }, [resize])
+    if (isConnected || isAttached) {
+      scheduleFit(4)
+    }
+  }, [attach, isAttached, isConnected, scheduleFit])
 
   return (
-    <div className="flex h-full flex-col bg-[#1e1e1e] text-neutral-200 font-mono text-xs">
+    <div className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#1e1e1e] text-neutral-200 font-mono text-xs">
       <div className="flex items-center justify-between px-3 py-1.5 bg-[#252526] border-b border-[#333] shrink-0">
         <div className="flex items-center gap-2">
           <Terminal size={13} className="text-neutral-500" />
@@ -262,7 +221,7 @@ const TerminalInstance: React.FC<TerminalInstanceProps> = ({ sessionId }) => {
       {/* Terminal Body */}
       <div
         ref={terminalRef}
-        className="flex-1 overflow-hidden px-1 pt-1"
+        className="terminal-xterm-host flex-1 min-h-0 min-w-0 w-full overflow-hidden"
       />
     </div>
   )

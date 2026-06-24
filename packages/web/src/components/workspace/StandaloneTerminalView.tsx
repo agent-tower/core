@@ -2,8 +2,10 @@ import React, { useEffect, useRef, useCallback, useLayoutEffect } from "react"
 import { Terminal as XTerm } from "xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import "xterm/css/xterm.css"
+import "./terminal.css"
 
 import { useStandaloneTerminal } from "@/lib/socket/hooks/useStandaloneTerminal"
+import { useXtermAutoFit } from "./useXtermAutoFit"
 
 // ============================================================
 // Types
@@ -77,6 +79,18 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
         onExit?.(exitCode)
       }, [onExit]),
     })
+    const { scheduleFit } = useXtermAutoFit({
+      terminalRef,
+      xtermRef,
+      fitAddonRef,
+      isVisible,
+      onResize: resize,
+    })
+
+    useEffect(() => {
+      if (isVisible) return
+      xtermRef.current?.blur()
+    }, [isVisible])
 
     // Auto-recreate terminal after socket reconnect
     useEffect(() => {
@@ -106,42 +120,16 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
       xterm.loadAddon(fitAddon)
       xterm.open(terminalRef.current)
 
-      // 使用递归重试机制确保容器尺寸稳定后再 fit
-      const fitAndResize = (attempt = 0) => {
-        const maxAttempts = 5
-        if (attempt >= maxAttempts) return
-
-        try {
-          const terminalEl = terminalRef.current
-          if (!terminalEl || terminalEl.clientWidth === 0 || terminalEl.clientHeight === 0) {
-            // 容器尺寸为 0，延迟重试
-            setTimeout(() => fitAndResize(attempt + 1), 50)
-            return
-          }
-
-          fitAddon.fit()
-
-          // 立即通知后端调整 PTY 尺寸
-          resize(xterm.cols, xterm.rows)
-        } catch {
-          // fit 失败时重试
-          setTimeout(() => fitAndResize(attempt + 1), 50)
-        }
-      }
-
-      // 立即尝试一次，然后延迟重试确保容器渲染完成
-      fitAndResize(0)
-      setTimeout(() => fitAndResize(1), 100)
-
       xtermRef.current = xterm
       fitAddonRef.current = fitAddon
+      scheduleFit(8)
 
       return () => {
         xterm.dispose()
         xtermRef.current = null
         fitAddonRef.current = null
       }
-    }, [resize])
+    }, [scheduleFit])
 
     // Auto-create terminal on mount
     useEffect(() => {
@@ -165,74 +153,13 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
     // Expose sendInput to parent when terminal is attached
     useEffect(() => {
       if (isAttached) {
+        scheduleFit(4)
         onReady?.({ sendInput })
       }
-    }, [isAttached, sendInput, onReady])
-
-    // Proactive fit when visibility changes from hidden to visible.
-    // ResizeObserver alone is unreliable for display:none→block transitions.
-    useEffect(() => {
-      if (!isVisible) return
-
-      const fitAddon = fitAddonRef.current
-      const xterm = xtermRef.current
-      const el = terminalRef.current
-      if (!fitAddon || !xterm || !el) return
-
-      let cancelled = false
-      let rafId: number | undefined
-
-      const tryFit = (attempt: number) => {
-        if (cancelled) return
-        if (attempt >= 5) return
-
-        rafId = requestAnimationFrame(() => {
-          if (cancelled) return
-          if (el.clientWidth > 0 && el.clientHeight > 0) {
-            try {
-              fitAddon.fit()
-              resize(xterm.cols, xterm.rows)
-            } catch { /* ignore */ }
-          } else {
-            setTimeout(() => tryFit(attempt + 1), 30)
-          }
-        })
-      }
-
-      tryFit(0)
-
-      return () => {
-        cancelled = true
-        if (rafId != null) cancelAnimationFrame(rafId)
-      }
-    }, [isVisible, resize])
-
-    // Auto-fit on container resize
-    useEffect(() => {
-      if (!terminalRef.current) return
-
-      const observer = new ResizeObserver(() => {
-        requestAnimationFrame(() => {
-          try {
-            const fitAddon = fitAddonRef.current
-            const xterm = xtermRef.current
-            const el = terminalRef.current
-            if (fitAddon && xterm && el && el.clientWidth > 0 && el.clientHeight > 0) {
-              fitAddon.fit()
-              resize(xterm.cols, xterm.rows)
-            }
-          } catch {
-            // ignore fit errors
-          }
-        })
-      })
-
-      observer.observe(terminalRef.current)
-      return () => observer.disconnect()
-    }, [resize])
+    }, [isAttached, onReady, scheduleFit, sendInput])
 
     return (
-      <div className="relative flex h-full flex-col bg-[#1e1e1e]">
+      <div className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#1e1e1e]">
         {/* Terminal loading overlay */}
         {!terminalId && (
           <div className="absolute inset-0 flex items-center justify-center text-neutral-500 text-xs z-10 bg-[#1e1e1e]">
@@ -242,7 +169,7 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
         {/* Terminal body — 始终渲染以确保 xterm 有正确尺寸的容器 */}
         <div
           ref={terminalRef}
-          className="flex-1 overflow-hidden px-1 pt-1"
+          className="terminal-xterm-host flex-1 min-h-0 min-w-0 w-full overflow-hidden"
         />
       </div>
     )
