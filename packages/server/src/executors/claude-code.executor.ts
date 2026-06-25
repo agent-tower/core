@@ -7,7 +7,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { AgentType } from '../types/index.js';
-import { execAsync, which } from '../utils/index.js';
 import {
   BaseExecutor,
   AvailabilityInfo,
@@ -15,7 +14,12 @@ import {
   ExecutorSpawnConfig,
   SpawnedChild,
 } from './base.executor.js';
-import { CommandBuilder, applyOverrides, CmdOverrides } from './command-builder.js';
+import {
+  CommandBuilder,
+  applyOverrides,
+  CmdOverrides,
+} from './command-builder.js';
+import { which } from '../utils/index.js';
 import { parsePromptWithImages, buildUserMessageNDJSON } from './image-utils.js';
 
 /**
@@ -83,6 +87,13 @@ export class ClaudeCodeExecutor extends BaseExecutor {
    */
   async getAvailabilityInfo(): Promise<AvailabilityInfo> {
     const authFilePath = path.join(os.homedir(), '.claude.json');
+    const claudePath = await which('claude');
+    if (!claudePath) {
+      return {
+        type: 'NOT_FOUND',
+        error: 'Claude Code CLI executable not found in PATH',
+      };
+    }
 
     try {
       const stats = fs.statSync(authFilePath);
@@ -92,12 +103,7 @@ export class ClaudeCodeExecutor extends BaseExecutor {
         lastAuthTimestamp: timestamp,
       };
     } catch {
-      // 文件不存在，检查命令是否可用
-      const claudePath = await which('claude');
-      if (claudePath) {
-        return { type: 'INSTALLATION_FOUND' };
-      }
-      return { type: 'NOT_FOUND', error: 'Claude Code CLI not installed' };
+      return { type: 'INSTALLATION_FOUND' };
     }
   }
 

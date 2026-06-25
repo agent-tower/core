@@ -7,12 +7,14 @@ import { AgentType, SessionContext, SessionStatus } from '../types/index.js';
 import type { Conversation } from '@agent-tower/shared';
 import { NotFoundError, ServiceError, ValidationError } from '../errors.js';
 import { getProviderById } from '../executors/index.js';
+import { CommandBuildError } from '../executors/command-builder.js';
 import { resolveDataDir } from '../utils/data-dir.js';
 import type { SessionManager } from './session-manager.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 
 const CONVERSATIONS_DIR = 'conversations';
 const TITLE_MAX_LENGTH = 80;
+const AGENT_COMMAND_UNAVAILABLE = 'AGENT_COMMAND_UNAVAILABLE';
 
 type ConversationWithSession = Prisma.ConversationGetPayload<{
   include: { session: true };
@@ -94,6 +96,14 @@ function toConversationDto(conversation: ConversationWithSession): Conversation 
     createdAt: conversation.createdAt.toISOString(),
     updatedAt: conversation.updatedAt.toISOString(),
   };
+}
+
+function toAgentCommandUnavailableError(error: CommandBuildError): ServiceError {
+  return new ServiceError(
+    `Agent command unavailable: ${error.message}`,
+    AGENT_COMMAND_UNAVAILABLE,
+    400,
+  );
 }
 
 export function getConversationRoot(): string {
@@ -198,6 +208,9 @@ export class ConversationService {
         where: { id: created.session.id },
         data: { status: SessionStatus.FAILED },
       }).catch(() => {});
+      if (error instanceof CommandBuildError) {
+        throw toAgentCommandUnavailableError(error);
+      }
       throw error;
     }
 
@@ -225,11 +238,18 @@ export class ConversationService {
       throw new ServiceError('Conversation has no session', 'CONVERSATION_SESSION_MISSING', 409);
     }
 
-    await this.sessionManager.sendMessage(
-      conversation.session.id,
-      message,
-      input.providerId,
-    );
+    try {
+      await this.sessionManager.sendMessage(
+        conversation.session.id,
+        message,
+        input.providerId,
+      );
+    } catch (error) {
+      if (error instanceof CommandBuildError) {
+        throw toAgentCommandUnavailableError(error);
+      }
+      throw error;
+    }
 
     const updated = await prisma.conversation.update({
       where: { id },
