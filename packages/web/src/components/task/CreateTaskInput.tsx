@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users } from 'lucide-react'
+import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users, Info } from 'lucide-react'
 import { WorkspaceKind, type AgentType, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
@@ -7,6 +7,7 @@ import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 import { AgentLogo } from '@/components/agent'
+import { Tooltip } from '@/components/ui/tooltip'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -151,6 +152,9 @@ export function CreateTaskInput({
   const effectiveCreateMode: CreateTaskMode = localProjectOnly ? 'SOLO' : mode
   const effectiveWorkspaceMode: WorkspaceMode = localProjectOnly ? WorkspaceKind.MAIN_DIRECTORY : workspaceMode
   const selectedWorkspaceModeLabel = effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? t('本地模式') : t('工作树模式')
+  const worktreeModeHint = t('工作树隔离改动，支持 TeamRun、Merge、Rebase 和冲突解决。')
+  const mainDirectoryModeHint = t('本地模式会直接修改项目主目录，不会自动提交，也不能使用 Merge、Rebase 或冲突解决。')
+  const disabledWorktreeModeHint = t('初始化 Git 后可使用工作树模式。')
 
   const isSubmitting = createStep !== 'idle'
   const hasTeamMembers = !!teamTemplateId || memberPresetIds.length > 0
@@ -477,29 +481,61 @@ export function CreateTaskInput({
             </button>
 
             {showWorkspaceModeMenu && (
-              <div className="absolute top-full left-0 mt-1.5 w-44 bg-popover border border-border rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.06)] py-1 z-50">
-                <button
-                  type="button"
-                  onClick={() => { setWorkspaceMode(WorkspaceKind.WORKTREE); setShowWorkspaceModeMenu(false) }}
-                  disabled={localProjectOnly}
-                  className={cn(
-                    'flex items-center w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors',
-                    localProjectOnly && 'opacity-40 cursor-not-allowed',
-                  )}
-                >
-                  <Check size={14} className={cn('mr-2 shrink-0 text-foreground', workspaceMode === WorkspaceKind.WORKTREE ? 'opacity-100' : 'opacity-0')} />
-                  <span className={cn('truncate', workspaceMode === WorkspaceKind.WORKTREE ? 'text-foreground font-medium' : 'text-muted-foreground')}>
-                    {t('工作树模式')}
-                  </span>
-                </button>
+              <div className="absolute top-full left-0 mt-1.5 w-72 max-w-[calc(100vw-2rem)] bg-popover border border-border rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.06)] py-1 z-50">
+                {localProjectOnly ? (
+                  <Tooltip side="bottom" className="block w-full" content={disabledWorktreeModeHint}>
+                    <div
+                      tabIndex={0}
+                      aria-label={disabledWorktreeModeHint}
+                      className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                    >
+                      <button
+                        type="button"
+                        disabled
+                        className="flex w-full cursor-not-allowed items-center px-3 py-2 text-left text-xs opacity-40 transition-colors"
+                      >
+                        <Check size={14} className="mr-2 mt-0.5 shrink-0 text-foreground opacity-0" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-muted-foreground">
+                            {t('工作树模式')}
+                          </span>
+                          <span className="mt-0.5 block whitespace-normal text-[11px] leading-snug text-muted-foreground/80">
+                            {worktreeModeHint}
+                          </span>
+                        </span>
+                      </button>
+                    </div>
+                  </Tooltip>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setWorkspaceMode(WorkspaceKind.WORKTREE); setShowWorkspaceModeMenu(false) }}
+                    className="flex w-full items-center px-3 py-2 text-left text-xs transition-colors hover:bg-accent"
+                  >
+                    <Check size={14} className={cn('mr-2 mt-0.5 shrink-0 text-foreground', effectiveWorkspaceMode === WorkspaceKind.WORKTREE ? 'opacity-100' : 'opacity-0')} />
+                    <span className="min-w-0 flex-1">
+                      <span className={cn('block truncate', effectiveWorkspaceMode === WorkspaceKind.WORKTREE ? 'text-foreground font-medium' : 'text-muted-foreground')}>
+                        {t('工作树模式')}
+                      </span>
+                      <span className="mt-0.5 block whitespace-normal text-[11px] leading-snug text-muted-foreground/80">
+                        {worktreeModeHint}
+                      </span>
+                    </span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => { setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY); setShowWorkspaceModeMenu(false) }}
-                  className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors"
+                  className="flex items-start w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors"
                 >
-                  <Check size={14} className={cn('mr-2 shrink-0 text-foreground', workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'opacity-100' : 'opacity-0')} />
-                  <span className={cn('truncate', workspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'text-foreground font-medium' : 'text-muted-foreground')}>
-                    {t('本地模式')}
+                  <Check size={14} className={cn('mr-2 mt-0.5 shrink-0 text-foreground', effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'opacity-100' : 'opacity-0')} />
+                  <span className="min-w-0 flex-1">
+                    <span className={cn('block truncate', effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'text-foreground font-medium' : 'text-muted-foreground')}>
+                      {t('本地模式')}
+                    </span>
+                    <span className="mt-0.5 block whitespace-normal text-[11px] leading-snug text-muted-foreground/80">
+                      {mainDirectoryModeHint}
+                    </span>
                   </span>
                 </button>
               </div>
@@ -509,66 +545,65 @@ export function CreateTaskInput({
 
         {/* Team mode toggle */}
         {!isConversationMode && (
-          <button
-            type="button"
-            role="switch"
-            aria-checked={effectiveCreateMode === 'TEAM'}
-            onClick={() => {
-              if (isSubmitting) return
-              if (localProjectOnly) return
-              if (mode === 'TEAM') {
-                setMode('SOLO')
-                setShowTeamConfig(false)
-              } else {
-                setMode('TEAM')
-                setShowWorkspaceModeMenu(false)
-                setWorkspaceMode(WorkspaceKind.WORKTREE)
-                setShowTeamConfig(true)
-              }
-            }}
-            disabled={isSubmitting || localProjectOnly}
-            className={cn(
-              'ml-auto flex items-center gap-2 h-7 pl-2 pr-2 rounded-md text-xs font-medium transition-colors',
-              'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              effectiveCreateMode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground',
-            )}
-            title={localProjectOnly ? t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.') : t('启用团队模式')}
+          <Tooltip
+            side="bottom"
+            className="ml-auto"
+            content={
+              localProjectOnly
+                ? t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.')
+                : effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY
+                ? t('TeamRun 需要工作树模式。开启团队模式时会自动切换为工作树模式。')
+                : t('启用 TeamRun 后可选择团队模板或成员。')
+            }
           >
-            <Users size={14} className={effectiveCreateMode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground'} />
-            <span>{t('团队模式')}</span>
-            <span
+            <button
+              type="button"
+              role="switch"
+              aria-checked={effectiveCreateMode === 'TEAM'}
+              onClick={() => {
+                if (isSubmitting) return
+                if (localProjectOnly) return
+                if (mode === 'TEAM') {
+                  setMode('SOLO')
+                  setShowTeamConfig(false)
+                } else {
+                  setMode('TEAM')
+                  setShowWorkspaceModeMenu(false)
+                  setWorkspaceMode(WorkspaceKind.WORKTREE)
+                  setShowTeamConfig(true)
+                }
+              }}
+              disabled={isSubmitting || localProjectOnly}
               className={cn(
-                'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors',
-                effectiveCreateMode === 'TEAM' ? 'bg-primary' : 'bg-border',
+                'flex items-center gap-2 h-7 pl-2 pr-2 rounded-md text-xs font-medium transition-colors',
+                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                effectiveCreateMode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground',
               )}
+              aria-label={t('启用团队模式')}
             >
+              <Users size={14} className={effectiveCreateMode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground'} />
+              <span>{t('团队模式')}</span>
+              {(localProjectOnly || effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY) && effectiveCreateMode !== 'TEAM' ? (
+                <Info size={12} className="text-muted-foreground/70" aria-hidden="true" />
+              ) : null}
               <span
                 className={cn(
-                  'inline-block size-3 rounded-full bg-background shadow-sm transition-transform',
-                  effectiveCreateMode === 'TEAM' ? 'translate-x-3.5' : 'translate-x-0.5',
+                  'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors',
+                  effectiveCreateMode === 'TEAM' ? 'bg-primary' : 'bg-border',
                 )}
-              />
-            </span>
-          </button>
+              >
+                <span
+                  className={cn(
+                    'inline-block size-3 rounded-full bg-background shadow-sm transition-transform',
+                    effectiveCreateMode === 'TEAM' ? 'translate-x-3.5' : 'translate-x-0.5',
+                  )}
+                />
+              </span>
+            </button>
+          </Tooltip>
         )}
       </div>
-
-      {localProjectOnly && (
-        <div className="mt-2.5">
-          <div className="rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-xs leading-relaxed text-info/90">
-            {t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.')}
-          </div>
-        </div>
-      )}
-
-      {!isConversationMode && effectiveCreateMode === 'SOLO' && effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
-        <div className="mt-2.5">
-          <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2 text-xs leading-relaxed text-warning/90">
-            {t('Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。')}
-          </div>
-        </div>
-      )}
 
       {/* TeamRun configuration panel — muted secondary area below input */}
       {!isConversationMode && effectiveCreateMode === 'TEAM' && showTeamConfig && (

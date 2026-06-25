@@ -22,9 +22,9 @@ export function Tooltip({ content, children, className = '', side = 'top' }: Too
     : 'top-full border-t-neutral-900'
 
   return (
-    <div className={`group/tooltip relative ${className}`}>
+    <div className={`group/tooltip relative inline-block ${className}`}>
       {children}
-      <div className={`absolute ${tooltipPosition} left-1/2 -translate-x-1/2 px-3 py-2 bg-neutral-900 text-white text-xs rounded-lg opacity-0 group-hover/tooltip:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-[100] shadow-lg`}>
+      <div className={`invisible absolute ${tooltipPosition} left-1/2 -translate-x-1/2 max-w-[260px] px-3 py-2 bg-neutral-900 text-white text-xs leading-relaxed rounded-lg opacity-0 group-hover/tooltip:visible group-hover/tooltip:opacity-100 group-focus-within/tooltip:visible group-focus-within/tooltip:opacity-100 transition-opacity pointer-events-none whitespace-normal z-[100] shadow-lg`}>
         {content}
         <div className={`absolute ${arrowPosition} left-1/2 -translate-x-1/2 border-4 border-transparent`} />
       </div>

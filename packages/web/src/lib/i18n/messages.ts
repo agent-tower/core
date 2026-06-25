@@ -839,6 +839,18 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '{count} 个追加成员': '{count} additional member(s)',
     '去创建': 'Create',
     '请选择团队模板或追加成员': 'Select a team template or add members',
+    '工作树隔离改动，支持 TeamRun、Merge、Rebase 和冲突解决。':
+      'Worktrees isolate changes and support TeamRun, Merge, Rebase, and conflict resolution.',
+    '初始化 Git 后可使用工作树模式。':
+      'Initialize Git to use worktree mode.',
+    '本地模式会直接修改项目主目录，不会自动提交，也不能使用 Merge、Rebase 或冲突解决。':
+      'Main directory mode modifies the project directory directly. Auto-commit, Merge, Rebase, and conflict resolution are unavailable.',
+    '非 Git 项目只能使用本地模式。':
+      'Non-Git projects can only use main directory mode.',
+    'TeamRun 需要工作树模式。开启团队模式时会自动切换为工作树模式。':
+      'TeamRun requires worktree mode. Enabling team mode will switch to worktree mode automatically.',
+    '启用 TeamRun 后可选择团队模板或成员。':
+      'After enabling TeamRun, choose a team template or members.',
     '收起': 'Collapse',
     '没有可用项目，请先创建或恢复项目': 'No available projects. Please create or restore a project first.',
     '任务已创建，但启动 Agent 失败，可在详情中重试': 'Task created, but failed to start Agent. You can retry from the task detail.',

@@ -7,6 +7,7 @@ import { useI18n } from "@/lib/i18n"
 export interface SelectOption {
   value: string
   label: string
+  description?: string
   disabled?: boolean
   icon?: React.ReactNode
 }
@@ -99,7 +100,7 @@ export function Select({
                   setOpen(false)
                 }}
                 className={cn(
-                  "flex items-center w-full px-3 py-1.5 text-sm text-left transition-colors",
+                  "flex items-start w-full px-3 py-1.5 text-sm text-left transition-colors",
                   "hover:bg-neutral-50",
                   option.value === value
                     ? "text-neutral-900 font-medium"
@@ -110,14 +111,21 @@ export function Select({
                 <Check
                   size={14}
                   className={cn(
-                    "mr-2 shrink-0",
+                    "mr-2 mt-0.5 shrink-0",
                     option.value === value ? "opacity-100" : "opacity-0"
                   )}
                 />
                 {option.icon ? (
-                  <span className="mr-2 flex shrink-0 items-center">{option.icon}</span>
+                  <span className="mr-2 mt-0.5 flex shrink-0 items-center">{option.icon}</span>
                 ) : null}
-                <span className="truncate">{option.label}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{option.label}</span>
+                  {option.description ? (
+                    <span className="mt-0.5 block whitespace-normal text-xs font-normal leading-snug text-neutral-400">
+                      {option.description}
+                    </span>
+                  ) : null}
+                </span>
               </button>
             ))
           )}

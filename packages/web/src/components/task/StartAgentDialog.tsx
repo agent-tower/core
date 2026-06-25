@@ -8,6 +8,7 @@ import { queryKeys } from '@/hooks/query-keys'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
+import { Tooltip } from '@/components/ui/tooltip'
 import { AgentLogo } from '@/components/agent'
 import { useI18n } from '@/lib/i18n'
 import { WorkspaceKind } from '@agent-tower/shared'
@@ -128,9 +129,12 @@ export function StartAgentDialog({
       disabled: !isAvailable,
     }
   })
+  const worktreeModeHint = t('工作树隔离改动，支持 TeamRun、Merge、Rebase 和冲突解决。')
+  const mainDirectoryModeHint = t('本地模式会直接修改项目主目录，不会自动提交，也不能使用 Merge、Rebase 或冲突解决。')
+  const nonGitProjectModeHint = t('非 Git 项目只能使用本地模式。')
   const workspaceModeOptions = [
-    { value: WorkspaceKind.WORKTREE, label: t('工作树模式'), disabled: !projectIsGitRepo },
-    { value: WorkspaceKind.MAIN_DIRECTORY, label: t('本地模式') },
+    { value: WorkspaceKind.WORKTREE, label: t('工作树模式'), description: worktreeModeHint, disabled: !projectIsGitRepo },
+    { value: WorkspaceKind.MAIN_DIRECTORY, label: t('本地模式'), description: mainDirectoryModeHint },
   ]
 
   return (
@@ -171,24 +175,31 @@ export function StartAgentDialog({
               <label className="block text-sm font-medium text-neutral-700 mb-2">
                 {t('模式')}
               </label>
-              <Select
-                value={workspaceMode}
-                onChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
-                options={workspaceModeOptions}
-                disabled={isStarting || !projectIsGitRepo}
-              />
+              {!projectIsGitRepo ? (
+                <Tooltip side="bottom" className="w-full" content={nonGitProjectModeHint}>
+                  <div
+                    tabIndex={0}
+                    aria-label={nonGitProjectModeHint}
+                    className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                  >
+                    <Select
+                      value={workspaceMode}
+                      onChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
+                      options={workspaceModeOptions}
+                      disabled
+                    />
+                  </div>
+                </Tooltip>
+              ) : (
+                <Select
+                  value={workspaceMode}
+                  onChange={(value) => setWorkspaceMode(value as WorkspaceMode)}
+                  options={workspaceModeOptions}
+                  disabled={isStarting}
+                />
+              )}
             </div>
           </div>
-          {!projectIsGitRepo && (
-            <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-800">
-              {t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.')}
-            </div>
-          )}
-          {workspaceMode === WorkspaceKind.MAIN_DIRECTORY && (
-            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
-              {t('Agent 将直接修改项目主目录；不会自动提交，也不能使用 Merge、Rebase 或冲突解决流程。')}
-            </div>
-          )}
         </div>
 
         {/* Prompt 输入 */}
