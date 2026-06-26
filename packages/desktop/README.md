@@ -80,9 +80,9 @@ Do not use `open packages/desktop/release/.../Agent Tower.app` for tests or acce
 
 Packaged mode does not use a global `agent-tower` command. The desktop app starts `runtime/server/dist/cli.js` directly using Electron's own executable as a Node-compatible runtime with `ELECTRON_RUN_AS_NODE=1`.
 
-## macOS Integrated Titlebar
+## Integrated Titlebar
 
-On macOS the desktop shell uses an integrated titlebar: Electron hides the separate system title text while keeping the red/yellow/green window controls. The Web app receives a desktop titlebar flag from the shell, so only desktop macOS runs add header drag regions and left padding for the traffic lights. Normal browser usage does not get the extra padding or desktop drag styling.
+On macOS and Windows the desktop shell uses an integrated titlebar: Electron hides the separate system title text and lets the Web app header act as the draggable titlebar. macOS keeps the red/yellow/green window controls with left header padding for the traffic lights. Windows uses Electron's Window Controls Overlay so the native minimize/maximize/close buttons sit over the header, with right header padding to avoid interactive controls under the overlay. Normal browser usage does not get the extra padding or desktop drag styling.
 
 ## MCP Client Config
 

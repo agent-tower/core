@@ -659,7 +659,8 @@ export function ProjectKanbanPage() {
 
   const isMobile = useIsMobile()
   const [mobileCreateOpen, setMobileCreateOpen] = useState(false)
-  const { usesIntegratedTitlebar } = useDesktopTitlebar()
+  const { usesIntegratedTitlebar, desktopPlatform, hasMacTrafficLights } = useDesktopTitlebar()
+  const hasWindowsWindowControls = usesIntegratedTitlebar && desktopPlatform === 'win32'
 
   const handleMobileCreateTask = useCallback(() => {
     if (activeProjects.length === 0) {
@@ -784,11 +785,12 @@ export function ProjectKanbanPage() {
         className={cn(
           'h-12 bg-sidebar flex items-center px-4 justify-between flex-shrink-0 z-20 relative',
           usesIntegratedTitlebar && 'app-region-drag',
+          hasWindowsWindowControls && 'pr-[150px]',
         )}
       >
         <div className={cn(
           'flex items-center gap-2 min-w-0',
-          usesIntegratedTitlebar && 'pl-[72px]',
+          hasMacTrafficLights && 'pl-[72px]',
         )}>
           <BrandLogo />
           <BrandLogoTitle />

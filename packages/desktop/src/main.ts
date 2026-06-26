@@ -449,9 +449,12 @@ async function verifySocketConnection(baseUrl: string): Promise<void> {
 
 function createWindow(baseUrl: string): BrowserWindow {
   const usesMacIntegratedTitlebar = process.platform === 'darwin';
+  const usesWindowsIntegratedTitlebar = process.platform === 'win32';
+  const usesIntegratedTitlebar = usesMacIntegratedTitlebar || usesWindowsIntegratedTitlebar;
   const appUrl = new URL(baseUrl);
   appUrl.searchParams.set('desktop', '1');
-  if (usesMacIntegratedTitlebar) {
+  appUrl.searchParams.set('desktopPlatform', process.platform);
+  if (usesIntegratedTitlebar) {
     appUrl.searchParams.set('desktopTitlebar', 'integrated');
   }
 
@@ -466,6 +469,16 @@ function createWindow(baseUrl: string): BrowserWindow {
       ? {
           titleBarStyle: 'hiddenInset' as const,
           trafficLightPosition: { x: 14, y: 14 },
+        }
+      : {}),
+    ...(usesWindowsIntegratedTitlebar
+      ? {
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: {
+            color: '#fafafa',
+            symbolColor: '#52525b',
+            height: 48,
+          },
         }
       : {}),
     backgroundColor: '#0f0f10',

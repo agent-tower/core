@@ -332,7 +332,8 @@ export function ConversationPage() {
   const { t } = useI18n()
   useTick()
   const navigate = useDesktopNavigate()
-  const { usesIntegratedTitlebar } = useDesktopTitlebar()
+  const { usesIntegratedTitlebar, desktopPlatform, hasMacTrafficLights } = useDesktopTitlebar()
+  const hasWindowsWindowControls = usesIntegratedTitlebar && desktopPlatform === 'win32'
   const { conversationId } = useParams<{ conversationId: string }>()
   const queryClient = useQueryClient()
 
@@ -570,11 +571,12 @@ export function ConversationPage() {
         className={cn(
           'flex h-12 shrink-0 items-center justify-between bg-sidebar px-4',
           usesIntegratedTitlebar && 'app-region-drag',
+          hasWindowsWindowControls && 'pr-[150px]',
         )}
       >
         <div className={cn(
           'flex min-w-0 items-center gap-2',
-          usesIntegratedTitlebar && 'pl-[72px]',
+          hasMacTrafficLights && 'pl-[72px]',
         )}>
           <BrandLogo />
           <BrandLogoTitle />
