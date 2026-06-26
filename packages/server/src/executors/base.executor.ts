@@ -16,6 +16,7 @@ import {
   buildPtyCommandWithStdin,
   getPtyLogFilePath,
 } from '../utils/process-launch.js';
+import { writeErrorLog } from '../utils/error-log.js';
 
 const PTY_LOG_FILE = getPtyLogFilePath();
 const OUTPUT_BUFFER_LIMIT = 8000;
@@ -246,13 +247,30 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     // default 120 is fine there and avoids changing behaviour for CLI tools
     // that respect terminal width.
     const ptyCols = process.platform === 'win32' ? 16384 : 120;
-    const shell = pty.spawn(invocation.command, invocation.args, {
-      name: 'xterm-256color',
-      cols: ptyCols,
-      rows: 30,
-      cwd: config.workingDir,
-      env: fullEnv,
-    });
+    let shell: IPty;
+    try {
+      shell = pty.spawn(invocation.command, invocation.args, {
+        name: 'xterm-256color',
+        cols: ptyCols,
+        rows: 30,
+        cwd: config.workingDir,
+        env: fullEnv,
+      });
+    } catch (error) {
+      writeErrorLog({
+        level: 'error',
+        source: 'executor.spawn',
+        message: `Failed to spawn ${this.displayName}`,
+        error,
+        metadata: {
+          agentType: this.agentType,
+          displayName: this.displayName,
+          programPath,
+          workingDir: config.workingDir,
+        },
+      });
+      throw error;
+    }
 
     ptyLog(shell.pid, `Process spawned`);
 
@@ -276,6 +294,20 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         if (cleaned) {
           ptyLog(shell.pid, `full output: ${cleaned.slice(0, 1000)}`);
         }
+        writeErrorLog({
+          level: 'warn',
+          source: 'executor.exit',
+          message: `${this.displayName} exited with non-zero code ${exitCode}`,
+          metadata: {
+            agentType: this.agentType,
+            displayName: this.displayName,
+            pid: shell.pid,
+            exitCode,
+            signal,
+            workingDir: config.workingDir,
+            output: cleaned ? cleaned.slice(0, 2000) : undefined,
+          },
+        });
       }
     });
 
@@ -377,6 +409,17 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         cancel,
       };
     } catch (error) {
+      writeErrorLog({
+        level: 'error',
+        source: 'executor.spawnWithStdin',
+        message: `Failed to spawn ${this.displayName} with stdin`,
+        error,
+        metadata: {
+          agentType: this.agentType,
+          displayName: this.displayName,
+          workingDir: config.workingDir,
+        },
+      });
       offData?.dispose();
       offExit?.dispose();
       try {

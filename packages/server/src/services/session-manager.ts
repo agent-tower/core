@@ -24,6 +24,7 @@ import {
   getWorkspaceWorkingDir,
   isMainDirectoryWorkspace,
 } from './workspace-kind.js';
+import { writeErrorLog } from '../utils/error-log.js';
 
 const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
 
@@ -82,6 +83,13 @@ export class SessionManager {
       this.cancelTokens.delete(sessionId);
       this.handleSessionExit(sessionId, exitCode).catch((error) => {
         console.error(`[SessionManager] post-exit handling failed for ${sessionId}:`, error);
+        writeErrorLog({
+          level: 'error',
+          source: 'session.postExit',
+          message: `Post-exit handling failed for session ${sessionId}`,
+          error,
+          metadata: { sessionId, exitCode },
+        });
       });
     });
 
@@ -167,11 +175,22 @@ export class SessionManager {
       await this.injectTeamRunInvocationEnv(id, env);
     }
 
-    const spawnResult = await executor.spawn({
-      workingDir,
-      prompt: session.prompt,
-      env,
-    });
+    let spawnResult: SpawnedChild;
+    try {
+      spawnResult = await executor.spawn({
+        workingDir,
+        prompt: session.prompt,
+        env,
+      });
+    } catch (error) {
+      this.logSessionError('session.spawn', error, {
+        sessionId: id,
+        agentType: session.agentType,
+        providerId: session.providerId,
+        workingDir,
+      });
+      throw error;
+    }
 
     await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
     this.attachPipeline(id, agentType, workingDir, spawnResult);
@@ -249,10 +268,45 @@ export class SessionManager {
           `[SessionManager] Follow-up spawn failed for ${id}, falling back to a new agent session:`,
           error instanceof Error ? error.message : error
         );
-        spawnResult = await executor.spawn(spawnConfig);
+        writeErrorLog({
+          level: 'warn',
+          source: 'session.spawnFollowUpResume',
+          message: `Follow-up spawn failed for session ${id}; falling back to a new agent session`,
+          error,
+          metadata: {
+            sessionId: id,
+            resumeFromSessionId,
+            agentType: session.agentType,
+            providerId: session.providerId,
+            workingDir,
+          },
+        });
+        try {
+          spawnResult = await executor.spawn(spawnConfig);
+        } catch (fallbackError) {
+          this.logSessionError('session.spawnFollowUpFallback', fallbackError, {
+            sessionId: id,
+            resumeFromSessionId,
+            agentType: session.agentType,
+            providerId: session.providerId,
+            workingDir,
+          });
+          throw fallbackError;
+        }
       }
     } else {
-      spawnResult = await executor.spawn(spawnConfig);
+      try {
+        spawnResult = await executor.spawn(spawnConfig);
+      } catch (error) {
+        this.logSessionError('session.spawnFollowUp', error, {
+          sessionId: id,
+          resumeFromSessionId,
+          agentType: session.agentType,
+          providerId: session.providerId,
+          workingDir,
+        });
+        throw error;
+      }
     }
 
     await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
@@ -388,11 +442,43 @@ export class SessionManager {
     if (agentSessionId && executor.spawnFollowUp) {
       try {
         spawnResult = await executor.spawnFollowUp(spawnConfig, agentSessionId);
-      } catch {
-        spawnResult = await executor.spawn(spawnConfig);
+      } catch (resumeError) {
+        writeErrorLog({
+          level: 'warn',
+          source: 'session.messageSpawnResume',
+          message: `Message follow-up spawn failed for session ${id}; falling back to a new agent session`,
+          error: resumeError,
+          metadata: {
+            sessionId: id,
+            agentType: session.agentType,
+            providerId: effectiveProviderId,
+            workingDir,
+          },
+        });
+        try {
+          spawnResult = await executor.spawn(spawnConfig);
+        } catch (error) {
+          this.logSessionError('session.messageSpawnFallback', error, {
+            sessionId: id,
+            agentType: session.agentType,
+            providerId: effectiveProviderId,
+            workingDir,
+          });
+          throw error;
+        }
       }
     } else {
-      spawnResult = await executor.spawn(spawnConfig);
+      try {
+        spawnResult = await executor.spawn(spawnConfig);
+      } catch (error) {
+        this.logSessionError('session.messageSpawn', error, {
+          sessionId: id,
+          agentType: session.agentType,
+          providerId: effectiveProviderId,
+          workingDir,
+        });
+        throw error;
+      }
     }
 
     await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
@@ -1021,6 +1107,12 @@ export class SessionManager {
 
     if (isFailed) {
       console.warn(`[SessionManager] Session ${sessionId} exited with code ${exitCode}, marking as FAILED`);
+      writeErrorLog({
+        level: 'warn',
+        source: 'session.exit',
+        message: `Session exited with non-zero code ${exitCode}`,
+        metadata: { sessionId, exitCode },
+      });
     }
 
     if (session?.context === SessionContext.CONVERSATION || session?.conversationId) {
@@ -1082,5 +1174,15 @@ export class SessionManager {
     // sendMessage 重启、resolveAgentSessionId、commit message 提取）都有
     // logSnapshot fallback，sendMessage 会经 restoreFromSnapshot 恢复上下文。
     sessionMsgStoreManager.delete(sessionId);
+  }
+
+  private logSessionError(source: string, error: unknown, metadata: Record<string, unknown>): void {
+    writeErrorLog({
+      level: 'error',
+      source,
+      message: error instanceof Error ? error.message : String(error),
+      error,
+      metadata,
+    });
   }
 }

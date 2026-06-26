@@ -3,6 +3,7 @@ import type { IPty } from '@shitiandmw/node-pty';
 import type { EventBus } from '../core/event-bus.js';
 import { randomUUID } from 'crypto';
 import { getDefaultTerminalShell } from '../utils/process-launch.js';
+import { writeErrorLog } from '../utils/error-log.js';
 
 // ============================================================
 // Constants
@@ -93,13 +94,30 @@ export class TerminalManager {
     const rows = options.rows ?? 30;
     const cwd = options.cwd || process.cwd();
 
-    const shell = pty.spawn(DEFAULT_TERMINAL_SHELL.command, DEFAULT_TERMINAL_SHELL.args, {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      cwd,
-      env: cleanInternalEnv(process.env) as Record<string, string>,
-    });
+    let shell: IPty;
+    try {
+      shell = pty.spawn(DEFAULT_TERMINAL_SHELL.command, DEFAULT_TERMINAL_SHELL.args, {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        cwd,
+        env: cleanInternalEnv(process.env) as Record<string, string>,
+      });
+    } catch (error) {
+      writeErrorLog({
+        level: 'error',
+        source: 'terminal.spawn',
+        message: 'Failed to spawn standalone terminal',
+        error,
+        metadata: {
+          terminalId,
+          socketId,
+          cwd,
+          command: DEFAULT_TERMINAL_SHELL.command,
+        },
+      });
+      throw error;
+    }
 
     const cleanups: Array<{ dispose(): void }> = [];
 
@@ -116,6 +134,19 @@ export class TerminalManager {
     // Handle PTY exit
     const onExit = shell.onExit(({ exitCode }) => {
       this.eventBus.emit('terminal:exit', { terminalId, exitCode });
+      if (typeof exitCode === 'number' && exitCode !== 0) {
+        writeErrorLog({
+          level: 'warn',
+          source: 'terminal.exit',
+          message: `Standalone terminal exited with non-zero code ${exitCode}`,
+          metadata: {
+            terminalId,
+            socketId,
+            pid: shell.pid,
+            exitCode,
+          },
+        });
+      }
       // Dispose all listeners before removing from map
       const terminal = this.terminals.get(terminalId);
       if (terminal) {

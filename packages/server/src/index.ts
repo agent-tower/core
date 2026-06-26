@@ -6,6 +6,8 @@ import { homedir } from 'os';
 import { buildApp } from './app.js';
 import { getDevPort } from '@agent-tower/shared/dev-port';
 import { getBundledPrismaCommand } from './utils/process-launch.js';
+import { preparePrismaCliEnv } from './utils/prisma-cli-env.js';
+import { installProcessErrorLogging, writeErrorLog } from './utils/error-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = path.resolve(__dirname, '../../..');
@@ -16,6 +18,7 @@ const dataDir = path.join(homedir(), '.agent-tower-dev');
 if (!existsSync(dataDir)) {
   mkdirSync(dataDir, { recursive: true });
 }
+installProcessErrorLogging(dataDir);
 
 const dbPath = path.join(dataDir, 'data.db');
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
@@ -29,11 +32,21 @@ const prisma = getBundledPrismaCommand(__dirname);
 try {
   execFileSync(prisma.command, [...prisma.args, 'db', 'push', '--skip-generate', `--schema=${schemaPath}`], {
     stdio: 'pipe',
-    env: { ...process.env, AGENT_TOWER_DATABASE_URL: `file:${dbPath}` },
+    env: preparePrismaCliEnv(dataDir, dbPath),
   });
 } catch (err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   console.error('Failed to initialize dev database:', msg);
+  writeErrorLog({
+    level: 'error',
+    source: 'server.index.ensureDatabase',
+    message: 'Failed to initialize dev database',
+    error: err,
+    metadata: {
+      dbPath,
+      schemaPath,
+    },
+  }, { dataDir });
   process.exit(1);
 }
 
@@ -56,6 +69,12 @@ async function main() {
       process.exit(0);
     } catch (err) {
       console.error('Error during shutdown:', err);
+      writeErrorLog({
+        level: 'error',
+        source: 'server.index.shutdown',
+        message: 'Error during shutdown',
+        error: err,
+      }, { dataDir });
       process.exit(1);
     }
   };
@@ -69,8 +88,24 @@ async function main() {
     console.log(`Data directory: ${dataDir}`);
   } catch (err) {
     app.log.error(err);
+    writeErrorLog({
+      level: 'error',
+      source: 'server.index.listen',
+      message: 'Failed to start server listener',
+      error: err,
+      metadata: { port: PORT },
+    }, { dataDir });
     process.exit(1);
   }
 }
 
-main();
+main().catch((err) => {
+  console.error('Fatal error:', err);
+  writeErrorLog({
+    level: 'error',
+    source: 'server.index.main',
+    message: 'Fatal dev server error',
+    error: err,
+  }, { dataDir });
+  process.exit(1);
+});

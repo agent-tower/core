@@ -1,12 +1,14 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, Menu } from 'electron';
 import { spawn, execFile } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import { promisify } from 'node:util';
 import { resolveDesktopDataMode } from './data-mode.js';
+import { redactDesktopLogText, sanitizeDesktopLogValue } from './log-redaction.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -32,6 +34,42 @@ if (userDataOverride) {
 
 function log(message: string): void {
   console.log(`[desktop] ${message}`);
+}
+
+function configureApplicationMenu(): void {
+  if (process.platform !== 'darwin' && app.isPackaged) {
+    Menu.setApplicationMenu(null);
+  }
+}
+
+function getSharedDataDir(): string {
+  return process.env.AGENT_TOWER_DATA_DIR || path.join(os.homedir(), '.agent-tower');
+}
+
+function getDesktopLogDataDir(dataDir?: string | null): string {
+  return dataDir || getSharedDataDir();
+}
+
+function writeDesktopLog(
+  level: 'info' | 'warn' | 'error',
+  source: string,
+  message: string,
+  metadata?: Record<string, unknown>,
+  dataDir?: string | null,
+): void {
+  try {
+    const logsDir = path.join(getDesktopLogDataDir(dataDir), 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    appendFileSync(path.join(logsDir, 'desktop.log'), `${JSON.stringify({
+      time: new Date().toISOString(),
+      level,
+      source,
+      message: redactDesktopLogText(message),
+      ...(metadata ? { metadata: sanitizeDesktopLogValue(metadata) } : {}),
+    })}\n`, 'utf-8');
+  } catch {
+    // Logging must not block desktop startup or shutdown.
+  }
 }
 
 function getStartupTimeoutMs(): number {
@@ -221,6 +259,12 @@ async function startBackend(): Promise<string> {
   } else {
     log('Data directory mode: shared (server CLI default)');
   }
+  writeDesktopLog('info', 'desktop.backend.start', 'Starting backend', {
+    port,
+    runtimeMode: runtimePaths.packagedRuntime ? 'packaged' : 'workspace',
+    dataMode,
+    serverCliPath: runtimePaths.serverCliPath,
+  }, dataDir);
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -260,6 +304,10 @@ async function startBackend(): Promise<string> {
   const startupError = new Promise<never>((_, reject) => {
     child.once('error', (error) => {
       log(`Backend spawn failed: ${error.message}`);
+      writeDesktopLog('error', 'desktop.backend.spawn', 'Backend spawn failed', {
+        message: error.message,
+        stack: error.stack,
+      }, dataDir);
       if (backendProcess === child) {
         backendProcess = null;
       }
@@ -275,6 +323,12 @@ async function startBackend(): Promise<string> {
         backendStderrTail.trim() ? `stderr:\n${backendStderrTail.trim()}` : null,
         backendStdoutTail.trim() ? `stdout:\n${backendStdoutTail.trim()}` : null,
       ].filter(Boolean).join('\n\n');
+      writeDesktopLog('error', 'desktop.backend.startupExit', 'Backend exited before becoming healthy', {
+        code,
+        signal,
+        stderrTail: backendStderrTail.trim(),
+        stdoutTail: backendStdoutTail.trim(),
+      }, dataDir);
       reject(new Error(`Backend exited before becoming healthy (${detail})`));
     });
   });
@@ -284,6 +338,10 @@ async function startBackend(): Promise<string> {
       backendProcess = null;
     }
     if (backendReady && !quitting) {
+      writeDesktopLog('error', 'desktop.backend.error', 'Backend process error after startup', {
+        message: error.message,
+        stack: error.stack,
+      }, dataDir);
       void dialog.showMessageBox({
         type: 'error',
         title: 'Agent Tower backend failed to start',
@@ -299,6 +357,10 @@ async function startBackend(): Promise<string> {
       backendProcess = null;
     }
     if (backendReady && !quitting) {
+      writeDesktopLog('error', 'desktop.backend.exit', 'Backend process exited after startup', {
+        code,
+        signal,
+      }, dataDir);
       void dialog.showMessageBox({
         type: 'error',
         title: 'Agent Tower backend exited',
@@ -312,6 +374,9 @@ async function startBackend(): Promise<string> {
   await Promise.race([waitForHealth(baseUrl), startupError, backendExit]);
   backendReady = true;
   log(`Backend health check passed: ${baseUrl}/api/health`);
+  writeDesktopLog('info', 'desktop.backend.ready', 'Backend health check passed', {
+    baseUrl,
+  }, dataDir);
 
   if (process.env.AGENT_TOWER_DESKTOP_VERIFY_SOCKET === '1') {
     await verifySocketConnection(baseUrl);
@@ -396,6 +461,7 @@ function createWindow(baseUrl: string): BrowserWindow {
     minWidth: 1024,
     minHeight: 720,
     title: 'Agent Tower',
+    autoHideMenuBar: !usesMacIntegratedTitlebar,
     ...(usesMacIntegratedTitlebar
       ? {
           titleBarStyle: 'hiddenInset' as const,
@@ -409,6 +475,10 @@ function createWindow(baseUrl: string): BrowserWindow {
       sandbox: true,
     },
   });
+
+  if (!usesMacIntegratedTitlebar && app.isPackaged) {
+    window.setMenu(null);
+  }
 
   window.on('closed', () => {
     if (mainWindow === window) {
@@ -494,12 +564,17 @@ app.on('window-all-closed', () => {
 
 app.whenReady()
   .then(async () => {
+    configureApplicationMenu();
     const baseUrl = await startBackend();
     mainWindow = createWindow(baseUrl);
   })
   .catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[desktop] Fatal startup error:', error);
+    writeDesktopLog('error', 'desktop.startup', 'Fatal desktop startup error', {
+      message,
+      stack: error instanceof Error ? error.stack : undefined,
+    });
     void dialog.showMessageBox({
       type: 'error',
       title: 'Agent Tower failed to start',

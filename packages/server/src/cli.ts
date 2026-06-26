@@ -16,12 +16,15 @@ import type { SpawnSyncReturns } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { getBundledPrismaCommand } from './utils/process-launch.js';
 import { resolveDataDir } from './utils/data-dir.js';
+import { preparePrismaCliEnv } from './utils/prisma-cli-env.js';
+import { installProcessErrorLogging, writeErrorLog } from './utils/error-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_PORT = 12580;
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_WEB_DIR = 'web';
+let currentDataDir: string | undefined;
 
 function parseArgs(): { port: number; host: string; dataDir: string; webDir: string } {
   const args = process.argv.slice(2);
@@ -120,18 +123,30 @@ function getCommandOutput(error: unknown, key: 'stdout' | 'stderr'): string {
 }
 
 /** 确保数据库 schema 与当前版本一致 */
-function ensureDatabase(dbPath: string, schemaPath: string) {
+function ensureDatabase(dataDir: string, dbPath: string, schemaPath: string) {
   const prisma = getBundledPrismaCommand(__dirname);
   try {
     execFileSync(prisma.command, [...prisma.args, 'db', 'push', '--skip-generate', `--schema=${schemaPath}`], {
       stdio: 'pipe',
-      env: { ...process.env, AGENT_TOWER_DATABASE_URL: `file:${dbPath}` },
+      env: preparePrismaCliEnv(dataDir, dbPath),
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('Failed to initialize database:', msg);
     const stderr = getCommandOutput(err, 'stderr');
     const stdout = getCommandOutput(err, 'stdout');
+    writeErrorLog({
+      level: 'error',
+      source: 'server.cli.ensureDatabase',
+      message: 'Failed to initialize database',
+      error: err,
+      metadata: {
+        dbPath,
+        schemaPath,
+        stderr,
+        stdout,
+      },
+    }, { dataDir });
     if (stderr) {
       console.error(stderr);
     }
@@ -144,6 +159,8 @@ function ensureDatabase(dbPath: string, schemaPath: string) {
 
 async function main() {
   const { port, host, dataDir, webDir } = parseArgs();
+  currentDataDir = dataDir;
+  installProcessErrorLogging(dataDir);
 
   // 确保数据目录存在
   if (!existsSync(dataDir)) {
@@ -162,7 +179,7 @@ async function main() {
 
   // 初始化数据库
   const schemaPath = path.resolve(__dirname, '../prisma/schema.prisma');
-  ensureDatabase(dbPath, schemaPath);
+  ensureDatabase(dataDir, dbPath, schemaPath);
 
   // 启动服务器
   const { buildApp } = await import('./app.js');
@@ -205,5 +222,11 @@ async function main() {
 
 main().catch((err) => {
   console.error('Fatal error:', err);
+  writeErrorLog({
+    level: 'error',
+    source: 'server.cli.main',
+    message: 'Fatal server startup error',
+    error: err,
+  }, { dataDir: currentDataDir });
   process.exit(1);
 });

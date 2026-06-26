@@ -1,6 +1,7 @@
 import type { IPty } from '@shitiandmw/node-pty';
 import type { MsgStore } from '../output/msg-store.js';
 import type { EventBus } from '../core/event-bus.js';
+import { writeErrorLog } from '../utils/error-log.js';
 
 export interface OutputParser {
   processData(data: string): void;
@@ -34,12 +35,34 @@ export class AgentPipeline {
       if (this.destroyed) return;
       this.msgStore.pushStdout(data);
       this.eventBus.emit('session:stdout', { sessionId: this.sessionId, data });
-      this.parser?.processData(data);
+      try {
+        this.parser?.processData(data);
+      } catch (error) {
+        writeErrorLog({
+          level: 'error',
+          source: 'agentPipeline.parser.processData',
+          message: `Parser failed while processing session ${this.sessionId} output`,
+          error,
+          metadata: { sessionId: this.sessionId },
+        });
+        throw error;
+      }
     });
 
     this.offExit = this.pty.onExit(({ exitCode }) => {
       if (this.destroyed) return;
-      this.parser?.finish(exitCode);
+      try {
+        this.parser?.finish(exitCode);
+      } catch (error) {
+        writeErrorLog({
+          level: 'error',
+          source: 'agentPipeline.parser.finish',
+          message: `Parser failed while finishing session ${this.sessionId}`,
+          error,
+          metadata: { sessionId: this.sessionId, exitCode },
+        });
+        throw error;
+      }
       this.msgStore.pushFinished();
       this.eventBus.emit('session:exit', { sessionId: this.sessionId, exitCode });
       // Self-cleanup: remove MsgStore listeners so stale references don't accumulate.

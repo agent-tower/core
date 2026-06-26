@@ -12,6 +12,7 @@ import { HibernationScheduler } from './services/hibernation-scheduler.js';
 import { TunnelService } from './services/tunnel.service.js';
 import { getTaskCleanupService, getWorkspaceGitWatcherService } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
+import { writeErrorLog } from './utils/error-log.js';
 
 let hibernationScheduler: HibernationScheduler | null = null;
 
@@ -23,6 +24,19 @@ export async function buildApp() {
       level: process.env.LOG_LEVEL || 'info',
     },
     bodyLimit: 10 * 1024 * 1024,
+  });
+
+  app.addHook('onError', async (request, _reply, error) => {
+    writeErrorLog({
+      level: 'error',
+      source: 'server.fastify.onError',
+      message: error.message,
+      error,
+      metadata: {
+        method: request.method,
+        url: request.url,
+      },
+    });
   });
 
   // 注册插件
