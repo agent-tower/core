@@ -1,0 +1,4 @@
+interface:
+  display_name: "Convert Skill to TeamRun Members"
+  short_description: "Convert methods into TeamRun roles"
+  default_prompt: "Use $convert-skill-to-teamrun-members to convert this methodology into Agent Tower TeamRun member presets, role prompts, and leader orchestration."
