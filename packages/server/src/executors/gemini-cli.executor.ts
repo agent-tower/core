@@ -110,8 +110,9 @@ export class GeminiCliExecutor extends BaseExecutor {
       builder.extendParams(['--allowed-tools', 'run_shell_command']);
     }
 
-    // 启用 ACP 协议
-    builder.extendParams(['--experimental-acp']);
+    // 非交互模式用短 prompt 参数触发 one-shot，长 prompt 仍从 stdin 读取。
+    // ACP 会占用 stdin 作为协议通道，不能直接写入普通 prompt。
+    builder.extendParams(['--output-format=stream-json', '-p', '']);
 
     // 应用覆盖
     return applyOverrides(builder, this.cmdOverrides);
@@ -126,9 +127,8 @@ export class GeminiCliExecutor extends BaseExecutor {
 
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
-    const newConfig = { ...config, prompt };
 
-    return this.spawnInternal(newConfig, commandParts);
+    return this.spawnWithStdin(config, commandParts, prompt);
   }
 
   /**
@@ -141,17 +141,18 @@ export class GeminiCliExecutor extends BaseExecutor {
   ): Promise<SpawnedChild> {
     const commandBuilder = this.buildCommandBuilder();
 
-    // Gemini 的 follow-up 参数（根据 ACP 协议）
     const additionalArgs: string[] = [];
-    // TODO: 添加 Gemini 特定的会话恢复参数
+    if (sessionId) {
+      additionalArgs.push('--resume', sessionId);
+    }
+    // resetToMessageId 参数暂时忽略：Gemini CLI 只支持按 session 继续。
 
     const commandParts = commandBuilder.buildFollowUp(additionalArgs);
 
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
-    const newConfig = { ...config, prompt };
 
-    return this.spawnInternal(newConfig, commandParts);
+    return this.spawnWithStdin(config, commandParts, prompt);
   }
 
   /**

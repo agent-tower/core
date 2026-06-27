@@ -12,7 +12,7 @@ export function getNodeRuntimeCommand(): string {
 
 const PTY_WRAPPER_SCRIPT = String.raw`
 const { spawn } = require('node:child_process');
-const { createReadStream, unlink } = require('node:fs');
+const { createReadStream, unlinkSync } = require('node:fs');
 
 const [mode, programPath, ...rest] = process.argv.slice(1);
 const isWin = process.platform === 'win32';
@@ -36,7 +36,7 @@ function cleanup() {
   if (!cleanupTarget) return;
   const target = cleanupTarget;
   cleanupTarget = null;
-  unlink(target, () => {});
+  try { unlinkSync(target); } catch {}
 }
 
 // 终止 child 及其整个进程组。
@@ -119,24 +119,85 @@ function spawnChild(args, stdioOpt) {
 if (mode === 'pipe-file') {
   const [stdinFile, ...args] = rest;
   cleanupTarget = stdinFile;
+  let stdinStream = null;
+  let stdinStreamClosed = false;
+  let finishingWithChildResult = false;
+
+  function isBrokenPipeError(error) {
+    const code = error && error.code;
+    return code === 'EPIPE'
+      || code === 'ECONNRESET'
+      || code === 'ERR_STREAM_DESTROYED'
+      || code === 'ERR_STREAM_WRITE_AFTER_END';
+  }
+
+  function closeInputPipe() {
+    if (stdinStream && !stdinStream.destroyed) {
+      stdinStream.destroy();
+    }
+    if (child && child.stdin && !child.stdin.destroyed) {
+      child.stdin.destroy();
+    }
+  }
+
+  function afterInputClosed(callback) {
+    if (!stdinStream || stdinStreamClosed) {
+      cleanup();
+      callback();
+      return;
+    }
+
+    stdinStream.once('close', () => {
+      cleanup();
+      callback();
+    });
+    closeInputPipe();
+  }
+
+  function finishWithChildResult(code, signal) {
+    if (finishingWithChildResult) return;
+    finishingWithChildResult = true;
+    afterInputClosed(() => exitWithChildResult(code, signal));
+  }
+
+  function exitWithPipeError(error) {
+    killTree('SIGTERM');
+    afterInputClosed(() => exitWithError(error));
+  }
+
   child = isCmdBat
     ? spawnCmd(args, ['pipe', 'inherit', 'inherit'])
     : spawnChild(args, ['pipe', 'inherit', 'inherit']);
 
-  child.on('error', exitWithError);
-  child.on('exit', exitWithChildResult);
+  child.on('error', (error) => {
+    afterInputClosed(() => exitWithError(error));
+  });
+  child.on('exit', finishWithChildResult);
 
-  const stream = createReadStream(stdinFile);
-  stream.on('error', (error) => {
-    killTree('SIGTERM');
-    exitWithError(error);
+  stdinStream = createReadStream(stdinFile);
+  stdinStream.on('close', () => {
+    stdinStreamClosed = true;
+    cleanup();
   });
-  stream.pipe(child.stdin);
-  stream.on('end', () => {
-    if (child.stdin) {
-      child.stdin.end();
-    }
-  });
+  stdinStream.on('error', exitWithPipeError);
+
+  if (child.stdin) {
+    child.stdin.on('error', (error) => {
+      if (isBrokenPipeError(error)) {
+        afterInputClosed(() => {});
+        return;
+      }
+      exitWithPipeError(error);
+    });
+    child.stdin.on('close', () => {
+      if (stdinStream && !stdinStream.readableEnded && !stdinStream.destroyed) {
+        stdinStream.destroy();
+      }
+    });
+    stdinStream.pipe(child.stdin);
+  } else {
+    exitWithPipeError(new Error('Child stdin is not available'));
+  }
 } else {
   child = isCmdBat
     ? spawnCmd(rest, 'inherit')
@@ -177,6 +238,17 @@ export function buildPtyCommandWithStdin(
     command: getNodeRuntimeCommand(),
     args: ['-e', PTY_WRAPPER_SCRIPT, 'pipe-file', programPath, stdinFile, ...args],
   };
+}
+
+export function escapeArgForWindowsCmd(arg: string): string {
+  if (/[\s"&|<>^()!]/.test(arg) || arg === '') {
+    return '"' + arg.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  }
+  return arg;
+}
+
+export function buildWindowsCmdShimCommandLine(programPath: string, args: string[]): string {
+  return [programPath, ...args].map(escapeArgForWindowsCmd).join(' ');
 }
 
 export function getDefaultTerminalShell(

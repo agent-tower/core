@@ -333,11 +333,11 @@ export class CodexExecutor extends BaseExecutor {
     if (imagePaths.length > 0) {
       commandBuilder.extendParams(['--']);
     }
+    commandBuilder.extendParams(['-']);
 
     const commandParts = commandBuilder.buildInitial();
-    const newConfig = { ...config, prompt: textPrompt };
 
-    return this.spawnInternal(newConfig, commandParts);
+    return this.spawnWithStdin(config, commandParts, textPrompt);
   }
 
   /**
@@ -379,11 +379,11 @@ export class CodexExecutor extends BaseExecutor {
     if (imagePaths.length > 0) {
       additionalArgs.push('--');
     }
+    additionalArgs.push('-');
 
     const commandParts = commandBuilder.buildFollowUp(additionalArgs);
-    const newConfig = { ...config, prompt: textPrompt };
 
-    return this.spawnInternal(newConfig, commandParts);
+    return this.spawnWithStdin(config, commandParts, textPrompt);
   }
 
   /**

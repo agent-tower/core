@@ -291,26 +291,12 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     const prompt = this.combinePrompt(config.prompt);
 
     console.log('[ClaudeCodeExecutor] spawn - prompt length:', prompt.length);
-    console.log('[ClaudeCodeExecutor] spawn - prompt preview:', prompt.substring(0, 200));
-
-    // 检测是否包含图片
     const parsedPrompt = await parsePromptWithImages(prompt);
 
-    if (parsedPrompt.hasImages) {
-      console.log('[ClaudeCodeExecutor] ✅ Detected images in prompt, using stdin JSON format');
-      // 使用 stdin JSON 格式发送
-      const commandBuilder = this.buildCommandBuilderForStreamJson();
-      const commandParts = commandBuilder.buildInitial();
-      const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
-      return this.spawnWithStdin(config, commandParts, userMessage);
-    } else {
-      console.log('[ClaudeCodeExecutor] ℹ️  No images detected, using normal text format');
-      // 保持原有方式
-      const commandBuilder = this.buildCommandBuilder();
-      const commandParts = commandBuilder.buildInitial();
-      const newConfig = { ...config, prompt };
-      return this.spawnInternal(newConfig, commandParts);
-    }
+    const commandBuilder = this.buildCommandBuilderForStreamJson();
+    const commandParts = commandBuilder.buildInitial();
+    const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
+    return this.spawnWithStdin(config, commandParts, userMessage);
   }
 
   /**
@@ -325,34 +311,16 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     const prompt = this.combinePrompt(config.prompt);
 
     console.log('[ClaudeCodeExecutor] spawnFollowUp - prompt length:', prompt.length);
-    console.log('[ClaudeCodeExecutor] spawnFollowUp - prompt preview:', prompt.substring(0, 200));
-
-    // 检测是否包含图片
     const parsedPrompt = await parsePromptWithImages(prompt);
 
-    if (parsedPrompt.hasImages) {
-      console.log('[ClaudeCodeExecutor] ✅ Detected images in follow-up, using stdin JSON format');
-      // 使用 stdin JSON 格式发送
-      const commandBuilder = this.buildCommandBuilderForStreamJson();
-      const additionalArgs = ['--resume', sessionId];
-      if (resetToMessageId) {
-        additionalArgs.push('--resume-session-at', resetToMessageId);
-      }
-      const commandParts = commandBuilder.buildFollowUp(additionalArgs);
-      const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
-      return this.spawnWithStdin(config, commandParts, userMessage);
-    } else {
-      console.log('[ClaudeCodeExecutor] ℹ️  No images detected in follow-up, using normal text format');
-      // 保持原有方式
-      const commandBuilder = this.buildCommandBuilder();
-      const additionalArgs = ['--resume', sessionId];
-      if (resetToMessageId) {
-        additionalArgs.push('--resume-session-at', resetToMessageId);
-      }
-      const commandParts = commandBuilder.buildFollowUp(additionalArgs);
-      const newConfig = { ...config, prompt };
-      return this.spawnInternal(newConfig, commandParts);
+    const commandBuilder = this.buildCommandBuilderForStreamJson();
+    const additionalArgs = ['--resume', sessionId];
+    if (resetToMessageId) {
+      additionalArgs.push('--resume-session-at', resetToMessageId);
     }
+    const commandParts = commandBuilder.buildFollowUp(additionalArgs);
+    const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
+    return this.spawnWithStdin(config, commandParts, userMessage);
   }
 
   /**

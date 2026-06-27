@@ -1,9 +1,10 @@
-import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  buildWindowsCmdShimCommandLine,
   buildPtyCommand,
   buildPtyCommandWithStdin,
   getDefaultTerminalShell,
@@ -83,6 +84,73 @@ describe('process-launch', () => {
 
     expect(stdout).toBe('{"message":"hello"}')
     expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  it('should delete the stdin temp file when the child exits without reading stdin', () => {
+    const tmpFile = path.join(os.tmpdir(), `agent-tower-test-early-exit-${Date.now()}.txt`)
+    writeFileSync(tmpFile, 'x'.repeat(1024 * 1024), 'utf-8')
+
+    try {
+      const invocation = buildPtyCommandWithStdin(process.execPath, [
+        '-e',
+        'process.exit(0)',
+      ], tmpFile)
+
+      execFileSync(invocation.command, invocation.args, {
+        encoding: 'utf-8',
+      })
+
+      expect(existsSync(tmpFile)).toBe(false)
+    } finally {
+      rmSync(tmpFile, { force: true })
+    }
+  })
+
+  it('should preserve the child exit code when stdin pipe breaks on early exit', () => {
+    const tmpFile = path.join(os.tmpdir(), `agent-tower-test-early-exit-code-${Date.now()}.txt`)
+    writeFileSync(tmpFile, 'x'.repeat(1024 * 1024), 'utf-8')
+
+    try {
+      const invocation = buildPtyCommandWithStdin(process.execPath, [
+        '-e',
+        'process.exit(42)',
+      ], tmpFile)
+
+      const result = spawnSync(invocation.command, invocation.args, {
+        encoding: 'utf-8',
+      })
+
+      expect(result.error).toBeUndefined()
+      expect(result.status).toBe(42)
+      expect(existsSync(tmpFile)).toBe(false)
+    } finally {
+      rmSync(tmpFile, { force: true })
+    }
+  })
+
+  it('should keep long stdin data out of Windows .cmd/.bat command lines', () => {
+    const marker = 'WINDOWS_LONG_PROMPT_MARKER'
+    const longPrompt = `${marker}${'x'.repeat(32_000)}`
+    const stdinFile = path.join(os.tmpdir(), 'agent-tower-long-prompt-test.txt')
+    const invocation = buildPtyCommandWithStdin(
+      'C:\\Tools\\cursor-agent.cmd',
+      ['--print', '--output-format=stream-json'],
+      stdinFile,
+    )
+
+    expect(longPrompt).toContain(marker)
+    expect(JSON.stringify(invocation.args)).not.toContain(marker)
+
+    const modeIndex = invocation.args.indexOf('pipe-file')
+    expect(modeIndex).toBeGreaterThanOrEqual(0)
+    const childProgram = invocation.args[modeIndex + 1]!
+    const childArgs = invocation.args.slice(modeIndex + 3)
+    const cmdLine = buildWindowsCmdShimCommandLine(childProgram, childArgs)
+
+    expect(cmdLine).toContain('cursor-agent.cmd')
+    expect(cmdLine).toContain('--print')
+    expect(cmdLine).not.toContain(marker)
+    expect(cmdLine).not.toContain(stdinFile)
   })
 
   it('should allow overriding the node-like runtime command', () => {

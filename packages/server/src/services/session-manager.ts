@@ -25,8 +25,20 @@ import {
   isMainDirectoryWorkspace,
 } from './workspace-kind.js';
 import { writeErrorLog } from '../utils/error-log.js';
+import { createHash } from 'node:crypto';
 
 const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
+
+function hashForLog(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 12);
+}
+
+function summarizeTextForLog(value: string): { length: number; sha256: string } {
+  return {
+    length: Buffer.byteLength(value, 'utf8'),
+    sha256: hashForLog(value),
+  };
+}
 
 interface StopSessionOptions {
   skipTeamRunReconcile?: boolean;
@@ -145,8 +157,7 @@ export class SessionManager {
       id: session.id,
       agentType: session.agentType,
       variant: session.variant,
-      promptLength: session.prompt.length,
-      promptPreview: session.prompt.substring(0, 200),
+      prompt: summarizeTextForLog(session.prompt),
       workingDir,
     });
 
@@ -225,8 +236,7 @@ export class SessionManager {
       agentSessionId,
       agentType: session.agentType,
       variant: session.variant,
-      promptLength: session.prompt.length,
-      promptPreview: session.prompt.substring(0, 200),
+      prompt: summarizeTextForLog(session.prompt),
       workingDir: this.getExecutionWorkingDir(session),
     });
 
@@ -319,8 +329,7 @@ export class SessionManager {
 
   async sendMessage(id: string, message: string, providerId?: string) {
     console.log('[SessionManager] 📨 Sending message to session:', id);
-    console.log('[SessionManager] Message length:', message.length);
-    console.log('[SessionManager] Message preview:', message.substring(0, 200));
+    console.log('[SessionManager] Message summary:', summarizeTextForLog(message));
     if (providerId) {
       console.log('[SessionManager] Switching provider to:', providerId);
     }

@@ -90,8 +90,8 @@ export class CursorAgentExecutor extends BaseExecutor {
   protected buildCommandBuilder(): CommandBuilder {
     let builder = CommandBuilder.new(getBaseCommand());
 
-    // 基础参数: -p 表示从 stdin 读取 prompt, --output-format=stream-json 输出 JSON 流
-    builder.setParams(['-p', '--output-format=stream-json']);
+    // Headless print 模式不传位置参数时从 stdin 读取 prompt。
+    builder.setParams(['--print', '--output-format=stream-json']);
 
     // 强制模式
     if (this.config.force) {
@@ -117,9 +117,8 @@ export class CursorAgentExecutor extends BaseExecutor {
 
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
-    const newConfig = { ...config, prompt };
 
-    return this.spawnInternal(newConfig, commandParts);
+    return this.spawnWithStdin(config, commandParts, prompt);
   }
 
   /**
@@ -138,9 +137,8 @@ export class CursorAgentExecutor extends BaseExecutor {
 
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
-    const newConfig = { ...config, prompt };
 
-    return this.spawnInternal(newConfig, commandParts);
+    return this.spawnWithStdin(config, commandParts, prompt);
   }
 
   /**

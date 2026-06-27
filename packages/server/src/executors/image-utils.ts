@@ -211,7 +211,7 @@ export async function parsePromptWithImages(prompt: string): Promise<ParsedPromp
   console.log('  contentBlocks count:', result.contentBlocks.length);
   result.contentBlocks.forEach((block, index) => {
     if (block.type === 'text') {
-      console.log(`  [${index}] text: ${block.text.substring(0, 100)}${block.text.length > 100 ? '...' : ''}`);
+      console.log(`  [${index}] text length: ${block.text.length}`);
     } else if (block.type === 'image') {
       console.log(`  [${index}] image: ${block.source.media_type}, base64 length: ${block.source.data.length}`);
     }
@@ -244,27 +244,11 @@ export function buildUserMessageNDJSON(contentBlocks: ContentBlock[]): string {
   console.log('  message.message.role:', message.message.role);
   console.log('  message.message.content blocks:', message.message.content.length);
 
-  // 打印消息结构（隐藏 base64 数据）
-  const debugMessage = {
-    ...message,
-    message: {
-      ...message.message,
-      content: message.message.content.map(block => {
-        if (block.type === 'image') {
-          return {
-            type: 'image',
-            source: {
-              type: block.source.type,
-              media_type: block.source.media_type,
-              data: `<base64 data, length: ${block.source.data.length}>`,
-            },
-          };
-        }
-        return block;
-      }),
-    },
-  };
-  console.log('  Full message structure:', JSON.stringify(debugMessage, null, 2));
+  console.log('  content summary:', message.message.content.map(block => (
+    block.type === 'image'
+      ? { type: 'image', mediaType: block.source.media_type, dataLength: block.source.data.length }
+      : { type: 'text', length: block.text.length }
+  )));
   console.log('  NDJSON length:', ndjson.length);
 
   // 返回 NDJSON 格式（单行 JSON + 换行符）

@@ -7,6 +7,10 @@ import * as pty from '@shitiandmw/node-pty';
 import type { IPty } from '@shitiandmw/node-pty';
 import { EventEmitter } from 'events';
 import { appendFileSync } from 'node:fs';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { AgentType } from '../types/index.js';
 import { ExecutionEnv } from './execution-env.js';
 import { CommandBuilder, CommandParts, CmdOverrides, resolveCommandParts } from './command-builder.js';
@@ -20,10 +24,53 @@ import { writeErrorLog } from '../utils/error-log.js';
 
 const PTY_LOG_FILE = getPtyLogFilePath();
 const OUTPUT_BUFFER_LIMIT = 8000;
+
+const REDACT_VALUE_AFTER_ARGS = new Set([
+  '-p',
+  '--prompt',
+  '--append-system-prompt',
+  '--settings',
+]);
+
 function ptyLog(pid: number, msg: string): void {
   const line = `[${new Date().toISOString()}][pid=${pid}] ${msg}\n`;
   process.stdout.write(line);
   try { appendFileSync(PTY_LOG_FILE, line); } catch { /* ignore */ }
+}
+
+function hashForLog(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 12);
+}
+
+function summarizeStdinForLog(stdinData: string): string {
+  return `length=${Buffer.byteLength(stdinData, 'utf8')} sha256=${hashForLog(stdinData)}`;
+}
+
+function redactArgsForLog(args: string[]): string {
+  const redacted: string[] = [];
+  let redactNext = false;
+  for (const arg of args) {
+    if (redactNext) {
+      redacted.push('<redacted>');
+      redactNext = false;
+      continue;
+    }
+
+    const equalsIndex = arg.indexOf('=');
+    const key = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
+    if (REDACT_VALUE_AFTER_ARGS.has(key)) {
+      if (equalsIndex === -1) {
+        redacted.push(arg);
+        redactNext = true;
+      } else {
+        redacted.push(`${key}=<redacted>`);
+      }
+      continue;
+    }
+
+    redacted.push(arg);
+  }
+  return redacted.join(' ');
 }
 
 /**
@@ -236,10 +283,10 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     const invocation = buildPtyCommand(programPath, fullArgs);
 
     const fullEnv = env.getFullEnv();
-    ptyLog(0, `Spawning: ${programPath} ${fullArgs.slice(0, -1).join(' ')} ... <prompt>`);
+    ptyLog(0, `Spawning: ${programPath} ${redactArgsForLog(fullArgs.slice(0, -1))} ... <prompt>`);
     ptyLog(0, `ENV ANTHROPIC_BASE_URL=${fullEnv.ANTHROPIC_BASE_URL || '(not set)'}`);
-    ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? fullEnv.ANTHROPIC_API_KEY.slice(0, 12) + '...' : '(not set)'}`);
-    ptyLog(0, `ENV ANTHROPIC_AUTH_TOKEN=${fullEnv.ANTHROPIC_AUTH_TOKEN ? fullEnv.ANTHROPIC_AUTH_TOKEN.slice(0, 12) + '...' : '(not set)'}`);
+    ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? '(set)' : '(not set)'}`);
+    ptyLog(0, `ENV ANTHROPIC_AUTH_TOKEN=${fullEnv.ANTHROPIC_AUTH_TOKEN ? '(set)' : '(not set)'}`);
 
     // On Windows, ConPTY auto-wraps at the column limit by inserting real
     // \r\n into the data stream, which breaks JSON parsing. Use very wide
@@ -343,47 +390,42 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     // 不添加 prompt 到参数列表，因为会通过 stdin 发送
     const fullArgs = [...args];
 
-    console.log('[BaseExecutor] Spawning with stdin (via temp file)');
-    console.log('[BaseExecutor] Program:', programPath);
-    console.log('[BaseExecutor] Args:', fullArgs.join(' '));
-    console.log('[BaseExecutor] Stdin data length:', stdinData.length);
-    console.log('[BaseExecutor] Stdin data preview:', stdinData.substring(0, 500));
-
     // 使用临时文件传递 stdin 数据，避免命令行参数长度限制
-    const fs = await import('node:fs/promises');
-    const os = await import('node:os');
-    const path = await import('node:path');
-
-    const tmpFile = path.join(os.tmpdir(), `agent-tower-stdin-${Date.now()}.json`);
-    await fs.writeFile(tmpFile, stdinData, 'utf-8');
-    console.log('[BaseExecutor] Wrote stdin data to temp file:', tmpFile);
+    const tmpFile = path.join(os.tmpdir(), `agent-tower-stdin-${Date.now()}-${randomUUID()}.txt`);
+    await fs.writeFile(tmpFile, stdinData, { encoding: 'utf-8', mode: 0o600 });
+    ptyLog(0, `Spawning with stdin: ${programPath} ${redactArgsForLog(fullArgs)} <stdin ${summarizeStdinForLog(stdinData)} file=${path.basename(tmpFile)}>`);
     const invocation = buildPtyCommandWithStdin(programPath, fullArgs, tmpFile);
+
+    const fullEnv = env.getFullEnv();
+    ptyLog(0, `ENV ANTHROPIC_BASE_URL=${fullEnv.ANTHROPIC_BASE_URL || '(not set)'}`);
+    ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? '(set)' : '(not set)'}`);
+    ptyLog(0, `ENV ANTHROPIC_AUTH_TOKEN=${fullEnv.ANTHROPIC_AUTH_TOKEN ? '(set)' : '(not set)'}`);
 
     let shell: IPty | undefined;
     let offData: { dispose(): void } | undefined;
     let offExit: { dispose(): void } | undefined;
 
     try {
+      const ptyCols = process.platform === 'win32' ? 16384 : 120;
       shell = pty.spawn(invocation.command, invocation.args, {
         name: 'xterm-256color',
-        cols: 120,
+        cols: ptyCols,
         rows: 30,
         cwd: config.workingDir,
-        env: env.getFullEnv(),
+        env: fullEnv,
       });
       const spawnedShell = shell;
 
-      console.log('[BaseExecutor] Process spawned with PID:', spawnedShell.pid);
+      ptyLog(spawnedShell.pid, `Process spawned with stdin`);
 
-      // 添加调试输出监听
       let outputBuffer = '';
       offData = spawnedShell.onData((data) => {
         if (outputBuffer.length < OUTPUT_BUFFER_LIMIT) {
           outputBuffer += data;
         }
-        // 只打印前1000个字符，避免日志过多
-        if (outputBuffer.length < 1000) {
-          console.log('[BaseExecutor] PTY output:', data.substring(0, 200));
+        const byteLength = Buffer.byteLength(data, 'utf8');
+        if (byteLength > 0) {
+          ptyLog(spawnedShell.pid, `PTY> <${byteLength} bytes>`);
         }
       });
 
@@ -391,10 +433,22 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       offExit = spawnedShell.onExit(({ exitCode, signal }) => {
         offData?.dispose();
         offExit?.dispose();
-        console.log('[BaseExecutor] PTY exited, code:', exitCode, 'signal:', signal);
-        console.log('[BaseExecutor] Total output length:', outputBuffer.length);
-        if (outputBuffer.length < 2000) {
-          console.log('[BaseExecutor] Full output:', outputBuffer);
+        ptyLog(spawnedShell.pid, `PTY exited code=${exitCode} signal=${signal} outputLength=${outputBuffer.length}`);
+        if (exitCode !== 0) {
+          writeErrorLog({
+            level: 'warn',
+            source: 'executor.exit',
+            message: `${this.displayName} exited with non-zero code ${exitCode}`,
+            metadata: {
+              agentType: this.agentType,
+              displayName: this.displayName,
+              pid: spawnedShell.pid,
+              exitCode,
+              signal,
+              workingDir: config.workingDir,
+              outputLength: outputBuffer.length,
+            },
+          });
         }
       });
 
@@ -417,7 +471,10 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         metadata: {
           agentType: this.agentType,
           displayName: this.displayName,
+          programPath,
           workingDir: config.workingDir,
+          stdinLength: Buffer.byteLength(stdinData, 'utf8'),
+          stdinSha256: hashForLog(stdinData),
         },
       });
       offData?.dispose();

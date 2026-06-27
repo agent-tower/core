@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AgentType } from '../../types/index.js';
@@ -52,7 +52,15 @@ class TestExecutor extends BaseExecutor {
   }
 }
 
-const tmpFileForNow = (now: number) => path.join(os.tmpdir(), `agent-tower-stdin-${now}.json`);
+const tmpFilePrefixForNow = (now: number) => `agent-tower-stdin-${now}-`;
+const tmpFilesForNow = (now: number) => readdirSync(os.tmpdir())
+  .filter((name) => name.startsWith(tmpFilePrefixForNow(now)))
+  .map((name) => path.join(os.tmpdir(), name));
+const removeTmpFilesForNow = (now: number) => {
+  for (const file of tmpFilesForNow(now)) {
+    rmSync(file, { force: true });
+  }
+};
 const envKeysToRestore = [
   ...AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
   ...AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
@@ -192,13 +200,13 @@ describe('BaseExecutor.spawnWithStdin', () => {
     spawnMock.mockReset();
     whichMock.mockClear();
     vi.spyOn(Date, 'now').mockReturnValue(now);
-    rmSync(tmpFileForNow(now), { force: true });
+    removeTmpFilesForNow(now);
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    rmSync(tmpFileForNow(now), { force: true });
+    removeTmpFilesForNow(now);
   });
 
   it('removes the stdin temp file when pty.spawn throws after writing it', async () => {
@@ -212,7 +220,7 @@ describe('BaseExecutor.spawnWithStdin', () => {
     await expect(executor.spawnForTest({ program: 'mock-agent', args: [] }, '{"message":"hello"}'))
       .rejects.toThrow(error);
 
-    expect(existsSync(tmpFileForNow(now))).toBe(false);
+    expect(tmpFilesForNow(now)).toEqual([]);
   });
 
   it('disposes data and exit listeners when the pty exits', async () => {
@@ -259,7 +267,28 @@ describe('BaseExecutor.spawnWithStdin', () => {
     const executor = new TestExecutor();
     await executor.spawnForTest({ program: 'mock-agent', args: [] }, '{"message":"hello"}');
 
-    expect(existsSync(tmpFileForNow(now))).toBe(true);
+    const tmpFiles = tmpFilesForNow(now);
+    expect(tmpFiles).toHaveLength(1);
+    expect(existsSync(tmpFiles[0]!)).toBe(true);
+  });
+
+  it('does not log stdin contents when spawning with stdin', async () => {
+    const secretMarker = 'SECRET_LONG_PROMPT_MARKER';
+    const stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    spawnMock.mockReturnValueOnce({
+      pid: 12345,
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+      kill: vi.fn(),
+    });
+
+    const executor = new TestExecutor();
+    await executor.spawnForTest({ program: 'mock-agent', args: ['--json'] }, `${secretMarker} ${'x'.repeat(200)}`);
+
+    const logs = stdoutWriteSpy.mock.calls.map(([line]) => String(line)).join('\n');
+    expect(logs).not.toContain(secretMarker);
+    expect(logs).toContain('length=');
+    expect(logs).toContain('sha256=');
   });
 });
 
