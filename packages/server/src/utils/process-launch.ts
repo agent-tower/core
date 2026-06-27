@@ -10,6 +10,25 @@ export function getNodeRuntimeCommand(): string {
   return process.env.AGENT_TOWER_NODE_RUNTIME || process.execPath;
 }
 
+export const PTY_WRAPPER_ENV_KEYS = [
+  'AGENT_TOWER_NODE_RUNTIME',
+  'ELECTRON_RUN_AS_NODE',
+] as const;
+
+export function buildPtyWrapperEnv(
+  agentEnv: Record<string, string>,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const wrapperEnv = { ...agentEnv };
+  for (const key of PTY_WRAPPER_ENV_KEYS) {
+    const value = parentEnv[key];
+    if (value !== undefined) {
+      wrapperEnv[key] = value;
+    }
+  }
+  return wrapperEnv;
+}
+
 const PTY_WRAPPER_SCRIPT = String.raw`
 const { spawn } = require('node:child_process');
 const { createReadStream, unlinkSync } = require('node:fs');
@@ -17,7 +36,7 @@ const { createReadStream, unlinkSync } = require('node:fs');
 const [mode, programPath, ...rest] = process.argv.slice(1);
 const isWin = process.platform === 'win32';
 const isCmdBat = isWin && /\.(cmd|bat)$/i.test(programPath);
-const internalEnvKeys = ['AGENT_TOWER_NODE_RUNTIME', 'ELECTRON_RUN_AS_NODE'];
+const internalEnvKeys = ${JSON.stringify(PTY_WRAPPER_ENV_KEYS)};
 
 let child;
 let cleanupTarget = null;

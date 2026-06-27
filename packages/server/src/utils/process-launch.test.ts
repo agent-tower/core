@@ -5,6 +5,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   buildWindowsCmdShimCommandLine,
+  buildPtyWrapperEnv,
   buildPtyCommand,
   buildPtyCommandWithStdin,
   getDefaultTerminalShell,
@@ -49,6 +50,78 @@ function spawnWrapperWithGrandchild(childScript: string) {
 }
 
 describe('process-launch', () => {
+  it('should add packaged Electron node-mode env only to the PTY wrapper env', () => {
+    const wrapperEnv = buildPtyWrapperEnv(
+      {
+        PATH: '/usr/bin',
+        AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      },
+      {
+        AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\Agent Tower.exe',
+        ELECTRON_RUN_AS_NODE: '1',
+      },
+    )
+
+    expect(wrapperEnv).toMatchObject({
+      PATH: '/usr/bin',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\Agent Tower.exe',
+      ELECTRON_RUN_AS_NODE: '1',
+    })
+  })
+
+  it('should leave npm CLI wrapper env unchanged when packaged env is absent', () => {
+    const agentEnv = {
+      PATH: '/usr/bin',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+    }
+
+    expect(buildPtyWrapperEnv(agentEnv, {})).toEqual(agentEnv)
+  })
+
+  it('should strip packaged node-mode env before spawning the wrapped child', () => {
+    const originalNodeRuntime = process.env.AGENT_TOWER_NODE_RUNTIME
+    delete process.env.AGENT_TOWER_NODE_RUNTIME
+
+    try {
+      const invocation = buildPtyCommand(process.execPath, [
+        '-e',
+        [
+          'process.stdout.write(JSON.stringify({',
+          'nodeRuntime: process.env.AGENT_TOWER_NODE_RUNTIME ?? null,',
+          'electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null,',
+          'marker: process.env.AGENT_TOWER_TEST_NORMAL_ENV ?? null',
+          '}))',
+        ].join(''),
+      ])
+      const agentEnv = {
+        ...process.env,
+        AGENT_TOWER_TEST_NORMAL_ENV: 'keep-me',
+      } as Record<string, string>
+      delete agentEnv.AGENT_TOWER_NODE_RUNTIME
+      delete agentEnv.ELECTRON_RUN_AS_NODE
+      const stdout = execFileSync(invocation.command, invocation.args, {
+        encoding: 'utf-8',
+        env: buildPtyWrapperEnv(agentEnv, {
+          AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\Agent Tower.exe',
+          ELECTRON_RUN_AS_NODE: '1',
+        }),
+      })
+
+      expect(JSON.parse(stdout)).toEqual({
+        nodeRuntime: null,
+        electronRunAsNode: null,
+        marker: 'keep-me',
+      })
+    } finally {
+      if (originalNodeRuntime === undefined) {
+        delete process.env.AGENT_TOWER_NODE_RUNTIME
+      } else {
+        process.env.AGENT_TOWER_NODE_RUNTIME = originalNodeRuntime
+      }
+    }
+  })
+
   it('should preserve arguments through the PTY wrapper', () => {
     const invocation = buildPtyCommand(process.execPath, [
       '-e',

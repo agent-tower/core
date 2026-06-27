@@ -18,6 +18,7 @@ import { stripAnsiSequences } from '../output/utils/ansi.js';
 import {
   buildPtyCommand,
   buildPtyCommandWithStdin,
+  buildPtyWrapperEnv,
   getPtyLogFilePath,
 } from '../utils/process-launch.js';
 import { writeErrorLog } from '../utils/error-log.js';
@@ -283,6 +284,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     const invocation = buildPtyCommand(programPath, fullArgs);
 
     const fullEnv = env.getFullEnv();
+    const wrapperEnv = buildPtyWrapperEnv(fullEnv);
     ptyLog(0, `Spawning: ${programPath} ${redactArgsForLog(fullArgs.slice(0, -1))} ... <prompt>`);
     ptyLog(0, `ENV ANTHROPIC_BASE_URL=${fullEnv.ANTHROPIC_BASE_URL || '(not set)'}`);
     ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? '(set)' : '(not set)'}`);
@@ -301,7 +303,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         cols: ptyCols,
         rows: 30,
         cwd: config.workingDir,
-        env: fullEnv,
+        env: wrapperEnv,
       });
     } catch (error) {
       writeErrorLog({
@@ -397,6 +399,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     const invocation = buildPtyCommandWithStdin(programPath, fullArgs, tmpFile);
 
     const fullEnv = env.getFullEnv();
+    const wrapperEnv = buildPtyWrapperEnv(fullEnv);
     ptyLog(0, `ENV ANTHROPIC_BASE_URL=${fullEnv.ANTHROPIC_BASE_URL || '(not set)'}`);
     ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? '(set)' : '(not set)'}`);
     ptyLog(0, `ENV ANTHROPIC_AUTH_TOKEN=${fullEnv.ANTHROPIC_AUTH_TOKEN ? '(set)' : '(not set)'}`);
@@ -412,7 +415,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         cols: ptyCols,
         rows: 30,
         cwd: config.workingDir,
-        env: fullEnv,
+        env: wrapperEnv,
       });
       const spawnedShell = shell;
 

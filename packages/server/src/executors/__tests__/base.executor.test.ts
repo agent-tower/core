@@ -11,6 +11,7 @@ import {
   AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
   ExecutionEnv,
 } from '../execution-env.js';
+import { PTY_WRAPPER_ENV_KEYS } from '../../utils/process-launch.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const whichMock = vi.hoisted(() => vi.fn(async (command: string) => `/bin/${command}`));
@@ -290,6 +291,58 @@ describe('BaseExecutor.spawnWithStdin', () => {
     expect(logs).toContain('length=');
     expect(logs).toContain('sha256=');
   });
+
+  it('keeps packaged node-mode env for the stdin PTY wrapper while sanitizing agent env', async () => {
+    const originalEnv = snapshotEnv(envKeysToRestore);
+    process.env.DATABASE_URL = 'file:/prod/database-url.db';
+    process.env.AGENT_TOWER_DATABASE_URL = 'file:/prod/agent-tower.db';
+    process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
+    process.env.AGENT_TOWER_WEB_DIR = '/prod/agent-tower-web';
+    process.env.AGENT_TOWER_NODE_RUNTIME = '/prod/Agent Tower.exe';
+    process.env.AGENT_TOWER_DESKTOP_RUNTIME_MODE = 'packaged';
+    process.env.AGENT_TOWER_MCP_ENTRY = '/prod/runtime/server/dist/mcp/index.js';
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    process.env.DATA_DIR = '/prod/data-dir';
+
+    spawnMock.mockReturnValueOnce({
+      pid: 12345,
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+      kill: vi.fn(),
+    });
+
+    try {
+      const env = ExecutionEnv.default(os.tmpdir()).merge({
+        AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+        DATABASE_URL: 'file:/provider/database-url.db',
+      });
+      const executor = new TestExecutor();
+
+      await executor.spawnForTest({ program: 'mock-agent', args: ['--json'] }, '{"message":"hello"}', env);
+
+      const [command, args, spawnOptions] = spawnMock.mock.calls[0]! as [
+        string,
+        string[],
+        { env: Record<string, string> },
+      ];
+      expect(command).toBe('/prod/Agent Tower.exe');
+      expect(args).toContain('pipe-file');
+
+      const wrapperEnvKeys = new Set<string>(PTY_WRAPPER_ENV_KEYS);
+      for (const key of AGENT_SUBPROCESS_BLOCKED_ENV_KEYS) {
+        if (!wrapperEnvKeys.has(key)) {
+          expect(spawnOptions.env).not.toHaveProperty(key);
+        }
+      }
+      expect(spawnOptions.env).toMatchObject({
+        AGENT_TOWER_NODE_RUNTIME: '/prod/Agent Tower.exe',
+        ELECTRON_RUN_AS_NODE: '1',
+        AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      });
+    } finally {
+      restoreEnv(originalEnv);
+    }
+  });
 });
 
 describe('BaseExecutor subprocess env', () => {
@@ -306,7 +359,7 @@ describe('BaseExecutor subprocess env', () => {
     restoreEnv(originalEnv);
   });
 
-  it('passes a sanitized env to agent pty.spawn', async () => {
+  it('keeps packaged node-mode env for the PTY wrapper while sanitizing other internal env', async () => {
     process.env.DATABASE_URL = 'file:/prod/database-url.db';
     process.env.AGENT_TOWER_DATABASE_URL = 'file:/prod/agent-tower.db';
     process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
@@ -341,10 +394,15 @@ describe('BaseExecutor subprocess env', () => {
     await executor.spawnInternalForTest({ program: 'mock-agent', args: ['--json'] }, env);
 
     const spawnOptions = spawnMock.mock.calls[0]![2] as { env: Record<string, string> };
+    const wrapperEnvKeys = new Set<string>(PTY_WRAPPER_ENV_KEYS);
     for (const key of AGENT_SUBPROCESS_BLOCKED_ENV_KEYS) {
-      expect(spawnOptions.env).not.toHaveProperty(key);
+      if (!wrapperEnvKeys.has(key)) {
+        expect(spawnOptions.env).not.toHaveProperty(key);
+      }
     }
     expect(spawnOptions.env).toMatchObject({
+      AGENT_TOWER_NODE_RUNTIME: '/prod/Agent Tower.exe',
+      ELECTRON_RUN_AS_NODE: '1',
       AGENT_TOWER_SESSION_ID: 'session-1',
       AGENT_TOWER_INVOCATION_ID: 'invocation-1',
       AGENT_TOWER_TEAM_RUN_ID: 'team-run-1',
