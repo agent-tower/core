@@ -124,6 +124,7 @@ function spawnCmd(args, stdioOpt) {
     stdio: stdioOpt,
     env: getChildEnv(),
     windowsVerbatimArguments: true,
+    windowsHide: true,
   });
 }
 
@@ -132,7 +133,12 @@ function spawnCmd(args, stdioOpt) {
 // 本 wrapper 经 killTree 显式转发。Windows 下 detached 会脱离 ConPTY，
 // 保持默认行为。
 function spawnChild(args, stdioOpt) {
-  return spawn(programPath, args, { stdio: stdioOpt, detached: !isWin, env: getChildEnv() });
+  return spawn(programPath, args, {
+    stdio: stdioOpt,
+    detached: !isWin,
+    env: getChildEnv(),
+    windowsHide: true,
+  });
 }
 
 if (mode === 'pipe-file') {

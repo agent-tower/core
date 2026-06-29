@@ -292,16 +292,15 @@ describe('BaseExecutor.spawnWithStdin', () => {
     expect(logs).toContain('sha256=');
   });
 
-  it('keeps packaged node-mode env for the stdin PTY wrapper while sanitizing agent env', async () => {
+  it('uses bundled node runtime for the stdin PTY wrapper while sanitizing agent env', async () => {
     const originalEnv = snapshotEnv(envKeysToRestore);
     process.env.DATABASE_URL = 'file:/prod/database-url.db';
     process.env.AGENT_TOWER_DATABASE_URL = 'file:/prod/agent-tower.db';
     process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
     process.env.AGENT_TOWER_WEB_DIR = '/prod/agent-tower-web';
-    process.env.AGENT_TOWER_NODE_RUNTIME = '/prod/Agent Tower.exe';
+    process.env.AGENT_TOWER_NODE_RUNTIME = '/prod/resources/runtime/node/node.exe';
     process.env.AGENT_TOWER_DESKTOP_RUNTIME_MODE = 'packaged';
     process.env.AGENT_TOWER_MCP_ENTRY = '/prod/runtime/server/dist/mcp/index.js';
-    process.env.ELECTRON_RUN_AS_NODE = '1';
     process.env.DATA_DIR = '/prod/data-dir';
 
     spawnMock.mockReturnValueOnce({
@@ -325,7 +324,7 @@ describe('BaseExecutor.spawnWithStdin', () => {
         string[],
         { env: Record<string, string> },
       ];
-      expect(command).toBe('/prod/Agent Tower.exe');
+      expect(command).toBe('/prod/resources/runtime/node/node.exe');
       expect(args).toContain('pipe-file');
 
       const wrapperEnvKeys = new Set<string>(PTY_WRAPPER_ENV_KEYS);
@@ -335,10 +334,10 @@ describe('BaseExecutor.spawnWithStdin', () => {
         }
       }
       expect(spawnOptions.env).toMatchObject({
-        AGENT_TOWER_NODE_RUNTIME: '/prod/Agent Tower.exe',
-        ELECTRON_RUN_AS_NODE: '1',
+        AGENT_TOWER_NODE_RUNTIME: '/prod/resources/runtime/node/node.exe',
         AGENT_TOWER_URL: 'http://127.0.0.1:42232',
       });
+      expect(spawnOptions.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE');
     } finally {
       restoreEnv(originalEnv);
     }
@@ -359,15 +358,14 @@ describe('BaseExecutor subprocess env', () => {
     restoreEnv(originalEnv);
   });
 
-  it('keeps packaged node-mode env for the PTY wrapper while sanitizing other internal env', async () => {
+  it('uses bundled node runtime for the PTY wrapper while sanitizing other internal env', async () => {
     process.env.DATABASE_URL = 'file:/prod/database-url.db';
     process.env.AGENT_TOWER_DATABASE_URL = 'file:/prod/agent-tower.db';
     process.env.AGENT_TOWER_DATA_DIR = '/prod/agent-tower-data';
     process.env.AGENT_TOWER_WEB_DIR = '/prod/agent-tower-web';
-    process.env.AGENT_TOWER_NODE_RUNTIME = '/prod/Agent Tower.exe';
+    process.env.AGENT_TOWER_NODE_RUNTIME = '/prod/resources/runtime/node/node.exe';
     process.env.AGENT_TOWER_DESKTOP_RUNTIME_MODE = 'packaged';
     process.env.AGENT_TOWER_MCP_ENTRY = '/prod/runtime/server/dist/mcp/index.js';
-    process.env.ELECTRON_RUN_AS_NODE = '1';
     process.env.DATA_DIR = '/prod/data-dir';
     process.env.AGENT_TOWER_SESSION_ID = 'inherited-session';
     process.env.AGENT_TOWER_INVOCATION_ID = 'inherited-invocation';
@@ -401,13 +399,13 @@ describe('BaseExecutor subprocess env', () => {
       }
     }
     expect(spawnOptions.env).toMatchObject({
-      AGENT_TOWER_NODE_RUNTIME: '/prod/Agent Tower.exe',
-      ELECTRON_RUN_AS_NODE: '1',
+      AGENT_TOWER_NODE_RUNTIME: '/prod/resources/runtime/node/node.exe',
       AGENT_TOWER_SESSION_ID: 'session-1',
       AGENT_TOWER_INVOCATION_ID: 'invocation-1',
       AGENT_TOWER_TEAM_RUN_ID: 'team-run-1',
       AGENT_TOWER_MEMBER_ID: 'member-1',
       AGENT_TOWER_URL: 'http://127.0.0.1:42232',
     });
+    expect(spawnOptions.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE');
   });
 });

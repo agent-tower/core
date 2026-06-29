@@ -9,6 +9,7 @@ const monorepoRoot = path.resolve(packageRoot, '../..');
 const runtimeDir = path.join(packageRoot, 'runtime');
 const serverRuntimeDir = path.join(runtimeDir, 'server');
 const webRuntimeDir = path.join(runtimeDir, 'web');
+const nodeRuntimeDir = path.join(runtimeDir, 'node');
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -49,6 +50,14 @@ function assertNoRuntimeSymlinks(target, root = target) {
 
 rmSync(runtimeDir, { recursive: true, force: true });
 mkdirSync(runtimeDir, { recursive: true });
+
+if (process.platform === 'win32') {
+  mkdirSync(nodeRuntimeDir, { recursive: true });
+  cpSync(process.execPath, path.join(nodeRuntimeDir, 'node.exe'), {
+    dereference: true,
+  });
+  requirePath(path.join(nodeRuntimeDir, 'node.exe'), 'Windows Node runtime');
+}
 
 run('pnpm', ['--filter', '@agent-tower/server', '--config.node-linker=hoisted', 'deploy', '--legacy', '--prod', serverRuntimeDir]);
 

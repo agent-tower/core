@@ -50,14 +50,33 @@ function spawnWrapperWithGrandchild(childScript: string) {
 }
 
 describe('process-launch', () => {
-  it('should add packaged Electron node-mode env only to the PTY wrapper env', () => {
+  it('should add bundled node runtime env only to the PTY wrapper env', () => {
     const wrapperEnv = buildPtyWrapperEnv(
       {
         PATH: '/usr/bin',
         AGENT_TOWER_URL: 'http://127.0.0.1:42232',
       },
       {
-        AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\Agent Tower.exe',
+        AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\resources\\runtime\\node\\node.exe',
+      },
+    )
+
+    expect(wrapperEnv).toMatchObject({
+      PATH: '/usr/bin',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\resources\\runtime\\node\\node.exe',
+    })
+    expect(wrapperEnv).not.toHaveProperty('ELECTRON_RUN_AS_NODE')
+  })
+
+  it('should preserve Electron node-mode env only for packaged fallback runtimes', () => {
+    const wrapperEnv = buildPtyWrapperEnv(
+      {
+        PATH: '/usr/bin',
+        AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      },
+      {
+        AGENT_TOWER_NODE_RUNTIME: '/Applications/Agent Tower.app/Contents/MacOS/Agent Tower',
         ELECTRON_RUN_AS_NODE: '1',
       },
     )
@@ -65,7 +84,7 @@ describe('process-launch', () => {
     expect(wrapperEnv).toMatchObject({
       PATH: '/usr/bin',
       AGENT_TOWER_URL: 'http://127.0.0.1:42232',
-      AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\Agent Tower.exe',
+      AGENT_TOWER_NODE_RUNTIME: '/Applications/Agent Tower.app/Contents/MacOS/Agent Tower',
       ELECTRON_RUN_AS_NODE: '1',
     })
   })
@@ -224,6 +243,12 @@ describe('process-launch', () => {
     expect(cmdLine).toContain('--print')
     expect(cmdLine).not.toContain(marker)
     expect(cmdLine).not.toContain(stdinFile)
+  })
+
+  it('should hide Windows consoles for wrapper-spawned child processes', () => {
+    const invocation = buildPtyCommand('C:\\Tools\\cursor-agent.cmd', ['--print'])
+
+    expect(invocation.args[1]).toContain('windowsHide: true')
   })
 
   it('should allow overriding the node-like runtime command', () => {

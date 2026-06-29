@@ -8,21 +8,39 @@ describe('mcp-config service', () => {
       serverDistDir: '/app/Resources/runtime/server/dist',
       env: {
         AGENT_TOWER_DESKTOP_RUNTIME_MODE: 'packaged',
-        AGENT_TOWER_NODE_RUNTIME: '/app/Contents/MacOS/Agent Tower Desktop Spike',
+        AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\resources\\runtime\\node\\node.exe',
         AGENT_TOWER_MCP_ENTRY: '/app/Resources/runtime/server/dist/mcp/index.js',
         AGENT_TOWER_DATA_DIR: '/Users/test/.agent-tower',
       } as NodeJS.ProcessEnv,
     })
 
     expect(config.runtimeMode).toBe('desktop-packaged')
-    expect(config.command).toBe('/app/Contents/MacOS/Agent Tower Desktop Spike')
+    expect(config.command).toBe('C:\\Program Files\\Agent Tower\\resources\\runtime\\node\\node.exe')
     expect(config.args).toEqual(['/app/Resources/runtime/server/dist/mcp/index.js'])
+    expect(config.env).toEqual({
+      AGENT_TOWER_DATA_DIR: '/Users/test/.agent-tower',
+    })
+    expect(config.configJson).toContain('/app/Resources/runtime/server/dist/mcp/index.js')
+    expect(config.configJson).not.toContain('agent-tower-mcp')
+  })
+
+  it('keeps Electron node-mode env only for packaged fallback config', () => {
+    const config = buildMcpConfigResponse({
+      serverDistDir: '/app/Resources/runtime/server/dist',
+      env: {
+        AGENT_TOWER_DESKTOP_RUNTIME_MODE: 'packaged',
+        AGENT_TOWER_NODE_RUNTIME: '/app/Contents/MacOS/Agent Tower',
+        AGENT_TOWER_MCP_ENTRY: '/app/Resources/runtime/server/dist/mcp/index.js',
+        AGENT_TOWER_DATA_DIR: '/Users/test/.agent-tower',
+        ELECTRON_RUN_AS_NODE: '1',
+      } as NodeJS.ProcessEnv,
+    })
+
+    expect(config.command).toBe('/app/Contents/MacOS/Agent Tower')
     expect(config.env).toEqual({
       AGENT_TOWER_DATA_DIR: '/Users/test/.agent-tower',
       ELECTRON_RUN_AS_NODE: '1',
     })
-    expect(config.configJson).toContain('/app/Resources/runtime/server/dist/mcp/index.js')
-    expect(config.configJson).not.toContain('agent-tower-mcp')
   })
 
   it('builds workspace config without global agent-tower-mcp command', () => {

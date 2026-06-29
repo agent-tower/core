@@ -39,7 +39,7 @@ export function buildMcpConfigResponse(options: {
     AGENT_TOWER_DATA_DIR: env.AGENT_TOWER_DATA_DIR || getDefaultDataDir(),
   };
 
-  if (runtimeMode === 'desktop-packaged') {
+  if (runtimeMode === 'desktop-packaged' && env.ELECTRON_RUN_AS_NODE === '1') {
     configEnv.ELECTRON_RUN_AS_NODE = '1';
   }
 

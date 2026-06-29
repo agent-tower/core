@@ -78,7 +78,7 @@ Isolated acceptance and smoke launches set `AGENT_TOWER_DESKTOP_STARTUP_TIMEOUT_
 
 Do not use `open packages/desktop/release/.../Agent Tower.app` for tests or acceptance runs. Directly opening the packaged app intentionally uses the production default data policy and can connect to the standard `~/.agent-tower` data directory. Only direct-open the app when explicitly validating the formal shared-data behavior.
 
-Packaged mode does not use a global `agent-tower` command. The desktop app starts `runtime/server/dist/cli.js` directly using Electron's own executable as a Node-compatible runtime with `ELECTRON_RUN_AS_NODE=1`.
+Packaged mode does not use a global `agent-tower` command. The desktop app starts `runtime/server/dist/cli.js` directly from app resources. Windows packages use the bundled `runtime/node/node.exe` for the backend and agent wrapper processes; other packaged platforms currently keep using Electron's executable as a Node-compatible runtime with `ELECTRON_RUN_AS_NODE=1`.
 
 ## Integrated Titlebar
 
@@ -96,9 +96,9 @@ Copy the JSON from that screen into an MCP-capable client. The generated config 
 
 In packaged desktop mode, the config points at the bundled runtime:
 
-- `command`: the packaged Electron app executable.
+- `command`: the bundled runtime command. On Windows this is `resources/runtime/node/node.exe`; on other packaged platforms this is the packaged Electron app executable.
 - `args`: `resources/runtime/server/dist/mcp/index.js` inside the app resources.
-- `env.ELECTRON_RUN_AS_NODE`: `1`, so Electron runs as a Node-compatible runtime for the MCP stdio process.
+- `env.ELECTRON_RUN_AS_NODE`: `1` only when the command is the Electron app executable.
 - `env.AGENT_TOWER_DATA_DIR`: the data directory used by the current desktop backend, so the MCP process can discover the current backend port file.
 
 This means users do not need `npm i -g agent-tower` or a global `agent-tower-mcp` command for the packaged desktop MCP path.
@@ -177,7 +177,7 @@ The workflow sets `CSC_IDENTITY_AUTO_DISCOVERY=false`, so unsigned test packages
 
 ## Current Limits
 
-- Development `spike` still uses `node` from `PATH`; packaged `package:dir` uses Electron as the Node runtime and does not require global `agent-tower`.
+- Development `spike` still uses `node` from `PATH`; packaged `package:dir` uses a bundled Node runtime on Windows and Electron node-mode elsewhere, so it does not require global `agent-tower`.
 - Installer packages are generated, but signing/notarization is not configured yet.
 - Does not implement auto-update.
 - Does not add desktop-specific local API authentication yet.

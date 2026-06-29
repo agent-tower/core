@@ -89,6 +89,7 @@ interface RuntimePaths {
   serverCliPath: string;
   serverCwd: string;
   mcpEntryPath: string;
+  nodeRuntimePath: string | null;
   webDistPath: string;
   runtimeRoot: string;
   packagedRuntime: boolean;
@@ -107,6 +108,9 @@ function getRuntimePaths(): RuntimePaths {
       serverCliPath: path.join(runtimeRoot, 'server/dist/cli.js'),
       serverCwd: path.join(runtimeRoot, 'server'),
       mcpEntryPath: path.join(runtimeRoot, 'server/dist/mcp/index.js'),
+      nodeRuntimePath: process.platform === 'win32'
+        ? path.join(runtimeRoot, 'node/node.exe')
+        : null,
       webDistPath: path.join(runtimeRoot, 'web'),
     };
   }
@@ -117,6 +121,7 @@ function getRuntimePaths(): RuntimePaths {
     serverCliPath: path.resolve(monorepoRoot, 'packages/server/dist/cli.js'),
     serverCwd: monorepoRoot,
     mcpEntryPath: path.resolve(monorepoRoot, 'packages/server/dist/mcp/index.js'),
+    nodeRuntimePath: null,
     webDistPath: path.resolve(monorepoRoot, 'packages/web/dist'),
   };
 }
@@ -128,6 +133,9 @@ function requireBuiltAssets(paths: RuntimePaths): void {
   }
   if (!existsSync(paths.mcpEntryPath)) {
     missing.push(path.relative(paths.runtimeRoot, paths.mcpEntryPath));
+  }
+  if (paths.nodeRuntimePath && !existsSync(paths.nodeRuntimePath)) {
+    missing.push(path.relative(paths.runtimeRoot, paths.nodeRuntimePath));
   }
   if (!existsSync(path.join(paths.webDistPath, 'index.html'))) {
     missing.push(path.relative(paths.runtimeRoot, path.join(paths.webDistPath, 'index.html')));
@@ -146,9 +154,9 @@ function requireBuiltAssets(paths: RuntimePaths): void {
   );
 }
 
-function getBackendNodeCommand(): string {
+function getBackendNodeCommand(paths: RuntimePaths): string {
   if (shouldUsePackagedRuntime()) {
-    return process.execPath;
+    return paths.nodeRuntimePath || process.execPath;
   }
   return process.env.AGENT_TOWER_DESKTOP_NODE || 'node';
 }
@@ -278,14 +286,20 @@ async function startBackend(): Promise<string> {
     env.AGENT_TOWER_DATA_DIR = dataDir;
   }
   if (runtimePaths.packagedRuntime) {
-    env.ELECTRON_RUN_AS_NODE = '1';
-    env.AGENT_TOWER_NODE_RUNTIME = process.execPath;
+    const backendNodeCommand = getBackendNodeCommand(runtimePaths);
+    env.AGENT_TOWER_NODE_RUNTIME = backendNodeCommand;
+    if (backendNodeCommand === process.execPath) {
+      env.ELECTRON_RUN_AS_NODE = '1';
+    } else {
+      delete env.ELECTRON_RUN_AS_NODE;
+    }
   }
 
-  const child = spawn(getBackendNodeCommand(), args, {
+  const child = spawn(getBackendNodeCommand(runtimePaths), args, {
     cwd: runtimePaths.serverCwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   backendProcess = child;
   let backendReady = false;
