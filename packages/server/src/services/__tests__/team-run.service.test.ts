@@ -421,12 +421,12 @@ describe('TeamRunService', () => {
     });
   });
 
-  it('creates initial TeamRun messages and WorkRequests with previews instead of full task description', async () => {
+  it('creates initial TeamRun messages and WorkRequests with the full task description', async () => {
     const preset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
     const project = await prisma.project.create({
       data: {
-        name: 'Initial preview project',
-        repoPath: createGitRepoPath('initial-preview-project'),
+        name: 'Initial full description project',
+        repoPath: createGitRepoPath('initial-full-description-project'),
       },
     });
     const longDescription = `Full diagnostic logs\n${'line '.repeat(500)}`;
@@ -445,23 +445,25 @@ describe('TeamRunService', () => {
 
     expect(teamRun.messages).toHaveLength(1);
     expect(teamRun.workRequests).toHaveLength(1);
-    expect(teamRun.messages?.[0]?.content).toContain('Investigate checkout logs');
-    expect(teamRun.messages?.[0]?.content).toContain('Full details are stored on the task description');
-    expect(teamRun.messages?.[0]?.content).not.toContain('line '.repeat(100));
-    expect(teamRun.workRequests?.[0]?.instruction).not.toContain('line '.repeat(100));
 
+    // 标题仍截断，但任务描述完整写入首条消息与 WorkRequest（不再退化成预览）
     const storedMessage = await prisma.roomMessage.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
     const storedRequest = await prisma.workRequest.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
-    expect(storedMessage.content).not.toContain('line '.repeat(100));
-    expect(storedRequest.instruction).not.toContain('line '.repeat(100));
+    expect(storedMessage.content).toContain('Investigate checkout logs');
+    expect(storedMessage.content).toContain('line '.repeat(100));
+    expect(storedMessage.content).not.toContain('Full details are stored on the task description');
+    expect(storedRequest.instruction).toContain('line '.repeat(100));
 
+    // 列表仍返回截断预览，按消息 id 取详情可拿到完整内容
     const listed = await service.listRoomMessages(teamRun.id);
     const detail = await service.getRoomMessage(teamRun.id, teamRun.messages![0]!.id);
-    expect(listed[0]?.isTruncated).toBe(false);
-    expect(detail.content).toBe(teamRun.messages?.[0]?.content);
+    expect(listed[0]?.isTruncated).toBe(true);
+    expect(listed[0]?.content).not.toContain('line '.repeat(100));
+    expect(detail.content).toBe(storedMessage.content);
+    expect(detail.content).toContain('line '.repeat(100));
   });
 
-  it('parses initial TeamRun mentions from full task body while storing only previews', async () => {
+  it('parses initial TeamRun mentions from the full task body and stores the full description', async () => {
     const leaderPreset = await service.createMemberPreset(userMessagesPresetInput('Leader'));
     const reviewerPreset = await service.createMemberPreset(presetInput('Reviewer', ['reviewer']));
     const project = await prisma.project.create({
@@ -499,13 +501,12 @@ describe('TeamRunService', () => {
     ]);
     expect(teamRun.workRequests).toHaveLength(1);
     expect(teamRun.workRequests?.[0]?.targetMemberId).toBe(reviewer!.id);
-    expect(teamRun.messages?.[0]?.content).not.toContain('@Reviewer please review');
-    expect(teamRun.workRequests?.[0]?.instruction).not.toContain('@Reviewer please review');
 
+    // 完整任务描述（含描述里书写的 @Reviewer 文本）原样写入首条消息与 WorkRequest
     const storedMessage = await prisma.roomMessage.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
     const storedRequest = await prisma.workRequest.findFirstOrThrow({ where: { teamRunId: teamRun.id } });
-    expect(storedMessage.content).not.toContain('@Reviewer please review');
-    expect(storedRequest.instruction).not.toContain('@Reviewer please review');
+    expect(storedMessage.content).toContain('@Reviewer please review the failure handling.');
+    expect(storedRequest.instruction).toContain('@Reviewer please review the failure handling.');
   });
 
   it('rolls back RoomMessage and WorkRequest creation if the task is deleted before transaction writes', async () => {

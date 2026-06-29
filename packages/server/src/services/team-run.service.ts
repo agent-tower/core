@@ -282,13 +282,10 @@ function buildInitialTaskRoomMessageContent(task: { title: string; description?:
     throw new ValidationError('Task title is required to create a TeamRun');
   }
 
-  const descriptionPreview = buildTextPreview(task.description, 120);
-  return [
-    title,
-    task.description?.trim()
-      ? `Details preview: ${descriptionPreview}\n\nFull details are stored on the task description.`
-      : '',
-  ].filter(Boolean).join('\n\n');
+  // 标题保持截断（避免把超长内容塞进任务标题），但任务描述完整写入首条群消息，
+  // 让成员通过 list_room_messages / get_room_message 能拿到完整需求，而不再只是预览。
+  const description = task.description?.trim() ?? '';
+  return [title, description].filter(Boolean).join('\n\n');
 }
 
 function buildInitialTaskMentionSource(task: { title: string; description?: string | null }): string {
