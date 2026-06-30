@@ -4,6 +4,7 @@ import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { useI18n } from '@/lib/i18n'
+import { getApiBaseUrl } from '@/lib/api-base-url'
 import { streamdownComponents } from '@/lib/streamdown-components'
 import 'streamdown/styles.css'
 
@@ -111,7 +112,7 @@ function groupExecutionDetails(logs: LogEntry[]): RenderItem[] {
 
 // ============ URL Transform ============
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const API_BASE_URL = getApiBaseUrl()
 
 /**
  * 将磁盘绝对路径转换为 HTTP URL，使浏览器能显示附件图片。

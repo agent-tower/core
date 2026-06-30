@@ -30,6 +30,7 @@ import {
   useUpdateTeamTemplate,
 } from '@/hooks/use-team-run'
 import { useI18n } from '@/lib/i18n'
+import { getApiBaseUrl } from '@/lib/api-base-url'
 import { cn } from '@/lib/utils'
 import {
   SettingsPageContainer,
@@ -38,7 +39,7 @@ import {
   SettingsEmptyState,
 } from '@/components/settings/SettingsSection'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const API_BASE_URL = getApiBaseUrl()
 const MAX_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024
 const EMPTY_MEMBER_PRESETS: MemberPreset[] = []
 const EMPTY_TEAM_TEMPLATES: TeamTemplate[] = []

@@ -4,6 +4,7 @@ import { CommitMessageService } from '../services/commit-message.service.js';
 import { NotificationService } from '../services/notifications/index.js';
 import { TaskCleanupService } from '../services/task-cleanup.service.js';
 import { WorkspaceGitWatcherService } from '../services/workspace-git-watcher.service.js';
+import { AgentCliEnvironmentService } from '../services/agent-cli/environment.service.js';
 import { prisma } from '../utils/index.js';
 // TerminalManager is lazy-imported to avoid eager native module (node-pty) loading
 // that could break getEventBus()/getSessionManager() if the import fails.
@@ -16,6 +17,7 @@ let commitMessageService: CommitMessageService | null = null;
 let notificationService: NotificationService | null = null;
 let taskCleanupService: TaskCleanupService | null = null;
 let workspaceGitWatcherService: WorkspaceGitWatcherService | null = null;
+let agentCliEnvironmentService: AgentCliEnvironmentService | null = null;
 
 export function getEventBus(): EventBus {
   if (!eventBus) {
@@ -58,6 +60,13 @@ export async function getTerminalManager(): Promise<TerminalManager> {
     terminalManager = new TM(getEventBus());
   }
   return terminalManager;
+}
+
+export function getAgentCliEnvironmentService(): AgentCliEnvironmentService {
+  if (!agentCliEnvironmentService) {
+    agentCliEnvironmentService = new AgentCliEnvironmentService();
+  }
+  return agentCliEnvironmentService;
 }
 
 export function getNotificationService(): NotificationService {

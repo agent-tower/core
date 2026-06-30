@@ -1,5 +1,6 @@
 import { io, Socket } from 'socket.io-client'
 import { NAMESPACE, ServerEvents } from '@agent-tower/shared/socket'
+import { getSocketBaseUrl } from '@/lib/api-base-url'
 
 // Debug 日志开关
 const DEBUG_SOCKET = import.meta.env.DEV;
@@ -15,7 +16,7 @@ class SocketManager {
 
   constructor() {
     // 开发环境使用相对路径，通过 Vite 代理；生产环境使用环境变量
-    this.baseUrl = import.meta.env.VITE_SOCKET_URL || ''
+    this.baseUrl = getSocketBaseUrl()
   }
 
   /**

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type SettingsTab = 'general' | 'agents' | 'team' | 'projects' | 'notifications' | 'mcp' | 'agents-legacy'
+export type SettingsTab = 'general' | 'agent-environment' | 'agents' | 'team' | 'projects' | 'notifications' | 'mcp' | 'agents-legacy'
 
 interface UIState {
   sidebarOpen: boolean

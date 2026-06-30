@@ -1,4 +1,6 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+import { getApiBaseUrl } from './api-base-url'
+
+const API_BASE_URL = getApiBaseUrl()
 
 type RequestOptions = RequestInit & {
   params?: Record<string, string>

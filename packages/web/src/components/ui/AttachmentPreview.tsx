@@ -1,7 +1,8 @@
 import { X, FileText, Image, Loader2 } from 'lucide-react'
 import type { PendingAttachment } from '@/hooks/use-attachments'
+import { getApiBaseUrl } from '@/lib/api-base-url'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const API_BASE_URL = getApiBaseUrl()
 
 interface AttachmentPreviewProps {
   files: PendingAttachment[]

@@ -36,6 +36,7 @@ import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
+import { getApiBaseUrl } from '@/lib/api-base-url'
 import {
   ROOM_MESSAGE_COLLAPSED_MAX_HEIGHT,
   isRoomMessageContentOverflowing,
@@ -66,7 +67,7 @@ interface RoomTimelineProps {
   centered?: boolean
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const API_BASE_URL = getApiBaseUrl()
 const INLINE_PREVIEW_MAX_LENGTH = 240
 const MERMAID_CODE_BLOCK_PATTERN = /(^|\n)(```|~~~)[^\S\r\n]*mermaid(?:[\s\r\n]|$)/i
 

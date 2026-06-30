@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Settings, X, Languages, Cpu, Users, FolderGit2, Bell, Cable } from 'lucide-react'
+import { Settings, X, Languages, Cpu, Users, FolderGit2, Bell, Cable, Bot } from 'lucide-react'
 import { useUIStore, type SettingsTab } from '@/stores/ui-store'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,9 @@ const GeneralSettingsPage = lazy(() =>
 )
 const ProviderSettingsPage = lazy(() =>
   import('@/pages/ProviderSettingsPage').then(m => ({ default: m.ProviderSettingsPage })),
+)
+const AgentEnvironmentSettingsPage = lazy(() =>
+  import('@/pages/AgentEnvironmentSettingsPage').then(m => ({ default: m.AgentEnvironmentSettingsPage })),
 )
 const TeamSettingsPage = lazy(() =>
   import('@/pages/TeamSettingsPage').then(m => ({ default: m.TeamSettingsPage })),
@@ -30,6 +33,7 @@ const ProfileSettingsPage = lazy(() =>
 
 const NAV_ITEMS: Array<{ id: SettingsTab; label: string; icon: typeof Languages }> = [
   { id: 'general', label: '通用', icon: Languages },
+  { id: 'agent-environment', label: 'Agent 环境', icon: Bot },
   { id: 'agents', label: 'Agent 配置', icon: Cpu },
   { id: 'team', label: '团队协作', icon: Users },
   { id: 'projects', label: '项目配置', icon: FolderGit2 },
@@ -41,6 +45,8 @@ function TabContent({ tab }: { tab: SettingsTab }) {
   switch (tab) {
     case 'general':
       return <GeneralSettingsPage />
+    case 'agent-environment':
+      return <AgentEnvironmentSettingsPage />
     case 'agents':
       return <ProviderSettingsPage />
     case 'team':
@@ -77,12 +83,16 @@ export function SettingsDialog() {
 
   useEffect(() => {
     if (isOpen) {
-      setIsVisible(true)
+      const frame = requestAnimationFrame(() => setIsVisible(true))
       if (!lockedRef.current) {
         acquireScrollLock()
         lockedRef.current = true
       }
-      requestAnimationFrame(() => dialogRef.current?.focus())
+      const focusFrame = requestAnimationFrame(() => dialogRef.current?.focus())
+      return () => {
+        cancelAnimationFrame(frame)
+        cancelAnimationFrame(focusFrame)
+      }
     } else {
       const timer = setTimeout(() => setIsVisible(false), 200)
       if (lockedRef.current) {

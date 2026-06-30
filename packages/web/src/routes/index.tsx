@@ -12,7 +12,7 @@ const DemoPage = lazy(() => import('@/pages/DemoPage').then(m => ({ default: m.D
 const AgentDemoPage = lazy(() => import('@/pages/AgentDemoPage').then(m => ({ default: m.AgentDemoPage })))
 const LoadingPreviewPage = lazy(() => import('@/pages/LoadingPreviewPage').then(m => ({ default: m.LoadingPreviewPage })))
 
-const VALID_SETTINGS_TABS = new Set<string>(['general', 'agents', 'team', 'projects', 'notifications', 'mcp', 'agents-legacy'])
+const VALID_SETTINGS_TABS = new Set<string>(['general', 'agent-environment', 'agents', 'team', 'projects', 'notifications', 'mcp', 'agents-legacy'])
 
 function SettingsRedirect() {
   const navigate = useDesktopNavigate()

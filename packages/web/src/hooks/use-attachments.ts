@@ -2,8 +2,9 @@ import { useState, useCallback, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Attachment } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
+import { getApiBaseUrl } from '@/lib/api-base-url'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const API_BASE_URL = getApiBaseUrl()
 
 export interface PendingAttachment {
   /** 临时 ID（上传前） */

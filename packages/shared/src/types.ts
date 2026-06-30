@@ -578,6 +578,181 @@ export interface ExecutorConfig {
   env?: Record<string, string>
 }
 
+// ============ Agent CLI 环境引导 ============
+
+export type AgentCliToolId = 'codex' | 'claude-code' | 'cursor-agent' | 'gemini-cli'
+
+export type AgentCliPlatform = 'darwin' | 'linux' | 'win32'
+
+export type AgentCliInstallKind = 'downloaded-script' | 'detect-only'
+
+export interface AgentCliOfficialSource {
+  label: string
+  url: string
+}
+
+export interface AgentCliCommandSpec {
+  command: string
+  args: string[]
+  timeoutMs: number
+  versionPattern?: string
+}
+
+export interface AgentCliInterpreterSpec {
+  command: string
+  args: string[]
+}
+
+export interface AgentCliDownloadedScriptInstall {
+  kind: 'downloaded-script'
+  downloadUrl: string
+  allowedRedirectHosts: string[]
+  allowedExactPaths: string[]
+  allowedPathPrefixes: string[]
+  interpreters: Partial<Record<AgentCliPlatform, AgentCliInterpreterSpec>>
+  fixedArgs: string[]
+  maxBytes: number
+  riskNotes: string[]
+  verifyCommand: AgentCliCommandSpec
+}
+
+export interface AgentCliDetectOnlyInstall {
+  kind: 'detect-only'
+  reason: string
+}
+
+export type AgentCliInstallPlan =
+  | AgentCliDownloadedScriptInstall
+  | AgentCliDetectOnlyInstall
+
+export interface AgentCliInstallManifestItem {
+  id: AgentCliToolId
+  displayName: string
+  description?: string
+  legacy: boolean
+  officialSources: AgentCliOfficialSource[]
+  supportedPlatforms: AgentCliPlatform[]
+  install: AgentCliInstallPlan
+  detectionCommands: AgentCliCommandSpec[]
+  versionCommand?: AgentCliCommandSpec
+  authCommand?: AgentCliCommandSpec
+  lastVerifiedAt: string
+}
+
+export type AgentCliPublicDownloadedScriptInstall =
+  Omit<AgentCliDownloadedScriptInstall, 'verifyCommand'>
+
+export type AgentCliPublicInstallPlan =
+  | AgentCliPublicDownloadedScriptInstall
+  | AgentCliDetectOnlyInstall
+
+export interface AgentCliPublicInstallManifestItem
+  extends Omit<AgentCliInstallManifestItem, 'install'> {
+  install: AgentCliPublicInstallPlan
+}
+
+export type AgentCliInstallStatus =
+  | 'unknown'
+  | 'installed'
+  | 'missing'
+  | 'unsupported'
+  | 'legacy_detected'
+  | 'error'
+
+export type AgentCliVersionStatus = 'unknown' | 'detected' | 'unavailable' | 'error'
+
+export type AgentCliAuthStatus =
+  | 'unknown'
+  | 'detected'
+  | 'not_detected'
+  | 'needs_interactive_login'
+  | 'error'
+
+export interface AgentCliToolStatus {
+  toolId: AgentCliToolId
+  installStatus: AgentCliInstallStatus
+  versionStatus: AgentCliVersionStatus
+  version: string | null
+  authStatus: AgentCliAuthStatus
+  checkedAt: string | null
+  stale: boolean
+  errorCode?: string
+}
+
+export interface AgentCliEnvironmentStatus {
+  tools: AgentCliToolStatus[]
+  checkedAt: string | null
+  stale: boolean
+}
+
+export type AgentCliInstallPreviewStatus = 'ready' | 'expired' | 'consumed'
+
+export interface AgentCliRedirectStep {
+  url: string
+  host: string
+  path: string
+  statusCode: number
+}
+
+export interface AgentCliInstallPreview {
+  id: string
+  toolId: AgentCliToolId
+  platform: AgentCliPlatform
+  status: AgentCliInstallPreviewStatus
+  finalUrl: string
+  redirectChain: AgentCliRedirectStep[]
+  sizeBytes: number
+  sha256: string
+  interpreter: AgentCliInterpreterSpec
+  fixedArgs: string[]
+  riskNotes: string[]
+  createdAt: string
+  expiresAt: string
+}
+
+export type AgentCliInstallTaskStatus =
+  | 'running'
+  | 'verifying'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelling'
+  | 'cancelled'
+
+export interface AgentCliInstallTask {
+  id: string
+  toolId: AgentCliToolId
+  previewId: string
+  status: AgentCliInstallTaskStatus
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  exitCode: number | null
+  signal: string | null
+  errorCode?: string
+  errorMessage?: string
+}
+
+export interface AgentCliCreateInstallTaskResponse {
+  reused: boolean
+  task: AgentCliInstallTask
+}
+
+export type AgentCliInstallLogSource = 'stdout' | 'stderr' | 'system'
+
+export interface AgentCliInstallLogEntry {
+  seq: number
+  timestamp: string
+  source: AgentCliInstallLogSource
+  data: string
+}
+
+export interface AgentCliInstallLogResponse {
+  taskId: string
+  entries: AgentCliInstallLogEntry[]
+  nextSeq: number
+  truncated: boolean
+}
+
 // ============ 附件类型 ============
 
 /** 附件 */

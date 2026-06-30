@@ -18,7 +18,26 @@ pnpm --filter web build
 pnpm --filter web lint
 ```
 
-默认情况下，前端通过 `VITE_API_URL` 访问后端；未配置时使用相对路径 `/api`。
+默认情况下，前端使用相对路径 `/api` 和同源 Socket.IO `/events`。
+开发模式下 Vite 会把 `/api`、`/socket.io`、`/view` 代理到后端，避免浏览器直连后端端口。
+
+如果后端运行在动态端口，显式配置代理目标即可：
+
+```bash
+# 终端 1：启动后端，记录输出里的端口
+pnpm --filter @agent-tower/server dev
+
+# 终端 2：把前端同源请求代理到该后端端口
+VITE_API_PROXY_TARGET=http://localhost:33952 pnpm --filter web dev --port 5175
+```
+
+也兼容旧变量：
+
+```bash
+VITE_API_URL=http://localhost:33952/api pnpm --filter web dev --port 5175
+```
+
+在 dev 模式中，如果 `VITE_API_URL` / `VITE_SOCKET_URL` 是本机绝对地址，浏览器端仍会使用同源相对路径，由 Vite 代理到目标后端。这样可以在 `http://localhost:5175` 打开设置页的“Agent 环境”，测试检测、预览和日志轮询流程，同时不放宽后端 local-only 安全规则。
 
 ## 目录概览
 

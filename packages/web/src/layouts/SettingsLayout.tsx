@@ -1,11 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { ArrowLeft, Cpu, Bell, FolderGit2, Languages, Users, Cable } from 'lucide-react'
+import { ArrowLeft, Cpu, Bell, FolderGit2, Languages, Users, Cable, Bot } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { BrandLogo } from '@/components/BrandLogo'
 import { useDesktopNavigate, useDesktopTitlebar } from '@/lib/desktop-titlebar'
 
 const NAV_ITEMS = [
   { to: '/settings/general', label: '通用', icon: Languages },
+  { to: '/settings/agent-environment', label: 'Agent 环境', icon: Bot },
   { to: '/settings/agents', label: 'Agent 配置', icon: Cpu },
   { to: '/settings/team', label: '团队协作', icon: Users },
   { to: '/settings/projects', label: '项目配置', icon: FolderGit2 },

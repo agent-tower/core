@@ -4,6 +4,7 @@ import { Loader2, X, PanelLeftOpen, ZoomIn, ZoomOut, Maximize } from 'lucide-rea
 import { TransformWrapper, TransformComponent, useControls, useTransformComponent } from 'react-zoom-pan-pinch'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
+import { getApiBaseUrl } from '@/lib/api-base-url'
 import { FileTree } from './FileTree'
 import { useFileContent, useSaveFile } from '@/hooks/use-files'
 
@@ -28,7 +29,7 @@ type OpenTab = {
 }
 
 function buildImageUrl(workingDir: string, filePath: string) {
-  const base = import.meta.env.VITE_API_URL || '/api'
+  const base = getApiBaseUrl()
   const params = new URLSearchParams({ workingDir, path: filePath })
   return `${base}/files/image?${params.toString()}`
 }

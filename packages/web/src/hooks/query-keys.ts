@@ -90,6 +90,14 @@ export const queryKeys = {
     detail: ['app-settings'] as const,
   },
 
+  agentCli: {
+    manifest: ['agent-cli', 'manifest'] as const,
+    status: ['agent-cli', 'status'] as const,
+    preview: (id: string) => ['agent-cli', 'preview', id] as const,
+    task: (id: string) => ['agent-cli', 'task', id] as const,
+    logs: (taskId: string) => ['agent-cli', 'logs', taskId] as const,
+  },
+
   system: {
     cursorAgentModels: ['system', 'cursor-agent-models'] as const,
     mcpConfig: ['system', 'mcp-config'] as const,

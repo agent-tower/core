@@ -16,11 +16,18 @@ describe('resolvePreviewViewUrl', () => {
     expect(resolvePreviewViewUrl('/view/workspace-1/')).toBe('/view/workspace-1/')
   })
 
-  it('resolves relative view URLs against an absolute API origin', async () => {
+  it('resolves relative view URLs against a non-local absolute API origin', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://tower.example.com/api')
+    const { resolvePreviewViewUrl } = await loadPreviewUrl()
+
+    expect(resolvePreviewViewUrl('/view/workspace-1/')).toBe('https://tower.example.com/view/workspace-1/')
+  })
+
+  it('keeps same-origin view URLs for local absolute API URLs in dev', async () => {
     vi.stubEnv('VITE_API_URL', 'http://localhost:18080/api')
     const { resolvePreviewViewUrl } = await loadPreviewUrl()
 
-    expect(resolvePreviewViewUrl('/view/workspace-1/')).toBe('http://localhost:18080/view/workspace-1/')
+    expect(resolvePreviewViewUrl('/view/workspace-1/')).toBe('/view/workspace-1/')
   })
 
   it('keeps relative view URLs when VITE_API_URL is relative', async () => {

@@ -1,4 +1,6 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL
+import { getApiBaseUrl } from './api-base-url'
+
+const API_BASE_URL = getApiBaseUrl()
 
 export function resolvePreviewViewUrl(viewUrl: string): string {
   if (!API_BASE_URL) return viewUrl
