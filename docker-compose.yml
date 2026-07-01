@@ -1,0 +1,64 @@
+name: agent-tower
+
+services:
+  agent-tower:
+    image: agent-tower:compose
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22.12.0}
+        PNPM_VERSION: ${PNPM_VERSION:-10.24.0}
+        CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:-0.142.4}
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.196}
+        GEMINI_CLI_VERSION: ${GEMINI_CLI_VERSION:-0.23.0}
+        INSTALL_AGENT_CLIS: ${INSTALL_AGENT_CLIS:-true}
+        INSTALL_CURSOR_CLI: ${INSTALL_CURSOR_CLI:-false}
+    restart: unless-stopped
+    ports:
+      - "${AGENT_TOWER_PORT:-12580}:12580"
+    environment:
+      NODE_ENV: production
+      AGENT_TOWER_DATA_DIR: /data
+      AGENT_TOWER_HOST: 0.0.0.0
+      AGENT_TOWER_PORT: "12580"
+      # Pass provider API keys through your shell or a local .env file when needed.
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}
+      # OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # GEMINI_API_KEY: ${GEMINI_API_KEY}
+      # CURSOR_API_KEY: ${CURSOR_API_KEY}
+    volumes:
+      - agent-tower-data:/data
+      - type: bind
+        source: ${AGENT_TOWER_WORKSPACE_DIR:-.}
+        target: /workspace
+      # Mount CLI auth/config directories after you have logged in on the host.
+      # - type: bind
+      #   source: ${HOME}/.codex
+      #   target: /home/node/.codex
+      # - type: bind
+      #   source: ${HOME}/.claude
+      #   target: /home/node/.claude
+      # - type: bind
+      #   source: ${HOME}/.claude.json
+      #   target: /home/node/.claude.json
+      # - type: bind
+      #   source: ${HOME}/.gemini
+      #   target: /home/node/.gemini
+      # - type: bind
+      #   source: ${HOME}/.cursor
+      #   target: /home/node/.cursor
+      # Mount git/SSH config if agents need to fetch, push, or access private repos.
+      # - type: bind
+      #   source: ${HOME}/.ssh
+      #   target: /home/node/.ssh
+      #   read_only: true
+      # - type: bind
+      #   source: ${HOME}/.gitconfig
+      #   target: /home/node/.gitconfig
+      #   read_only: true
+
+volumes:
+  agent-tower-data:
+    name: agent-tower-data
