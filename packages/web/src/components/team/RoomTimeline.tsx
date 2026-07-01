@@ -279,7 +279,7 @@ function RoomMessageMarkdown({
   return (
     <div
       className={cn(
-        'prose prose-sm max-w-none break-words [overflow-wrap:anywhere]',
+        'team-room-message-markdown prose prose-sm max-w-none break-words [overflow-wrap:anywhere]',
         'prose-p:my-2 prose-p:first:mt-0 prose-p:last:mb-0 prose-p:leading-6',
         'prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-li:pl-0 prose-li:leading-6 prose-li:marker:text-neutral-400',
         'prose-blockquote:my-2 prose-blockquote:border-l-2 prose-blockquote:border-neutral-300 prose-blockquote:pl-3 prose-blockquote:text-neutral-600',
