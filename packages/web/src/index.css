@@ -165,6 +165,8 @@
 }
 
 @layer components {
+  .team-room-message-markdown [role="button"]:has(> [role="presentation"] [data-streamdown="mermaid"]),
+  .team-room-message-markdown [role="button"]:has(> [role="presentation"] [data-streamdown="mermaid"]) > [role="presentation"],
   .team-room-message-markdown [role="button"] > [role="presentation"] [data-streamdown="mermaid"],
   .team-room-message-markdown [role="button"] > [role="presentation"] [data-streamdown="mermaid"] > div,
   .team-room-message-markdown [role="button"] > [role="presentation"] [data-streamdown="mermaid"] [role="application"],
