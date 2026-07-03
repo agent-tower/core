@@ -4,6 +4,7 @@ import type {
   IfBusyPolicy,
   MemberPreset,
   RoomMessage,
+  RoomMessageContentMode,
   RoomMessageKind,
   RoomMessageParticipant,
   RoomMessageParticipantRole,
@@ -134,6 +135,10 @@ export interface CreatePrivateRoomMessageInput {
 
 export interface TeamRunVisibilityOptions {
   viewerMemberId?: string | null;
+}
+
+export interface ListRoomMessagesOptions extends TeamRunVisibilityOptions {
+  limit?: number;
 }
 
 export interface TeamRunAgentInvocationIdentity {
@@ -1040,7 +1045,10 @@ export class TeamRunService {
     };
   }
 
-  async listRoomMessages(teamRunId: string, options: TeamRunVisibilityOptions = {}): Promise<RoomMessage[]> {
+  async listRoomMessages(teamRunId: string, options: ListRoomMessagesOptions = {}): Promise<RoomMessage[]> {
+    const normalizedLimit = options.limit && options.limit > 0
+      ? Math.min(Math.floor(options.limit), 200)
+      : undefined;
     const [teamRun, messages] = await Promise.all([
       prisma.teamRun.findUnique({
         where: { id: teamRunId },
@@ -1049,13 +1057,17 @@ export class TeamRunService {
       prisma.roomMessage.findMany({
         where: buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
         include: { participants: true },
-        orderBy: { createdAt: 'asc' },
+        orderBy: normalizedLimit
+          ? [{ createdAt: 'desc' }, { id: 'desc' }]
+          : [{ createdAt: 'asc' }, { id: 'asc' }],
+        ...(normalizedLimit ? { take: normalizedLimit } : {}),
       }),
     ]);
     if (!teamRun) {
       throw new NotFoundError('TeamRun', teamRunId);
     }
-    return messages.map((message) => this.serializeRoomMessage(message));
+    const orderedMessages = normalizedLimit ? [...messages].reverse() : messages;
+    return orderedMessages.map((message) => this.serializeRoomMessage(message));
   }
 
   async getRoomMessage(teamRunId: string, messageId: string, options: TeamRunVisibilityOptions = {}): Promise<RoomMessage> {
@@ -1798,10 +1810,15 @@ export class TeamRunService {
     const participantMemberIds = participants.map((participant) => participant.memberId);
 
     const serializedContent = this.serializePreviewField(message.content);
+    const contentMode: RoomMessageContentMode = options.includeFullContent || !serializedContent.isTruncated
+      ? 'full'
+      : 'preview';
     return {
       ...message,
       content: options.includeFullContent ? message.content : serializedContent.value,
       contentPreview: serializedContent.preview,
+      contentMode,
+      fullContentAvailable: contentMode === 'preview',
       isTruncated: serializedContent.isTruncated,
       senderType: message.senderType as RoomMessageSenderType,
       kind: message.kind as RoomMessageKind,

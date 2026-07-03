@@ -383,10 +383,46 @@ describe('TeamRunService', () => {
     expect(listed).toBeDefined();
     expect(listed?.content).not.toBe(fullContent);
     expect(listed?.contentPreview).toBe(listed?.content);
+    expect(listed?.contentMode).toBe('preview');
+    expect(listed?.fullContentAvailable).toBe(true);
     expect(listed?.isTruncated).toBe(true);
     expect(detail.content).toBe(fullContent);
     expect(detail.contentPreview).toBe(listed?.contentPreview);
+    expect(detail.contentMode).toBe('full');
+    expect(detail.fullContentAvailable).toBe(false);
     expect(detail.isTruncated).toBe(true);
+  });
+
+  it('limits RoomMessage lists at the service query boundary while preserving chronological order', async () => {
+    const preset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+
+    const first = await service.createRoomMessage(teamRun.id, { content: 'First note' });
+    const second = await service.createRoomMessage(teamRun.id, { content: 'Second note' });
+    const third = await service.createRoomMessage(teamRun.id, { content: 'Third note' });
+    await prisma.roomMessage.update({
+      where: { id: first.id },
+      data: { createdAt: new Date('2026-01-01T00:00:00.000Z') },
+    });
+    await prisma.roomMessage.update({
+      where: { id: second.id },
+      data: { createdAt: new Date('2026-01-01T00:00:01.000Z') },
+    });
+    await prisma.roomMessage.update({
+      where: { id: third.id },
+      data: { createdAt: new Date('2026-01-01T00:00:02.000Z') },
+    });
+
+    const messages = await service.listRoomMessages(teamRun.id, { limit: 2 });
+
+    expect(messages.map((message) => message.id)).toEqual([second.id, third.id]);
+    expect(messages.map((message) => message.content)).toEqual(['Second note', 'Third note']);
+    expect(messages.map((message) => message.contentMode)).toEqual(['full', 'full']);
+    expect(messages.find((message) => message.id === first.id)).toBeUndefined();
   });
 
   it('creates WorkRequests for USER_MESSAGES members when a user message has no mentions', async () => {
@@ -458,8 +494,12 @@ describe('TeamRunService', () => {
     const listed = await service.listRoomMessages(teamRun.id);
     const detail = await service.getRoomMessage(teamRun.id, teamRun.messages![0]!.id);
     expect(listed[0]?.isTruncated).toBe(true);
+    expect(listed[0]?.contentMode).toBe('preview');
+    expect(listed[0]?.fullContentAvailable).toBe(true);
     expect(listed[0]?.content).not.toContain('line '.repeat(100));
     expect(detail.content).toBe(storedMessage.content);
+    expect(detail.contentMode).toBe('full');
+    expect(detail.fullContentAvailable).toBe(false);
     expect(detail.content).toContain('line '.repeat(100));
   });
 

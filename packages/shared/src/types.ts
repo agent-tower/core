@@ -123,6 +123,9 @@ export type RoomMessageKind =
 /** 房间消息可见性 */
 export type RoomMessageVisibility = 'PUBLIC' | 'PRIVATE'
 
+/** RoomMessage.content 当前承载的是完整正文还是预览 */
+export type RoomMessageContentMode = 'preview' | 'full'
+
 /** 私聊消息参与者角色 */
 export type RoomMessageParticipantRole = 'sender' | 'recipient'
 
@@ -471,6 +474,9 @@ export interface RoomMessage {
   visibility: RoomMessageVisibility
   content: string
   contentPreview?: string
+  contentMode?: RoomMessageContentMode
+  /** 当前响应未包含全文时，是否可通过详情接口获取完整 content */
+  fullContentAvailable?: boolean
   isTruncated?: boolean
   mentions: StructuredMention[]
   recipientMemberIds?: string[] | null

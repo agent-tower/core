@@ -163,8 +163,10 @@ export class AgentTowerClient {
     return this.request<any>('POST', `/api/team-runs/${teamRunId}/private-messages`, input);
   }
 
-  async listRoomMessages(teamRunId: string) {
-    return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/messages`);
+  async listRoomMessages(teamRunId: string, params?: { limit?: number }) {
+    const query: Record<string, string> = {};
+    if (params?.limit) query.limit = String(params.limit);
+    return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/messages`, undefined, query);
   }
 
   async getRoomMessage(teamRunId: string, messageId: string) {

@@ -107,6 +107,10 @@ const privateRoomMessageSchema = z.object({
   cancelQueued: z.boolean().optional(),
 });
 
+const listRoomMessagesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
 const stopMemberWorkSchema = z.object({
   cancelQueued: z.boolean().optional(),
 });
@@ -415,10 +419,11 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
     }
   });
 
-  app.get<{ Params: { id: string } }>('/team-runs/:id/messages', async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>('/team-runs/:id/messages', async (request, reply) => {
     try {
+      const query = listRoomMessagesQuerySchema.parse(request.query);
       const viewerMemberId = await resolveViewerMemberId(request.params.id, request);
-      return await service.listRoomMessages(request.params.id, { viewerMemberId });
+      return await service.listRoomMessages(request.params.id, { viewerMemberId, limit: query.limit });
     } catch (error) {
       return handleError(error, reply);
     }

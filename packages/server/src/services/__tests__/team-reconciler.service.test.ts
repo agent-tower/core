@@ -820,6 +820,21 @@ describe('TeamReconcilerService', () => {
       workspaceId: workspace.id,
     });
     const longContent = `Long Team Room detail\n${'visible detail '.repeat(80)}`;
+    const earlierMessage = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        senderId: members[0]!.id,
+        senderInvocationId: null,
+        kind: 'chat',
+        visibility: 'PUBLIC',
+        content: 'Earlier visible message',
+        mentions: stringifyJson([]),
+        artifactRefs: stringifyJson([]),
+        attachmentIds: stringifyJson([]),
+        workRequestIds: stringifyJson([]),
+      },
+    });
     const roomMessage = await prisma.roomMessage.create({
       data: {
         teamRunId: teamRun.id,
@@ -834,6 +849,33 @@ describe('TeamReconcilerService', () => {
         attachmentIds: stringifyJson([]),
         workRequestIds: stringifyJson([]),
       },
+    });
+    await prisma.roomMessage.update({
+      where: { id: earlierMessage.id },
+      data: { createdAt: new Date('2026-01-01T00:00:00.000Z') },
+    });
+    await prisma.roomMessage.update({
+      where: { id: roomMessage.id },
+      data: { createdAt: new Date('2026-01-01T00:00:01.000Z') },
+    });
+    const agentMessage = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'agent',
+        senderId: members[0]!.id,
+        senderInvocationId: invocation.id,
+        kind: 'review',
+        visibility: 'PUBLIC',
+        content: 'Agent review summary',
+        mentions: stringifyJson([]),
+        artifactRefs: stringifyJson([]),
+        attachmentIds: stringifyJson([]),
+        workRequestIds: stringifyJson(['work-request-from-agent-message']),
+      },
+    });
+    await prisma.roomMessage.update({
+      where: { id: agentMessage.id },
+      data: { createdAt: new Date('2026-01-01T00:00:02.000Z') },
     });
     const app = Fastify({ logger: false });
 
@@ -862,14 +904,34 @@ describe('TeamReconcilerService', () => {
         id: string;
         content: string;
         contentPreview: string;
+        contentMode: 'preview' | 'full';
+        fullContentAvailable: boolean;
         isTruncated: boolean;
       }>;
       expect(restList[0]).toMatchObject({
+        id: earlierMessage.id,
+        contentMode: 'full',
+        fullContentAvailable: false,
+        isTruncated: false,
+      });
+      expect(restList[1]).toMatchObject({
         id: roomMessage.id,
+        contentMode: 'preview',
+        fullContentAvailable: true,
         isTruncated: true,
       });
-      expect(restList[0]!.content).toBe(restList[0]!.contentPreview);
-      expect(restList[0]!.content).not.toBe(longContent);
+      expect(restList[1]!.content).toBe(restList[1]!.contentPreview);
+      expect(restList[1]!.content).not.toBe(longContent);
+
+      const limitedRestListResponse = await app.inject({
+        method: 'GET',
+        url: `/api/team-runs/${teamRun.id}/messages?limit=1`,
+        headers: { 'x-agent-tower-invocation-id': invocation.id },
+      });
+      expect(limitedRestListResponse.statusCode).toBe(200);
+      expect((limitedRestListResponse.json() as Array<{ id: string }>).map((message) => message.id)).toEqual([
+        agentMessage.id,
+      ]);
 
       const restDetailResponse = await app.inject({
         method: 'GET',
@@ -880,7 +942,9 @@ describe('TeamReconcilerService', () => {
       expect(restDetailResponse.json()).toMatchObject({
         id: roomMessage.id,
         content: longContent,
-        contentPreview: restList[0]!.contentPreview,
+        contentPreview: restList[1]!.contentPreview,
+        contentMode: 'full',
+        fullContentAvailable: false,
         isTruncated: true,
       });
 
@@ -898,17 +962,84 @@ describe('TeamReconcilerService', () => {
         expect(listResult.isError).not.toBe(true);
         const mcpList = JSON.parse(getMcpToolText(listResult)) as Array<{
           id: string;
+          createdAt: string;
+          kind: string;
+          sender: {
+            type: string;
+            memberId?: string;
+            name?: string;
+          };
           content: string;
-          isTruncated: boolean;
+          fullContentAvailable: boolean;
+          mentions: unknown[];
+          workRequestIds?: string[];
+          teamRunId?: string;
+          senderId?: string | null;
+          senderInvocationId?: string | null;
+          visibility?: string;
           contentPreview?: string;
+          contentMode?: string;
+          isTruncated?: boolean;
+          participants?: unknown[];
+          recipientMemberIds?: string[];
+          participantMemberIds?: string[];
         }>;
         expect(mcpList[0]).toMatchObject({
-          id: roomMessage.id,
-          isTruncated: true,
+          id: earlierMessage.id,
+          kind: 'chat',
+          sender: {
+            type: 'user',
+            memberId: members[0]!.id,
+            name: members[0]!.name,
+          },
+          content: 'Earlier visible message',
+          fullContentAvailable: false,
+          mentions: [],
         });
-        expect(mcpList[0]!.contentPreview).toBeUndefined();
-        expect(mcpList[0]!.content).toBe(restList[0]!.contentPreview);
-        expect(mcpList[0]!.content).not.toBe(longContent);
+        expect(mcpList[0]).not.toHaveProperty('teamRunId');
+        expect(mcpList[0]).not.toHaveProperty('senderId');
+        expect(mcpList[0]).not.toHaveProperty('senderInvocationId');
+        expect(mcpList[0]).not.toHaveProperty('visibility');
+        expect(mcpList[0]).not.toHaveProperty('contentPreview');
+        expect(mcpList[0]).not.toHaveProperty('contentMode');
+        expect(mcpList[0]).not.toHaveProperty('isTruncated');
+        expect(mcpList[0]).not.toHaveProperty('participants');
+        expect(mcpList[0]).not.toHaveProperty('recipientMemberIds');
+        expect(mcpList[0]).not.toHaveProperty('participantMemberIds');
+        expect(mcpList[1]).toMatchObject({
+          id: roomMessage.id,
+          kind: 'chat',
+          sender: { type: 'user' },
+          fullContentAvailable: true,
+          mentions: [],
+        });
+        expect(mcpList[1]!.content).toBe(restList[1]!.contentPreview);
+        expect(mcpList[1]!.content).not.toBe(longContent);
+        expect(mcpList[2]).toMatchObject({
+          id: agentMessage.id,
+          kind: 'review',
+          sender: {
+            type: 'agent',
+            memberId: members[0]!.id,
+            name: members[0]!.name,
+          },
+          content: 'Agent review summary',
+          fullContentAvailable: false,
+          mentions: [],
+          workRequestIds: ['work-request-from-agent-message'],
+        });
+        expect(mcpList[2]).not.toHaveProperty('senderInvocationId');
+
+        const limitedListResult = await client.callTool({
+          name: 'list_room_messages',
+          arguments: {
+            limit: 1,
+          },
+        });
+        expect(limitedListResult.isError).not.toBe(true);
+        expect((JSON.parse(getMcpToolText(limitedListResult)) as Array<{ id: string }>).map((message) => message.id)).toEqual([
+          agentMessage.id,
+        ]);
 
         const detailResult = await client.callTool({
           name: 'get_room_message',
@@ -920,7 +1051,9 @@ describe('TeamReconcilerService', () => {
         expect(JSON.parse(getMcpToolText(detailResult))).toMatchObject({
           id: roomMessage.id,
           content: longContent,
-          contentPreview: restList[0]!.contentPreview,
+          contentPreview: restList[1]!.contentPreview,
+          contentMode: 'full',
+          fullContentAvailable: false,
           isTruncated: true,
         });
       } finally {

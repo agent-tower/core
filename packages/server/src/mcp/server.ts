@@ -12,9 +12,60 @@ import { registerProviderTools } from './tools/providers.js';
 import { registerWorkspaceTools } from './tools/workspaces.js';
 import { registerSessionTools } from './tools/sessions.js';
 
-function serializeMcpRoomMessageListItem(message: Record<string, unknown>): Record<string, unknown> {
-  const output = { ...message };
-  delete output.contentPreview;
+type McpRoomMessage = Record<string, unknown>;
+type McpTeamMemberSummary = { id: string; name?: string };
+
+function getStringField(value: Record<string, unknown>, field: string): string | undefined {
+  const raw = value[field];
+  return typeof raw === 'string' ? raw : undefined;
+}
+
+function formatMcpRoomMessageSender(
+  message: McpRoomMessage,
+  memberById: Map<string, McpTeamMemberSummary>
+) {
+  const senderType = getStringField(message, 'senderType') ?? 'unknown';
+  const senderId = getStringField(message, 'senderId');
+  if (!senderId) {
+    return { type: senderType };
+  }
+
+  const member = memberById.get(senderId);
+  if (!member) {
+    return { type: senderType };
+  }
+
+  return {
+    type: senderType,
+    memberId: senderId,
+    ...(member.name ? { name: member.name } : {}),
+  };
+}
+
+function serializeMcpRoomMessageListItem(
+  message: McpRoomMessage,
+  memberById: Map<string, McpTeamMemberSummary>
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {
+    id: getStringField(message, 'id'),
+    createdAt: getStringField(message, 'createdAt'),
+    kind: getStringField(message, 'kind'),
+    sender: formatMcpRoomMessageSender(message, memberById),
+    content: getStringField(message, 'content') ?? '',
+    fullContentAvailable: message.fullContentAvailable === true,
+    mentions: Array.isArray(message.mentions) ? message.mentions : [],
+  };
+
+  if (Array.isArray(message.workRequestIds) && message.workRequestIds.length > 0) {
+    output.workRequestIds = message.workRequestIds;
+  }
+  if (Array.isArray(message.artifactRefs) && message.artifactRefs.length > 0) {
+    output.artifactRefs = message.artifactRefs;
+  }
+  if (Array.isArray(message.attachmentIds) && message.attachmentIds.length > 0) {
+    output.attachmentIds = message.attachmentIds;
+  }
+
   return output;
 }
 
@@ -298,7 +349,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
 
   server.tool(
     'list_room_messages',
-    'List TeamRun room messages visible to the current TeamRun member. Long messages return content/isTruncated; use get_room_message to fetch full content by ID.',
+    'List TeamRun room messages visible to the current TeamRun member. Returns compact list items for room context; use get_room_message with an item id for full message details.',
     ListRoomMessagesInput.shape,
     async (params) => {
       try {
@@ -308,9 +359,16 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
           throw new Error('Current TeamRun agent identity is required to list room messages.');
         }
         await requireCurrentMemberCapabilities(client, context, teamRunId, ['readRoom']);
-        const messages = await client.listRoomMessages(teamRunId);
-        const limited = params.limit ? messages.slice(-params.limit) : messages;
-        const output = limited.map(serializeMcpRoomMessageListItem);
+        const [messages, members] = await Promise.all([
+          client.listRoomMessages(teamRunId, { limit: params.limit }),
+          client.listTeamMembers(teamRunId),
+        ]);
+        const memberById = new Map<string, McpTeamMemberSummary>(
+          members
+            .filter((member) => typeof member.id === 'string')
+            .map((member) => [member.id, { id: member.id, name: member.name }])
+        );
+        const output = messages.map((message) => serializeMcpRoomMessageListItem(message, memberById));
         return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
