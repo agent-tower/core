@@ -1,12 +1,15 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   AgentInvocation,
   AgentInvocationStatus,
+  AgentInvocationTargetSyncStatus,
   IfBusyPolicy,
   TeamRunInvalidationReason,
   TeamRunInvalidationScope,
   TeamMemberCapabilities,
   TeamMemberQueueManagementPolicy,
+  WorkRequestTargetKind,
+  WorkRequestTargetPurpose,
   WorkRequest,
   WorkRequestRequesterType,
   WorkRequestStatus,
@@ -14,6 +17,7 @@ import type {
 } from '@agent-tower/shared';
 import type {
   AgentInvocation as PrismaAgentInvocation,
+  Prisma,
   TeamMember as PrismaTeamMember,
   WorkRequest as PrismaWorkRequest,
   Workspace as PrismaWorkspace,
@@ -76,6 +80,7 @@ type WorkspaceStarter = {
   create(taskId: string): Promise<{ id: string }>;
   getOrCreateMainWorkspace?(teamRunId: string): Promise<{ id: string }>;
   getOrCreateDedicatedWorkspace?(teamRunId: string, memberId: string): Promise<{ id: string }>;
+  prepareTargetedExecutionWorkspace?(input: PrepareTargetedExecutionWorkspaceInput): Promise<PrepareTargetedExecutionWorkspaceResult>;
 };
 
 type SessionStarter = {
@@ -93,6 +98,38 @@ type SessionStarter = {
 
 type TeamRunReviewAdvancer = {
   maybeAdvanceTeamRunToReview(teamRunId: string): Promise<boolean>;
+};
+
+type WorkRequestTargetSnapshot = {
+  targetKind: WorkRequestTargetKind;
+  targetPurpose: WorkRequestTargetPurpose;
+  targetSourceWorkspaceId: string;
+  targetSourceMemberId: string | null;
+  targetHeadSha: string;
+  targetBranchName: string;
+  targetPlanItemId: string | null;
+};
+
+type PrepareTargetedExecutionWorkspaceInput = WorkRequestTargetSnapshot & {
+  teamRunId: string;
+  executionWorkspaceId: string;
+  memberId: string;
+};
+
+type PrepareTargetedExecutionWorkspaceResult = {
+  executionBranch: string;
+};
+
+type TargetPortAllocation = {
+  targetPort: number;
+  targetVitePort: number;
+  targetE2EPort: number;
+};
+
+type InvocationTargetStartData = Partial<TargetPortAllocation> & {
+  targetSyncStatus?: AgentInvocationTargetSyncStatus | null;
+  targetSyncError?: string | null;
+  targetExecutionBranch?: string | null;
 };
 
 interface TeamSchedulerDependencies {
@@ -132,6 +169,7 @@ const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
   mergeWorkspace: false,
 };
 const DEFAULT_QUEUE_MANAGEMENT_POLICY: TeamMemberQueueManagementPolicy = 'own_only';
+const TARGET_REVIEW_TEST_PURPOSES = new Set(['REVIEW', 'TEST']);
 
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
   if (value == null || value === '') {
@@ -155,6 +193,108 @@ function invalidTransition(action: string, status: string): ServiceError {
     'INVALID_STATE_TRANSITION',
     400
   );
+}
+
+function normalizeTargetPurpose(value: string | null | undefined): WorkRequestTargetPurpose | null {
+  return value === 'REVIEW' || value === 'TEST' ? value : null;
+}
+
+function getWorkRequestTarget(workRequest: PrismaWorkRequest): WorkRequestTargetSnapshot | null {
+  if (!workRequest.targetKind) {
+    return null;
+  }
+  if (workRequest.targetKind !== 'WORKSPACE_COMMIT') {
+    throw new ServiceError('Unsupported WorkRequest target kind', 'WORK_REQUEST_TARGET_KIND_UNSUPPORTED', 400);
+  }
+  const purpose = normalizeTargetPurpose(workRequest.targetPurpose);
+  if (!purpose || !TARGET_REVIEW_TEST_PURPOSES.has(purpose)) {
+    throw new ServiceError('Targeted WorkRequest purpose must be REVIEW or TEST', 'WORK_REQUEST_TARGET_PURPOSE_INVALID', 400);
+  }
+  if (!workRequest.targetSourceWorkspaceId || !workRequest.targetHeadSha || !workRequest.targetBranchName) {
+    throw new ServiceError('Targeted WorkRequest is missing target commit fields', 'WORK_REQUEST_TARGET_INCOMPLETE', 400);
+  }
+
+  return {
+    targetKind: 'WORKSPACE_COMMIT',
+    targetPurpose: purpose,
+    targetSourceWorkspaceId: workRequest.targetSourceWorkspaceId,
+    targetSourceMemberId: workRequest.targetSourceMemberId,
+    targetHeadSha: workRequest.targetHeadSha,
+    targetBranchName: workRequest.targetBranchName,
+    targetPlanItemId: workRequest.targetPlanItemId,
+  };
+}
+
+function targetDataFromWorkRequest(workRequest: PrismaWorkRequest): Partial<PrismaAgentInvocation> {
+  return {
+    targetKind: workRequest.targetKind,
+    targetPurpose: workRequest.targetPurpose,
+    targetSourceWorkspaceId: workRequest.targetSourceWorkspaceId,
+    targetSourceMemberId: workRequest.targetSourceMemberId,
+    targetHeadSha: workRequest.targetHeadSha,
+    targetBranchName: workRequest.targetBranchName,
+    targetPlanItemId: workRequest.targetPlanItemId,
+  };
+}
+
+function targetErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function targetedWorkspacePolicyError(
+  member: Pick<PrismaTeamMember, 'name' | 'workspacePolicy'>,
+  target: WorkRequestTargetSnapshot
+): string {
+  return `Targeted ${target.targetPurpose} requests require workspacePolicy=dedicated; ${member.name} is configured with workspacePolicy=${member.workspacePolicy}`;
+}
+
+function buildTargetHandoffPrompt(workRequest: PrismaWorkRequest): string {
+  const target = getWorkRequestTarget(workRequest);
+  if (!target) {
+    return '';
+  }
+
+  const lines = [
+    'Target commit handoff:',
+    `- purpose: ${target.targetPurpose}`,
+    `- sourceWorkspaceId: ${target.targetSourceWorkspaceId}`,
+    `- targetHeadSha: ${target.targetHeadSha}`,
+    `- sourceBranch: ${target.targetBranchName}`,
+  ];
+  if (target.targetPlanItemId) {
+    lines.push(`- planItemId: ${target.targetPlanItemId}`);
+  }
+  lines.push(
+    '- The execution workspace is synced to targetHeadSha before this session starts.',
+    '- Record review/test verdicts against sourceWorkspaceId with reviewed_sha=targetHeadSha.'
+  );
+  return lines.join('\n');
+}
+
+function allocateTargetPorts(invocationId: string, target: WorkRequestTargetSnapshot | null): TargetPortAllocation | null {
+  if (target?.targetPurpose !== 'TEST') {
+    return null;
+  }
+  const hash = createHash('sha256').update(invocationId).digest();
+  const slot = hash.readUInt16BE(0) % 1000;
+  const base = 20_000 + slot * 10;
+  return {
+    targetPort: base,
+    targetVitePort: base + 1,
+    targetE2EPort: base + 2,
+  };
+}
+
+function serializeTargetKind(value: string | null): WorkRequestTargetKind | null {
+  return value === 'WORKSPACE_COMMIT' ? value : null;
+}
+
+function serializeTargetPurpose(value: string | null): WorkRequestTargetPurpose | null {
+  return value === 'REVIEW' || value === 'TEST' ? value : null;
+}
+
+function serializeTargetSyncStatus(value: string | null): AgentInvocationTargetSyncStatus | null {
+  return value === 'PENDING' || value === 'SYNCED' || value === 'FAILED' ? value : null;
 }
 
 export class TeamSchedulerService {
@@ -204,11 +344,26 @@ export class TeamSchedulerService {
         continue;
       }
 
+      const target = getWorkRequestTarget(workRequest);
       const workspaceId = this.resolveInvocationWorkspaceId(context.teamRun, member);
       const projectId = context.teamRun.task.projectId;
       const lockKeys = this.getRequiredLocks(context.teamRun, member);
       const requiresStopCurrent = workRequest.ifBusy === 'cancel_current_and_start'
         && activeMemberIds.has(member.id);
+
+      if (target && member.workspacePolicy !== 'dedicated') {
+        plans.push({
+          workRequestId: workRequest.id,
+          memberId: member.id,
+          canStart: false,
+          blockedReason: 'unsupported_workspace_policy',
+          requiresStopCurrent,
+          lockKeys,
+          workspaceId,
+          projectId,
+        });
+        continue;
+      }
 
       if (activeMemberIds.has(member.id)) {
         plans.push({
@@ -405,7 +560,86 @@ export class TeamSchedulerService {
           continue;
         }
 
-        const workspace = await this.getOrCreateWorkspaceForMember(context.teamRun, member);
+        const target = getWorkRequestTarget(freshWorkRequest);
+        if (target && member.workspacePolicy !== 'dedicated') {
+          const targetSyncError = targetedWorkspacePolicyError(member, target);
+          const failedInvocation = await this.createFailedInvocationForClaimedWorkRequest(
+            context.teamRun,
+            member,
+            freshWorkRequest,
+            invocationId,
+            null,
+            targetSyncError,
+            'FAILED'
+          );
+          this.lockService.releaseByOwner(invocationId);
+          invocationId = null;
+          if (failedInvocation) {
+            createdTerminalInvocation = true;
+            await this.createTargetedWorkspacePolicyFailureRoomMessage(
+              context.teamRun,
+              member,
+              freshWorkRequest,
+              failedInvocation,
+              target,
+              targetSyncError
+            );
+            await this.emitTeamRunInvalidated(
+              context.teamRun,
+              ['work-requests', 'agent-invocations', 'room-messages'],
+              'agent-invocation-updated'
+            );
+          }
+          continue;
+        }
+
+        const workspace = target
+          ? await this.getOrCreateDedicatedWorkspace(context.teamRun, member)
+          : await this.getOrCreateWorkspaceForMember(context.teamRun, member);
+        let targetSyncStatus: AgentInvocationTargetSyncStatus | null = null;
+        let targetSyncError: string | null = null;
+        let targetExecutionBranch: string | null = null;
+        const targetPorts = allocateTargetPorts(invocationId, target);
+        if (target) {
+          try {
+            const syncResult = await this.prepareTargetedExecutionWorkspace(
+              context.teamRun,
+              member,
+              workspace.id,
+              target
+            );
+            targetSyncStatus = 'SYNCED';
+            targetExecutionBranch = syncResult.executionBranch;
+          } catch (error) {
+            targetSyncStatus = 'FAILED';
+            targetSyncError = targetErrorMessage(error);
+            const failedInvocation = await this.createFailedInvocationForClaimedWorkRequest(
+              context.teamRun,
+              member,
+              freshWorkRequest,
+              invocationId,
+              workspace.id,
+              targetSyncError,
+              targetSyncStatus,
+              {
+                targetExecutionBranch,
+                ...targetPorts,
+              }
+            );
+            this.lockService.releaseByOwner(invocationId);
+            invocationId = null;
+            if (failedInvocation) {
+              createdTerminalInvocation = true;
+              await this.emitTeamRunInvalidated(
+                context.teamRun,
+                ['work-requests', 'agent-invocations', 'workspaces'],
+                'agent-invocation-updated'
+              );
+            }
+            continue;
+          }
+        }
+
         const session = await this.sessionManager.create(
           workspace.id,
           provider.agentType as AgentType,
@@ -420,7 +654,13 @@ export class TeamSchedulerService {
           freshWorkRequest,
           invocationId,
           workspace.id,
-          session.id
+          session.id,
+          {
+            targetSyncStatus,
+            targetSyncError,
+            targetExecutionBranch,
+            ...targetPorts,
+          }
         );
 
         if (!createdInvocation) {
@@ -430,7 +670,7 @@ export class TeamSchedulerService {
           continue;
         }
 
-        const resumeFromSessionId = await this.findResumeSourceSessionId(member, session.id, workspace.id);
+        const resumeFromSessionId = await this.findResumeSourceSessionId(member, session.id, workspace.id, target?.targetHeadSha ?? null);
         try {
           if (resumeFromSessionId && this.sessionManager.startFollowUp) {
             await this.sessionManager.startFollowUp(session.id, resumeFromSessionId);
@@ -616,7 +856,8 @@ export class TeamSchedulerService {
     member: PrismaTeamMember,
     workRequest: PrismaWorkRequest,
     invocationId: string,
-    workspaceId: string | null
+    workspaceId: string | null,
+    targetStartData: InvocationTargetStartData = {}
   ): Promise<PrismaAgentInvocation | null> {
     return prisma.$transaction(async (tx) => {
       const claimed = await tx.workRequest.updateMany({
@@ -652,6 +893,13 @@ export class TeamSchedulerService {
           memberId: member.id,
           workspaceId,
           sessionId: null,
+          ...targetDataFromWorkRequest(workRequest),
+          targetSyncStatus: targetStartData.targetSyncStatus ?? null,
+          targetSyncError: targetStartData.targetSyncError ?? null,
+          targetExecutionBranch: targetStartData.targetExecutionBranch ?? null,
+          targetPort: targetStartData.targetPort ?? null,
+          targetVitePort: targetStartData.targetVitePort ?? null,
+          targetE2EPort: targetStartData.targetE2EPort ?? null,
           status: 'QUEUED',
         },
       });
@@ -664,7 +912,8 @@ export class TeamSchedulerService {
     workRequest: PrismaWorkRequest,
     invocationId: string,
     workspaceId: string,
-    sessionId: string
+    sessionId: string,
+    targetStartData: InvocationTargetStartData = {}
   ): Promise<PrismaAgentInvocation | null> {
     return prisma.$transaction(async (tx) => {
       const claimed = await tx.workRequest.updateMany({
@@ -700,6 +949,13 @@ export class TeamSchedulerService {
           memberId: member.id,
           workspaceId,
           sessionId,
+          ...targetDataFromWorkRequest(workRequest),
+          targetSyncStatus: targetStartData.targetSyncStatus ?? null,
+          targetSyncError: targetStartData.targetSyncError ?? null,
+          targetExecutionBranch: targetStartData.targetExecutionBranch ?? null,
+          targetPort: targetStartData.targetPort ?? null,
+          targetVitePort: targetStartData.targetVitePort ?? null,
+          targetE2EPort: targetStartData.targetE2EPort ?? null,
           status: 'RUNNING',
         },
       });
@@ -711,7 +967,10 @@ export class TeamSchedulerService {
     member: PrismaTeamMember,
     workRequest: PrismaWorkRequest,
     invocationId: string,
-    workspaceId: string | null
+    workspaceId: string | null,
+    targetSyncError: string | null = null,
+    targetSyncStatus: AgentInvocationTargetSyncStatus | null = null,
+    targetStartData: InvocationTargetStartData = {}
   ): Promise<PrismaAgentInvocation | null> {
     return prisma.$transaction(async (tx) => {
       const claimed = await tx.workRequest.updateMany({
@@ -747,10 +1006,62 @@ export class TeamSchedulerService {
           memberId: member.id,
           workspaceId,
           sessionId: null,
+          ...targetDataFromWorkRequest(workRequest),
+          targetSyncStatus,
+          targetSyncError,
+          targetExecutionBranch: targetStartData.targetExecutionBranch ?? null,
+          targetPort: targetStartData.targetPort ?? null,
+          targetVitePort: targetStartData.targetVitePort ?? null,
+          targetE2EPort: targetStartData.targetE2EPort ?? null,
           status: 'FAILED',
         },
       });
     });
+  }
+
+  private async createTargetedWorkspacePolicyFailureRoomMessage(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+    workRequest: PrismaWorkRequest,
+    invocation: PrismaAgentInvocation,
+    target: WorkRequestTargetSnapshot,
+    targetSyncError: string
+  ): Promise<void> {
+    const shortSha = target.targetHeadSha.slice(0, 12);
+    const content = [
+      `Targeted ${target.targetPurpose} request for ${member.name} failed before start.`,
+      '',
+      `Reason: ${targetSyncError}.`,
+      `Target: ${shortSha} from source workspace ${target.targetSourceWorkspaceId}.`,
+      '',
+      'Action: change this TeamMember instance to workspacePolicy=dedicated, and update the MemberPreset or TeamTemplate for future TeamRuns. Then create a new targeted REVIEW/TEST request for the same commit.',
+    ].join('\n');
+
+    try {
+      await prisma.roomMessage.create({
+        data: {
+          teamRunId: teamRun.id,
+          senderType: 'system',
+          senderId: null,
+          senderInvocationId: invocation.id,
+          kind: 'system',
+          visibility: 'PUBLIC',
+          content,
+          mentions: JSON.stringify([]),
+          workRequestIds: JSON.stringify([workRequest.id]),
+          artifactRefs: JSON.stringify([]),
+          attachmentIds: JSON.stringify([]),
+        },
+      });
+    } catch (error) {
+      console.warn('[TeamSchedulerService] Failed to create targeted workspace policy failure RoomMessage:', {
+        teamRunId: teamRun.id,
+        workRequestId: workRequest.id,
+        invocationId: invocation.id,
+        memberId: member.id,
+        error,
+      });
+    }
   }
 
   private async getSchedulingContext(teamRunId: string): Promise<{
@@ -1101,6 +1412,28 @@ export class TeamSchedulerService {
     return workspace;
   }
 
+  private async prepareTargetedExecutionWorkspace(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+    executionWorkspaceId: string,
+    target: WorkRequestTargetSnapshot
+  ): Promise<PrepareTargetedExecutionWorkspaceResult> {
+    if (!this.workspaceService.prepareTargetedExecutionWorkspace) {
+      throw new ServiceError(
+        'Targeted workspace sync is not available',
+        'TARGETED_WORKSPACE_SYNC_UNAVAILABLE',
+        500
+      );
+    }
+
+    return this.workspaceService.prepareTargetedExecutionWorkspace({
+      teamRunId: teamRun.id,
+      memberId: member.id,
+      executionWorkspaceId,
+      ...target,
+    });
+  }
+
   private async buildSessionPrompt(
     teamRun: SchedulerTeamRun,
     member: PrismaTeamMember,
@@ -1115,9 +1448,11 @@ export class TeamSchedulerService {
       teamRun.task.title.trim(),
       teamRun.task.description?.trim() ?? '',
     ].filter(Boolean).join('\n\n');
+    const targetContext = buildTargetHandoffPrompt(workRequest);
     const triggerContent = triggerMessage?.content?.trim() ?? '';
     const instructionParts = [
       taskContext,
+      targetContext,
       triggerContent && triggerContent !== taskContext ? `Triggering room message:\n${triggerContent}` : '',
       workRequest.instruction.trim() && workRequest.instruction.trim() !== triggerContent
         ? `Work request summary:\n${workRequest.instruction.trim()}`
@@ -1132,6 +1467,7 @@ export class TeamSchedulerService {
     member: PrismaTeamMember,
     currentSessionId: string,
     workspaceId: string,
+    targetHeadSha: string | null,
   ): Promise<string | null> {
     if (member.sessionPolicy !== 'resume_last') {
       return null;
@@ -1141,6 +1477,7 @@ export class TeamSchedulerService {
       where: {
         memberId: member.id,
         workspaceId,
+        targetHeadSha: targetHeadSha == null ? null : targetHeadSha,
         sessionId: {
           not: null,
           notIn: [currentSessionId],
@@ -1264,6 +1601,8 @@ export class TeamSchedulerService {
     return {
       ...workRequest,
       requesterType: workRequest.requesterType as WorkRequestRequesterType,
+      targetKind: serializeTargetKind(workRequest.targetKind),
+      targetPurpose: serializeTargetPurpose(workRequest.targetPurpose),
       ifBusy: workRequest.ifBusy as IfBusyPolicy,
       status: workRequest.status as WorkRequestStatus,
       createdAt: toIso(workRequest.createdAt),
@@ -1274,6 +1613,9 @@ export class TeamSchedulerService {
   private serializeAgentInvocation(invocation: PrismaAgentInvocation): AgentInvocation {
     return {
       ...invocation,
+      targetKind: serializeTargetKind(invocation.targetKind),
+      targetPurpose: serializeTargetPurpose(invocation.targetPurpose),
+      targetSyncStatus: serializeTargetSyncStatus(invocation.targetSyncStatus),
       status: invocation.status as AgentInvocationStatus,
       createdAt: toIso(invocation.createdAt),
       updatedAt: toIso(invocation.updatedAt),

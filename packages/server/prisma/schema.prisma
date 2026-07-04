@@ -121,6 +121,7 @@ model TeamRun {
   messages        RoomMessage[]
   workRequests    WorkRequest[]
   invocations     AgentInvocation[]
+  verdicts        WorkspaceVerdict[]
 
   @@index([mainWorkspaceId])
 }
@@ -196,6 +197,13 @@ model WorkRequest {
   requesterMemberId String?
   requesterType     String
   targetMemberId    String
+  targetKind        String?
+  targetPurpose     String?
+  targetSourceWorkspaceId String?
+  targetSourceMemberId String?
+  targetHeadSha     String?
+  targetBranchName  String?
+  targetPlanItemId  String?
   triggerMessageId  String
   instruction       String
   ifBusy            String   @default("queue")
@@ -206,6 +214,8 @@ model WorkRequest {
 
   @@index([teamRunId])
   @@index([targetMemberId])
+  @@index([targetSourceWorkspaceId])
+  @@index([targetHeadSha])
   @@index([status])
 }
 
@@ -217,6 +227,19 @@ model AgentInvocation {
   memberId                String
   workspaceId             String?
   sessionId               String?
+  targetKind              String?
+  targetPurpose           String?
+  targetSourceWorkspaceId String?
+  targetSourceMemberId    String?
+  targetHeadSha           String?
+  targetBranchName        String?
+  targetPlanItemId        String?
+  targetSyncStatus        String?
+  targetSyncError         String?
+  targetExecutionBranch   String?
+  targetPort              Int?
+  targetVitePort          Int?
+  targetE2EPort           Int?
   status                  String    @default("QUEUED")
   roomReplyReminderCount  Int       @default(0)
   nextRoomReplyReminderAt DateTime?
@@ -226,6 +249,9 @@ model AgentInvocation {
   @@index([teamRunId])
   @@index([memberId])
   @@index([sessionId])
+  @@index([targetSourceWorkspaceId])
+  @@index([targetHeadSha])
+  @@index([targetSyncStatus])
   @@index([status])
 }
 
@@ -252,6 +278,7 @@ model Workspace {
   previewTarget String?   // Preview 代理目标（仅允许 loopback 地址）
   hibernatedAt  DateTime? // 自动休眠时间
   sessions      Session[]
+  verdicts      WorkspaceVerdict[]
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -262,6 +289,30 @@ model Workspace {
   @@index([workspaceKind])
   @@index([workingDir])
   @@unique([parentWorkspaceId, ownerMemberId])
+}
+
+// 工作区审查/测试记录
+// WorkspaceVerdictKind: REVIEW, TEST
+// REVIEW verdict: APPROVED, CHANGES_REQUESTED
+// TEST verdict: PASSED, FAILED
+model WorkspaceVerdict {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  teamRunId        String
+  teamRun          TeamRun   @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  kind             String
+  verdict          String
+  reviewedSha      String
+  reviewerMemberId String?
+  reason           String?
+  sequence         Int       @default(0)
+  createdAt        DateTime  @default(now())
+
+  @@index([workspaceId, kind, createdAt])
+  @@index([workspaceId, kind, sequence])
+  @@index([teamRunId])
+  @@index([reviewerMemberId])
 }
 
 // 独立对话：不绑定 Project/Task/Workspace，仅复用 Session 执行链路

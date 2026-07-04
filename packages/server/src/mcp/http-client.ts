@@ -102,6 +102,27 @@ export class AgentTowerClient {
     return this.request<{ success: boolean; sha: string }>('POST', `/api/workspaces/${workspaceId}/merge`);
   }
 
+  async listMergeableWorkspaces(teamRunId: string) {
+    return this.request<any>('GET', `/api/team-runs/${teamRunId}/mergeable-workspaces`);
+  }
+
+  async mergeAllMemberWorkspaces(teamRunId: string, input: {
+    workspaceIds?: string[];
+    dryRun?: boolean;
+    stopOnConflict?: boolean;
+  } = {}) {
+    return this.request<any>('POST', `/api/team-runs/${teamRunId}/merge-members`, input);
+  }
+
+  async recordWorkspaceVerdict(workspaceId: string, input: {
+    kind: 'REVIEW' | 'TEST';
+    verdict: 'APPROVED' | 'CHANGES_REQUESTED' | 'PASSED' | 'FAILED';
+    reviewedSha: string;
+    reason?: string;
+  }) {
+    return this.request<any>('POST', `/api/workspaces/${workspaceId}/verdicts`, input);
+  }
+
   // ── Providers ──
 
   async listProviders() {
@@ -138,6 +159,14 @@ export class AgentTowerClient {
       label?: string;
       ifBusy?: 'queue' | 'cancel_current_and_start';
       cancelQueued?: boolean;
+      target?: {
+        kind: 'WORKSPACE_COMMIT';
+        purpose: 'REVIEW' | 'TEST';
+        sourceWorkspaceId: string;
+        headSha: string;
+        branchName: string;
+        planItemId?: string | null;
+      } | null;
     }>;
     attachmentIds?: string[];
     artifactRefs?: string[];
@@ -152,6 +181,14 @@ export class AgentTowerClient {
   async createPrivateRoomMessage(teamRunId: string, input: {
     content: string;
     recipientMemberIds: string[];
+    target?: {
+      kind: 'WORKSPACE_COMMIT';
+      purpose: 'REVIEW' | 'TEST';
+      sourceWorkspaceId: string;
+      headSha: string;
+      branchName: string;
+      planItemId?: string | null;
+    } | null;
     attachmentIds?: string[];
     artifactRefs?: string[];
     ifBusy?: 'queue' | 'cancel_current_and_start';

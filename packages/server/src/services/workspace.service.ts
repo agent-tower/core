@@ -13,7 +13,19 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Prisma } from '@prisma/client';
 import type { EventBus } from '../core/event-bus.js';
-import type { GitOperationStatus } from '@agent-tower/shared';
+import type {
+  GitOperationStatus,
+  MergeableWorkspaceItem,
+  MergeableWorkspacesResponse,
+  MergeReadinessBlocker,
+  MergeTeamRunMemberResult,
+  MergeTeamRunMembersInput,
+  MergeTeamRunMembersResponse,
+  TeamMemberCapabilities,
+  WorkspaceVerdict,
+  WorkspaceVerdictKind,
+  WorkspaceVerdictValue,
+} from '@agent-tower/shared';
 import { ensureProjectIsMutable, ensureProjectSupportsGit, hasGitMetadata } from './project-guards.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import {
@@ -25,6 +37,18 @@ import {
 const DEFAULT_IDLE_THRESHOLD_HOURS = 24;
 const WORKSPACE_READY_RETRY_COUNT = 20;
 const WORKSPACE_READY_RETRY_DELAY_MS = 50;
+const DEFAULT_TEAM_MEMBER_CAPABILITIES: TeamMemberCapabilities = {
+  readRoom: false,
+  postRoomMessage: false,
+  mentionMembers: false,
+  stopMemberWork: false,
+  markReadyForReview: false,
+  readFiles: false,
+  writeFiles: false,
+  runCommands: false,
+  readDiff: false,
+  mergeWorkspace: false,
+};
 
 const execAsync = promisify(exec);
 
@@ -45,6 +69,7 @@ const visibleSessionsFilter = {
   },
 } satisfies Prisma.SessionFindManyArgs;
 const activeSessionStatuses = [SessionStatus.PENDING, SessionStatus.RUNNING];
+const activeInvocationStatuses = ['QUEUED', 'RUNNING', 'SESSION_ENDED', 'WAITING_ROOM_REPLY'];
 const finalChildWorkspaceStatuses = [WorkspaceStatus.MERGED, WorkspaceStatus.ABANDONED];
 
 export interface CreateWorkspaceOptions {
@@ -60,6 +85,47 @@ export interface CreateWorkspaceOptions {
 export interface MergeWorkspaceOptions {
   commitMessage?: string;
   lockOwnerId?: string;
+  requesterMemberId?: string;
+  invocationId?: string;
+}
+
+export interface RecordWorkspaceVerdictInput {
+  kind: WorkspaceVerdictKind;
+  verdict: WorkspaceVerdictValue;
+  reviewedSha: string;
+  reviewerMemberId: string;
+  expectedTargetHeadSha?: string | null;
+  reason?: string | null;
+}
+
+export interface WorkspaceInvocationIdentity {
+  teamRunId: string;
+  memberId: string;
+  invocationId: string;
+  targetHeadSha?: string | null;
+  targetSourceWorkspaceId?: string | null;
+}
+
+export interface PrepareTargetedExecutionWorkspaceInput {
+  teamRunId: string;
+  memberId: string;
+  executionWorkspaceId: string;
+  targetKind: 'WORKSPACE_COMMIT';
+  targetPurpose: 'REVIEW' | 'TEST';
+  targetSourceWorkspaceId: string;
+  targetSourceMemberId: string | null;
+  targetHeadSha: string;
+  targetBranchName: string;
+  targetPlanItemId: string | null;
+}
+
+export interface PrepareTargetedExecutionWorkspaceResult {
+  executionBranch: string;
+}
+
+export interface MergeTeamRunMembersOptions extends MergeTeamRunMembersInput {
+  invocationId: string;
+  requesterMemberId: string;
 }
 
 type WorkspaceWithTaskProject = Prisma.WorkspaceGetPayload<{
@@ -71,8 +137,79 @@ type WorkspaceWithVisibleSessions = Prisma.WorkspaceGetPayload<{
 }>;
 
 type MergeWorkspaceRecord = Prisma.WorkspaceGetPayload<{
-  include: { task: { include: { project: true; teamRun: true } } };
+  include: {
+    task: {
+      include: {
+        project: true;
+        teamRun: true;
+      };
+    };
+  };
 }>;
+
+type TeamRunChildWorkspaceRecord = MergeWorkspaceRecord & {
+  task: MergeWorkspaceRecord['task'] & { teamRun: NonNullable<MergeWorkspaceRecord['task']['teamRun']> };
+  parentWorkspaceId: string;
+  ownerMemberId: string;
+};
+
+type TeamRunMergeableRecord = Prisma.WorkspaceGetPayload<{
+  include: {
+    ownerMember: true;
+    task: {
+      include: {
+        project: true;
+        teamRun: true;
+      };
+    };
+  };
+}>;
+
+type TeamRunMergeableWorkspaceRecord = TeamRunMergeableRecord & {
+  task: TeamRunMergeableRecord['task'] & { teamRun: NonNullable<TeamRunMergeableRecord['task']['teamRun']> };
+  parentWorkspaceId: string;
+  ownerMemberId: string;
+  ownerMember: NonNullable<TeamRunMergeableRecord['ownerMember']>;
+};
+
+type VerdictRecord = {
+  id: string;
+  workspaceId: string;
+  teamRunId: string;
+  kind: string;
+  verdict: string;
+  reviewedSha: string;
+  reviewerMemberId: string | null;
+  reason: string | null;
+  sequence: number;
+  createdAt: Date;
+};
+
+type MergeableComputationContext = {
+  teamRunId: string;
+  taskId: string;
+  projectId: string;
+  project: {
+    name: string;
+    repoPath: string;
+    mainBranch: string;
+    archivedAt: Date | null;
+    repoDeletedAt: Date | null;
+  };
+  mainWorkspace: {
+    id: string | null;
+    branchName: string | null;
+    status: string | null;
+    worktreePath: string | null;
+    headSha: string | null;
+    hasActiveWriteSession: boolean;
+  };
+  generatedAt: string;
+  workspaces: TeamRunMergeableWorkspaceRecord[];
+  latestReviews: Map<string, VerdictRecord>;
+  latestTests: Map<string, VerdictRecord>;
+  ownerActiveMemberIds: Set<string>;
+};
 
 type NormalizedCreateWorkspaceOptions = Required<CreateWorkspaceOptions>;
 
@@ -123,6 +260,20 @@ function teamRunBranchPrefix(teamRunId: string): string {
   return `at/team/${teamRunId.slice(0, 8)}`;
 }
 
+function targetExecutionBranchName(input: PrepareTargetedExecutionWorkspaceInput): string {
+  return `${teamRunBranchPrefix(input.teamRunId)}/target/${input.targetPurpose.toLowerCase()}-${input.memberId.slice(0, 8)}-${input.targetHeadSha.slice(0, 12)}`;
+}
+
+function assertFullCommitSha(value: string): void {
+  if (!/^[0-9a-f]{40}$/i.test(value)) {
+    throw new ServiceError(
+      'targetHeadSha must be a full 40-character commit SHA',
+      'TARGET_HEAD_SHA_INVALID',
+      400
+    );
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -137,6 +288,100 @@ function mainDirectoryGitStatus(): GitOperationStatus {
     hasUncommittedChanges: false,
     uncommittedCount: 0,
     untrackedCount: 0,
+  };
+}
+
+function toIso(date: Date): string {
+  return date.toISOString();
+}
+
+function serializeWorkspaceVerdict(verdict: {
+  id: string;
+  workspaceId: string;
+  teamRunId: string;
+  kind: string;
+  verdict: string;
+  reviewedSha: string;
+  reviewerMemberId: string | null;
+  reason: string | null;
+  sequence: number;
+  createdAt: Date;
+}): WorkspaceVerdict {
+  return {
+    id: verdict.id,
+    workspaceId: verdict.workspaceId,
+    teamRunId: verdict.teamRunId,
+    kind: verdict.kind as WorkspaceVerdictKind,
+    verdict: verdict.verdict as WorkspaceVerdictValue,
+    reviewedSha: verdict.reviewedSha,
+    reviewerMemberId: verdict.reviewerMemberId,
+    reason: verdict.reason,
+    sequence: verdict.sequence,
+    createdAt: toIso(verdict.createdAt),
+  };
+}
+
+function parseCapabilities(value: string | null | undefined): TeamMemberCapabilities {
+  if (!value) {
+    return DEFAULT_TEAM_MEMBER_CAPABILITIES;
+  }
+
+  try {
+    return {
+      ...DEFAULT_TEAM_MEMBER_CAPABILITIES,
+      ...(JSON.parse(value) as Partial<TeamMemberCapabilities>),
+    };
+  } catch {
+    return DEFAULT_TEAM_MEMBER_CAPABILITIES;
+  }
+}
+
+function blocker(
+  code: MergeReadinessBlocker['code'],
+  severity: MergeReadinessBlocker['severity'],
+  message: string,
+  details?: Record<string, unknown>
+): MergeReadinessBlocker {
+  return details
+    ? { code, severity, message, details }
+    : { code, severity, message };
+}
+
+function serializeLatestVerdict(
+  verdict: VerdictRecord | undefined,
+  currentHeadSha: string | null,
+  ownerMemberId: string
+): MergeableWorkspaceItem['latestReview'] {
+  if (!verdict) {
+    return null;
+  }
+
+  return {
+    id: verdict.id,
+    verdict: verdict.verdict as WorkspaceVerdictValue,
+    reviewedSha: verdict.reviewedSha,
+    reviewerMemberId: verdict.reviewerMemberId,
+    reason: verdict.reason,
+    sequence: verdict.sequence,
+    createdAt: toIso(verdict.createdAt),
+    matchesHead: currentHeadSha !== null && verdict.reviewedSha === currentHeadSha,
+    isSelfReview: verdict.reviewerMemberId === ownerMemberId,
+  };
+}
+
+function resultSummary(
+  results: MergeTeamRunMemberResult[],
+  requested = results.length
+): MergeTeamRunMembersResponse['summary'] {
+  return {
+    requested,
+    considered: results.length,
+    merged: results.filter((item) => item.status === 'MERGED').length,
+    alreadyMerged: results.filter((item) => item.status === 'ALREADY_MERGED').length,
+    wouldMerge: results.filter((item) => item.status === 'WOULD_MERGE').length,
+    skipped: results.filter((item) => item.status === 'SKIPPED').length,
+    conflicts: results.filter((item) => item.status === 'CONFLICT').length,
+    failed: results.filter((item) => item.status === 'FAILED').length,
   };
 }
 
@@ -196,6 +441,710 @@ export class WorkspaceService {
       include: { sessions: visibleSessionsFilter },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  async listVerdicts(workspaceId: string): Promise<WorkspaceVerdict[]> {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      include: { task: true },
+    });
+    if (!workspace) {
+      throw new NotFoundError('Workspace', workspaceId);
+    }
+    ensureTaskNotDeleted(workspace.task);
+
+    const verdicts = await prisma.workspaceVerdict.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'desc' },
+    });
+    return verdicts.map(serializeWorkspaceVerdict);
+  }
+
+  async listTeamRunMergeableWorkspaces(teamRunId: string): Promise<MergeableWorkspacesResponse> {
+    const context = await this.loadTeamRunMergeableContext(teamRunId);
+    return this.buildMergeableWorkspacesResponse(context);
+  }
+
+  async mergeTeamRunMembers(
+    teamRunId: string,
+    options: MergeTeamRunMembersOptions
+  ): Promise<MergeTeamRunMembersResponse> {
+    await this.assertTeamRunMergeInvocation(teamRunId, options.invocationId, options.requesterMemberId);
+
+    const initialContext = await this.loadTeamRunMergeableContext(teamRunId);
+    ensureProjectIsMutable(initialContext.project, 'merge TeamRun member workspaces');
+
+    const dryRun = options.dryRun === true;
+    const stopOnConflict = options.stopOnConflict === true;
+    const hasExplicitWorkspaceIds = Array.isArray(options.workspaceIds);
+    const requestedWorkspaceIds = hasExplicitWorkspaceIds
+      ? [...new Set(options.workspaceIds)]
+      : undefined;
+    const requestedCount = requestedWorkspaceIds?.length ?? initialContext.workspaces.length;
+
+    const run = async (): Promise<MergeTeamRunMembersResponse> => {
+      const context = await this.loadTeamRunMergeableContext(teamRunId);
+      const response = await this.buildMergeableWorkspacesResponse(context);
+      const results: MergeTeamRunMemberResult[] = [];
+      const selected: MergeableWorkspaceItem[] = [];
+
+      if (requestedWorkspaceIds) {
+        const itemsById = new Map(response.workspaces.map((item) => [item.workspaceId, item]));
+        for (const workspaceId of requestedWorkspaceIds) {
+          const item = itemsById.get(workspaceId);
+          if (item) {
+            selected.push(item);
+          } else {
+            results.push({
+              workspaceId,
+              ownerMemberId: null,
+              status: 'SKIPPED',
+              code: 'INVALID_WORKSPACE_STATE',
+              message: 'Workspace is not a mergeable dedicated TeamRun child workspace',
+            });
+          }
+        }
+      } else {
+        selected.push(...response.workspaces);
+      }
+
+      for (const item of selected) {
+        if (item.status === WorkspaceStatus.MERGED) {
+          results.push({
+            workspaceId: item.workspaceId,
+            ownerMemberId: item.owner.memberId,
+            status: dryRun ? 'ALREADY_MERGED' : 'ALREADY_MERGED',
+            sha: item.headSha ?? undefined,
+          });
+          continue;
+        }
+
+        if (!item.mergeReady) {
+          const firstBlocking = item.blockers.find((entry) => entry.severity === 'BLOCKING') ?? item.blockers[0];
+          results.push({
+            workspaceId: item.workspaceId,
+            ownerMemberId: item.owner.memberId,
+            status: 'SKIPPED',
+            code: firstBlocking?.code ?? 'WORKSPACE_NOT_ACTIVE',
+            message: firstBlocking?.message ?? 'Workspace is not ready to merge',
+            blockers: item.blockers,
+          });
+          continue;
+        }
+
+        if (dryRun) {
+          results.push({
+            workspaceId: item.workspaceId,
+            ownerMemberId: item.owner.memberId,
+            status: 'WOULD_MERGE',
+            sha: item.headSha ?? undefined,
+          });
+          continue;
+        }
+
+        try {
+          const sha = await this.merge(item.workspaceId, {
+            invocationId: options.invocationId,
+            lockOwnerId: options.invocationId,
+            requesterMemberId: options.requesterMemberId,
+          });
+          results.push({
+            workspaceId: item.workspaceId,
+            ownerMemberId: item.owner.memberId,
+            status: 'MERGED',
+            sha,
+          });
+        } catch (error) {
+          const result = this.mergeErrorToResult(item, error);
+          results.push(result);
+          if (stopOnConflict && result.status === 'CONFLICT') {
+            break;
+          }
+        }
+      }
+
+      return {
+        teamRunId: response.teamRunId,
+        taskId: response.taskId,
+        projectId: response.projectId,
+        mainWorkspaceId: response.mainWorkspace.id,
+        dryRun,
+        stopOnConflict,
+        requestedWorkspaceIds,
+        summary: resultSummary(results, requestedCount),
+        results,
+      };
+    };
+
+    if (dryRun) {
+      return run();
+    }
+
+    return this.withProjectMergeLock(
+      initialContext.projectId,
+      options.invocationId,
+      run
+    );
+  }
+
+  async recordVerdict(workspaceId: string, input: RecordWorkspaceVerdictInput): Promise<WorkspaceVerdict> {
+    if (input.kind === 'REVIEW' && !['APPROVED', 'CHANGES_REQUESTED'].includes(input.verdict)) {
+      throw new ServiceError('Invalid review verdict', 'INVALID_WORKSPACE_VERDICT', 400);
+    }
+    if (input.kind === 'TEST' && !['PASSED', 'FAILED'].includes(input.verdict)) {
+      throw new ServiceError('Invalid test verdict', 'INVALID_WORKSPACE_VERDICT', 400);
+    }
+    if (!input.reviewedSha.trim()) {
+      throw new ServiceError('reviewedSha is required', 'VALIDATION_ERROR', 400);
+    }
+
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      include: { task: { include: { teamRun: true } } },
+    });
+    if (!workspace) {
+      throw new NotFoundError('Workspace', workspaceId);
+    }
+    ensureTaskNotDeleted(workspace.task);
+    const teamRun = workspace.task.teamRun;
+    if (!teamRun) {
+      throw new ServiceError('Workspace verdicts are only supported for TeamRun workspaces', 'WORKSPACE_VERDICT_TEAM_RUN_REQUIRED', 400);
+    }
+    this.assertWorktreeWorkspace(workspace);
+
+    const reviewedSha = input.reviewedSha.trim();
+    const currentHeadSha = await this.getHeadSha(workspace.worktreePath);
+    const expectedTargetHeadSha = input.expectedTargetHeadSha?.trim() || null;
+    if (expectedTargetHeadSha && currentHeadSha !== expectedTargetHeadSha) {
+      throw new ServiceError(
+        'Targeted workspace verdict is stale because the source workspace HEAD changed',
+        'TARGET_VERDICT_STALE',
+        409
+      );
+    }
+    if (expectedTargetHeadSha && reviewedSha !== expectedTargetHeadSha) {
+      throw new ServiceError(
+        'Targeted workspace verdict SHA must match the invocation targetHeadSha',
+        'TARGET_VERDICT_SHA_MISMATCH',
+        409
+      );
+    }
+    if (reviewedSha !== currentHeadSha) {
+      throw new ServiceError(
+        'Workspace verdict SHA must match the current workspace HEAD',
+        'WORKSPACE_VERDICT_SHA_MISMATCH',
+        409
+      );
+    }
+
+    const reviewer = await prisma.teamMember.findFirst({
+      where: {
+        id: input.reviewerMemberId,
+        teamRunId: teamRun.id,
+        membershipStatus: { not: 'REMOVED' },
+      },
+      select: { id: true, capabilities: true },
+    });
+    if (!reviewer) {
+      throw new ServiceError('Reviewer is not an active member of this TeamRun', 'WORKSPACE_VERDICT_REVIEWER_INVALID', 403);
+    }
+    const reviewerCapabilities = parseCapabilities(reviewer.capabilities);
+    const requiredCapability = input.kind === 'REVIEW' ? 'readDiff' : 'runCommands';
+    if (reviewerCapabilities[requiredCapability] !== true) {
+      throw new ServiceError(
+        `Current TeamRun member lacks required capabilities: ${requiredCapability}`,
+        'TEAM_RUN_MEMBER_CAPABILITY_REQUIRED',
+        403
+      );
+    }
+
+    const verdict = await prisma.$transaction(async (tx) => {
+      const latest = await tx.workspaceVerdict.findFirst({
+        where: {
+          workspaceId,
+          kind: input.kind,
+        },
+        orderBy: { sequence: 'desc' },
+        select: { sequence: true },
+      });
+
+      return tx.workspaceVerdict.create({
+        data: {
+          workspaceId,
+          teamRunId: teamRun.id,
+          kind: input.kind,
+          verdict: input.verdict,
+          reviewedSha,
+          reviewerMemberId: input.reviewerMemberId,
+          reason: input.reason ?? null,
+          sequence: (latest?.sequence ?? 0) + 1,
+        },
+      });
+    });
+
+    return serializeWorkspaceVerdict(verdict);
+  }
+
+  async resolveInvocationMemberForWorkspace(
+    workspaceId: string,
+    invocationId: string | null | undefined
+  ): Promise<WorkspaceInvocationIdentity | null> {
+    if (!invocationId) {
+      return null;
+    }
+
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      include: { task: { include: { teamRun: true } } },
+    });
+    if (!workspace) {
+      throw new NotFoundError('Workspace', workspaceId);
+    }
+    ensureTaskNotDeleted(workspace.task);
+    const teamRunId = workspace.task.teamRun?.id;
+    if (!teamRunId) {
+      return null;
+    }
+
+    const invocation = await prisma.agentInvocation.findFirst({
+      where: {
+        id: invocationId,
+        teamRunId,
+        OR: [
+          { workspaceId },
+          { targetSourceWorkspaceId: workspaceId },
+        ],
+      },
+      select: {
+        id: true,
+        memberId: true,
+        targetHeadSha: true,
+        targetSourceWorkspaceId: true,
+      },
+    });
+    return invocation
+      ? {
+        teamRunId,
+        memberId: invocation.memberId,
+        invocationId: invocation.id,
+        targetHeadSha: invocation.targetSourceWorkspaceId === workspaceId
+          ? invocation.targetHeadSha
+          : null,
+        targetSourceWorkspaceId: invocation.targetSourceWorkspaceId,
+      }
+      : null;
+  }
+
+  async resolveInvocationMemberForTeamRun(teamRunId: string, invocationId: string | null | undefined): Promise<{
+    teamRunId: string;
+    memberId: string;
+    invocationId: string;
+  } | null> {
+    if (!invocationId) {
+      return null;
+    }
+
+    const invocation = await prisma.agentInvocation.findFirst({
+      where: {
+        id: invocationId,
+        teamRunId,
+      },
+      select: {
+        id: true,
+        memberId: true,
+      },
+    });
+
+    return invocation
+      ? { teamRunId, memberId: invocation.memberId, invocationId: invocation.id }
+      : null;
+  }
+
+  private async assertTeamRunMergeInvocation(
+    teamRunId: string,
+    invocationId: string | null | undefined,
+    requesterMemberId?: string | null
+  ): Promise<void> {
+    if (!invocationId) {
+      throw new ServiceError(
+        'TeamRun member merge requires an agent invocation identity',
+        'TEAM_RUN_MERGE_INVOCATION_REQUIRED',
+        403
+      );
+    }
+
+    const identity = await this.resolveInvocationMemberForTeamRun(teamRunId, invocationId);
+    if (!identity) {
+      throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
+    }
+    if (requesterMemberId && requesterMemberId !== identity.memberId) {
+      throw new ServiceError('Requester member does not match the agent invocation identity', 'FORBIDDEN', 403);
+    }
+
+    const member = await prisma.teamMember.findFirst({
+      where: {
+        id: identity.memberId,
+        teamRunId,
+        membershipStatus: { not: 'REMOVED' },
+      },
+      select: {
+        capabilities: true,
+      },
+    });
+    if (!member) {
+      throw new ServiceError('Current TeamRun member was not found', 'FORBIDDEN', 403);
+    }
+
+    const capabilities = parseCapabilities(member.capabilities);
+    if (capabilities.mergeWorkspace !== true) {
+      throw new ServiceError(
+        'Current TeamRun member lacks required capabilities: mergeWorkspace',
+        'TEAM_RUN_MEMBER_CAPABILITY_REQUIRED',
+        403
+      );
+    }
+  }
+
+  private async loadTeamRunMergeableContext(teamRunId: string): Promise<MergeableComputationContext> {
+    const teamRun = await prisma.teamRun.findUnique({
+      where: { id: teamRunId },
+      include: {
+        task: { include: { project: true } },
+        mainWorkspace: true,
+      },
+    });
+    if (!teamRun) {
+      throw new NotFoundError('TeamRun', teamRunId);
+    }
+    ensureTaskNotDeleted(teamRun.task);
+
+    const mainWorkspace = teamRun.mainWorkspace;
+    const workspaces = mainWorkspace
+      ? await prisma.workspace.findMany({
+        where: {
+          taskId: teamRun.taskId,
+          parentWorkspaceId: mainWorkspace.id,
+          ownerMemberId: { not: null },
+        },
+        include: {
+          ownerMember: true,
+          task: { include: { project: true, teamRun: true } },
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      })
+      : [];
+    const dedicatedWorkspaces = workspaces.filter((workspace): workspace is TeamRunMergeableWorkspaceRecord => {
+      return Boolean(
+        workspace.ownerMember
+        && workspace.ownerMemberId
+        && workspace.parentWorkspaceId
+        && workspace.task.teamRun
+      );
+    });
+
+    const workspaceIds = dedicatedWorkspaces.map((workspace) => workspace.id);
+    const ownerMemberIds = dedicatedWorkspaces.map((workspace) => workspace.ownerMemberId);
+
+    const [verdicts, ownerInvocations, parentActiveWriteSession, mainHeadSha] = await Promise.all([
+      workspaceIds.length > 0
+        ? prisma.workspaceVerdict.findMany({
+          where: {
+            teamRunId,
+            workspaceId: { in: workspaceIds },
+            kind: { in: ['REVIEW', 'TEST'] },
+          },
+          orderBy: [
+            { workspaceId: 'asc' },
+            { kind: 'asc' },
+            { sequence: 'desc' },
+            { createdAt: 'desc' },
+            { id: 'desc' },
+          ],
+        })
+        : Promise.resolve([]),
+      ownerMemberIds.length > 0
+        ? prisma.agentInvocation.findMany({
+          where: {
+            teamRunId,
+            memberId: { in: ownerMemberIds },
+            status: { in: activeInvocationStatuses },
+          },
+          select: { memberId: true },
+        })
+        : Promise.resolve([]),
+      mainWorkspace
+        ? prisma.session.findFirst({
+          where: {
+            workspaceId: mainWorkspace.id,
+            status: { in: activeSessionStatuses },
+            purpose: SessionPurpose.CHAT,
+          },
+          select: { id: true },
+        })
+        : Promise.resolve(null),
+      mainWorkspace?.worktreePath
+        ? this.getHeadSha(mainWorkspace.worktreePath).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    const latestReviews = new Map<string, VerdictRecord>();
+    const latestTests = new Map<string, VerdictRecord>();
+    for (const verdict of verdicts) {
+      const key = verdict.workspaceId;
+      if (verdict.kind === 'REVIEW' && !latestReviews.has(key)) {
+        latestReviews.set(key, verdict);
+      }
+      if (verdict.kind === 'TEST' && !latestTests.has(key)) {
+        latestTests.set(key, verdict);
+      }
+    }
+
+    return {
+      teamRunId,
+      taskId: teamRun.taskId,
+      projectId: teamRun.task.projectId,
+      project: {
+        name: teamRun.task.project.name,
+        repoPath: teamRun.task.project.repoPath,
+        mainBranch: teamRun.task.project.mainBranch,
+        archivedAt: teamRun.task.project.archivedAt,
+        repoDeletedAt: teamRun.task.project.repoDeletedAt,
+      },
+      mainWorkspace: {
+        id: mainWorkspace?.id ?? null,
+        branchName: mainWorkspace?.branchName ?? null,
+        status: mainWorkspace?.status ?? null,
+        worktreePath: mainWorkspace?.worktreePath ?? null,
+        headSha: mainHeadSha,
+        hasActiveWriteSession: Boolean(parentActiveWriteSession),
+      },
+      generatedAt: new Date().toISOString(),
+      workspaces: dedicatedWorkspaces,
+      latestReviews,
+      latestTests,
+      ownerActiveMemberIds: new Set(ownerInvocations.map((invocation) => invocation.memberId)),
+    };
+  }
+
+  private async buildMergeableWorkspacesResponse(context: MergeableComputationContext): Promise<MergeableWorkspacesResponse> {
+    const workspaceOrder = new Map(context.workspaces.map((workspace, index) => [workspace.id, index]));
+    const items = (await Promise.all(
+      context.workspaces.map((workspace) => this.buildMergeableWorkspaceItem(context, workspace))
+    ))
+      .sort((left, right) => {
+        const leftBehind = left.git.behindMain ?? Number.MAX_SAFE_INTEGER;
+        const rightBehind = right.git.behindMain ?? Number.MAX_SAFE_INTEGER;
+        if (leftBehind !== rightBehind) return leftBehind - rightBehind;
+        const leftOrder = workspaceOrder.get(left.workspaceId) ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = workspaceOrder.get(right.workspaceId) ?? Number.MAX_SAFE_INTEGER;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return left.workspaceId.localeCompare(right.workspaceId);
+      });
+
+    return {
+      teamRunId: context.teamRunId,
+      taskId: context.taskId,
+      projectId: context.projectId,
+      mainWorkspace: {
+        id: context.mainWorkspace.id,
+        branchName: context.mainWorkspace.branchName,
+        status: context.mainWorkspace.status,
+        headSha: context.mainWorkspace.headSha,
+        hasActiveWriteSession: context.mainWorkspace.hasActiveWriteSession,
+      },
+      generatedAt: context.generatedAt,
+      workspaces: items,
+    };
+  }
+
+  private async buildMergeableWorkspaceItem(
+    context: MergeableComputationContext,
+    workspace: TeamRunMergeableWorkspaceRecord
+  ): Promise<MergeableWorkspaceItem> {
+    const blockers: MergeReadinessBlocker[] = [];
+    let headSha: string | null = null;
+    let gitStatus: GitOperationStatus | null = null;
+    let gitStatusAvailable = false;
+    const worktreeManager = new WorktreeManager(context.project.repoPath);
+    const isWorktree = workspace.workspaceKind === WorkspaceKind.WORKTREE;
+
+    if (!isWorktree) {
+      blockers.push(blocker(
+        'WORKSPACE_GIT_UNAVAILABLE',
+        'BLOCKING',
+        'Workspace git operations are unavailable for this workspace type'
+      ));
+    } else if (!workspace.worktreePath) {
+      blockers.push(blocker('MISSING_HEAD_SHA', 'BLOCKING', 'Workspace worktree path is missing'));
+    } else {
+      try {
+        headSha = await this.getHeadSha(workspace.worktreePath);
+      } catch {
+        blockers.push(blocker('MISSING_HEAD_SHA', 'BLOCKING', 'Cannot read workspace HEAD SHA'));
+      }
+
+      try {
+        gitStatus = await worktreeManager.getGitOperationStatus(
+          workspace.worktreePath,
+          context.mainWorkspace.branchName ?? workspace.baseBranch ?? context.project.mainBranch
+        );
+        gitStatusAvailable = true;
+      } catch (error) {
+        blockers.push(blocker(
+          'GIT_STATUS_UNAVAILABLE',
+          'BLOCKING',
+          error instanceof Error ? error.message : 'Cannot read workspace git status'
+        ));
+      }
+    }
+
+    const latestReview = serializeLatestVerdict(
+      context.latestReviews.get(workspace.id),
+      headSha,
+      workspace.ownerMemberId
+    );
+    const latestTest = serializeLatestVerdict(
+      context.latestTests.get(workspace.id),
+      headSha,
+      workspace.ownerMemberId
+    );
+    const ownerHasActiveInvocation = context.ownerActiveMemberIds.has(workspace.ownerMemberId);
+    const clean = gitStatusAvailable && gitStatus
+      ? gitStatus.operation === 'idle'
+        && !gitStatus.hasUncommittedChanges
+        && gitStatus.untrackedCount === 0
+      : null;
+
+    if (workspace.status === WorkspaceStatus.MERGED) {
+      blockers.push(blocker('WORKSPACE_ALREADY_MERGED', 'WARNING', 'Workspace has already been merged'));
+    } else if (workspace.status === WorkspaceStatus.ABANDONED) {
+      blockers.push(blocker('WORKSPACE_ABANDONED', 'BLOCKING', 'Workspace has been abandoned'));
+    } else if (workspace.status === WorkspaceStatus.HIBERNATED) {
+      blockers.push(blocker('WORKSPACE_HIBERNATED', 'BLOCKING', 'Workspace is hibernated'));
+    } else if (workspace.status !== WorkspaceStatus.ACTIVE) {
+      blockers.push(blocker(
+        'INVALID_WORKSPACE_STATE',
+        'BLOCKING',
+        `Workspace is in ${workspace.status} status`
+      ));
+    }
+
+    if (context.mainWorkspace.id !== workspace.parentWorkspaceId) {
+      blockers.push(blocker('INVALID_PARENT_WORKSPACE', 'BLOCKING', 'Workspace parent is not the TeamRun main workspace'));
+    }
+    if (context.mainWorkspace.status !== WorkspaceStatus.ACTIVE) {
+      blockers.push(blocker(
+        'INVALID_PARENT_WORKSPACE_STATE',
+        'BLOCKING',
+        `TeamRun main workspace is in ${context.mainWorkspace.status ?? 'missing'} status`
+      ));
+    }
+
+    if (workspace.status === WorkspaceStatus.ACTIVE) {
+      if (!latestReview || latestReview.verdict !== 'APPROVED') {
+        blockers.push(blocker('REVIEW_REQUIRED', 'BLOCKING', 'TeamRun workspace merge requires an approved review'));
+      } else if (!latestReview.matchesHead) {
+        blockers.push(blocker('REVIEW_STALE', 'BLOCKING', 'Approved review is stale because the workspace HEAD changed'));
+      } else if (!latestReview.reviewerMemberId || latestReview.isSelfReview) {
+        blockers.push(blocker('SELF_REVIEW_FORBIDDEN', 'BLOCKING', 'Workspace owner cannot approve their own workspace for merge'));
+      }
+
+      if (ownerHasActiveInvocation) {
+        blockers.push(blocker('OWNER_HAS_ACTIVE_INVOCATION', 'BLOCKING', 'Cannot merge while the workspace owner has active work'));
+      }
+      if (context.mainWorkspace.hasActiveWriteSession) {
+        blockers.push(blocker('PARENT_WORKSPACE_HAS_ACTIVE_SESSION', 'BLOCKING', 'Cannot merge into parent workspace while it has an active write session'));
+      }
+      if (gitStatus?.operation === 'rebase') {
+        blockers.push(blocker('REBASE_IN_PROGRESS', 'BLOCKING', 'Workspace has a rebase in progress'));
+      }
+      if (gitStatus?.operation === 'merge') {
+        blockers.push(blocker('MERGE_CONFLICT', 'BLOCKING', 'Workspace has a merge in progress', {
+          conflictedFiles: gitStatus.conflictedFiles,
+        }));
+      }
+      if (gitStatus && (gitStatus.hasUncommittedChanges || gitStatus.untrackedCount > 0)) {
+        blockers.push(blocker('WORKTREE_DIRTY', 'BLOCKING', 'Workspace has uncommitted or untracked changes', {
+          uncommittedCount: gitStatus.uncommittedCount,
+          untrackedCount: gitStatus.untrackedCount,
+        }));
+      }
+      if ((gitStatus?.behind ?? 0) > 0) {
+        blockers.push(blocker('BEHIND_MAIN', 'WARNING', 'Workspace branch is behind the TeamRun main workspace', {
+          behindMain: gitStatus?.behind ?? 0,
+          aheadOfMain: gitStatus?.ahead ?? 0,
+        }));
+      }
+    }
+
+    return {
+      workspaceId: workspace.id,
+      owner: {
+        memberId: workspace.ownerMemberId,
+        name: workspace.ownerMember.name,
+        membershipStatus: workspace.ownerMember.membershipStatus,
+      },
+      status: workspace.status,
+      branchName: workspace.branchName,
+      baseBranch: workspace.baseBranch,
+      parentWorkspaceId: workspace.parentWorkspaceId,
+      headSha,
+      git: {
+        clean,
+        aheadOfMain: gitStatus?.ahead ?? null,
+        behindMain: gitStatus?.behind ?? null,
+        operation: gitStatus?.operation ?? null,
+        conflictedFiles: gitStatus?.conflictedFiles ?? [],
+        hasUncommittedChanges: gitStatus?.hasUncommittedChanges ?? null,
+        uncommittedCount: gitStatus?.uncommittedCount ?? null,
+        untrackedCount: gitStatus?.untrackedCount ?? null,
+        statusAvailable: gitStatusAvailable,
+      },
+      activity: {
+        ownerHasActiveInvocation,
+        parentHasActiveWriteSession: context.mainWorkspace.hasActiveWriteSession,
+      },
+      latestReview,
+      latestTest,
+      mergeReady: workspace.status === WorkspaceStatus.ACTIVE
+        && blockers.every((entry) => entry.severity !== 'BLOCKING'),
+      blockers,
+    };
+  }
+
+  private mergeErrorToResult(
+    item: MergeableWorkspaceItem,
+    error: unknown
+  ): MergeTeamRunMemberResult {
+    const errorCode = typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+    if (error instanceof MergeConflictError || errorCode === 'MERGE_CONFLICT') {
+      const conflict = error as Partial<MergeConflictError>;
+      return {
+        workspaceId: item.workspaceId,
+        ownerMemberId: item.owner.memberId,
+        status: 'CONFLICT',
+        code: errorCode || 'MERGE_CONFLICT',
+        message: error instanceof Error ? error.message : 'Merge conflict',
+        conflictedFiles: Array.isArray(conflict.conflictedFiles) ? conflict.conflictedFiles : [],
+        sourceBranch: conflict.sourceBranch,
+        targetBranch: conflict.targetBranch,
+        sourceWorkspaceId: conflict.sourceWorkspaceId,
+        targetWorkspaceId: conflict.targetWorkspaceId,
+      };
+    }
+
+    const code = errorCode || 'UNKNOWN';
+    const message = error instanceof Error ? error.message : String(error);
+
+    return {
+      workspaceId: item.workspaceId,
+      ownerMemberId: item.owner.memberId,
+      status: 'FAILED',
+      code,
+      message,
+    };
   }
 
   // ── Create ───────────────────────────────────────────────────────────────────
@@ -524,6 +1473,108 @@ export class WorkspaceService {
     }
   }
 
+  async prepareTargetedExecutionWorkspace(
+    input: PrepareTargetedExecutionWorkspaceInput
+  ): Promise<PrepareTargetedExecutionWorkspaceResult> {
+    assertFullCommitSha(input.targetHeadSha);
+
+    const [teamRun, sourceWorkspace, executionWorkspace] = await Promise.all([
+      prisma.teamRun.findUnique({
+        where: { id: input.teamRunId },
+        include: { task: { include: { project: true } }, mainWorkspace: true },
+      }),
+      prisma.workspace.findFirst({
+        where: {
+          id: input.targetSourceWorkspaceId,
+          task: { teamRun: { id: input.teamRunId } },
+        },
+        include: { task: { include: { project: true } } },
+      }),
+      prisma.workspace.findFirst({
+        where: {
+          id: input.executionWorkspaceId,
+          ownerMemberId: input.memberId,
+          task: { teamRun: { id: input.teamRunId } },
+        },
+        include: { task: { include: { project: true } } },
+      }),
+    ]);
+
+    if (!teamRun) {
+      throw new NotFoundError('TeamRun', input.teamRunId);
+    }
+    ensureTaskNotDeleted(teamRun.task);
+    ensureProjectSupportsGit(teamRun.task.project, 'prepare targeted TeamRun workspace');
+
+    if (!sourceWorkspace) {
+      throw new ServiceError(
+        'Target source workspace must belong to this TeamRun',
+        'TARGET_SOURCE_WORKSPACE_INVALID',
+        400
+      );
+    }
+    if (!executionWorkspace) {
+      throw new ServiceError(
+        'Execution workspace must be a dedicated workspace owned by the target member',
+        'TARGET_EXECUTION_WORKSPACE_INVALID',
+        400
+      );
+    }
+    this.assertWorktreeWorkspace(sourceWorkspace);
+    this.assertWorktreeWorkspace(executionWorkspace);
+
+    if (!teamRun.mainWorkspaceId || executionWorkspace.parentWorkspaceId !== teamRun.mainWorkspaceId) {
+      throw new ServiceError(
+        'Targeted review/test requires a dedicated TeamRun execution workspace',
+        'TARGET_EXECUTION_WORKSPACE_NOT_DEDICATED',
+        400
+      );
+    }
+
+    if (executionWorkspace.id === sourceWorkspace.id) {
+      throw new ServiceError(
+        'Execution workspace cannot be the source workspace being reviewed or tested',
+        'TARGET_EXECUTION_WORKSPACE_SOURCE_CONFLICT',
+        400
+      );
+    }
+
+    const repoPath = teamRun.task.project.repoPath;
+    await execGit(repoPath, ['cat-file', '-e', `${input.targetHeadSha}^{commit}`]);
+
+    const clean = await new WorktreeManager(repoPath).isWorktreeClean(executionWorkspace.worktreePath);
+    if (!clean) {
+      throw new ServiceError(
+        'Execution workspace has uncommitted changes; targeted sync was not applied',
+        'TARGET_EXECUTION_WORKSPACE_DIRTY',
+        409
+      );
+    }
+
+    const executionBranch = targetExecutionBranchName(input);
+    await execGit(executionWorkspace.worktreePath, ['checkout', '-B', executionBranch, input.targetHeadSha]);
+    await execGit(executionWorkspace.worktreePath, ['reset', '--hard', input.targetHeadSha]);
+    const actualHead = (await execGit(executionWorkspace.worktreePath, ['rev-parse', 'HEAD'])).trim();
+    if (actualHead !== input.targetHeadSha) {
+      throw new ServiceError(
+        'Execution workspace HEAD does not match targetHeadSha after sync',
+        'TARGET_SYNC_HEAD_MISMATCH',
+        500
+      );
+    }
+
+    await prisma.workspace.update({
+      where: { id: executionWorkspace.id },
+      data: {
+        branchName: executionBranch,
+        baseBranch: input.targetBranchName,
+      },
+    });
+    this.refreshGitWatcher(executionWorkspace.id);
+
+    return { executionBranch };
+  }
+
   private async findDedicatedWorkspace(
     mainWorkspaceId: string,
     memberId: string,
@@ -817,11 +1868,22 @@ export class WorkspaceService {
     return this.withProjectMergeLock(
       workspace.task.projectId,
       options.lockOwnerId,
-      () => this.mergeWithLock(workspace, options.commitMessage)
+      () => this.mergeWithLock(workspace, options)
     );
   }
 
-  private async mergeWithLock(workspace: MergeWorkspaceRecord, commitMessage?: string): Promise<string> {
+  private async mergeWithLock(workspace: MergeWorkspaceRecord, options: MergeWorkspaceOptions): Promise<string> {
+    if (this.isTeamRunDedicatedChildWorkspace(workspace) && workspace.status === WorkspaceStatus.MERGED) {
+      if (!workspace.worktreePath) {
+        return '';
+      }
+      try {
+        return await this.getHeadSha(workspace.worktreePath);
+      } catch {
+        return '';
+      }
+    }
+
     if (workspace.status !== WorkspaceStatus.ACTIVE) {
       throw new ServiceError(
         `Cannot merge workspace in ${workspace.status} status`,
@@ -831,10 +1893,144 @@ export class WorkspaceService {
     }
 
     if (workspace.parentWorkspaceId) {
-      return this.mergeChildIntoParent(workspace, commitMessage);
+      if (this.isTeamRunDedicatedChildWorkspace(workspace)) {
+        await this.assertTeamRunChildMergeGate(workspace, options);
+      }
+      return this.mergeChildIntoParent(workspace, options.commitMessage);
     }
 
-    return this.mergeRootWorkspaceToMain(workspace, commitMessage);
+    return this.mergeRootWorkspaceToMain(workspace, options.commitMessage);
+  }
+
+  private isTeamRunDedicatedChildWorkspace(workspace: MergeWorkspaceRecord): workspace is TeamRunChildWorkspaceRecord {
+    return Boolean(
+      workspace.task.teamRun
+      && workspace.task.teamRun.mainWorkspaceId === workspace.parentWorkspaceId
+      && workspace.parentWorkspaceId
+      && workspace.ownerMemberId
+    );
+  }
+
+  private async getHeadSha(worktreePath: string): Promise<string> {
+    return (await execGit(worktreePath, ['rev-parse', 'HEAD'])).trim();
+  }
+
+  private async assertTeamRunChildMergeGate(
+    workspace: TeamRunChildWorkspaceRecord,
+    options: MergeWorkspaceOptions
+  ): Promise<void> {
+    const invocationId = options.invocationId ?? options.lockOwnerId;
+    if (!invocationId) {
+      throw new ServiceError(
+        'TeamRun workspace merge requires an agent invocation identity',
+        'TEAM_RUN_MERGE_INVOCATION_REQUIRED',
+        403
+      );
+    }
+
+    const invocation = await prisma.agentInvocation.findFirst({
+      where: {
+        id: invocationId,
+        teamRunId: workspace.task.teamRun.id,
+      },
+      select: {
+        id: true,
+        memberId: true,
+      },
+    });
+    if (!invocation) {
+      throw new ServiceError(
+        'Agent invocation identity is invalid for this TeamRun',
+        'FORBIDDEN',
+        403
+      );
+    }
+    if (options.requesterMemberId && options.requesterMemberId !== invocation.memberId) {
+      throw new ServiceError(
+        'Requester member does not match the agent invocation identity',
+        'FORBIDDEN',
+        403
+      );
+    }
+
+    const member = await prisma.teamMember.findFirst({
+      where: {
+        id: invocation.memberId,
+        teamRunId: workspace.task.teamRun.id,
+        membershipStatus: { not: 'REMOVED' },
+      },
+      select: {
+        id: true,
+        capabilities: true,
+      },
+    });
+    if (!member) {
+      throw new ServiceError(
+        'Current TeamRun member was not found',
+        'FORBIDDEN',
+        403
+      );
+    }
+
+    const capabilities = parseCapabilities(member.capabilities);
+    if (capabilities.mergeWorkspace !== true) {
+      throw new ServiceError(
+        'Current TeamRun member lacks required capabilities: mergeWorkspace',
+        'TEAM_RUN_MEMBER_CAPABILITY_REQUIRED',
+        403
+      );
+    }
+
+    const currentHeadSha = await this.getHeadSha(workspace.worktreePath);
+    const latestReview = await prisma.workspaceVerdict.findFirst({
+      where: {
+        workspaceId: workspace.id,
+        teamRunId: workspace.task.teamRun.id,
+        kind: 'REVIEW',
+      },
+      orderBy: [
+        { sequence: 'desc' },
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ],
+    });
+    if (!latestReview || latestReview.verdict !== 'APPROVED') {
+      throw new ServiceError(
+        'TeamRun workspace merge requires an approved review',
+        'REVIEW_REQUIRED',
+        409
+      );
+    }
+    if (latestReview.reviewedSha !== currentHeadSha) {
+      throw new ServiceError(
+        'Approved review is stale because the workspace HEAD changed',
+        'REVIEW_STALE',
+        409
+      );
+    }
+    if (!latestReview.reviewerMemberId || latestReview.reviewerMemberId === workspace.ownerMemberId) {
+      throw new ServiceError(
+        'Workspace owner cannot approve their own workspace for merge',
+        'SELF_REVIEW_FORBIDDEN',
+        409
+      );
+    }
+
+    const ownerActiveInvocation = await prisma.agentInvocation.findFirst({
+      where: {
+        teamRunId: workspace.task.teamRun.id,
+        memberId: workspace.ownerMemberId,
+        status: { in: ['QUEUED', 'RUNNING', 'SESSION_ENDED', 'WAITING_ROOM_REPLY'] },
+      },
+      select: { id: true },
+    });
+    if (ownerActiveInvocation) {
+      throw new ServiceError(
+        'Cannot merge while the workspace owner has active work',
+        'OWNER_HAS_ACTIVE_INVOCATION',
+        409
+      );
+    }
   }
 
   private async mergeChildIntoParent(workspace: MergeWorkspaceRecord, commitMessage?: string): Promise<string> {

@@ -58,6 +58,22 @@ function stringifyJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function initGitRepo(repoPath: string): string {
+  fs.mkdirSync(repoPath, { recursive: true });
+  git(repoPath, ['init']);
+  git(repoPath, ['checkout', '-B', 'main']);
+  git(repoPath, ['config', 'user.email', 'test@example.com']);
+  git(repoPath, ['config', 'user.name', 'Test User']);
+  fs.writeFileSync(path.join(repoPath, 'README.md'), '# test\n');
+  git(repoPath, ['add', 'README.md']);
+  git(repoPath, ['commit', '-m', 'initial commit']);
+  return git(repoPath, ['rev-parse', 'HEAD']).trim();
+}
+
 async function createTask(title = 'Team scheduler task', status = TaskStatus.TODO) {
   const project = await prisma.project.create({
     data: {
@@ -135,6 +151,15 @@ async function createWorkRequest(options: {
   cancelQueued?: boolean;
   instruction?: string;
   triggerMessageId?: string;
+  target?: {
+    targetKind: 'WORKSPACE_COMMIT';
+    targetPurpose: 'REVIEW' | 'TEST';
+    targetSourceWorkspaceId: string;
+    targetSourceMemberId?: string | null;
+    targetHeadSha: string;
+    targetBranchName: string;
+    targetPlanItemId?: string | null;
+  };
 }) {
   return prisma.workRequest.create({
     data: {
@@ -142,6 +167,7 @@ async function createWorkRequest(options: {
       requesterMemberId: null,
       requesterType: 'user',
       targetMemberId: options.targetMemberId,
+      ...(options.target ?? {}),
       triggerMessageId: options.triggerMessageId ?? `message-${Math.random().toString(16).slice(2)}`,
       instruction: options.instruction ?? 'Please do the work',
       ifBusy: options.ifBusy ?? 'queue',
@@ -1151,6 +1177,330 @@ describe('TeamSchedulerService', () => {
     ]));
   });
 
+  it('marks targeted review/test requests for non-dedicated members as failed', async () => {
+    const { workspace: sourceWorkspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [commandCapabilities],
+      workspacePolicies: ['shared'],
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      target: {
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: sourceWorkspace!.id,
+        targetHeadSha: 'a'.repeat(40),
+        targetBranchName: sourceWorkspace!.branchName,
+      },
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.planNext(teamRun.id)).resolves.toEqual([
+      expect.objectContaining({
+        workRequestId: request.id,
+        canStart: false,
+        blockedReason: 'unsupported_workspace_policy',
+      }),
+    ]);
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toEqual([]);
+    expect(sessionManager.create).not.toHaveBeenCalled();
+    const invocation = await prisma.agentInvocation.findFirst({ where: { workRequestId: request.id } });
+    expect(invocation).toMatchObject({
+      status: 'FAILED',
+      targetSyncError: expect.stringContaining('workspacePolicy=dedicated'),
+      targetKind: 'WORKSPACE_COMMIT',
+      targetPurpose: 'REVIEW',
+    });
+    expect(invocation?.targetSyncError).toContain('workspacePolicy=shared');
+    await expect(prisma.roomMessage.findFirst({ where: { senderInvocationId: invocation?.id ?? '' } })).resolves.toMatchObject({
+      senderType: 'system',
+      kind: 'system',
+      content: expect.stringContaining('change this TeamMember instance to workspacePolicy=dedicated'),
+      workRequestIds: JSON.stringify([request.id]),
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+  });
+
+  it('syncs a targeted dedicated execution workspace to the target commit before starting', async () => {
+    const repoPath = path.join(testDir, 'target-sync-success-repo');
+    const targetSha = initGitRepo(repoPath);
+    const { project, task } = await createTask('Target sync success task');
+    await prisma.project.update({ where: { id: project.id }, data: { repoPath } });
+    const teamRun = await prisma.teamRun.create({ data: { taskId: task.id, mode: 'AUTO' } });
+    const mainWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'main',
+        baseBranch: 'main',
+        worktreePath: repoPath,
+        workingDir: repoPath,
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.teamRun.update({ where: { id: teamRun.id }, data: { mainWorkspaceId: mainWorkspace.id } });
+    const sourceWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: null,
+        branchName: 'source-delivery',
+        baseBranch: 'main',
+        worktreePath: repoPath,
+        workingDir: repoPath,
+        status: 'ACTIVE',
+      },
+    });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        presetId: null,
+        name: 'Tester',
+        aliases: stringifyJson(['tester']),
+        providerId: 'provider-1',
+        rolePrompt: 'Test role',
+        capabilities: stringifyJson(commandCapabilities),
+        workspacePolicy: 'dedicated',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
+        queueManagementPolicy: 'own_only',
+        avatar: null,
+      },
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: member.id,
+      target: {
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'TEST',
+        targetSourceWorkspaceId: sourceWorkspace.id,
+        targetHeadSha: targetSha,
+        targetBranchName: sourceWorkspace.branchName,
+        targetPlanItemId: 'plan-sync',
+      },
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    const invocation = await prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocations[0]!.id } });
+    expect(invocation).toMatchObject({
+      workRequestId: request.id,
+      targetKind: 'WORKSPACE_COMMIT',
+      targetPurpose: 'TEST',
+      targetSourceWorkspaceId: sourceWorkspace.id,
+      targetHeadSha: targetSha,
+      targetSyncStatus: 'SYNCED',
+      targetSyncError: null,
+      targetPlanItemId: 'plan-sync',
+      targetPort: expect.any(Number),
+      targetVitePort: expect.any(Number),
+      targetE2EPort: expect.any(Number),
+    });
+    expect(invocation.targetExecutionBranch).toBe(`at/team/${teamRun.id.slice(0, 8)}/target/test-${member.id.slice(0, 8)}-${targetSha.slice(0, 12)}`);
+    const executionWorkspace = await prisma.workspace.findUniqueOrThrow({ where: { id: invocation.workspaceId! } });
+    expect(executionWorkspace.branchName).toBe(invocation.targetExecutionBranch);
+    expect(git(executionWorkspace.worktreePath, ['rev-parse', 'HEAD']).trim()).toBe(targetSha);
+    expect(sessionManager.create).toHaveBeenCalledWith(
+      executionWorkspace.id,
+      AgentType.CODEX,
+      buildExpectedSessionPrompt(
+        'Test role',
+        [
+          'Target sync success task',
+          [
+            'Target commit handoff:',
+            '- purpose: TEST',
+            `- sourceWorkspaceId: ${sourceWorkspace.id}`,
+            `- targetHeadSha: ${targetSha}`,
+            `- sourceBranch: ${sourceWorkspace.branchName}`,
+            '- planItemId: plan-sync',
+            '- The execution workspace is synced to targetHeadSha before this session starts.',
+            '- Record review/test verdicts against sourceWorkspaceId with reviewed_sha=targetHeadSha.',
+          ].join('\n'),
+          'Work request summary:\nPlease do the work',
+        ].join('\n\n')
+      ),
+      'DEFAULT',
+      member.providerId
+    );
+  }, 15_000);
+
+  it('fails targeted sync when the execution workspace is dirty', async () => {
+    const repoPath = path.join(testDir, 'target-sync-dirty-repo');
+    const targetSha = initGitRepo(repoPath);
+    const { project, task } = await createTask('Target sync dirty task');
+    await prisma.project.update({ where: { id: project.id }, data: { repoPath } });
+    const teamRun = await prisma.teamRun.create({ data: { taskId: task.id, mode: 'AUTO' } });
+    const mainWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'main',
+        baseBranch: 'main',
+        worktreePath: repoPath,
+        workingDir: repoPath,
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.teamRun.update({ where: { id: teamRun.id }, data: { mainWorkspaceId: mainWorkspace.id } });
+    const sourceWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: null,
+        branchName: 'source-delivery-dirty',
+        baseBranch: 'main',
+        worktreePath: repoPath,
+        workingDir: repoPath,
+        status: 'ACTIVE',
+      },
+    });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        presetId: null,
+        name: 'Reviewer',
+        aliases: stringifyJson(['reviewer']),
+        providerId: 'provider-1',
+        rolePrompt: 'Review role',
+        capabilities: stringifyJson(commandCapabilities),
+        workspacePolicy: 'dedicated',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
+        queueManagementPolicy: 'own_only',
+        avatar: null,
+      },
+    });
+    const executionWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: member.id,
+        branchName: `at/team/${teamRun.id.slice(0, 8)}/member-${member.id.slice(0, 8)}`,
+        baseBranch: mainWorkspace.branchName,
+        worktreePath: await import('../../git/worktree.manager.js').then(async ({ WorktreeManager }) => {
+          const manager = new WorktreeManager(repoPath);
+          return manager.create(`at/team/${teamRun.id.slice(0, 8)}/member-${member.id.slice(0, 8)}`);
+        }),
+        status: 'ACTIVE',
+      },
+    });
+    fs.writeFileSync(path.join(executionWorkspace.worktreePath, 'dirty.txt'), 'dirty');
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: member.id,
+      target: {
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: sourceWorkspace.id,
+        targetHeadSha: targetSha,
+        targetBranchName: sourceWorkspace.branchName,
+      },
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toEqual([]);
+    expect(sessionManager.create).not.toHaveBeenCalled();
+    await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: request.id } })).resolves.toMatchObject({
+      workspaceId: executionWorkspace.id,
+      status: 'FAILED',
+      targetSyncStatus: 'FAILED',
+      targetSyncError: expect.stringContaining('Execution workspace has uncommitted changes'),
+    });
+  }, 15_000);
+
+  it('fails targeted sync when the target commit does not exist', async () => {
+    const repoPath = path.join(testDir, 'target-sync-missing-sha-repo');
+    initGitRepo(repoPath);
+    const { project, task } = await createTask('Target sync missing sha task');
+    await prisma.project.update({ where: { id: project.id }, data: { repoPath } });
+    const teamRun = await prisma.teamRun.create({ data: { taskId: task.id, mode: 'AUTO' } });
+    const mainWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'main',
+        baseBranch: 'main',
+        worktreePath: repoPath,
+        workingDir: repoPath,
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.teamRun.update({ where: { id: teamRun.id }, data: { mainWorkspaceId: mainWorkspace.id } });
+    const sourceWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: null,
+        branchName: 'source-delivery-missing',
+        baseBranch: 'main',
+        worktreePath: repoPath,
+        workingDir: repoPath,
+        status: 'ACTIVE',
+      },
+    });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        presetId: null,
+        name: 'Reviewer',
+        aliases: stringifyJson(['reviewer']),
+        providerId: 'provider-1',
+        rolePrompt: 'Review role',
+        capabilities: stringifyJson(commandCapabilities),
+        workspacePolicy: 'dedicated',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
+        queueManagementPolicy: 'own_only',
+        avatar: null,
+      },
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: member.id,
+      target: {
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: sourceWorkspace.id,
+        targetHeadSha: 'f'.repeat(40),
+        targetBranchName: sourceWorkspace.branchName,
+      },
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    expect(sessionManager.create).not.toHaveBeenCalled();
+    await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      targetSyncStatus: 'FAILED',
+      targetSyncError: expect.stringContaining('git cat-file -e'),
+    });
+  }, 15_000);
+
   it('records the dedicated child workspace for queued no-session invocations', async () => {
     const { workspace: mainWorkspace, teamRun, members } = await createTeamRunFixture({
       memberCapabilities: [writeCapabilities],
@@ -1498,6 +1848,89 @@ describe('TeamSchedulerService', () => {
       prompt: buildExpectedSessionPrompt('Role 1', 'Team scheduler task\n\nWork request summary:\nContinue with context'),
       status: 'RUNNING',
     });
+  });
+
+  it('does not resume targeted requests across different targetHeadSha values', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture({
+      sessionPolicies: ['resume_last'],
+    });
+    const previousRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+      target: {
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: workspace!.id,
+        targetHeadSha: '1'.repeat(40),
+        targetBranchName: workspace!.branchName,
+      },
+    });
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'previous prompt',
+        status: 'COMPLETED',
+        logSnapshot: JSON.stringify({ sessionId: 'agent-native-session-previous-target', entries: [] }),
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: previousRequest.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace!.id,
+        sessionId: previousSession.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: workspace!.id,
+        targetHeadSha: '1'.repeat(40),
+        targetBranchName: workspace!.branchName,
+        targetSyncStatus: 'SYNCED',
+        status: 'COMPLETED',
+      },
+    });
+    const nextRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      instruction: 'Review a different target',
+      target: {
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: workspace!.id,
+        targetHeadSha: '2'.repeat(40),
+        targetBranchName: workspace!.branchName,
+      },
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: {
+        create: vi.fn(),
+        getOrCreateDedicatedWorkspace: vi.fn(async () => workspace!),
+        prepareTargetedExecutionWorkspace: vi.fn(async () => ({
+          executionBranch: 'target-review-branch',
+        })),
+      },
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+    await prisma.teamMember.update({
+      where: { id: members[0]!.id },
+      data: { workspacePolicy: 'dedicated' },
+    });
+
+    const invocations = await service.startNextSessions(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({
+      workRequestId: nextRequest.id,
+      targetHeadSha: '2'.repeat(40),
+      targetSyncStatus: 'SYNCED',
+    });
+    expect(sessionManager.start).toHaveBeenCalledWith(invocations[0]!.sessionId);
+    expect(sessionManager.startFollowUp).not.toHaveBeenCalled();
   });
 
   it('starts new_per_request members without resuming previous native context', async () => {

@@ -19,6 +19,7 @@ const {
   deleteBranchIfSafeMock,
   mergeWorktreeMock,
   mergeIntoWorktreeMock,
+  getGitOperationStatusMock,
   execGitMock,
   refreshWorkspaceGitWatcherMock,
   unwatchWorkspaceGitWatcherMock,
@@ -29,6 +30,7 @@ const {
   deleteBranchIfSafeMock: vi.fn(),
   mergeWorktreeMock: vi.fn(),
   mergeIntoWorktreeMock: vi.fn(),
+  getGitOperationStatusMock: vi.fn(),
   execGitMock: vi.fn(),
   refreshWorkspaceGitWatcherMock: vi.fn(async () => undefined),
   unwatchWorkspaceGitWatcherMock: vi.fn(),
@@ -43,7 +45,7 @@ vi.mock('../../git/worktree.manager.js', () => ({
       deleteBranchIfSafe: deleteBranchIfSafeMock,
       getDiff: vi.fn(),
       rebase: vi.fn(),
-      getGitOperationStatus: vi.fn(),
+      getGitOperationStatus: getGitOperationStatusMock,
       abortOperation: vi.fn(),
       merge: mergeWorktreeMock,
       mergeIntoWorktree: mergeIntoWorktreeMock,
@@ -60,6 +62,9 @@ vi.mock('../../git/git-cli.js', () => ({
 execGitMock.mockImplementation(async (_repoPath: string, args: string[]) => {
     if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) {
       return 'main\n';
+    }
+    if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+      return 'child-head-sha\n';
     }
     if (args[0] === 'status') {
       return '';
@@ -143,6 +148,149 @@ async function createTeamRunWithMember(options: { workspacePolicy?: string } = {
   return { project, task, teamRun, member };
 }
 
+async function addTeamMember(teamRunId: string, overrides: {
+  name?: string;
+  capabilities?: Record<string, unknown>;
+} = {}) {
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return prisma.teamMember.create({
+    data: {
+      teamRunId,
+      presetId: null,
+      name: overrides.name ?? `Member ${suffix}`,
+      aliases: JSON.stringify([`member-${suffix}`]),
+      providerId: `provider-${suffix}`,
+      rolePrompt: `Role ${suffix}`,
+      capabilities: JSON.stringify(overrides.capabilities ?? {}),
+      workspacePolicy: 'dedicated',
+      triggerPolicy: 'MENTION_ONLY',
+      sessionPolicy: 'new_per_request',
+      avatar: null,
+    },
+  });
+}
+
+async function createTeamRunChildMergeFixture(options: {
+  mergerCapabilities?: Record<string, unknown>;
+  reviewVerdict?: 'APPROVED' | 'CHANGES_REQUESTED';
+  reviewSha?: string;
+  reviewerIsOwner?: boolean;
+  childStatus?: string;
+} = {}) {
+  const { task, teamRun, member: owner } = await createTeamRunWithMember();
+  await prisma.task.update({
+    where: { id: task.id },
+    data: { status: 'IN_REVIEW' },
+  });
+  const reviewer = options.reviewerIsOwner
+    ? owner
+    : await addTeamMember(teamRun.id, { name: 'Reviewer', capabilities: { readDiff: true } });
+  const merger = await addTeamMember(teamRun.id, {
+    name: 'Merger',
+    capabilities: options.mergerCapabilities ?? { mergeWorkspace: true },
+  });
+  const mainWorkspace = await prisma.workspace.create({
+    data: {
+      taskId: task.id,
+      branchName: 'team-main',
+      baseBranch: 'main',
+      worktreePath: path.join(testDir, 'team-main'),
+      status: 'ACTIVE',
+    },
+  });
+  await prisma.teamRun.update({
+    where: { id: teamRun.id },
+    data: { mainWorkspaceId: mainWorkspace.id },
+  });
+  const childWorkspace = await prisma.workspace.create({
+    data: {
+      taskId: task.id,
+      parentWorkspaceId: mainWorkspace.id,
+      ownerMemberId: owner.id,
+      branchName: 'dedicated-child',
+      baseBranch: mainWorkspace.branchName,
+      worktreePath: path.join(testDir, 'dedicated-child'),
+      status: options.childStatus ?? 'ACTIVE',
+    },
+  });
+  const request = await prisma.workRequest.create({
+    data: {
+      teamRunId: teamRun.id,
+      requesterMemberId: null,
+      requesterType: 'user',
+      targetMemberId: merger.id,
+      triggerMessageId: await createRoomMessageId(teamRun.id),
+      instruction: 'merge workspace',
+      status: 'STARTED',
+    },
+  });
+  const invocation = await prisma.agentInvocation.create({
+    data: {
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: merger.id,
+      workspaceId: mainWorkspace.id,
+      status: 'RUNNING',
+    },
+  });
+
+  if (options.reviewVerdict) {
+    await prisma.workspaceVerdict.create({
+      data: {
+        workspaceId: childWorkspace.id,
+        teamRunId: teamRun.id,
+        kind: 'REVIEW',
+        verdict: options.reviewVerdict,
+        reviewedSha: options.reviewSha ?? 'child-head-sha',
+        reviewerMemberId: reviewer.id,
+        reason: 'reviewed',
+        sequence: 1,
+      },
+    });
+  }
+
+  return { task, teamRun, owner, reviewer, merger, mainWorkspace, childWorkspace, invocation };
+}
+
+async function createMergeInvocation(teamRunId: string, memberId: string, workspaceId: string) {
+  const request = await prisma.workRequest.create({
+    data: {
+      teamRunId,
+      requesterMemberId: null,
+      requesterType: 'user',
+      targetMemberId: memberId,
+      triggerMessageId: await createRoomMessageId(teamRunId),
+      instruction: 'merge workspace',
+      status: 'STARTED',
+    },
+  });
+
+  return prisma.agentInvocation.create({
+    data: {
+      teamRunId,
+      workRequestId: request.id,
+      memberId,
+      workspaceId,
+      status: 'RUNNING',
+    },
+  });
+}
+
+async function createRoomMessageId(teamRunId: string): Promise<string> {
+  const message = await prisma.roomMessage.create({
+    data: {
+      teamRunId,
+      senderType: 'user',
+      senderId: null,
+      senderInvocationId: null,
+      kind: 'chat',
+      content: 'trigger',
+      mentions: '[]',
+    },
+  });
+  return message.id;
+}
+
 function mockCreatedWorktreePath(branchName: string) {
   const worktreePath = path.join(testDir, 'created-worktrees', branchName);
   fs.mkdirSync(path.join(worktreePath, '.git'), { recursive: true });
@@ -181,6 +329,9 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
       if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) {
         return 'main\n';
       }
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+        return 'child-head-sha\n';
+      }
       if (args[0] === 'status') {
         return '';
       }
@@ -202,6 +353,16 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
       sha: 'child-merge-sha',
       sourceBranch: 'dedicated-child',
       targetBranch: 'team-main',
+    });
+    getGitOperationStatusMock.mockResolvedValue({
+      operation: 'idle',
+      conflictedFiles: [],
+      conflictOp: null,
+      ahead: 1,
+      behind: 0,
+      hasUncommittedChanges: false,
+      uncommittedCount: 0,
+      untrackedCount: 0,
     });
     service = new WorkspaceService();
 
@@ -664,8 +825,26 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
         status: 'ACTIVE',
       },
     });
+    const reviewer = await addTeamMember(teamRun.id, { name: 'Reviewer', capabilities: { readDiff: true } });
+    const merger = await addTeamMember(teamRun.id, { name: 'Merger', capabilities: { mergeWorkspace: true } });
+    const invocation = await createMergeInvocation(teamRun.id, merger.id, mainWorkspace.id);
+    await prisma.workspaceVerdict.create({
+      data: {
+        workspaceId: childWorkspace.id,
+        teamRunId: teamRun.id,
+        kind: 'REVIEW',
+        verdict: 'APPROVED',
+        reviewedSha: 'child-head-sha',
+        reviewerMemberId: reviewer.id,
+        reason: 'approved',
+      },
+    });
 
-    const sha = await service.merge(childWorkspace.id, 'merge child');
+    const sha = await service.merge(childWorkspace.id, {
+      commitMessage: 'merge child',
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    });
 
     expect(sha).toBe('child-merge-sha');
     expect(mergeIntoWorktreeMock).toHaveBeenCalledWith(
@@ -706,6 +885,20 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
         status: 'ACTIVE',
       },
     });
+    const reviewer = await addTeamMember(teamRun.id, { name: 'Reviewer', capabilities: { readDiff: true } });
+    const merger = await addTeamMember(teamRun.id, { name: 'Merger', capabilities: { mergeWorkspace: true } });
+    const invocation = await createMergeInvocation(teamRun.id, merger.id, mainWorkspace.id);
+    await prisma.workspaceVerdict.create({
+      data: {
+        workspaceId: childWorkspace.id,
+        teamRunId: teamRun.id,
+        kind: 'REVIEW',
+        verdict: 'APPROVED',
+        reviewedSha: 'child-head-sha',
+        reviewerMemberId: reviewer.id,
+        reason: 'approved',
+      },
+    });
     await prisma.session.create({
       data: {
         workspaceId: mainWorkspace.id,
@@ -715,10 +908,858 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
       },
     });
 
-    await expect(service.merge(childWorkspace.id)).rejects.toMatchObject({
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    })).rejects.toMatchObject({
       code: 'PARENT_WORKSPACE_HAS_ACTIVE_SESSION',
     });
     expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects TeamRun dedicated child merge without an approved review', async () => {
+    const { childWorkspace, invocation } = await createTeamRunChildMergeFixture();
+
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    })).rejects.toMatchObject({
+      code: 'REVIEW_REQUIRED',
+      statusCode: 409,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects TeamRun dedicated child merge when the approved review SHA is stale', async () => {
+    const { childWorkspace, invocation } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+      reviewSha: 'old-sha',
+    });
+
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    })).rejects.toMatchObject({
+      code: 'REVIEW_STALE',
+      statusCode: 409,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects TeamRun dedicated child merge when the latest review requests changes', async () => {
+    const { teamRun, childWorkspace, invocation, reviewer } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    const sameCreatedAt = new Date(Date.UTC(2026, 0, 1, 0, 0, 0));
+    await prisma.workspaceVerdict.updateMany({
+      where: {
+        workspaceId: childWorkspace.id,
+        kind: 'REVIEW',
+        verdict: 'APPROVED',
+      },
+      data: {
+        createdAt: sameCreatedAt,
+        sequence: 1,
+      },
+    });
+    await prisma.workspaceVerdict.create({
+      data: {
+        workspaceId: childWorkspace.id,
+        teamRunId: teamRun.id,
+        kind: 'REVIEW',
+        verdict: 'CHANGES_REQUESTED',
+        reviewedSha: 'child-head-sha',
+        reviewerMemberId: reviewer.id,
+        reason: 'needs changes',
+        createdAt: sameCreatedAt,
+        sequence: 2,
+      },
+    });
+
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    })).rejects.toMatchObject({
+      code: 'REVIEW_REQUIRED',
+      statusCode: 409,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects ACTIVE TeamRun dedicated child merge when the invocation identity is missing', async () => {
+    const { childWorkspace } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+
+    await expect(service.merge(childWorkspace.id)).rejects.toMatchObject({
+      code: 'TEAM_RUN_MERGE_INVOCATION_REQUIRED',
+      statusCode: 403,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects ACTIVE TeamRun dedicated child merge when the invocation identity is invalid', async () => {
+    const { childWorkspace } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: 'missing-invocation',
+      invocationId: 'missing-invocation',
+    })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      statusCode: 403,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects TeamRun dedicated child merge when the owner approved their own workspace', async () => {
+    const { childWorkspace, invocation } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+      reviewerIsOwner: true,
+    });
+
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    })).rejects.toMatchObject({
+      code: 'SELF_REVIEW_FORBIDDEN',
+      statusCode: 409,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects TeamRun dedicated child merge when the owner has active work', async () => {
+    const { teamRun, owner, childWorkspace, invocation } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    const ownerRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: owner.id,
+        triggerMessageId: await createRoomMessageId(teamRun.id),
+        instruction: 'continue writing',
+        status: 'STARTED',
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: ownerRequest.id,
+        memberId: owner.id,
+        workspaceId: childWorkspace.id,
+        status: 'RUNNING',
+      },
+    });
+
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    })).rejects.toMatchObject({
+      code: 'OWNER_HAS_ACTIVE_INVOCATION',
+      statusCode: 409,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects TeamRun dedicated child merge when the parent has active write sessions after review passes', async () => {
+    const { mainWorkspace, childWorkspace, invocation } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    await prisma.session.create({
+      data: {
+        workspaceId: mainWorkspace.id,
+        agentType: 'CODEX',
+        prompt: 'write on parent',
+        status: 'RUNNING',
+      },
+    });
+
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    })).rejects.toMatchObject({
+      code: 'PARENT_WORKSPACE_HAS_ACTIVE_SESSION',
+      statusCode: 409,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects TeamRun dedicated child merge for an invocation without mergeWorkspace capability', async () => {
+    const { childWorkspace, invocation } = await createTeamRunChildMergeFixture({
+      mergerCapabilities: { mergeWorkspace: false },
+      reviewVerdict: 'APPROVED',
+    });
+
+    await expect(service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    })).rejects.toMatchObject({
+      code: 'TEAM_RUN_MEMBER_CAPABILITY_REQUIRED',
+      statusCode: 403,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('returns idempotent success when a TeamRun dedicated child workspace is already merged', async () => {
+    const { childWorkspace, invocation } = await createTeamRunChildMergeFixture({
+      childStatus: 'MERGED',
+    });
+
+    const sha = await service.merge(childWorkspace.id, {
+      lockOwnerId: invocation.id,
+      invocationId: invocation.id,
+    });
+
+    expect(sha).toBe('child-head-sha');
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('lists mergeable TeamRun workspaces with review, activity, and behind warnings', async () => {
+    const { teamRun, childWorkspace } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    getGitOperationStatusMock.mockResolvedValueOnce({
+      operation: 'idle',
+      conflictedFiles: [],
+      conflictOp: null,
+      ahead: 2,
+      behind: 1,
+      hasUncommittedChanges: false,
+      uncommittedCount: 0,
+      untrackedCount: 0,
+    });
+
+    const response = await service.listTeamRunMergeableWorkspaces(teamRun.id);
+
+    expect(response).toMatchObject({
+      teamRunId: teamRun.id,
+      taskId: childWorkspace.taskId,
+      workspaces: [
+        expect.objectContaining({
+          workspaceId: childWorkspace.id,
+          headSha: 'child-head-sha',
+          mergeReady: true,
+          latestReview: expect.objectContaining({
+            verdict: 'APPROVED',
+            reviewedSha: 'child-head-sha',
+            matchesHead: true,
+            isSelfReview: false,
+          }),
+          git: expect.objectContaining({
+            aheadOfMain: 2,
+            behindMain: 1,
+            clean: true,
+          }),
+          blockers: [
+            expect.objectContaining({
+              code: 'BEHIND_MAIN',
+              severity: 'WARNING',
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
+  it('reports readiness blockers for stale reviews, owner activity, and parent activity', async () => {
+    const { teamRun, owner, childWorkspace, mainWorkspace } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+      reviewSha: 'old-sha',
+    });
+    const ownerRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: owner.id,
+        triggerMessageId: await createRoomMessageId(teamRun.id),
+        instruction: 'continue writing',
+        status: 'STARTED',
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: ownerRequest.id,
+        memberId: owner.id,
+        workspaceId: childWorkspace.id,
+        status: 'RUNNING',
+      },
+    });
+    await prisma.session.create({
+      data: {
+        workspaceId: mainWorkspace.id,
+        agentType: 'CODEX',
+        prompt: 'write on parent',
+        status: 'RUNNING',
+      },
+    });
+
+    const response = await service.listTeamRunMergeableWorkspaces(teamRun.id);
+    const item = response.workspaces[0]!;
+
+    expect(item.mergeReady).toBe(false);
+    expect(item.blockers.map((entry) => entry.code)).toEqual(expect.arrayContaining([
+      'REVIEW_STALE',
+      'OWNER_HAS_ACTIVE_INVOCATION',
+      'PARENT_WORKSPACE_HAS_ACTIVE_SESSION',
+    ]));
+  });
+
+  it('dry-runs batch member merges without changing workspace state', async () => {
+    const { teamRun, childWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+
+    const result = await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+      dryRun: true,
+    });
+
+    expect(result.summary).toMatchObject({
+      requested: 1,
+      considered: 1,
+      wouldMerge: 1,
+      merged: 0,
+    });
+    expect(result.results[0]).toMatchObject({
+      workspaceId: childWorkspace.id,
+      status: 'WOULD_MERGE',
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+    await expect(prisma.workspace.findUnique({ where: { id: childWorkspace.id } })).resolves.toMatchObject({
+      status: 'ACTIVE',
+    });
+  });
+
+  it('treats an explicit empty workspaceIds batch request as an empty no-op', async () => {
+    const { teamRun, childWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+
+    const result = await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+      workspaceIds: [],
+    });
+
+    expect(result.summary).toMatchObject({
+      requested: 0,
+      considered: 0,
+      merged: 0,
+      skipped: 0,
+      conflicts: 0,
+      failed: 0,
+    });
+    expect(result.requestedWorkspaceIds).toEqual([]);
+    expect(result.results).toEqual([]);
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+    await expect(prisma.workspace.findUnique({ where: { id: childWorkspace.id } })).resolves.toMatchObject({
+      status: 'ACTIVE',
+    });
+  });
+
+  it('batch merge defaults to only merge-ready member workspaces', async () => {
+    const { teamRun, childWorkspace, invocation, merger, mainWorkspace } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    const blockedOwner = await addTeamMember(teamRun.id, { name: 'Blocked owner' });
+    const blockedWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: childWorkspace.taskId,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: blockedOwner.id,
+        branchName: 'blocked-child',
+        baseBranch: mainWorkspace.branchName,
+        worktreePath: path.join(testDir, 'blocked-child'),
+        status: 'ACTIVE',
+      },
+    });
+
+    const result = await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+    });
+
+    expect(result.summary).toMatchObject({
+      requested: 2,
+      considered: 2,
+      merged: 1,
+      skipped: 1,
+    });
+    expect(result.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        workspaceId: childWorkspace.id,
+        status: 'MERGED',
+        sha: 'child-merge-sha',
+      }),
+      expect.objectContaining({
+        workspaceId: blockedWorkspace.id,
+        status: 'SKIPPED',
+        code: 'REVIEW_REQUIRED',
+      }),
+    ]));
+    expect(mergeIntoWorktreeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('batch merge returns idempotent results for already merged workspaces', async () => {
+    const { teamRun, childWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
+      childStatus: 'MERGED',
+    });
+
+    const result = await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+    });
+
+    expect(result.summary).toMatchObject({
+      requested: 1,
+      considered: 1,
+      alreadyMerged: 1,
+      merged: 0,
+    });
+    expect(result.results[0]).toMatchObject({
+      workspaceId: childWorkspace.id,
+      status: 'ALREADY_MERGED',
+      sha: 'child-head-sha',
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects batch member merge when invocation lacks mergeWorkspace capability', async () => {
+    const { teamRun, invocation, merger } = await createTeamRunChildMergeFixture({
+      mergerCapabilities: { mergeWorkspace: false },
+      reviewVerdict: 'APPROVED',
+    });
+
+    await expect(service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+    })).rejects.toMatchObject({
+      code: 'TEAM_RUN_MEMBER_CAPABILITY_REQUIRED',
+      statusCode: 403,
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('continues batch member merge after per-workspace failure', async () => {
+    const { teamRun, childWorkspace, invocation, merger, mainWorkspace } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    const secondOwner = await addTeamMember(teamRun.id, { name: 'Second owner' });
+    const secondWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: childWorkspace.taskId,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: secondOwner.id,
+        branchName: 'second-child',
+        baseBranch: mainWorkspace.branchName,
+        worktreePath: path.join(testDir, 'second-child'),
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.workspaceVerdict.create({
+      data: {
+        workspaceId: secondWorkspace.id,
+        teamRunId: teamRun.id,
+        kind: 'REVIEW',
+        verdict: 'APPROVED',
+        reviewedSha: 'child-head-sha',
+        reviewerMemberId: merger.id,
+        reason: 'approved',
+        sequence: 1,
+      },
+    });
+    mergeIntoWorktreeMock
+      .mockRejectedValueOnce(Object.assign(new Error('git failed'), { code: 'GIT_ERROR' }))
+      .mockResolvedValueOnce({
+        sha: 'second-merge-sha',
+        sourceBranch: 'second-child',
+        targetBranch: 'team-main',
+      });
+
+    const result = await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+    });
+
+    expect(result.summary).toMatchObject({
+      requested: 2,
+      considered: 2,
+      failed: 1,
+      merged: 1,
+    });
+    expect(result.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        workspaceId: childWorkspace.id,
+        status: 'FAILED',
+        code: 'GIT_ERROR',
+      }),
+      expect.objectContaining({
+        workspaceId: secondWorkspace.id,
+        status: 'MERGED',
+        sha: 'second-merge-sha',
+      }),
+    ]));
+    expect(mergeIntoWorktreeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns conflict item details from batch member merge', async () => {
+    const { teamRun, childWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    const conflictError = Object.assign(new Error('Merge conflict in files: file.txt'), {
+      name: 'MergeConflictError',
+      code: 'MERGE_CONFLICT',
+      conflictedFiles: ['file.txt'],
+      sourceBranch: childWorkspace.branchName,
+      targetBranch: 'team-main',
+      sourceWorkspaceId: childWorkspace.id,
+      targetWorkspaceId: 'main-workspace',
+    });
+    mergeIntoWorktreeMock.mockRejectedValueOnce(conflictError);
+
+    const result = await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+      stopOnConflict: true,
+    });
+
+    expect(result.summary).toMatchObject({
+      conflicts: 1,
+      merged: 0,
+    });
+    expect(result.results[0]).toMatchObject({
+      workspaceId: childWorkspace.id,
+      status: 'CONFLICT',
+      code: 'MERGE_CONFLICT',
+      conflictedFiles: ['file.txt'],
+    });
+  });
+
+  it('releases the project merge lock after batch member merge failure', async () => {
+    const lockService = new TeamLockService();
+    service = new WorkspaceService(lockService);
+    const { teamRun, invocation, merger } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    mergeIntoWorktreeMock.mockRejectedValueOnce(Object.assign(new Error('git failed'), { code: 'GIT_ERROR' }));
+
+    await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+    });
+
+    expect(lockService.listLocks()).toEqual([]);
+  });
+
+  it('reuses an existing project merge lock held by the same invocation', async () => {
+    const lockService = new TeamLockService();
+    service = new WorkspaceService(lockService);
+    const { task, teamRun, childWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    const lockKey = `project:${task.projectId}:merge`;
+    expect(lockService.acquire(invocation.id, [lockKey])).toBe(true);
+
+    const result = await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+    });
+
+    expect(result.results[0]).toMatchObject({
+      workspaceId: childWorkspace.id,
+      status: 'MERGED',
+    });
+    expect(lockService.isHeldBy(invocation.id, lockKey)).toBe(true);
+    lockService.release(invocation.id, [lockKey]);
+  });
+
+  it('records workspace review and test verdicts for the current HEAD', async () => {
+    const { teamRun, childWorkspace } = await createTeamRunChildMergeFixture();
+    const reviewer = await addTeamMember(teamRun.id, {
+      name: 'Review And Test',
+      capabilities: { readDiff: true, runCommands: true },
+    });
+
+    const review = await service.recordVerdict(childWorkspace.id, {
+      kind: 'REVIEW',
+      verdict: 'APPROVED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: reviewer.id,
+      reason: 'looks good',
+    });
+    const test = await service.recordVerdict(childWorkspace.id, {
+      kind: 'TEST',
+      verdict: 'PASSED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: reviewer.id,
+      reason: 'unit tests passed',
+    });
+
+    expect(review).toMatchObject({
+      workspaceId: childWorkspace.id,
+      kind: 'REVIEW',
+      verdict: 'APPROVED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: reviewer.id,
+      sequence: 1,
+    });
+    expect(test).toMatchObject({
+      workspaceId: childWorkspace.id,
+      kind: 'TEST',
+      verdict: 'PASSED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: reviewer.id,
+      sequence: 1,
+    });
+    await expect(service.listVerdicts(childWorkspace.id)).resolves.toHaveLength(2);
+  });
+
+  it('resolves targeted invocation identity for verdicts recorded on the source workspace', async () => {
+    const { teamRun, mainWorkspace, childWorkspace } = await createTeamRunChildMergeFixture();
+    const reviewer = await addTeamMember(teamRun.id, {
+      name: 'Targeted Reviewer',
+      capabilities: { readDiff: true },
+    });
+    const executionWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: childWorkspace.taskId,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: reviewer.id,
+        branchName: 'targeted-review-execution',
+        baseBranch: childWorkspace.branchName,
+        worktreePath: path.join(testDir, 'targeted-review-execution'),
+        status: 'ACTIVE',
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: reviewer.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: childWorkspace.id,
+        targetHeadSha: 'child-head-sha',
+        targetBranchName: childWorkspace.branchName,
+        triggerMessageId: await createRoomMessageId(teamRun.id),
+        instruction: 'review target commit',
+        status: 'STARTED',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: reviewer.id,
+        workspaceId: executionWorkspace.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: childWorkspace.id,
+        targetHeadSha: 'child-head-sha',
+        targetBranchName: childWorkspace.branchName,
+        targetSyncStatus: 'SYNCED',
+        status: 'RUNNING',
+      },
+    });
+
+    const identity = await service.resolveInvocationMemberForWorkspace(childWorkspace.id, invocation.id);
+    expect(identity).toMatchObject({
+      teamRunId: teamRun.id,
+      memberId: reviewer.id,
+      invocationId: invocation.id,
+    });
+
+    const review = await service.recordVerdict(childWorkspace.id, {
+      kind: 'REVIEW',
+      verdict: 'APPROVED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: identity!.memberId,
+      reason: 'target commit reviewed',
+    });
+
+    expect(review).toMatchObject({
+      workspaceId: childWorkspace.id,
+      kind: 'REVIEW',
+      verdict: 'APPROVED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: reviewer.id,
+    });
+  });
+
+  it('rejects targeted workspace verdicts when the source workspace HEAD moved past targetHeadSha', async () => {
+    const { teamRun, mainWorkspace, childWorkspace } = await createTeamRunChildMergeFixture();
+    const reviewer = await addTeamMember(teamRun.id, {
+      name: 'Stale Target Reviewer',
+      capabilities: { readDiff: true },
+    });
+    const executionWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: childWorkspace.taskId,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: reviewer.id,
+        branchName: 'stale-target-execution',
+        baseBranch: childWorkspace.branchName,
+        worktreePath: path.join(testDir, 'stale-target-execution'),
+        status: 'ACTIVE',
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: reviewer.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: childWorkspace.id,
+        targetHeadSha: 'old-target-sha',
+        targetBranchName: childWorkspace.branchName,
+        triggerMessageId: await createRoomMessageId(teamRun.id),
+        instruction: 'review old target',
+        status: 'STARTED',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: reviewer.id,
+        workspaceId: executionWorkspace.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: childWorkspace.id,
+        targetHeadSha: 'old-target-sha',
+        targetBranchName: childWorkspace.branchName,
+        targetSyncStatus: 'SYNCED',
+        status: 'RUNNING',
+      },
+    });
+    const identity = await service.resolveInvocationMemberForWorkspace(childWorkspace.id, invocation.id);
+
+    await expect(service.recordVerdict(childWorkspace.id, {
+      kind: 'REVIEW',
+      verdict: 'APPROVED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: identity!.memberId,
+      expectedTargetHeadSha: identity!.targetHeadSha,
+    })).rejects.toMatchObject({
+      code: 'TARGET_VERDICT_STALE',
+      statusCode: 409,
+    });
+  });
+
+  it('rejects targeted workspace verdicts when reviewedSha differs from targetHeadSha', async () => {
+    const { teamRun, mainWorkspace, childWorkspace } = await createTeamRunChildMergeFixture();
+    const reviewer = await addTeamMember(teamRun.id, {
+      name: 'Target Mismatch Reviewer',
+      capabilities: { readDiff: true },
+    });
+    const executionWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: childWorkspace.taskId,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: reviewer.id,
+        branchName: 'target-mismatch-execution',
+        baseBranch: childWorkspace.branchName,
+        worktreePath: path.join(testDir, 'target-mismatch-execution'),
+        status: 'ACTIVE',
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: reviewer.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: childWorkspace.id,
+        targetHeadSha: 'child-head-sha',
+        targetBranchName: childWorkspace.branchName,
+        triggerMessageId: await createRoomMessageId(teamRun.id),
+        instruction: 'review target',
+        status: 'STARTED',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: reviewer.id,
+        workspaceId: executionWorkspace.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: childWorkspace.id,
+        targetHeadSha: 'child-head-sha',
+        targetBranchName: childWorkspace.branchName,
+        targetSyncStatus: 'SYNCED',
+        status: 'RUNNING',
+      },
+    });
+    const identity = await service.resolveInvocationMemberForWorkspace(childWorkspace.id, invocation.id);
+
+    await expect(service.recordVerdict(childWorkspace.id, {
+      kind: 'REVIEW',
+      verdict: 'APPROVED',
+      reviewedSha: 'different-sha',
+      reviewerMemberId: identity!.memberId,
+      expectedTargetHeadSha: identity!.targetHeadSha,
+    })).rejects.toMatchObject({
+      code: 'TARGET_VERDICT_SHA_MISMATCH',
+      statusCode: 409,
+    });
+  });
+
+  it('rejects workspace verdicts when the submitted SHA does not match HEAD', async () => {
+    const { childWorkspace, reviewer } = await createTeamRunChildMergeFixture();
+
+    await expect(service.recordVerdict(childWorkspace.id, {
+      kind: 'REVIEW',
+      verdict: 'APPROVED',
+      reviewedSha: 'old-sha',
+      reviewerMemberId: reviewer.id,
+    })).rejects.toMatchObject({
+      code: 'WORKSPACE_VERDICT_SHA_MISMATCH',
+      statusCode: 409,
+    });
+  });
+
+  it('rejects workspace verdicts when the current member lacks the required capability', async () => {
+    const { teamRun, childWorkspace } = await createTeamRunChildMergeFixture();
+    const memberWithoutReview = await addTeamMember(teamRun.id, {
+      name: 'No Review Capability',
+      capabilities: { runCommands: true },
+    });
+    const memberWithoutTest = await addTeamMember(teamRun.id, {
+      name: 'No Test Capability',
+      capabilities: { readDiff: true },
+    });
+
+    await expect(service.recordVerdict(childWorkspace.id, {
+      kind: 'REVIEW',
+      verdict: 'APPROVED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: memberWithoutReview.id,
+    })).rejects.toMatchObject({
+      code: 'TEAM_RUN_MEMBER_CAPABILITY_REQUIRED',
+      statusCode: 403,
+    });
+    await expect(service.recordVerdict(childWorkspace.id, {
+      kind: 'TEST',
+      verdict: 'PASSED',
+      reviewedSha: 'child-head-sha',
+      reviewerMemberId: memberWithoutTest.id,
+    })).rejects.toMatchObject({
+      code: 'TEAM_RUN_MEMBER_CAPABILITY_REQUIRED',
+      statusCode: 403,
+    });
   });
 
   it('rejects final TeamRun main workspace merge while dedicated children are not final', async () => {

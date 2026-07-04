@@ -1,6 +1,7 @@
 import type {
   AgentInvocation,
   AgentInvocationStatus,
+  AgentInvocationTargetSyncStatus,
   IfBusyPolicy,
   MemberPreset,
   RoomMessage,
@@ -26,11 +27,14 @@ import type {
   WorkRequest,
   WorkRequestRequesterType,
   WorkRequestStatus,
+  WorkRequestTargetKind,
+  WorkRequestTargetPurpose,
   WorkspacePolicy,
 } from '@agent-tower/shared';
 import type {
   AgentInvocation as PrismaAgentInvocation,
   MemberPreset as PrismaMemberPreset,
+  Prisma,
   RoomMessage as PrismaRoomMessage,
   RoomMessageParticipant as PrismaRoomMessageParticipant,
   TeamMember as PrismaTeamMember,
@@ -124,6 +128,7 @@ export interface CreateRoomMessageInput {
 export interface CreatePrivateRoomMessageInput {
   content: string;
   recipientMemberIds: string[];
+  target?: StructuredMention['target'];
   attachmentIds?: string[];
   artifactRefs?: string[];
   senderType?: RoomMessageSenderType;
@@ -223,6 +228,18 @@ const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
   'SESSION_ENDED',
   'WAITING_ROOM_REPLY',
 ];
+
+function serializeTargetKind(value: string | null): WorkRequestTargetKind | null {
+  return value === 'WORKSPACE_COMMIT' ? value : null;
+}
+
+function serializeTargetPurpose(value: string | null): WorkRequestTargetPurpose | null {
+  return value === 'REVIEW' || value === 'TEST' ? value : null;
+}
+
+function serializeTargetSyncStatus(value: string | null): AgentInvocationTargetSyncStatus | null {
+  return value === 'PENDING' || value === 'SYNCED' || value === 'FAILED' ? value : null;
+}
 const OPEN_WORK_REQUEST_STATUSES: WorkRequestStatus[] = [
   'PENDING_APPROVAL',
   'QUEUED',
@@ -435,12 +452,13 @@ function resolveRoomMessageTargetRequests({
   senderType: RoomMessageSenderType;
   requesterMemberId: string | null;
   allowUserMessageFallback?: boolean;
-}): Array<{ targetMemberId: string; ifBusy: IfBusyPolicy; cancelQueued: boolean }> {
+}): Array<{ targetMemberId: string; ifBusy: IfBusyPolicy; cancelQueued: boolean; target?: StructuredMention['target'] }> {
   if (mentions.length > 0) {
     return mentions.map((mention) => ({
       targetMemberId: mention.memberId,
       ifBusy: mention.ifBusy ?? 'queue',
       cancelQueued: mention.cancelQueued ?? false,
+      target: mention.target ?? null,
     }));
   }
 
@@ -459,7 +477,52 @@ function resolveRoomMessageTargetRequests({
       targetMemberId: member.id,
       ifBusy: 'queue' as const,
       cancelQueued: false,
+      target: null,
     }));
+}
+
+type WorkRequestTargetData = {
+  targetKind?: string | null;
+  targetPurpose?: string | null;
+  targetSourceWorkspaceId?: string | null;
+  targetSourceMemberId?: string | null;
+  targetHeadSha?: string | null;
+  targetBranchName?: string | null;
+  targetPlanItemId?: string | null;
+};
+
+async function buildWorkRequestTargetData(
+  tx: Prisma.TransactionClient,
+  teamRunId: string,
+  target: StructuredMention['target'] | null | undefined
+): Promise<WorkRequestTargetData> {
+  if (!target) {
+    return {};
+  }
+
+  const sourceWorkspace = await tx.workspace.findFirst({
+    where: {
+      id: target.sourceWorkspaceId,
+      task: { teamRun: { id: teamRunId } },
+    },
+    select: {
+      id: true,
+      ownerMemberId: true,
+    },
+  });
+  if (!sourceWorkspace) {
+    throw new ValidationError('Target sourceWorkspaceId must belong to this TeamRun');
+  }
+
+  return {
+    targetKind: target.kind,
+    targetPurpose: target.purpose,
+    targetSourceWorkspaceId: sourceWorkspace.id,
+    targetSourceMemberId: sourceWorkspace.ownerMemberId,
+    targetHeadSha: target.headSha.trim(),
+    targetBranchName: target.branchName.trim(),
+    targetPlanItemId: target.planItemId?.trim() || null,
+  };
 }
 
 export class TeamRunService {
@@ -776,12 +839,14 @@ export class TeamRunService {
         });
         const workRequestIds: string[] = [];
         for (const targetRequest of targetRequests) {
+          const targetData = await buildWorkRequestTargetData(tx, teamRun.id, targetRequest.target);
           const workRequest = await tx.workRequest.create({
             data: {
               teamRunId: teamRun.id,
               requesterMemberId: null,
               requesterType: 'user',
               targetMemberId: targetRequest.targetMemberId,
+              ...targetData,
               triggerMessageId: message.id,
               instruction: initialContent,
               ifBusy: targetRequest.ifBusy,
@@ -1277,12 +1342,14 @@ export class TeamRunService {
 
       const workRequestIds: string[] = [];
       for (const targetRequest of targetRequests) {
+        const targetData = await buildWorkRequestTargetData(tx, teamRunId, targetRequest.target);
         const workRequest = await tx.workRequest.create({
           data: {
             teamRunId,
             requesterMemberId,
             requesterType: senderType as WorkRequestRequesterType,
             targetMemberId: targetRequest.targetMemberId,
+            ...targetData,
             triggerMessageId: message.id,
             instruction: workRequestInstruction,
             ifBusy: targetRequest.ifBusy,
@@ -1424,6 +1491,7 @@ export class TeamRunService {
       }
 
       const workRequestIds: string[] = [];
+      const targetData = await buildWorkRequestTargetData(tx, teamRunId, input.target);
       for (const recipientMemberId of recipientMemberIds) {
         const workRequest = await tx.workRequest.create({
           data: {
@@ -1431,6 +1499,7 @@ export class TeamRunService {
             requesterMemberId,
             requesterType: senderType as WorkRequestRequesterType,
             targetMemberId: recipientMemberId,
+            ...targetData,
             triggerMessageId: message.id,
             instruction: workRequestInstruction,
             ifBusy: input.ifBusy ?? 'queue',
@@ -1850,6 +1919,8 @@ export class TeamRunService {
       instructionPreview: serializedInstruction.preview,
       isTruncated: serializedInstruction.isTruncated,
       requesterType: workRequest.requesterType as WorkRequestRequesterType,
+      targetKind: serializeTargetKind(workRequest.targetKind),
+      targetPurpose: serializeTargetPurpose(workRequest.targetPurpose),
       ifBusy: workRequest.ifBusy as IfBusyPolicy,
       status: workRequest.status as WorkRequestStatus,
       createdAt: toIso(workRequest.createdAt),
@@ -1888,6 +1959,9 @@ export class TeamRunService {
   private serializeAgentInvocation(invocation: PrismaAgentInvocation): AgentInvocation {
     return {
       ...invocation,
+      targetKind: serializeTargetKind(invocation.targetKind),
+      targetPurpose: serializeTargetPurpose(invocation.targetPurpose),
+      targetSyncStatus: serializeTargetSyncStatus(invocation.targetSyncStatus),
       status: invocation.status as AgentInvocationStatus,
       createdAt: toIso(invocation.createdAt),
       updatedAt: toIso(invocation.updatedAt),

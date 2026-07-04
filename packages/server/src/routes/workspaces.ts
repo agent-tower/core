@@ -48,11 +48,23 @@ const createWorkspaceSchema = z.object({
   workspaceKind: z.nativeEnum(WorkspaceKind).optional(),
 });
 
+const workspaceVerdictSchema = z.object({
+  kind: z.enum(['REVIEW', 'TEST']),
+  verdict: z.enum(['APPROVED', 'CHANGES_REQUESTED', 'PASSED', 'FAILED']),
+  reviewedSha: z.string().min(1),
+  reason: z.string().optional().nullable(),
+});
+
 /**
  * 统一错误响应格式
  */
 function errorResponse(error: string, code: string) {
   return { error, code };
+}
+
+function getInvocationId(request: { headers: Record<string, unknown> }): string | null {
+  const header = request.headers['x-agent-tower-invocation-id'];
+  return typeof header === 'string' && header.length > 0 ? header : null;
 }
 
 export async function workspaceRoutes(app: FastifyInstance) {
@@ -162,6 +174,50 @@ export async function workspaceRoutes(app: FastifyInstance) {
     }
   );
 
+  app.get<{ Params: { id: string } }>(
+    '/workspaces/:id/verdicts',
+    async (request) => {
+      return workspaceService.listVerdicts(request.params.id);
+    }
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/workspaces/:id/verdicts',
+    async (request, reply) => {
+      const body = workspaceVerdictSchema.parse(request.body || {});
+      const invocationId = getInvocationId(request);
+      const identity = await workspaceService.resolveInvocationMemberForWorkspace(request.params.id, invocationId);
+      if (!identity) {
+        throw new ServiceError(
+          'A valid TeamRun agent invocation identity is required to record workspace verdicts',
+          'TEAM_RUN_INVOCATION_REQUIRED',
+          403
+        );
+      }
+      if (identity.targetSourceWorkspaceId === request.params.id) {
+        if (!identity.targetHeadSha) {
+          throw new ServiceError(
+            'Targeted invocation is missing targetHeadSha for workspace verdict',
+            'TARGET_VERDICT_TARGET_MISSING',
+            409
+          );
+        }
+      }
+      const verdict = await workspaceService.recordVerdict(request.params.id, {
+        kind: body.kind,
+        verdict: body.verdict,
+        reviewedSha: body.reviewedSha,
+        reviewerMemberId: identity.memberId,
+        expectedTargetHeadSha: identity.targetSourceWorkspaceId === request.params.id
+          ? identity.targetHeadSha
+          : null,
+        reason: body.reason,
+      });
+      reply.code(201);
+      return verdict;
+    }
+  );
+
   // ── 合并工作空间到主分支 ────────────────────────────────────────────────────
 
   const mergeSchema = z.object({
@@ -172,12 +228,13 @@ export async function workspaceRoutes(app: FastifyInstance) {
     '/workspaces/:id/merge',
     async (request) => {
       const body = mergeSchema.parse(request.body || {});
-      const lockOwnerId = typeof request.headers['x-agent-tower-invocation-id'] === 'string'
-        ? request.headers['x-agent-tower-invocation-id']
-        : undefined;
+      const invocationId = getInvocationId(request) ?? undefined;
+      const identity = await workspaceService.resolveInvocationMemberForWorkspace(request.params.id, invocationId);
       const sha = await workspaceService.merge(request.params.id, {
         commitMessage: body.commitMessage,
-        lockOwnerId,
+        lockOwnerId: invocationId,
+        invocationId,
+        requesterMemberId: identity?.memberId,
       });
       return { success: true, sha };
     }

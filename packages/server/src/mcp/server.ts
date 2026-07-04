@@ -75,6 +75,14 @@ const RoomMessageMentionInput = z.object({
   ifBusy: z.enum(['queue', 'cancel_current_and_start']).optional()
     .describe("How to handle the target member if busy: 'queue' or 'cancel_current_and_start'."),
   cancelQueued: z.boolean().optional().describe('Whether to cancel queued requests for the same target member.'),
+  target: z.object({
+    kind: z.literal('WORKSPACE_COMMIT').describe('Bind this WorkRequest to a workspace commit.'),
+    purpose: z.enum(['REVIEW', 'TEST']).describe('Whether the target is for review or test execution.'),
+    sourceWorkspaceId: z.string().min(1).describe('Workspace whose commit should be reviewed or tested.'),
+    headSha: z.string().min(1).describe('Target commit SHA to prepare before the agent starts.'),
+    branchName: z.string().min(1).describe('Source workspace branch name for display and validation context.'),
+    planItemId: z.string().min(1).nullable().optional().describe('Optional plan item ID this handoff belongs to.'),
+  }).nullable().optional().describe('Optional target commit payload for review/test handoff.'),
 });
 
 const PostRoomMessageInput = z.object({
@@ -92,6 +100,7 @@ const PostPrivateMessageInput = z.object({
   team_run_id: z.string().min(1).optional().describe('TeamRun ID. Optional inside a TeamRun agent session.'),
   recipient_member_ids: z.array(z.string().min(1)).min(1).describe('TeamMember IDs that can see and respond to this private message.'),
   content: z.string().min(1).describe('Private message content. Recipients receive WorkRequests like normal room mentions.'),
+  target: RoomMessageMentionInput.shape.target.describe('Optional target commit payload copied to each recipient WorkRequest.'),
   attachmentIds: z.array(z.string().min(1)).optional().describe('Attachment IDs to associate with the private message.'),
   artifactRefs: z.array(z.string().min(1)).optional().describe('Artifact references to associate with the private message.'),
   ifBusy: z.enum(['queue', 'cancel_current_and_start']).optional()
@@ -332,6 +341,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
         const message = await client.createPrivateRoomMessage(teamRunId, {
           content: params.content,
           recipientMemberIds: params.recipient_member_ids,
+          target: params.target,
           attachmentIds: params.attachmentIds,
           artifactRefs: params.artifactRefs,
           ifBusy: params.ifBusy,
@@ -523,7 +533,10 @@ export async function createMcpServer(baseUrl: string): Promise<McpServer> {
   registerProjectTools(server, client);
   registerTaskTools(server, client);
   registerProviderTools(server, client);
-  registerWorkspaceTools(server, client);
+  registerWorkspaceTools(server, client, context, {
+    resolveBoundTeamRunId,
+    requireCurrentMemberCapabilities,
+  });
   registerSessionTools(server, client);
   registerTeamRoomTools(server, client, context);
 

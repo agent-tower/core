@@ -1926,6 +1926,15 @@ describe('TeamReconcilerService', () => {
       expect(noStopResult.isError).toBe(true);
       expect(getMcpToolText(noStopResult)).toContain('stopMemberWork');
 
+      const noMergeResult = await callToolForCurrentMember(noRead, noReadInvocation.id, {
+        name: 'merge_workspace',
+        arguments: {
+          workspace_id: noRead.workspace.id,
+        },
+      });
+      expect(noMergeResult.isError).toBe(true);
+      expect(getMcpToolText(noMergeResult)).toContain('mergeWorkspace');
+
       await expect(prisma.roomMessage.count({
         where: {
           content: {

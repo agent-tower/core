@@ -3,6 +3,7 @@ import { ZodError, z } from 'zod';
 import { ServiceError, ValidationError } from '../errors.js';
 import { TeamRunService } from '../services/team-run.service.js';
 import { TeamSchedulerService } from '../services/team-scheduler.service.js';
+import { WorkspaceService } from '../services/workspace.service.js';
 
 type TeamRunRouteScheduler = Pick<
   TeamSchedulerService,
@@ -16,6 +17,7 @@ type TeamRunRouteScheduler = Pick<
 export interface TeamRunRouteDependencies {
   service?: TeamRunService;
   scheduler?: TeamRunRouteScheduler;
+  workspaceService?: WorkspaceService;
 }
 
 const capabilitiesSchema = z.object({
@@ -31,11 +33,21 @@ const capabilitiesSchema = z.object({
   mergeWorkspace: z.boolean(),
 });
 
+const workspaceCommitTargetSchema = z.object({
+  kind: z.literal('WORKSPACE_COMMIT'),
+  purpose: z.enum(['REVIEW', 'TEST']),
+  sourceWorkspaceId: z.string().min(1),
+  headSha: z.string().min(1),
+  branchName: z.string().min(1),
+  planItemId: z.string().min(1).nullable().optional(),
+});
+
 const structuredMentionSchema = z.object({
   memberId: z.string().min(1),
   label: z.string().optional(),
   ifBusy: z.enum(['queue', 'cancel_current_and_start']).optional(),
   cancelQueued: z.boolean().optional(),
+  target: workspaceCommitTargetSchema.nullable().optional(),
 });
 
 const teamMemberSnapshotSchema = z.object({
@@ -98,6 +110,7 @@ const roomMessageSchema = z.object({
 const privateRoomMessageSchema = z.object({
   content: z.string().min(1),
   recipientMemberIds: z.array(z.string().min(1)).min(1),
+  target: workspaceCommitTargetSchema.nullable().optional(),
   attachmentIds: z.array(z.string().min(1)).optional(),
   artifactRefs: z.array(z.string().min(1)).optional(),
   senderType: z.enum(['user', 'agent', 'system']).default('user'),
@@ -118,6 +131,12 @@ const stopMemberWorkSchema = z.object({
 const removeTeamRunMemberSchema = z.object({
   stopActive: z.boolean().default(true),
   cancelQueued: z.boolean().default(true),
+});
+
+const mergeMembersSchema = z.object({
+  workspaceIds: z.array(z.string().min(1)).optional(),
+  dryRun: z.boolean().optional(),
+  stopOnConflict: z.boolean().optional(),
 });
 
 const cancelWorkRequestSchema = z.object({
@@ -183,6 +202,7 @@ function getInvocationId(request: { headers: Record<string, unknown> }): string 
 export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteDependencies = {}) {
   const service = options.service ?? new TeamRunService();
   const scheduler = options.scheduler ?? new TeamSchedulerService();
+  const workspaceService = options.workspaceService ?? new WorkspaceService();
 
   async function resolveViewerMemberId(teamRunId: string, request: { headers: Record<string, unknown> }) {
     const invocationId = getInvocationId(request);
@@ -356,6 +376,31 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
     }
   });
 
+  app.get<{ Params: { id: string } }>('/team-runs/:id/mergeable-workspaces', async (request, reply) => {
+    try {
+      return await workspaceService.listTeamRunMergeableWorkspaces(request.params.id);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/team-runs/:id/merge-members', async (request, reply) => {
+    try {
+      const body = mergeMembersSchema.parse(request.body ?? {});
+      const invocationId = getInvocationId(request);
+      const identity = await workspaceService.resolveInvocationMemberForTeamRun(request.params.id, invocationId);
+      return await workspaceService.mergeTeamRunMembers(request.params.id, {
+        workspaceIds: body.workspaceIds,
+        dryRun: body.dryRun,
+        stopOnConflict: body.stopOnConflict,
+        invocationId: invocationId ?? '',
+        requesterMemberId: identity?.memberId ?? '',
+      });
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
   app.post<{ Params: { id: string } }>('/team-runs/:id/messages', async (request, reply) => {
     try {
       const body = roomMessageSchema.parse(request.body);
@@ -389,6 +434,7 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
       const message = await service.createPrivateRoomMessage(request.params.id, {
         content: body.content,
         recipientMemberIds: body.recipientMemberIds,
+        target: body.target,
         attachmentIds: body.attachmentIds,
         artifactRefs: body.artifactRefs,
         ifBusy: body.ifBusy,

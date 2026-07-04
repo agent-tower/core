@@ -761,6 +761,9 @@ export class SessionManager {
         id: true,
         teamRunId: true,
         memberId: true,
+        targetPort: true,
+        targetVitePort: true,
+        targetE2EPort: true,
       },
     });
 
@@ -774,6 +777,20 @@ export class SessionManager {
       AGENT_TOWER_TEAM_RUN_ID: invocation.teamRunId,
       AGENT_TOWER_MEMBER_ID: invocation.memberId,
     });
+
+    const portEnv: Record<string, string> = {};
+    if (invocation.targetPort != null) {
+      portEnv.PORT = String(invocation.targetPort);
+    }
+    if (invocation.targetVitePort != null) {
+      portEnv.VITE_PORT = String(invocation.targetVitePort);
+    }
+    if (invocation.targetE2EPort != null) {
+      portEnv.E2E_PORT = String(invocation.targetE2EPort);
+    }
+    if (Object.keys(portEnv).length > 0) {
+      env.merge(portEnv);
+    }
   }
 
   /**

@@ -284,6 +284,84 @@ describe('SessionManager TeamRun env injection', () => {
     manager.destroyAll();
   });
 
+  it('injects targeted test port env when the invocation has allocated ports', async () => {
+    const { task, workspace } = await createWorkspace();
+    const teamRun = await prisma.teamRun.create({
+      data: {
+        taskId: task.id,
+        mode: 'AUTO',
+      },
+    });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        presetId: null,
+        name: 'Tester',
+        aliases: '["tester"]',
+        providerId: 'codex-default',
+        rolePrompt: 'Test role',
+        capabilities: '{}',
+        workspacePolicy: 'dedicated',
+        triggerPolicy: 'MENTION_ONLY',
+        avatar: null,
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'TEST',
+        targetSourceWorkspaceId: workspace.id,
+        targetHeadSha: 'a'.repeat(40),
+        targetBranchName: workspace.branchName,
+        triggerMessageId: 'message-target-test',
+        instruction: 'Run tests',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.PENDING,
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'TEST',
+        targetSourceWorkspaceId: workspace.id,
+        targetHeadSha: 'a'.repeat(40),
+        targetBranchName: workspace.branchName,
+        targetSyncStatus: 'SYNCED',
+        targetPort: 21000,
+        targetVitePort: 21001,
+        targetE2EPort: 21002,
+        status: 'RUNNING',
+      },
+    });
+
+    await manager.start(session.id);
+
+    const spawnConfig = spawnMock.mock.calls[0]![0] as ExecutorSpawnConfig;
+    expect(spawnConfig.env.toObject()).toMatchObject({
+      PORT: '21000',
+      VITE_PORT: '21001',
+      E2E_PORT: '21002',
+    });
+    manager.destroyAll();
+  });
+
   it('does not inject TeamRun env for a solo session', async () => {
     const { workspace } = await createWorkspace();
     const session = await prisma.session.create({

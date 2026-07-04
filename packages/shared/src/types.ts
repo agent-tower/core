@@ -150,6 +150,25 @@ export type AgentInvocationStatus =
   | 'FAILED'
   | 'CANCELLED'
 
+/** 工作区审查/测试记录类型 */
+export type WorkspaceVerdictKind = 'REVIEW' | 'TEST'
+
+/** 工作区审查/测试结论 */
+export type WorkspaceVerdictValue =
+  | 'APPROVED'
+  | 'CHANGES_REQUESTED'
+  | 'PASSED'
+  | 'FAILED'
+
+/** WorkRequest 绑定的目标类型 */
+export type WorkRequestTargetKind = 'WORKSPACE_COMMIT'
+
+/** WorkRequest 绑定目标的使用目的 */
+export type WorkRequestTargetPurpose = 'REVIEW' | 'TEST'
+
+/** AgentInvocation target workspace 同步状态 */
+export type AgentInvocationTargetSyncStatus = 'PENDING' | 'SYNCED' | 'FAILED'
+
 /** 团队成员能力开关 */
 export interface TeamMemberCapabilities {
   readRoom: boolean
@@ -164,12 +183,23 @@ export interface TeamMemberCapabilities {
   mergeWorkspace: boolean
 }
 
+/** 指向一个 TeamRun workspace commit 的派活目标 */
+export interface WorkspaceCommitTarget {
+  kind: WorkRequestTargetKind
+  purpose: WorkRequestTargetPurpose
+  sourceWorkspaceId: string
+  headSha: string
+  branchName: string
+  planItemId?: string | null
+}
+
 /** 房间消息中的结构化提及 */
 export interface StructuredMention {
   memberId: string
   label?: string
   ifBusy?: IfBusyPolicy
   cancelQueued?: boolean
+  target?: WorkspaceCommitTarget | null
 }
 
 
@@ -342,6 +372,177 @@ export interface Workspace {
   updatedAt?: string
 }
 
+/** 工作区审查/测试记录 */
+export interface WorkspaceVerdict {
+  id: string
+  workspaceId: string
+  teamRunId: string
+  kind: WorkspaceVerdictKind
+  verdict: WorkspaceVerdictValue
+  reviewedSha: string
+  reviewerMemberId?: string | null
+  reason?: string | null
+  sequence: number
+  createdAt?: string
+}
+
+export type MergeReadinessBlockerSeverity = 'BLOCKING' | 'WARNING'
+
+export type MergeReadinessBlockerCode =
+  | 'WORKSPACE_NOT_ACTIVE'
+  | 'WORKSPACE_ALREADY_MERGED'
+  | 'WORKSPACE_ABANDONED'
+  | 'WORKSPACE_HIBERNATED'
+  | 'INVALID_WORKSPACE_STATE'
+  | 'INVALID_PARENT_WORKSPACE'
+  | 'INVALID_PARENT_WORKSPACE_STATE'
+  | 'WORKSPACE_GIT_UNAVAILABLE'
+  | 'MISSING_HEAD_SHA'
+  | 'REVIEW_REQUIRED'
+  | 'REVIEW_STALE'
+  | 'SELF_REVIEW_FORBIDDEN'
+  | 'OWNER_HAS_ACTIVE_INVOCATION'
+  | 'PARENT_WORKSPACE_HAS_ACTIVE_SESSION'
+  | 'WORKTREE_DIRTY'
+  | 'REBASE_IN_PROGRESS'
+  | 'MERGE_CONFLICT'
+  | 'BRANCHES_DIVERGED'
+  | 'BEHIND_MAIN'
+  | 'GIT_STATUS_UNAVAILABLE'
+  | 'PROJECT_MERGE_LOCKED'
+  | 'TEAM_RUN_MERGE_INVOCATION_REQUIRED'
+  | 'TEAM_RUN_MEMBER_CAPABILITY_REQUIRED'
+  | 'FORBIDDEN'
+  | 'UNKNOWN'
+  | (string & {})
+
+export interface MergeReadinessBlocker {
+  code: MergeReadinessBlockerCode
+  severity: MergeReadinessBlockerSeverity
+  message: string
+  details?: Record<string, unknown>
+}
+
+export interface MergeableWorkspaceMainWorkspace {
+  id: string | null
+  branchName: string | null
+  status: WorkspaceStatus | string | null
+  headSha?: string | null
+  hasActiveWriteSession: boolean
+}
+
+export interface MergeableWorkspaceOwner {
+  memberId: string
+  name: string
+  membershipStatus?: TeamMemberMembershipStatus | string
+}
+
+export interface MergeableWorkspaceGitInfo {
+  clean: boolean | null
+  aheadOfMain: number | null
+  behindMain: number | null
+  operation: GitOperationStatus['operation'] | null
+  conflictedFiles: string[]
+  hasUncommittedChanges: boolean | null
+  uncommittedCount: number | null
+  untrackedCount: number | null
+  statusAvailable: boolean
+}
+
+export interface MergeableWorkspaceActivityInfo {
+  ownerHasActiveInvocation: boolean
+  parentHasActiveWriteSession: boolean
+}
+
+export interface MergeableWorkspaceVerdictSnapshot {
+  id: string
+  verdict: WorkspaceVerdictValue
+  reviewedSha: string
+  reviewerMemberId?: string | null
+  reason?: string | null
+  sequence: number
+  createdAt?: string
+  matchesHead: boolean
+  isSelfReview: boolean
+}
+
+export interface MergeableWorkspaceItem {
+  workspaceId: string
+  owner: MergeableWorkspaceOwner
+  status: WorkspaceStatus | string
+  branchName: string
+  baseBranch?: string | null
+  parentWorkspaceId: string
+  headSha: string | null
+  git: MergeableWorkspaceGitInfo
+  activity: MergeableWorkspaceActivityInfo
+  latestReview?: MergeableWorkspaceVerdictSnapshot | null
+  latestTest?: MergeableWorkspaceVerdictSnapshot | null
+  mergeReady: boolean
+  blockers: MergeReadinessBlocker[]
+}
+
+export interface MergeableWorkspacesResponse {
+  teamRunId: string
+  taskId: string
+  projectId: string
+  mainWorkspace: MergeableWorkspaceMainWorkspace
+  generatedAt: string
+  workspaces: MergeableWorkspaceItem[]
+}
+
+export interface MergeTeamRunMembersInput {
+  workspaceIds?: string[]
+  dryRun?: boolean
+  stopOnConflict?: boolean
+}
+
+export type MergeTeamRunMemberResultStatus =
+  | 'MERGED'
+  | 'ALREADY_MERGED'
+  | 'WOULD_MERGE'
+  | 'SKIPPED'
+  | 'CONFLICT'
+  | 'FAILED'
+
+export interface MergeTeamRunMemberResult {
+  workspaceId: string
+  ownerMemberId?: string | null
+  status: MergeTeamRunMemberResultStatus
+  code?: string
+  message?: string
+  sha?: string
+  blockers?: MergeReadinessBlocker[]
+  conflictedFiles?: string[]
+  sourceBranch?: string
+  targetBranch?: string
+  sourceWorkspaceId?: string
+  targetWorkspaceId?: string
+}
+
+export interface MergeTeamRunMembersSummary {
+  requested: number
+  considered: number
+  merged: number
+  alreadyMerged: number
+  wouldMerge: number
+  skipped: number
+  conflicts: number
+  failed: number
+}
+
+export interface MergeTeamRunMembersResponse {
+  teamRunId: string
+  taskId: string
+  projectId: string
+  mainWorkspaceId: string | null
+  dryRun: boolean
+  stopOnConflict: boolean
+  requestedWorkspaceIds?: string[]
+  summary: MergeTeamRunMembersSummary
+  results: MergeTeamRunMemberResult[]
+}
+
 /** 会话 */
 export interface Session {
   id: string
@@ -505,6 +706,13 @@ export interface WorkRequest {
   requesterMemberId?: string | null
   requesterType: WorkRequestRequesterType
   targetMemberId: string
+  targetKind?: WorkRequestTargetKind | null
+  targetPurpose?: WorkRequestTargetPurpose | null
+  targetSourceWorkspaceId?: string | null
+  targetSourceMemberId?: string | null
+  targetHeadSha?: string | null
+  targetBranchName?: string | null
+  targetPlanItemId?: string | null
   triggerMessageId: string
   instruction: string
   instructionPreview?: string
@@ -524,6 +732,19 @@ export interface AgentInvocation {
   memberId: string
   workspaceId?: string | null
   sessionId?: string | null
+  targetKind?: WorkRequestTargetKind | null
+  targetPurpose?: WorkRequestTargetPurpose | null
+  targetSourceWorkspaceId?: string | null
+  targetSourceMemberId?: string | null
+  targetHeadSha?: string | null
+  targetBranchName?: string | null
+  targetPlanItemId?: string | null
+  targetSyncStatus?: AgentInvocationTargetSyncStatus | null
+  targetSyncError?: string | null
+  targetExecutionBranch?: string | null
+  targetPort?: number | null
+  targetVitePort?: number | null
+  targetE2EPort?: number | null
   status: AgentInvocationStatus
   roomReplyReminderCount: number
   nextRoomReplyReminderAt?: string | null

@@ -606,6 +606,98 @@ describe('TeamRunService', () => {
     });
   });
 
+  it('persists target commit metadata from RoomMessage mentions', async () => {
+    const reviewerPreset = await service.createMemberPreset(presetInput('Reviewer'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'CONFIRM',
+      memberPresetIds: [reviewerPreset.id],
+    });
+    const member = teamRun.members?.[0];
+    expect(member).toBeDefined();
+    const sourceWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: null,
+        ownerMemberId: null,
+        branchName: 'source-branch',
+        worktreePath: path.join(testDir, 'source-workspace'),
+        status: 'ACTIVE',
+      },
+    });
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'Please review this commit',
+      mentions: [{
+        memberId: member!.id,
+        target: {
+          kind: 'WORKSPACE_COMMIT',
+          purpose: 'REVIEW',
+          sourceWorkspaceId: sourceWorkspace.id,
+          headSha: 'a'.repeat(40),
+          branchName: sourceWorkspace.branchName,
+          planItemId: 'plan-1',
+        },
+      }],
+    });
+    const requests = await service.listWorkRequests(teamRun.id);
+
+    expect(message.mentions[0]?.target).toMatchObject({
+      kind: 'WORKSPACE_COMMIT',
+      purpose: 'REVIEW',
+      sourceWorkspaceId: sourceWorkspace.id,
+      headSha: 'a'.repeat(40),
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      targetKind: 'WORKSPACE_COMMIT',
+      targetPurpose: 'REVIEW',
+      targetSourceWorkspaceId: sourceWorkspace.id,
+      targetSourceMemberId: null,
+      targetHeadSha: 'a'.repeat(40),
+      targetBranchName: sourceWorkspace.branchName,
+      targetPlanItemId: 'plan-1',
+    });
+  });
+
+  it('rejects target commit metadata for source workspaces outside the TeamRun', async () => {
+    const reviewerPreset = await service.createMemberPreset(presetInput('Reviewer'));
+    const task = await createTask();
+    const otherTask = await createTask('Other task');
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [reviewerPreset.id],
+    });
+    const member = teamRun.members?.[0];
+    expect(member).toBeDefined();
+    const otherWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: otherTask.id,
+        branchName: 'other-source',
+        worktreePath: path.join(testDir, 'other-source'),
+        status: 'ACTIVE',
+      },
+    });
+
+    await expect(service.createRoomMessage(teamRun.id, {
+      content: 'Please review this commit',
+      mentions: [{
+        memberId: member!.id,
+        target: {
+          kind: 'WORKSPACE_COMMIT',
+          purpose: 'REVIEW',
+          sourceWorkspaceId: otherWorkspace.id,
+          headSha: 'b'.repeat(40),
+          branchName: otherWorkspace.branchName,
+        },
+      }],
+    })).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+    await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+  });
+
   it('creates private RoomMessages with participants and WorkRequests for recipients', async () => {
     const senderPreset = await service.createMemberPreset(presetInput('Sender'));
     const recipientPreset = await service.createMemberPreset(presetInput('Recipient'));
@@ -665,6 +757,58 @@ describe('TeamRunService', () => {
       expect.arrayContaining([expect.objectContaining({ id: message.id })])
     );
     await expect(service.listRoomMessages(teamRun.id, { viewerMemberId: observer!.id })).resolves.toEqual([]);
+  });
+
+  it('persists target commit metadata from private RoomMessages', async () => {
+    const senderPreset = await service.createMemberPreset(presetInput('Sender'));
+    const recipientPreset = await service.createMemberPreset(presetInput('Recipient'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [senderPreset.id, recipientPreset.id],
+    });
+    const sender = teamRun.members?.find((member) => member.name === 'Sender');
+    const recipient = teamRun.members?.find((member) => member.name === 'Recipient');
+    expect(sender).toBeDefined();
+    expect(recipient).toBeDefined();
+    const sourceWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: null,
+        ownerMemberId: sender!.id,
+        branchName: 'private-source',
+        worktreePath: path.join(testDir, 'private-source-workspace'),
+        status: 'ACTIVE',
+      },
+    });
+
+    await service.createPrivateRoomMessage(teamRun.id, {
+      content: 'Private targeted test',
+      recipientMemberIds: [recipient!.id],
+      target: {
+        kind: 'WORKSPACE_COMMIT',
+        purpose: 'TEST',
+        sourceWorkspaceId: sourceWorkspace.id,
+        headSha: 'c'.repeat(40),
+        branchName: sourceWorkspace.branchName,
+        planItemId: 'private-plan',
+      },
+      senderType: 'agent',
+      senderId: sender!.id,
+    });
+    const requests = await service.listWorkRequests(teamRun.id);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      targetMemberId: recipient!.id,
+      targetKind: 'WORKSPACE_COMMIT',
+      targetPurpose: 'TEST',
+      targetSourceWorkspaceId: sourceWorkspace.id,
+      targetSourceMemberId: sender!.id,
+      targetHeadSha: 'c'.repeat(40),
+      targetBranchName: sourceWorkspace.branchName,
+      targetPlanItemId: 'private-plan',
+    });
   });
 
   it('records user private message senderId as a sender participant when provided', async () => {
