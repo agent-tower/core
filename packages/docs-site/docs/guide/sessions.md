@@ -5,7 +5,7 @@ description: agent 执行与后续对话。
 
 # Session
 
-Session 表示一次 agent 执行或一次后续对话。它运行在 workspace 目录中，由后端的 PTY pipeline 管理。
+Session 表示一次 agent 执行或一次后续对话。常规任务 session 运行在 workspace 目录中，由后端的 PTY pipeline 管理；独立对话 session 运行在 conversation 工作目录中。
 
 ## 创建 Session
 
@@ -33,6 +33,8 @@ Session 表示一次 agent 执行或一次后续对话。它运行在 workspace 
 
 无论 session 正在运行还是已经结束，都可以通过统一入口发送后续消息。对于支持 session id 的 agent，系统会尽量使用 follow-up 模式延续上下文。
 
+后续消息可以指定新的 `providerId`，用于在继续对话时切换 provider。这个切换仅支持同一 `agentType` 内的 provider；如果要从 Codex 切到 Claude Code、Gemini CLI 或其他不同 agent 类型，需要新建 session 或独立对话。
+
 ## 日志快照
 
 Session 日志包含两层：
@@ -55,3 +57,7 @@ Session 日志包含两层：
 | `COMPLETED` | 正常完成 |
 | `FAILED` | 执行失败 |
 | `CANCELLED` | 被用户停止或取消 |
+
+## 独立对话
+
+独立对话通过 `/conversations` 页面使用，不绑定 Project、Task 或 Workspace。它适合临时问答、轻量上下文整理，或不需要 Git worktree 隔离的 agent 对话。

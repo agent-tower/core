@@ -33,6 +33,7 @@ TODO -> IN_PROGRESS -> IN_REVIEW -> DONE
 ```text
 ACTIVE -> MERGED
        -> ABANDONED
+       -> HIBERNATED
 ```
 
 | 状态 | 说明 |
@@ -40,6 +41,7 @@ ACTIVE -> MERGED
 | `ACTIVE` | 当前可执行、审查、rebase、merge |
 | `MERGED` | 已合并回主分支 |
 | `ABANDONED` | 已归档或被重试流程替换 |
+| `HIBERNATED` | 已休眠，可通过 reactivate 恢复 |
 
 ## Session 状态
 
@@ -69,3 +71,21 @@ PENDING -> RUNNING -> COMPLETED
 普通 `CHAT` session 正常退出后，后端会尝试对 workspace 中未提交变更做兜底 auto-commit。这样 review 阶段可以看到更稳定的 Git 状态。
 
 这不是跳过审查。它只是把 agent 的文件变更固定下来，方便后续 diff、rebase 和 squash merge。
+
+## TeamRun 状态
+
+TeamRun 自身的工作由成员、WorkRequest 和 AgentInvocation 状态共同表达。
+
+成员状态包括 `IDLE`、`PENDING_APPROVAL`、`QUEUED`、`RUNNING`、`WAITING_ROOM_REPLY`、`READY_FOR_REVIEW`、`FAILED`、`CANCELLED` 和 `REMOVED` 等。
+
+WorkRequest 状态包括：
+
+| 状态 | 说明 |
+| --- | --- |
+| `PENDING_APPROVAL` | Confirm 模式下等待批准 |
+| `QUEUED` | 已排队，等待成员空闲或调度启动 |
+| `STARTED` | 已创建对应 invocation |
+| `REJECTED` | 已拒绝 |
+| `CANCELLED` | 已取消 |
+
+AgentInvocation 状态包括 `QUEUED`、`RUNNING`、`SESSION_ENDED`、`WAITING_ROOM_REPLY`、`COMPLETED`、`FAILED` 和 `CANCELLED`。

@@ -49,6 +49,19 @@ Provider 页面支持：
 - 从备份导入
 - 重新加载配置
 
+Agent 环境页面支持检测和引导安装本机 Agent CLI。安装前会展示官方来源、下载摘要、风险提示和校验信息。
+
+当前环境引导支持：
+
+| CLI | 支持平台 | 安装方式 |
+| --- | --- | --- |
+| Codex | macOS、Linux | 下载官方安装脚本并执行 |
+| Claude Code | macOS、Linux | 下载官方安装脚本并执行 |
+| Cursor CLI Agent | macOS、Linux | 下载官方安装脚本并执行 |
+| Gemini CLI | macOS、Linux、Windows | 仅检测已安装状态 |
+
+安装相关接口只允许本机访问，避免通过远程 tunnel 触发本机安装操作。
+
 ## 备份和导入
 
 备份接口导出的主要是用户层配置，不是仓库代码。

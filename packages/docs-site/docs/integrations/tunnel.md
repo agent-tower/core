@@ -12,8 +12,10 @@ Tunnel 用来把本地 Agent Tower 临时暴露到外网，方便手机或其他
 | 接口 | 作用 |
 | --- | --- |
 | `GET /api/tunnel/status` | 查看当前 tunnel 状态 |
+| `GET /api/tunnel/health` | tunnel 健康检查 |
 | `POST /api/tunnel/bootstrap` | 前端启动时用 token 换取 session cookie |
 | `POST /api/tunnel/start` | 启动 tunnel |
+| `POST /api/tunnel/regenerate` | 重新生成访问 token 并启动 tunnel |
 | `POST /api/tunnel/stop` | 停止 tunnel |
 
 ## 状态返回

@@ -5,7 +5,7 @@ description: 从源码运行 Agent Tower。
 
 # 源码开发
 
-Agent Tower 是 pnpm monorepo，主要包含 `shared`、`server`、`web` 和 `docs-site`。
+Agent Tower 是 pnpm monorepo，主要包含 `shared`、`server`、`web`、`desktop` 和 `docs-site`。
 
 ## 准备
 
@@ -31,6 +31,12 @@ pnpm --filter web dev
 pnpm --filter @agent-tower/docs-site dev
 ```
 
+根目录的 `pnpm dev` 默认排除文档站。如果要把文档站也一起启动，可以使用：
+
+```bash
+pnpm dev:all
+```
+
 ## 构建
 
 构建主应用：
@@ -51,6 +57,14 @@ pnpm docs:build
 pnpm docs:serve
 ```
 
+桌面端开发壳会复用已有 Web UI 和后端：
+
+```bash
+pnpm desktop:spike
+```
+
+`desktop:spike` 会先构建 `shared`、`server` 和 `web`，再启动 Electron。
+
 ## 数据库
 
 服务端使用 Prisma + SQLite。开发时可运行：
@@ -67,3 +81,11 @@ pnpm db:push
 发布构建脚本位于 `scripts/build-publish.mjs`。它会构建 `shared`、`server` 和 `web`，然后把可发布 npm 包组装到 `packages/server/publish/`。
 
 文档站是独立静态站点，不参与 CLI npm 包产物。
+
+桌面端打包命令位于 `packages/desktop`，根目录也提供了常用入口：
+
+```bash
+pnpm desktop:package:dir
+pnpm desktop:package:smoke
+pnpm desktop:package:acceptance
+```

@@ -15,6 +15,8 @@ const sidebars: SidebarsConfig = {
         'getting-started/quick-start',
         'getting-started/source-development',
         'getting-started/project-setup',
+        'getting-started/docker',
+        'getting-started/desktop',
       ],
     },
     {

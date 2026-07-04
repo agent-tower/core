@@ -103,7 +103,7 @@ pnpm --filter @agent-tower/server dev
 
 | Tool | 说明 |
 | --- | --- |
-| `start_workspace_session` | 创建 workspace、创建 session，并立即启动 agent |
+| `start_workspace_session` | 创建 workspace、创建 session，并立即启动 agent；默认使用 worktree，也支持 `main_directory` |
 | `get_workspace_diff` | 获取 workspace 当前 diff |
 | `merge_workspace` | 将 workspace squash merge 回主分支 |
 
@@ -119,6 +119,30 @@ pnpm --filter @agent-tower/server dev
 | Tool | 说明 |
 | --- | --- |
 | `get_context` | 获取当前目录对应的 project/task/workspace 上下文，仅在 worktree 目录内可用 |
+
+### Team Room
+
+Team Room 工具始终在 MCP server 中注册，但大多数工具需要当前 MCP 进程带有 TeamRun 身份。TeamRun 由 Agent Tower 启动 agent session 时注入：
+
+- `AGENT_TOWER_TEAM_RUN_ID`
+- `AGENT_TOWER_MEMBER_ID`
+- `AGENT_TOWER_INVOCATION_ID`
+- `AGENT_TOWER_SESSION_ID`
+
+| Tool | 说明 |
+| --- | --- |
+| `post_room_message` | 发送公开 Team Room 消息，可通过结构化 mentions 创建 WorkRequest |
+| `post_private_message` | 给指定成员发送私聊消息，并为收件人创建 WorkRequest |
+| `list_room_messages` | 列出当前成员可见的房间消息 |
+| `get_room_message` | 获取单条房间消息完整内容 |
+| `list_team_members` | 列出成员 ID、状态、能力、workspace/session/队列策略和 provider |
+| `list_member_work_requests` | 列出当前成员可见的 pending/queued WorkRequest |
+| `approve_work_request` | 批准 pending WorkRequest，并尝试启动下一项工作 |
+| `reject_work_request` | 拒绝 pending WorkRequest |
+| `cancel_work_request` | 取消 pending 或 queued WorkRequest |
+| `stop_member_work` | 停止某个成员当前工作，并可同时取消其排队请求 |
+
+权限由 TeamRun 成员身份和能力开关共同决定。普通成员通常只能看到自己的队列；具备队列管理能力的成员可以看到团队 pending 队列。
 
 ## 常见链路
 
