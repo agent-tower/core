@@ -110,6 +110,7 @@ describe('ExecutionEnv.getFullEnv', () => {
     process.env.AGENT_TOWER_MEMBER_ID = 'inherited-member';
     process.env.AGENT_TOWER_URL = 'http://127.0.0.1:12580';
     process.env.AGENT_TOWER_PORT = '12580';
+    process.env.AGENT_TOWER_INTERNAL_TOKEN = 'inherited-internal-token';
     process.env.AGENT_TOWER_TEST_NORMAL_ENV = 'keep-me';
 
     const env = ExecutionEnv.default(os.tmpdir()).merge({
@@ -128,6 +129,7 @@ describe('ExecutionEnv.getFullEnv', () => {
       AGENT_TOWER_MEMBER_ID: 'member-1',
       AGENT_TOWER_URL: 'http://127.0.0.1:42232',
       AGENT_TOWER_PORT: '42232',
+      AGENT_TOWER_INTERNAL_TOKEN: 'explicit-internal-token',
       PROVIDER_SAFE_ENV: 'provider-value',
     });
 
@@ -143,6 +145,7 @@ describe('ExecutionEnv.getFullEnv', () => {
       AGENT_TOWER_MEMBER_ID: 'member-1',
       AGENT_TOWER_URL: 'http://127.0.0.1:42232',
       AGENT_TOWER_PORT: '42232',
+      AGENT_TOWER_INTERNAL_TOKEN: 'explicit-internal-token',
       AGENT_TOWER_TEST_NORMAL_ENV: 'keep-me',
       PROVIDER_SAFE_ENV: 'provider-value',
     });
@@ -156,6 +159,7 @@ describe('ExecutionEnv.getFullEnv', () => {
       AGENT_TOWER_MEMBER_ID: 'member-1',
       AGENT_TOWER_URL: 'http://127.0.0.1:42232',
       AGENT_TOWER_PORT: '42232',
+      AGENT_TOWER_INTERNAL_TOKEN: 'explicit-internal-token',
     });
 
     const profiledEnv = env.withProfile({
@@ -163,6 +167,7 @@ describe('ExecutionEnv.getFullEnv', () => {
         DATABASE_URL: 'file:/provider/database-url.db',
         AGENT_TOWER_SESSION_ID: 'provider-session',
         AGENT_TOWER_URL: 'http://127.0.0.1:9999',
+        AGENT_TOWER_INTERNAL_TOKEN: 'provider-token',
         PROVIDER_SAFE_ENV: 'provider-value',
       },
     });
@@ -174,22 +179,25 @@ describe('ExecutionEnv.getFullEnv', () => {
       AGENT_TOWER_MEMBER_ID: 'member-1',
       AGENT_TOWER_URL: 'http://127.0.0.1:42232',
       AGENT_TOWER_PORT: '42232',
+      AGENT_TOWER_INTERNAL_TOKEN: 'explicit-internal-token',
       PROVIDER_SAFE_ENV: 'provider-value',
     });
     expect(profiledEnv.getFullEnv()).not.toHaveProperty('DATABASE_URL');
   });
 
-  it('does not inherit parent TeamRun identity env without explicit injection', () => {
+  it('does not inherit parent TeamRun identity or internal token env without explicit injection', () => {
     process.env.AGENT_TOWER_SESSION_ID = 'inherited-session';
     process.env.AGENT_TOWER_INVOCATION_ID = 'inherited-invocation';
     process.env.AGENT_TOWER_TEAM_RUN_ID = 'inherited-team-run';
     process.env.AGENT_TOWER_MEMBER_ID = 'inherited-member';
+    process.env.AGENT_TOWER_INTERNAL_TOKEN = 'inherited-internal-token';
 
     const fullEnv = ExecutionEnv.default(os.tmpdir()).getFullEnv();
 
     for (const key of AGENT_TOWER_MCP_IDENTITY_ENV_KEYS) {
       expect(fullEnv).not.toHaveProperty(key);
     }
+    expect(fullEnv).not.toHaveProperty('AGENT_TOWER_INTERNAL_TOKEN');
   });
 });
 
@@ -290,6 +298,29 @@ describe('BaseExecutor.spawnWithStdin', () => {
     expect(logs).not.toContain(secretMarker);
     expect(logs).toContain('length=');
     expect(logs).toContain('sha256=');
+  });
+
+  it('redacts token-like config override values from spawn logs', async () => {
+    const stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    spawnMock.mockReturnValueOnce({
+      pid: 12345,
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+      kill: vi.fn(),
+    });
+
+    const executor = new TestExecutor();
+    await executor.spawnInternalForTest({
+      program: 'mock-agent',
+      args: [
+        '-c',
+        'mcp_servers.agent-tower.env.AGENT_TOWER_INTERNAL_TOKEN=secret-internal-token',
+      ],
+    }, ExecutionEnv.default(os.tmpdir()));
+
+    const logs = stdoutWriteSpy.mock.calls.map(([line]) => String(line)).join('\n');
+    expect(logs).not.toContain('secret-internal-token');
+    expect(logs).toContain('mcp_servers.agent-tower.env.AGENT_TOWER_INTERNAL_TOKEN=<redacted>');
   });
 
   it('uses bundled node runtime for the stdin PTY wrapper while sanitizing agent env', async () => {

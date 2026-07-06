@@ -8,6 +8,7 @@
  *   agent-tower --data-dir /path    # 指定数据目录
  *   agent-tower --host 127.0.0.1    # 指定监听地址
  *   agent-tower --web-dir web       # 指定前端静态目录（相对 dist/）
+ *   agent-tower --disable-access-password  # 关闭访问密码（忘记密码恢复）
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
@@ -18,6 +19,7 @@ import { getBundledPrismaCommand } from './utils/process-launch.js';
 import { resolveDataDir } from './utils/data-dir.js';
 import { preparePrismaCliEnv } from './utils/prisma-cli-env.js';
 import { installProcessErrorLogging, writeErrorLog } from './utils/error-log.js';
+import { getOrCreateInternalApiToken, INTERNAL_API_TOKEN_ENV } from './utils/internal-api-token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,12 +28,14 @@ const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_WEB_DIR = 'web';
 let currentDataDir: string | undefined;
 
-function parseArgs(): { port: number; host: string; dataDir: string; webDir: string } {
+function parseArgs(): { port: number; host: string; dataDir: string; webDir: string; disableAccessPassword: boolean } {
   const args = process.argv.slice(2);
   let port: number | undefined;
   let host: string | undefined;
   let dataDir: string | undefined;
   let webDir: string | undefined;
+  let disableAccessPassword = process.env.AGENT_TOWER_DISABLE_ACCESS_PASSWORD === '1'
+    || process.env.AGENT_TOWER_DISABLE_ACCESS_PASSWORD === 'true';
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -65,6 +69,9 @@ function parseArgs(): { port: number; host: string; dataDir: string; webDir: str
           process.exit(1);
         }
         break;
+      case '--disable-access-password':
+        disableAccessPassword = true;
+        break;
       case '--help':
       case '-h':
         printHelp();
@@ -85,6 +92,7 @@ function parseArgs(): { port: number; host: string; dataDir: string; webDir: str
     host: host ?? process.env.AGENT_TOWER_HOST ?? DEFAULT_HOST,
     dataDir: resolveDataDir(dataDir),
     webDir: webDir ?? (process.env.AGENT_TOWER_WEB_DIR || DEFAULT_WEB_DIR),
+    disableAccessPassword,
   };
 }
 
@@ -100,6 +108,9 @@ Options:
   -d, --data-dir <path>  Data directory (default: ~/.agent-tower, env: AGENT_TOWER_DATA_DIR)
   --web-dir <path>       Web dist directory, resolved relative to dist/ unless absolute
                          (default: web, env: AGENT_TOWER_WEB_DIR)
+  --disable-access-password
+                         Disable the access password and rotate sessions
+                         (env: AGENT_TOWER_DISABLE_ACCESS_PASSWORD=1)
   -h, --help             Show this help
   -v, --version          Show version
 `);
@@ -158,7 +169,7 @@ function ensureDatabase(dataDir: string, dbPath: string, schemaPath: string) {
 }
 
 async function main() {
-  const { port, host, dataDir, webDir } = parseArgs();
+  const { port, host, dataDir, webDir, disableAccessPassword } = parseArgs();
   currentDataDir = dataDir;
   installProcessErrorLogging(dataDir);
 
@@ -180,9 +191,15 @@ async function main() {
   // 初始化数据库
   const schemaPath = path.resolve(__dirname, '../prisma/schema.prisma');
   ensureDatabase(dataDir, dbPath, schemaPath);
+  process.env[INTERNAL_API_TOKEN_ENV] = getOrCreateInternalApiToken(dataDir);
 
   // 启动服务器
   const { buildApp } = await import('./app.js');
+  if (disableAccessPassword) {
+    const { AccessAuthService } = await import('./services/access-auth.service.js');
+    await AccessAuthService.disableForRecovery();
+    console.log('Access password disabled.');
+  }
   const app = await buildApp();
 
   let shuttingDown = false;

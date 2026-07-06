@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { McpConfigResponse, McpConfigRuntimeMode } from '@agent-tower/shared';
-import { getDefaultDataDir } from '../utils/data-dir.js';
+import { INTERNAL_API_TOKEN_ENV, requireInternalApiTokenFromEnv } from '../utils/internal-api-token.js';
 
 const SERVER_NAME = 'agent-tower';
 
@@ -36,8 +36,14 @@ export function buildMcpConfigResponse(options: {
     ? env.AGENT_TOWER_NODE_RUNTIME || process.execPath
     : env.AGENT_TOWER_DESKTOP_NODE || process.execPath;
   const configEnv: Record<string, string> = {
-    AGENT_TOWER_DATA_DIR: env.AGENT_TOWER_DATA_DIR || getDefaultDataDir(),
+    [INTERNAL_API_TOKEN_ENV]: requireInternalApiTokenFromEnv(env),
   };
+  if (env.AGENT_TOWER_URL) {
+    configEnv.AGENT_TOWER_URL = env.AGENT_TOWER_URL;
+  }
+  if (env.AGENT_TOWER_PORT) {
+    configEnv.AGENT_TOWER_PORT = env.AGENT_TOWER_PORT;
+  }
 
   if (runtimeMode === 'desktop-packaged' && env.ELECTRON_RUN_AS_NODE === '1') {
     configEnv.ELECTRON_RUN_AS_NODE = '1';

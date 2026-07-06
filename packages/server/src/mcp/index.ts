@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createMcpServer } from './server.js';
 import { resolveDataDir } from '../utils/data-dir.js';
+import { requireInternalApiTokenFromEnv } from '../utils/internal-api-token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,7 +44,9 @@ async function main() {
 
   console.error(`[agent-tower-mcp] Connecting to backend at ${baseUrl}`);
 
-  const server = await createMcpServer(baseUrl);
+  const server = await createMcpServer(baseUrl, {
+    internalApiToken: requireInternalApiTokenFromEnv(),
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 

@@ -90,6 +90,11 @@ export const queryKeys = {
     detail: ['app-settings'] as const,
   },
 
+  accessAuth: {
+    status: ['access-auth', 'status'] as const,
+    settings: ['access-auth', 'settings'] as const,
+  },
+
   agentCli: {
     manifest: ['agent-cli', 'manifest'] as const,
     status: ['agent-cli', 'status'] as const,

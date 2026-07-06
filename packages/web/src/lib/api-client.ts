@@ -32,6 +32,7 @@ class ApiClient {
     const response = await fetch(url, {
       ...init,
       headers,
+      credentials: init.credentials ?? 'same-origin',
     })
 
     if (!response.ok) {

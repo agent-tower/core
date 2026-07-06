@@ -59,6 +59,10 @@ function redactArgsForLog(args: string[]): string {
 
     const equalsIndex = arg.indexOf('=');
     const key = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
+    if (equalsIndex !== -1 && /(?:^|[._-])(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH)(?:[._-]|$)/i.test(key)) {
+      redacted.push(`${key}=<redacted>`);
+      continue;
+    }
     if (REDACT_VALUE_AFTER_ARGS.has(key)) {
       if (equalsIndex === -1) {
         redacted.push(arg);

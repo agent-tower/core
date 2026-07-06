@@ -25,6 +25,8 @@ Agent Tower Backend
 
 MCP server 只是轻量 HTTP 代理层，不直接访问数据库，也不绕过业务规则。
 
+如果启用了访问密码，MCP 不能使用浏览器 cookie。Agent Tower 会为自己启动的 agent/MCP 进程注入 `AGENT_TOWER_INTERNAL_TOKEN`，MCP 调后端 API 时会使用这个内部凭证。手动配置第三方 MCP 客户端时，推荐从设置页复制生成的 MCP 配置；如果手写配置，需要包含 `AGENT_TOWER_INTERNAL_TOKEN` env，占位符形式如下，不要写死真实 token。
+
 ## 前置条件
 
 在使用 MCP 之前，Agent Tower 后端必须先运行。
@@ -52,12 +54,15 @@ pnpm --filter @agent-tower/server dev
       "command": "agent-tower-mcp",
       "args": [],
       "env": {
-        "AGENT_TOWER_URL": "http://127.0.0.1:12580"
+        "AGENT_TOWER_URL": "http://127.0.0.1:12580",
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}"
       }
     }
   }
 }
 ```
+
+如果当前 MCP 客户端不支持 `${env:...}` 占位符，请从 Agent Tower 设置页复制生成配置，或用该客户端支持的安全 secret/env 注入方式传入 `AGENT_TOWER_INTERNAL_TOKEN`。不要把真实 token 提交到项目配置中。
 
 ### 自定义后端地址
 
@@ -68,7 +73,8 @@ pnpm --filter @agent-tower/server dev
       "command": "agent-tower-mcp",
       "args": [],
       "env": {
-        "AGENT_TOWER_URL": "http://127.0.0.1:12580"
+        "AGENT_TOWER_URL": "http://127.0.0.1:12580",
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}"
       }
     }
   }
@@ -124,10 +130,13 @@ pnpm --filter @agent-tower/server dev
 
 Team Room 工具始终在 MCP server 中注册，但大多数工具需要当前 MCP 进程带有 TeamRun 身份。TeamRun 由 Agent Tower 启动 agent session 时注入：
 
+- `AGENT_TOWER_INTERNAL_TOKEN`
 - `AGENT_TOWER_TEAM_RUN_ID`
 - `AGENT_TOWER_MEMBER_ID`
 - `AGENT_TOWER_INVOCATION_ID`
 - `AGENT_TOWER_SESSION_ID`
+
+其中 `AGENT_TOWER_INTERNAL_TOKEN` 用于 MCP 后端鉴权；其余变量用于 TeamRun 成员身份和上下文。不要在共享配置中写死这些值。
 
 | Tool | 说明 |
 | --- | --- |

@@ -519,8 +519,12 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
   );
 }
 
-export async function createMcpServer(baseUrl: string): Promise<McpServer> {
+export async function createMcpServer(
+  baseUrl: string,
+  options: { internalApiToken?: string } = {},
+): Promise<McpServer> {
   const client = new AgentTowerClient(baseUrl);
+  client.setInternalApiToken(options.internalApiToken);
   const context = await fetchContext(client);
   client.setInvocationId(process.env.AGENT_TOWER_INVOCATION_ID ?? context?.invocationId);
 

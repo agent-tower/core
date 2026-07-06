@@ -67,11 +67,16 @@ Let Claude Code operate the task board directly:
   "mcpServers": {
     "agent-tower": {
       "command": "agent-tower-mcp",
-      "args": []
+      "args": [],
+      "env": {
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}"
+      }
     }
   }
 }
 ```
+
+If access password is enabled, MCP calls use `AGENT_TOWER_INTERNAL_TOKEN` instead of browser cookies. Prefer copying the generated MCP config from Agent Tower settings, or pass this env var through your MCP client's secret/env mechanism. Do not hard-code a real token in shared config.
 
 ### Development from Source
 

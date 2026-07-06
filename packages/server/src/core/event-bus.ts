@@ -35,6 +35,7 @@ type EventMap = {
   };
   'workspace:git_changed': WorkspaceGitChangedPayload;
   'team-run:invalidated': TeamRunInvalidatedPayload;
+  'access-auth:session-secret-rotated': { generation: number };
 };
 
 type EventName = keyof EventMap;

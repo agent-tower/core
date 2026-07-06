@@ -67,11 +67,16 @@ agent-tower
   "mcpServers": {
     "agent-tower": {
       "command": "agent-tower-mcp",
-      "args": []
+      "args": [],
+      "env": {
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}"
+      }
     }
   }
 }
 ```
+
+如果开启了访问密码，MCP 调用后端会使用 `AGENT_TOWER_INTERNAL_TOKEN`，不会走浏览器 cookie。推荐从 Agent Tower 设置页复制生成的 MCP 配置，或用 MCP 客户端支持的 secret/env 方式注入这个变量。不要在共享配置里写死真实 token。
 
 ### 从源码开发
 

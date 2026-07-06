@@ -29,6 +29,7 @@ export const AGENT_TOWER_MCP_IDENTITY_ENV_KEYS = [
 export const AGENT_TOWER_MCP_SERVICE_ENV_KEYS = [
   'AGENT_TOWER_URL',
   'AGENT_TOWER_PORT',
+  'AGENT_TOWER_INTERNAL_TOKEN',
 ] as const;
 
 const AGENT_SUBPROCESS_EXTERNAL_ENV_BLOCKED_KEYS = new Set<string>([
@@ -36,6 +37,10 @@ const AGENT_SUBPROCESS_EXTERNAL_ENV_BLOCKED_KEYS = new Set<string>([
   ...AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
   ...AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
 ]);
+
+const AGENT_SUBPROCESS_PARENT_ONLY_BLOCKED_ENV_KEYS = [
+  'AGENT_TOWER_INTERNAL_TOKEN',
+] as const;
 
 export function filterAgentSubprocessExternalEnv(overrides: Record<string, string>): Record<string, string> {
   const filtered: Record<string, string> = {};
@@ -173,6 +178,9 @@ export class ExecutionEnv {
     }
 
     for (const key of AGENT_TOWER_MCP_IDENTITY_ENV_KEYS) {
+      delete env[key];
+    }
+    for (const key of AGENT_SUBPROCESS_PARENT_ONLY_BLOCKED_ENV_KEYS) {
       delete env[key];
     }
 

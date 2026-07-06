@@ -12,6 +12,7 @@ import { HibernationScheduler } from './services/hibernation-scheduler.js';
 import { TunnelService } from './services/tunnel.service.js';
 import { getTaskCleanupService, getWorkspaceGitWatcherService } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
+import { accessAuthHook } from './middleware/access-auth.js';
 import { writeErrorLog } from './utils/error-log.js';
 
 let hibernationScheduler: HibernationScheduler | null = null;
@@ -52,6 +53,9 @@ export async function buildApp() {
 
   // 隧道 token 认证钩子（仅拦截经 Cloudflare 隧道的请求）
   app.addHook('onRequest', tunnelAuthHook);
+
+  // 访问密码认证钩子（启用后保护浏览器业务入口）
+  app.addHook('onRequest', accessAuthHook);
 
   // 注册路由
   await registerRoutes(app);

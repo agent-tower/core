@@ -31,6 +31,30 @@ INSTALL_AGENT_CLIS=false docker compose up -d --build
 http://localhost:12580
 ```
 
+## 访问密码
+
+Docker/服务器部署建议在首次打开后进入「设置 → 通用 → 访问安全」开启访问密码。开启后，浏览器访问 Agent Tower 会先显示解锁页；登录态默认保留 7 天。修改或关闭访问密码时需要输入当前密码。访问密码至少需要 8 个字符，登录失败过多会短暂冷却。
+
+访问密码和 Cloudflare Tunnel token 是两层独立门禁：
+
+- 直接暴露 `http://server:12580`：只需要访问密码。
+- 使用 Cloudflare Tunnel 分享链接：先通过 tunnel token，再输入访问密码。
+- 未开启访问密码时，现有本地使用体验不变。
+
+如果把服务暴露到公网，请优先使用 HTTPS 反向代理或 Cloudflare Tunnel。直接用 HTTP 暴露时，访问密码和登录 cookie 都会以明文经过网络。
+
+忘记访问密码时，可以在备份 `/data` 后用恢复开关启动一次：
+
+```bash
+docker compose run --rm agent-tower agent-tower \
+  --data-dir /data \
+  --host 0.0.0.0 \
+  --port 12580 \
+  --disable-access-password
+```
+
+也可以临时设置环境变量 `AGENT_TOWER_DISABLE_ACCESS_PASSWORD=1` 启动。恢复入口会关闭访问密码并使旧登录态失效，之后请回到设置页重新开启。
+
 查看日志：
 
 ```bash
@@ -66,9 +90,12 @@ AGENT_TOWER_WORKSPACE_DIR=/path/to/projects docker compose up -d --build
 - `data.db`：SQLite 数据库
 - `attachments/`：上传附件
 - `providers.json`、`profiles.json`：Provider/Profile 自定义配置
+- `internal-api-token`：Agent Tower 内部 MCP/API 调用凭据
 - `conversations/`：独立对话工作目录
 - `logs/`：运行错误日志
 - `cache/`：Prisma 等运行期缓存
+
+`/data` 是 Agent Tower 内部数据目录，不要作为项目目录添加到 UI；浏览器侧文件 API 会拒绝读取该目录下的数据库、内部 token 等文件。
 
 ## Agent CLI 认证
 

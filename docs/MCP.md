@@ -22,6 +22,8 @@ SQLite
 
 MCP server 本身是一个轻量的 HTTP 代理层，不直接访问数据库，也不绕过 Agent Tower 的业务规则。
 
+如果启用了访问密码，MCP 不走浏览器 cookie，而是通过 `AGENT_TOWER_INTERNAL_TOKEN` 这个内部凭证调用后端。Agent Tower 自己启动的 agent/MCP 进程会自动注入该变量；手动配置外部 MCP 客户端时，推荐从设置页复制生成配置，或用客户端支持的安全 env/secret 方式传入，不要写死真实 token。
+
 ## 2. 前置条件
 
 在使用 MCP 之前，Agent Tower 后端必须先运行。
@@ -49,7 +51,10 @@ pnpm --filter @agent-tower/server dev
   "mcpServers": {
     "agent-tower": {
       "command": "agent-tower-mcp",
-      "args": []
+      "args": [],
+      "env": {
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}"
+      }
     }
   }
 }
@@ -62,7 +67,10 @@ pnpm --filter @agent-tower/server dev
   "mcpServers": {
     "agent-tower": {
       "command": "node",
-      "args": ["/path/to/agent-tower/packages/server/dist/mcp/index.js"]
+      "args": ["/path/to/agent-tower/packages/server/dist/mcp/index.js"],
+      "env": {
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}"
+      }
     }
   }
 }
@@ -75,7 +83,10 @@ pnpm --filter @agent-tower/server dev
   "mcpServers": {
     "agent-tower": {
       "command": "npx",
-      "args": ["tsx", "/path/to/agent-tower/packages/server/src/mcp/index.ts"]
+      "args": ["tsx", "/path/to/agent-tower/packages/server/src/mcp/index.ts"],
+      "env": {
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}"
+      }
     }
   }
 }
@@ -98,12 +109,15 @@ pnpm --filter @agent-tower/server dev
       "command": "agent-tower-mcp",
       "args": [],
       "env": {
-        "AGENT_TOWER_URL": "http://127.0.0.1:12345"
+        "AGENT_TOWER_URL": "http://127.0.0.1:12345",
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}"
       }
     }
   }
 }
 ```
+
+`${env:AGENT_TOWER_INTERNAL_TOKEN}` 表示由 Agent Tower 启动器或 MCP 客户端运行环境注入的变量占位符。如果你的客户端不支持这种占位符，请使用它支持的 secret/env 注入方式。
 
 ## 4. 当前可用 Tools
 

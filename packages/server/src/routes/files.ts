@@ -3,6 +3,7 @@ import { z, ZodError } from 'zod';
 import * as fs from 'node:fs/promises';
 import * as fssync from 'node:fs';
 import * as path from 'node:path';
+import { resolveDataDir } from '../utils/data-dir.js';
 
 type FileItem = { name: string; type: 'file' | 'directory' };
 
@@ -44,6 +45,10 @@ function handleError(error: unknown, reply: any) {
 
   if (error && typeof error === 'object' && 'code' in error) {
     const code = (error as any).code as string;
+    if (code === 'INTERNAL_PATH_FORBIDDEN') {
+      reply.code(403);
+      return { error: 'Internal Agent Tower files are not accessible', code: 'INTERNAL_PATH_FORBIDDEN' };
+    }
     if (code === 'ENOENT') {
       reply.code(404);
       return { error: 'Not found', code: 'NOT_FOUND' };
@@ -80,8 +85,47 @@ function assertNoTraversalSegments(relPath: string) {
   }
 }
 
+function isSameOrChildPath(candidate: string, base: string): boolean {
+  const relative = path.relative(base, candidate);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function resolveExistingPath(candidate: string): Promise<string | null> {
+  try {
+    return await fs.realpath(candidate);
+  } catch {
+    return null;
+  }
+}
+
+async function getProtectedInternalRoots(): Promise<string[]> {
+  const configuredDataDir = path.resolve(resolveDataDir());
+  const roots = [configuredDataDir];
+  const realDataDir = await resolveExistingPath(configuredDataDir);
+  if (realDataDir && realDataDir !== configuredDataDir) roots.push(realDataDir);
+  return roots;
+}
+
+async function assertNotInternalPath(...candidates: Array<string | null | undefined>) {
+  const roots = await getProtectedInternalRoots();
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const resolved = path.resolve(candidate);
+    const real = await resolveExistingPath(resolved);
+    const paths = real && real !== resolved ? [resolved, real] : [resolved];
+
+    if (paths.some((item) => roots.some((root) => isSameOrChildPath(item, root)))) {
+      const err: any = new Error('Internal Agent Tower files are not accessible');
+      err.code = 'INTERNAL_PATH_FORBIDDEN';
+      throw err;
+    }
+  }
+}
+
 async function resolveInWorkingDir(workingDir: string, userPath: string | undefined) {
   const baseReal = await fs.realpath(workingDir);
+  await assertNotInternalPath(baseReal);
   const rel = normalizeUserPath(userPath);
   assertNoTraversalSegments(rel);
   const abs = path.resolve(baseReal, rel);
@@ -181,6 +225,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
       const { baseReal, abs } = await resolveInWorkingDir(workingDir, userPath);
       const dirReal = await fs.realpath(abs);
+      await assertNotInternalPath(dirReal);
       const relative = path.relative(baseReal, dirReal);
       if (relative.startsWith('..') || path.isAbsolute(relative)) {
         reply.code(400);
@@ -234,6 +279,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
       const { baseReal, abs } = await resolveInWorkingDir(workingDir, userFilePath);
       const fileReal = await fs.realpath(abs);
+      await assertNotInternalPath(fileReal);
       const relative = path.relative(baseReal, fileReal);
       if (relative.startsWith('..') || path.isAbsolute(relative)) {
         reply.code(400);
@@ -274,6 +320,8 @@ export async function filesRoutes(app: FastifyInstance) {
       // Ensure parent dir exists and is within workingDir (mitigate symlink escapes)
       const parent = path.dirname(abs);
       const parentReal = await fs.realpath(parent);
+      const targetReal = await resolveExistingPath(abs);
+      await assertNotInternalPath(parentReal, targetReal, abs);
       const parentRel = path.relative(baseReal, parentReal);
       if (parentRel.startsWith('..') || path.isAbsolute(parentRel)) {
         reply.code(400);
@@ -305,6 +353,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
       const { baseReal, abs } = await resolveInWorkingDir(workingDir, userFilePath);
       const fileReal = await fs.realpath(abs);
+      await assertNotInternalPath(fileReal);
       const relative = path.relative(baseReal, fileReal);
       if (relative.startsWith('..') || path.isAbsolute(relative)) {
         reply.code(400);
@@ -337,4 +386,3 @@ export async function filesRoutes(app: FastifyInstance) {
     }
   });
 }
-

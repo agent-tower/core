@@ -73,4 +73,6 @@ agent-tower --port 12580
 AGENT_TOWER_URL=http://127.0.0.1:12580 agent-tower-mcp
 ```
 
+访问密码开启后，MCP 还需要 `AGENT_TOWER_INTERNAL_TOKEN`。推荐从设置页复制生成的 MCP 配置，或用 MCP 客户端支持的 env/secret 机制注入该变量。
+
 如果 agent CLI 无法启动，通常是 provider 配置或本机 PATH 问题。见 [Agent Provider](../integrations/agent-providers.md)。

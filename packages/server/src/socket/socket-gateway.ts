@@ -2,6 +2,8 @@ import type { Namespace, Socket } from 'socket.io';
 import type { EventBus } from '../core/event-bus.js';
 import type { SessionManager } from '../services/session-manager.js';
 import type { TerminalManager } from '../services/terminal-manager.js';
+import { AccessAuthService } from '../services/access-auth.service.js';
+import type { AuthenticatedSocket } from './middleware/index.js';
 import {
   ClientEvents,
   ServerEvents,
@@ -35,18 +37,21 @@ export class SocketGateway {
     this.cleanups = [];
   }
 
-  register(socket: Socket): void {
+  register(socket: AuthenticatedSocket): void {
     // --- Subscribe / Unsubscribe ---
     socket.on(ClientEvents.SUBSCRIBE, (payload: SubscribePayload, ack?: (res: AckResponse) => void) => {
+      if (!this.ensureSocketAuthIsCurrent(socket, ack)) return;
       this.handleSubscribe(socket, payload, ack);
     });
 
     socket.on(ClientEvents.UNSUBSCRIBE, (payload: UnsubscribePayload, ack?: (res: AckResponse) => void) => {
+      if (!this.ensureSocketAuthIsCurrent(socket, ack)) return;
       this.handleUnsubscribe(socket, payload, ack);
     });
 
     // --- Agent session I/O ---
     socket.on(ClientEvents.INPUT, (payload: SessionInputPayload) => {
+      if (!this.ensureSocketAuthIsCurrent(socket)) return;
       if (!payload?.sessionId || typeof payload.data !== 'string') return;
       try {
         this.sessionManager.writeInput(payload.sessionId, payload.data);
@@ -56,6 +61,7 @@ export class SocketGateway {
     });
 
     socket.on(ClientEvents.RESIZE, (payload: SessionResizePayload) => {
+      if (!this.ensureSocketAuthIsCurrent(socket)) return;
       if (!payload?.sessionId || typeof payload.cols !== 'number' || typeof payload.rows !== 'number') return;
       try {
         this.sessionManager.resize(payload.sessionId, payload.cols, payload.rows);
@@ -66,6 +72,7 @@ export class SocketGateway {
 
     // --- Standalone terminal I/O ---
     socket.on(ClientEvents.TERMINAL_INPUT, (payload: TerminalInputPayload) => {
+      if (!this.ensureSocketAuthIsCurrent(socket)) return;
       if (!payload?.terminalId || typeof payload.data !== 'string') return;
       try {
         this.terminalManager.write(payload.terminalId, payload.data);
@@ -75,6 +82,7 @@ export class SocketGateway {
     });
 
     socket.on(ClientEvents.TERMINAL_RESIZE, (payload: TerminalResizePayload) => {
+      if (!this.ensureSocketAuthIsCurrent(socket)) return;
       if (!payload?.terminalId || typeof payload.cols !== 'number' || typeof payload.rows !== 'number') return;
       try {
         this.terminalManager.resize(payload.terminalId, payload.cols, payload.rows);
@@ -90,45 +98,67 @@ export class SocketGateway {
   }
 
   private registerEventBusForwarders(): void {
+    const emitToCurrentSockets = (event: string, payload: unknown) => {
+      for (const socket of this.nsp.sockets.values()) {
+        if (this.isSocketAuthCurrent(socket as AuthenticatedSocket)) {
+          socket.emit(event, payload);
+        } else {
+          socket.disconnect(true);
+        }
+      }
+    };
+
+    const emitToCurrentTerminalRoom = (terminalId: string, event: string, payload: unknown) => {
+      for (const socketId of this.nsp.adapter.rooms.get(`terminal:${terminalId}`) ?? []) {
+        const socket = this.nsp.sockets.get(socketId);
+        if (!socket) continue;
+        if (this.isSocketAuthCurrent(socket as AuthenticatedSocket)) {
+          socket.emit(event, payload);
+        } else {
+          socket.disconnect(true);
+        }
+      }
+    };
+
     // --- Session events: broadcast to entire namespace (no room filtering) ---
     const onStdout = ({ sessionId, data }: { sessionId: string; data: string }) => {
-      this.nsp.emit(ServerEvents.SESSION_STDOUT, { sessionId, data });
+      emitToCurrentSockets(ServerEvents.SESSION_STDOUT, { sessionId, data });
     };
     const onPatch = ({ sessionId, patch, seq }: { sessionId: string; patch: unknown[]; seq: number }) => {
-      this.nsp.emit(ServerEvents.SESSION_PATCH, { sessionId, patch, seq });
+      emitToCurrentSockets(ServerEvents.SESSION_PATCH, { sessionId, patch, seq });
     };
     const onSessionId = ({ sessionId, agentSessionId }: { sessionId: string; agentSessionId: string }) => {
-      this.nsp.emit(ServerEvents.SESSION_ID, { sessionId, agentSessionId });
+      emitToCurrentSockets(ServerEvents.SESSION_ID, { sessionId, agentSessionId });
     };
     const onExit = ({ sessionId, exitCode }: { sessionId: string; exitCode?: number }) => {
-      this.nsp.emit(ServerEvents.SESSION_EXIT, {
+      emitToCurrentSockets(ServerEvents.SESSION_EXIT, {
         sessionId,
         exitCode: typeof exitCode === 'number' ? exitCode : 0,
       });
     };
     const onSessionCompleted = ({ sessionId, status }: { sessionId: string; status: string }) => {
-      this.nsp.emit(ServerEvents.SESSION_COMPLETED, { sessionId, status });
+      emitToCurrentSockets(ServerEvents.SESSION_COMPLETED, { sessionId, status });
     };
     const onTask = ({ taskId, projectId, status }: { taskId: string; projectId: string; status: string }) => {
-      this.nsp.emit(ServerEvents.TASK_UPDATED, { taskId, projectId, status });
+      emitToCurrentSockets(ServerEvents.TASK_UPDATED, { taskId, projectId, status });
     };
     const onTaskDeleted = ({ taskId, projectId }: { taskId: string; projectId: string }) => {
-      this.nsp.emit(ServerEvents.TASK_DELETED, { taskId, projectId });
+      emitToCurrentSockets(ServerEvents.TASK_DELETED, { taskId, projectId });
     };
     const onWorkspaceCommitMessageUpdated = (payload: {
       workspaceId: string;
       taskId: string;
       commitMessage: string | null;
     }) => {
-      this.nsp.emit(ServerEvents.WORKSPACE_COMMIT_MESSAGE_UPDATED, payload);
+      emitToCurrentSockets(ServerEvents.WORKSPACE_COMMIT_MESSAGE_UPDATED, payload);
     };
 
     // --- Terminal events: keep room-based dispatch (lifecycle tied to socket) ---
     const onTerminalStdout = ({ terminalId, data }: { terminalId: string; data: string }) => {
-      this.nsp.to(`terminal:${terminalId}`).emit(ServerEvents.TERMINAL_STDOUT, { terminalId, data });
+      emitToCurrentTerminalRoom(terminalId, ServerEvents.TERMINAL_STDOUT, { terminalId, data });
     };
     const onTerminalExit = ({ terminalId, exitCode }: { terminalId: string; exitCode?: number }) => {
-      this.nsp.to(`terminal:${terminalId}`).emit(ServerEvents.TERMINAL_EXIT, {
+      emitToCurrentTerminalRoom(terminalId, ServerEvents.TERMINAL_EXIT, {
         terminalId,
         exitCode: typeof exitCode === 'number' ? exitCode : 0,
       });
@@ -144,7 +174,7 @@ export class SocketGateway {
       totalCommands: number;
       error?: string;
     }) => {
-      this.nsp.emit(ServerEvents.WORKSPACE_SETUP_PROGRESS, payload);
+      emitToCurrentSockets(ServerEvents.WORKSPACE_SETUP_PROGRESS, payload);
     };
 
     const onWorkspaceHibernated = (payload: {
@@ -152,15 +182,19 @@ export class SocketGateway {
       taskId: string;
       projectId: string;
     }) => {
-      this.nsp.emit(ServerEvents.WORKSPACE_HIBERNATED, payload);
+      emitToCurrentSockets(ServerEvents.WORKSPACE_HIBERNATED, payload);
     };
 
     const onWorkspaceGitChanged = (payload: WorkspaceGitChangedPayload) => {
-      this.nsp.emit(ServerEvents.WORKSPACE_GIT_CHANGED, payload);
+      emitToCurrentSockets(ServerEvents.WORKSPACE_GIT_CHANGED, payload);
     };
 
     const onTeamRunInvalidated = (payload: TeamRunInvalidatedPayload) => {
-      this.nsp.emit(ServerEvents.TEAM_RUN_INVALIDATED, payload);
+      emitToCurrentSockets(ServerEvents.TEAM_RUN_INVALIDATED, payload);
+    };
+
+    const onAccessAuthSessionSecretRotated = () => {
+      this.disconnectStaleSockets();
     };
 
     this.eventBus.on('session:stdout', onStdout);
@@ -177,6 +211,7 @@ export class SocketGateway {
     this.eventBus.on('workspace:hibernated', onWorkspaceHibernated);
     this.eventBus.on('workspace:git_changed', onWorkspaceGitChanged);
     this.eventBus.on('team-run:invalidated', onTeamRunInvalidated);
+    this.eventBus.on('access-auth:session-secret-rotated', onAccessAuthSessionSecretRotated);
 
     this.cleanups.push(
       () => this.eventBus.off('session:stdout', onStdout),
@@ -193,7 +228,37 @@ export class SocketGateway {
       () => this.eventBus.off('workspace:hibernated', onWorkspaceHibernated),
       () => this.eventBus.off('workspace:git_changed', onWorkspaceGitChanged),
       () => this.eventBus.off('team-run:invalidated', onTeamRunInvalidated),
+      () => this.eventBus.off('access-auth:session-secret-rotated', onAccessAuthSessionSecretRotated),
     );
+  }
+
+  private isSocketAuthCurrent(socket: AuthenticatedSocket): boolean {
+    return socket.accessAuthSessionSecretGeneration === AccessAuthService.getSessionSecretGeneration();
+  }
+
+  private ensureSocketAuthIsCurrent(
+    socket: AuthenticatedSocket,
+    ack?: (res: AckResponse) => void,
+  ): boolean {
+    if (this.isSocketAuthCurrent(socket)) return true;
+
+    ack?.({
+      success: false,
+      error: {
+        code: 'ACCESS_AUTH_STALE_SESSION',
+        message: 'Socket authentication is no longer current',
+      },
+    });
+    socket.disconnect(true);
+    return false;
+  }
+
+  private disconnectStaleSockets(): void {
+    for (const socket of this.nsp.sockets.values()) {
+      if (!this.isSocketAuthCurrent(socket as AuthenticatedSocket)) {
+        socket.disconnect(true);
+      }
+    }
   }
 
   private handleSubscribe(socket: Socket, payload: SubscribePayload, ack?: (res: AckResponse) => void): void {

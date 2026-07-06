@@ -1008,6 +1008,26 @@ export interface AppSettings {
   commitMessagePrompt: string | null
 }
 
+/** 访问密码公开状态 */
+export interface AccessAuthPublicStatus {
+  enabled: boolean
+  authenticated: boolean
+}
+
+/** 访问密码设置（不包含密码 hash） */
+export interface AccessAuthSafeSettings {
+  enabled: boolean
+  passwordConfigured: boolean
+  passwordUpdatedAt: string | null
+}
+
+/** 更新访问密码设置 */
+export interface UpdateAccessAuthSettingsInput {
+  enabled?: boolean
+  currentPassword?: string
+  newPassword?: string
+}
+
 /** 第三方通知渠道 */
 export type ThirdPartyChannel = 'none' | 'feishu'
 

@@ -39,10 +39,13 @@ description: 使用 TeamRun、Team Room 和多个 agent 协作完成任务。
 
 Team Room 和私聊相关工具依赖这些受信任身份变量：
 
+- `AGENT_TOWER_INTERNAL_TOKEN`
 - `AGENT_TOWER_TEAM_RUN_ID`
 - `AGENT_TOWER_MEMBER_ID`
 - `AGENT_TOWER_INVOCATION_ID`
 - `AGENT_TOWER_SESSION_ID`
+
+`AGENT_TOWER_INTERNAL_TOKEN` 是 MCP 调用 Agent Tower 后端时使用的内部凭证，访问密码开启后尤其必要。它由 Agent Tower 启动器注入到 agent/MCP 运行环境中，不要把固定 token 手写进全局配置或提交到仓库。
 
 安全边界：`memberId` 和 `invocationId` 不能通过提示词、tool args 或手工参数显式传给 MCP 工具。它们必须由 Agent Tower 启动器注入到 Agent/MCP 运行环境中。这样 room 工具才能按当前成员身份过滤私聊内容，并防止 Agent 冒充其他成员。
 
@@ -73,6 +76,7 @@ Cursor 使用 `mcpServers` JSON 配置，位置可以是全局 `~/.cursor/mcp.js
       "command": "agent-tower-mcp",
       "env": {
         "AGENT_TOWER_URL": "http://127.0.0.1:12580",
+        "AGENT_TOWER_INTERNAL_TOKEN": "${env:AGENT_TOWER_INTERNAL_TOKEN}",
         "AGENT_TOWER_TEAM_RUN_ID": "${env:AGENT_TOWER_TEAM_RUN_ID}",
         "AGENT_TOWER_MEMBER_ID": "${env:AGENT_TOWER_MEMBER_ID}",
         "AGENT_TOWER_INVOCATION_ID": "${env:AGENT_TOWER_INVOCATION_ID}",
@@ -83,7 +87,7 @@ Cursor 使用 `mcpServers` JSON 配置，位置可以是全局 `~/.cursor/mcp.js
 }
 ```
 
-这里的 `${env:AGENT_TOWER_*}` 是占位符，用于承接 Agent Tower 启动器注入到 Cursor Agent 进程中的身份变量。不要把具体 member id、invocation id 或 session id 写死到 `mcp.json`，这些值每次 TeamRun invocation 都不同。
+这里的 `${env:AGENT_TOWER_*}` 是占位符，用于承接 Agent Tower 启动器注入到 Cursor Agent 进程中的内部凭证和身份变量。不要把具体 internal token、member id、invocation id 或 session id 写死到 `mcp.json`，这些值由 Agent Tower 管理，TeamRun invocation 之间也可能不同。
 
 ## Claude Code
 

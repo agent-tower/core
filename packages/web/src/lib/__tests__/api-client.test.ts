@@ -19,6 +19,7 @@ describe('api-client', () => {
     expect(fetch).toHaveBeenCalledWith(
       '/api/projects',
       expect.objectContaining({
+        credentials: 'same-origin',
         headers: {},
       }),
     )

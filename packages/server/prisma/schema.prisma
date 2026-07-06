@@ -402,6 +402,17 @@ model AppSettings {
   commitMessagePrompt     String?
 }
 
+// 访问密码配置 (单例，只有一行)
+model AccessAuthSettings {
+  id                String    @id @default("singleton")
+  enabled           Boolean   @default(false)
+  passwordHash      String?
+  sessionSecret     String
+  passwordUpdatedAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
 // 通知配置 (单例，只有一行)
 // thirdPartyChannel: none, feishu
 model NotificationSettings {

@@ -13,6 +13,7 @@ interface I18nContextValue {
 }
 
 const I18nContext = createContext<I18nContextValue | null>(null)
+const LOCALE_STORAGE_KEY = 'agent-tower.locale'
 
 function resolveLocale(locale?: string | null): AppLocale | null {
   if (!locale) return null
@@ -21,9 +22,31 @@ function resolveLocale(locale?: string | null): AppLocale | null {
   return null
 }
 
+function readStoredLocale(): AppLocale | null {
+  if (typeof window === 'undefined') return null
+  try {
+    return resolveLocale(window.localStorage.getItem(LOCALE_STORAGE_KEY))
+  } catch {
+    return null
+  }
+}
+
+function writeStoredLocale(locale: AppLocale) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, locale)
+  } catch {
+    // Ignore storage failures; the server-side setting remains authoritative.
+  }
+}
+
 function detectBrowserLocale(): AppLocale {
   if (typeof navigator === 'undefined') return 'zh-CN'
   return navigator.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
+}
+
+function getClientPreferredLocale(): AppLocale {
+  return readStoredLocale() ?? detectBrowserLocale()
 }
 
 function interpolate(template: string, values?: TranslationValues) {
@@ -36,7 +59,7 @@ function interpolate(template: string, values?: TranslationValues) {
   return result
 }
 
-let currentLocale: AppLocale = 'zh-CN'
+let currentLocale: AppLocale = getClientPreferredLocale()
 
 export function translateForLocale(locale: AppLocale, source: string, values?: TranslationValues) {
   const template = messages[locale]?.[source] ?? source
@@ -48,8 +71,8 @@ export function translate(source: string, values?: TranslationValues) {
 }
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
-  const browserLocaleRef = useRef<AppLocale>(detectBrowserLocale())
-  const [locale, setLocaleState] = useState<AppLocale>(browserLocaleRef.current)
+  const fallbackLocaleRef = useRef<AppLocale>(getClientPreferredLocale())
+  const [locale, setLocaleState] = useState<AppLocale>(fallbackLocaleRef.current)
   const { data } = useAppSettings()
   const updateAppSettings = useUpdateAppSettings()
   const autoPersistedFallbackRef = useRef(false)
@@ -58,10 +81,11 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     currentLocale = nextLocale
     setLocaleState(nextLocale)
     document.documentElement.lang = nextLocale
+    writeStoredLocale(nextLocale)
   }, [])
 
   useEffect(() => {
-    const nextLocale = resolveLocale(data?.locale) ?? browserLocaleRef.current
+    const nextLocale = resolveLocale(data?.locale) ?? fallbackLocaleRef.current
     applyLocale(nextLocale)
 
     if (data && data.locale === null && !autoPersistedFallbackRef.current) {

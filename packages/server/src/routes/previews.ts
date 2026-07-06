@@ -12,10 +12,33 @@ import {
   TUNNEL_SESSION_COOKIE_NAME,
   extractTunnelSessionTokenFromCookieHeader,
 } from '../utils/tunnel-cookie.js';
+import { AccessAuthService } from '../services/access-auth.service.js';
+import {
+  INTERNAL_API_TOKEN_HEADER,
+  validateInternalApiToken,
+} from '../utils/internal-api-token.js';
+import {
+  buildPreviewPathPrefix,
+  parsePreviewPath,
+  PREVIEW_PREFIX,
+} from '../utils/preview-path.js';
 
-const PREVIEW_PREFIX = '/view';
+export const PREVIEW_SANDBOX_CSP = [
+  'sandbox',
+  'allow-scripts',
+  'allow-forms',
+  'allow-popups',
+  'allow-modals',
+  'allow-downloads',
+  'allow-pointer-lock',
+  'allow-presentation',
+  'allow-top-navigation-by-user-activation',
+].join(' ');
+const PREVIEW_CORS_ALLOW_METHODS = 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS';
+const PREVIEW_CORS_DEFAULT_ALLOW_HEADERS = 'Content-Type, Accept, Authorization, X-Requested-With';
 const INTERNAL_COOKIE_NAMES = new Set([
   TUNNEL_SESSION_COOKIE_NAME,
+  AccessAuthService.cookieName,
 ]);
 
 type ProxyRequestOptions = http.RequestOptions & { rejectUnauthorized?: boolean };
@@ -35,21 +58,6 @@ function errorResponse(error: unknown, reply: FastifyReply) {
 
   reply.log.error(error);
   return reply.code(500).send({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
-}
-
-function parsePreviewPath(url: string): { workspaceId: string; suffix: string; search: string } | null {
-  const parsed = new URL(url, 'http://agent-tower.local');
-  const prefix = `${PREVIEW_PREFIX}/`;
-  if (!parsed.pathname.startsWith(prefix)) return null;
-
-  const rest = parsed.pathname.slice(prefix.length);
-  const slashIndex = rest.indexOf('/');
-  const encodedWorkspaceId = slashIndex === -1 ? rest : rest.slice(0, slashIndex);
-  if (!encodedWorkspaceId) return null;
-
-  const workspaceId = decodeURIComponent(encodedWorkspaceId);
-  const suffix = slashIndex === -1 ? '/' : rest.slice(slashIndex) || '/';
-  return { workspaceId, suffix, search: parsed.search };
 }
 
 function joinTargetPath(target: NormalizedPreviewTarget, suffix: string, search: string): string {
@@ -80,6 +88,7 @@ function proxyRequestHeaders(headers: IncomingHttpHeaders, targetUrl: URL): http
   delete next.connection;
   delete next['content-length'];
   delete next['accept-encoding'];
+  delete next.referer;
 
   const cookie = filterCookieHeader(headers.cookie);
   if (cookie) next.cookie = cookie;
@@ -92,8 +101,38 @@ function proxyRequestHeaders(headers: IncomingHttpHeaders, targetUrl: URL): http
   return next;
 }
 
-export function rewriteLocationHeader(value: string, workspaceId: string, target: NormalizedPreviewTarget): string {
-  const prefix = `${PREVIEW_PREFIX}/${encodeURIComponent(workspaceId)}`;
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function normalizeRequestedHeaders(value: string | undefined): string {
+  if (!value) return PREVIEW_CORS_DEFAULT_ALLOW_HEADERS;
+  const headers = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return headers.length > 0 ? headers.join(', ') : PREVIEW_CORS_DEFAULT_ALLOW_HEADERS;
+}
+
+export function previewCorsHeaders(requestHeaders?: IncomingHttpHeaders): http.OutgoingHttpHeaders {
+  return {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': PREVIEW_CORS_ALLOW_METHODS,
+    'access-control-allow-headers': normalizeRequestedHeaders(
+      firstHeaderValue(requestHeaders?.['access-control-request-headers']),
+    ),
+    'access-control-max-age': '600',
+    'vary': 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
+  };
+}
+
+export function rewriteLocationHeader(
+  value: string,
+  workspaceId: string,
+  target: NormalizedPreviewTarget,
+  previewToken?: string | null,
+): string {
+  const prefix = buildPreviewPathPrefix(workspaceId, previewToken);
 
   try {
     const location = new URL(value, target.origin);
@@ -117,18 +156,20 @@ export function rewriteLocationHeader(value: string, workspaceId: string, target
   }
 }
 
-function rewriteSetCookieHeader(value: string, workspaceId: string): string {
-  const prefix = `${PREVIEW_PREFIX}/${encodeURIComponent(workspaceId)}/`;
+function rewriteSetCookieHeader(value: string, workspaceId: string, previewToken?: string | null): string {
+  const prefix = `${buildPreviewPathPrefix(workspaceId, previewToken)}/`;
   if (/;\s*path=/i.test(value)) {
     return value.replace(/;\s*path=([^;]*)/i, `; Path=${prefix}`);
   }
   return `${value}; Path=${prefix}`;
 }
 
-function proxyResponseHeaders(
+export function proxyResponseHeaders(
   headers: IncomingHttpHeaders,
   workspaceId: string,
   target: NormalizedPreviewTarget,
+  requestHeaders?: IncomingHttpHeaders,
+  previewToken?: string | null,
 ): http.OutgoingHttpHeaders {
   const next: http.OutgoingHttpHeaders = {};
 
@@ -140,6 +181,7 @@ function proxyResponseHeaders(
       || lower === 'content-encoding'
       || lower === 'transfer-encoding'
       || lower === 'x-frame-options'
+      || lower === 'referrer-policy'
     ) {
       continue;
     }
@@ -148,19 +190,28 @@ function proxyResponseHeaders(
       continue;
     }
 
+    if (lower.startsWith('access-control-')) {
+      continue;
+    }
+
     if (lower === 'location' && typeof value === 'string') {
-      next[key] = rewriteLocationHeader(value, workspaceId, target);
+      next[key] = rewriteLocationHeader(value, workspaceId, target, previewToken);
       continue;
     }
 
     if (lower === 'set-cookie') {
       const cookies = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
-      next[key] = cookies.map((cookie) => rewriteSetCookieHeader(cookie, workspaceId));
+      next[key] = cookies.map((cookie) => rewriteSetCookieHeader(cookie, workspaceId, previewToken));
       continue;
     }
 
     if (value !== undefined) next[key] = value;
   }
+
+  next['content-security-policy'] = PREVIEW_SANDBOX_CSP;
+  next['referrer-policy'] = 'no-referrer';
+  Object.assign(next, previewCorsHeaders(requestHeaders));
+  next['cross-origin-resource-policy'] = 'cross-origin';
 
   return next;
 }
@@ -194,7 +245,13 @@ function shouldRewriteJavaScriptPath(value: string, prefix: string): boolean {
   const pathname = getPathname(value);
   if (isSameOrChildPath(pathname, prefix) || pathname.startsWith(`${PREVIEW_PREFIX}/`)) return false;
 
-  if (isSameOrChildPath(pathname, '/api') || isSameOrChildPath(pathname, '/socket.io')) return true;
+  if (
+    isSameOrChildPath(pathname, '/api')
+    || isSameOrChildPath(pathname, '/socket.io')
+    || isSameOrChildPath(pathname, '/ws')
+  ) {
+    return true;
+  }
   if (isSameOrChildPath(pathname, '/assets')) return true;
   return hasStaticFileExtension(pathname);
 }
@@ -231,8 +288,13 @@ function rewriteJavaScriptRouterBasenameDefaults(body: string, prefix: string): 
     );
 }
 
-export function rewritePreviewBody(body: string, workspaceId: string, contentType?: string | string[]): string {
-  const prefix = `${PREVIEW_PREFIX}/${encodeURIComponent(workspaceId)}`;
+export function rewritePreviewBody(
+  body: string,
+  workspaceId: string,
+  contentType?: string | string[],
+  previewToken?: string | null,
+): string {
+  const prefix = buildPreviewPathPrefix(workspaceId, previewToken);
   const value = Array.isArray(contentType) ? contentType.join(';') : contentType ?? '';
   const lower = value.toLowerCase();
 
@@ -275,6 +337,7 @@ async function proxyHttpRequest(
   response: ServerResponse,
   workspaceId: string,
   target: NormalizedPreviewTarget,
+  previewToken?: string | null,
 ): Promise<void> {
   const parsed = parsePreviewPath(request.raw.url ?? '');
   if (!parsed) {
@@ -302,7 +365,7 @@ async function proxyHttpRequest(
 
   await new Promise<void>((resolve) => {
     const proxyReq = transport.request(options, (proxyRes: IncomingMessage) => {
-      const headers = proxyResponseHeaders(proxyRes.headers, workspaceId, target);
+      const headers = proxyResponseHeaders(proxyRes.headers, workspaceId, target, request.headers, previewToken);
       response.statusCode = proxyRes.statusCode ?? 502;
       for (const [key, value] of Object.entries(headers)) {
         if (value !== undefined) response.setHeader(key, value);
@@ -323,7 +386,7 @@ async function proxyHttpRequest(
       proxyRes.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       proxyRes.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8');
-        response.end(rewritePreviewBody(text, workspaceId, proxyRes.headers['content-type']));
+        response.end(rewritePreviewBody(text, workspaceId, proxyRes.headers['content-type'], previewToken));
         resolve();
       });
       proxyRes.on('error', () => {
@@ -365,6 +428,8 @@ function proxyWebSocketRequest(
 
   const targetUrl = new URL(target.origin);
   const headers = proxyRequestHeaders(req.headers, targetUrl);
+  headers.connection = 'Upgrade';
+  headers.upgrade = 'websocket';
 
   const options: ProxyRequestOptions = {
     protocol: targetUrl.protocol,
@@ -409,7 +474,7 @@ function proxyWebSocketRequest(
 }
 
 function registerPreviewWebSocketProxy(app: FastifyInstance, previewService: PreviewService): void {
-  app.server.on('upgrade', (req, socket, head) => {
+  app.server.on('upgrade', async (req, socket, head) => {
     const parsed = parsePreviewPath(req.url ?? '');
     if (!parsed) return;
 
@@ -417,6 +482,21 @@ function registerPreviewWebSocketProxy(app: FastifyInstance, previewService: Pre
     if (isTunnel && TunnelService.isRunning()) {
       const token = extractTunnelSessionTokenFromCookieHeader(req.headers.cookie);
       if (!token || !TunnelService.validateToken(token)) {
+        writeUpgradeError(socket, 401, 'Unauthorized');
+        return;
+      }
+    }
+
+    const internalToken = req.headers[INTERNAL_API_TOKEN_HEADER];
+    const normalizedInternalToken = Array.isArray(internalToken) ? internalToken[0] : internalToken;
+    if (internalToken !== undefined) {
+      if (!validateInternalApiToken(normalizedInternalToken)) {
+        writeUpgradeError(socket, 401, 'Invalid Internal Token');
+        return;
+      }
+    } else if (!parsed.previewToken || !await AccessAuthService.validatePreviewAccessToken(parsed.previewToken, parsed.workspaceId)) {
+      const accessToken = AccessAuthService.extractCookieFromHeader(req.headers.cookie);
+      if (!await AccessAuthService.validateSessionToken(accessToken)) {
         writeUpgradeError(socket, 401, 'Unauthorized');
         return;
       }
@@ -444,7 +524,13 @@ export async function previewRoutes(app: FastifyInstance) {
     '/api/previews/:workspaceId/status',
     async (request, reply) => {
       try {
-        return await previewService.getStatus(request.params.workspaceId);
+        const status = await previewService.getStatus(request.params.workspaceId);
+        if (!status.viewUrl) return status;
+        const previewToken = await AccessAuthService.createPreviewAccessToken(request.params.workspaceId);
+        return {
+          ...status,
+          viewUrl: `${buildPreviewPathPrefix(request.params.workspaceId, previewToken)}/`,
+        };
       } catch (err) {
         return errorResponse(err, reply);
       }
@@ -458,8 +544,12 @@ export async function previewRoutes(app: FastifyInstance) {
         const body = configSchema.parse(request.body);
         const target = await previewService.setTarget(request.params.workspaceId, body.target);
         const status = await previewService.getStatus(request.params.workspaceId);
+        const previewToken = status.viewUrl
+          ? await AccessAuthService.createPreviewAccessToken(request.params.workspaceId)
+          : null;
         return {
           ...status,
+          viewUrl: previewToken ? `${buildPreviewPathPrefix(request.params.workspaceId, previewToken)}/` : status.viewUrl,
           target: target?.target ?? null,
         };
       } catch (err) {
@@ -473,13 +563,26 @@ export async function previewRoutes(app: FastifyInstance) {
     if (!parsed) return reply.code(404).send({ error: 'Preview route not found', code: 'NOT_FOUND' });
 
     try {
+      if (request.method.toUpperCase() === 'OPTIONS' && request.headers['access-control-request-method']) {
+        return reply
+          .code(204)
+          .headers(previewCorsHeaders(request.headers))
+          .send();
+      }
+
       const target = await previewService.getTarget(parsed.workspaceId);
       if (!target) {
         return reply.code(404).send({ error: 'Preview target is not configured', code: 'PREVIEW_NOT_CONFIGURED' });
       }
 
+      if (!parsed.previewToken) {
+        const previewToken = await AccessAuthService.createPreviewAccessToken(parsed.workspaceId);
+        const redirectUrl = `${buildPreviewPathPrefix(parsed.workspaceId, previewToken)}${parsed.suffix}${parsed.search}`;
+        return reply.redirect(redirectUrl, 302);
+      }
+
       reply.hijack();
-      await proxyHttpRequest(request, reply.raw, parsed.workspaceId, target);
+      await proxyHttpRequest(request, reply.raw, parsed.workspaceId, target, parsed.previewToken);
     } catch (err) {
       if (!reply.sent) return errorResponse(err, reply);
       reply.raw.end();

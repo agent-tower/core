@@ -5,11 +5,16 @@
 
 export class AgentTowerClient {
   private invocationIdOverride?: string;
+  private internalApiToken?: string;
 
   constructor(private baseUrl: string) {}
 
   setInvocationId(invocationId: string | undefined): void {
     this.invocationIdOverride = invocationId;
+  }
+
+  setInternalApiToken(token: string | undefined): void {
+    this.internalApiToken = token;
   }
 
   private url(path: string): string {
@@ -30,6 +35,9 @@ export class AgentTowerClient {
     const invocationId = this.invocationIdOverride ?? process.env.AGENT_TOWER_INVOCATION_ID;
     if (invocationId) {
       headers['x-agent-tower-invocation-id'] = invocationId;
+    }
+    if (this.internalApiToken) {
+      headers['x-agent-tower-internal-token'] = this.internalApiToken;
     }
 
     const resp = await fetch(url, {

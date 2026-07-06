@@ -71,6 +71,7 @@ vi.mock('../../executors/index.js', async (importOriginal) => {
         AGENT_TOWER_MEMBER_ID: 'provider-member',
         AGENT_TOWER_URL: 'http://127.0.0.1:9999',
         AGENT_TOWER_PORT: '9999',
+        AGENT_TOWER_INTERNAL_TOKEN: 'provider-token',
         PROVIDER_SAFE_ENV: 'provider-value',
       },
       config: {},
@@ -99,6 +100,7 @@ function seedServiceEnv(): void {
   process.env.AGENT_TOWER_MEMBER_ID = 'inherited-member';
   process.env.AGENT_TOWER_URL = 'http://127.0.0.1:12580';
   process.env.AGENT_TOWER_PORT = '12580';
+  process.env.AGENT_TOWER_INTERNAL_TOKEN = 'service-internal-token';
   process.env.AGENT_TOWER_TEST_NORMAL_ENV = 'keep-me';
 }
 
@@ -119,6 +121,7 @@ function expectServiceEnvFiltered(fullEnv: Record<string, string>): void {
   expect(fullEnv).toMatchObject({
     AGENT_TOWER_URL: 'http://127.0.0.1:12580',
     AGENT_TOWER_PORT: '12580',
+    AGENT_TOWER_INTERNAL_TOKEN: 'service-internal-token',
     AGENT_TOWER_TEST_NORMAL_ENV: 'keep-me',
     PROVIDER_SAFE_ENV: 'provider-value',
   });

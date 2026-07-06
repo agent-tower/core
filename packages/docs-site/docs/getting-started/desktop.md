@@ -72,3 +72,5 @@ pnpm desktop:package:acceptance
 桌面端设置页提供 `MCP Config` 入口，用于复制当前桌面后端对应的 MCP JSON。
 
 打包桌面模式下，这份配置指向 bundled runtime，不要求用户额外安装全局 `agent-tower-mcp`。当前 UI 只负责展示和复制配置，不会自动写入 Claude、Codex、Cursor 等第三方客户端配置文件。
+
+如果启用了访问密码，复制出的 MCP 配置会包含 `AGENT_TOWER_INTERNAL_TOKEN` env。它是 MCP 调后端所需的内部凭证，不要把真实值提交到共享配置中。

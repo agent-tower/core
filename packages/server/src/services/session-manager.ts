@@ -25,6 +25,7 @@ import {
   isMainDirectoryWorkspace,
 } from './workspace-kind.js';
 import { writeErrorLog } from '../utils/error-log.js';
+import { INTERNAL_API_TOKEN_ENV, readInternalApiTokenFromEnv } from '../utils/internal-api-token.js';
 import { createHash } from 'node:crypto';
 
 const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
@@ -748,6 +749,10 @@ export class SessionManager {
     }
     if (process.env.AGENT_TOWER_PORT) {
       serviceEnv.AGENT_TOWER_PORT = process.env.AGENT_TOWER_PORT;
+    }
+    const internalToken = readInternalApiTokenFromEnv();
+    if (internalToken) {
+      serviceEnv[INTERNAL_API_TOKEN_ENV] = internalToken;
     }
     if (Object.keys(serviceEnv).length > 0) {
       env.merge(serviceEnv);

@@ -131,7 +131,7 @@ export function PreviewPanel({ workspaceId, readOnly }: PreviewPanelProps) {
             src={viewUrl}
             title={t('Preview')}
             className="absolute inset-0 h-full w-full border-0 bg-white"
-            sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-same-origin allow-scripts"
+            sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm text-neutral-500">
