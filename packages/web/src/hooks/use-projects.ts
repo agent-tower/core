@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { Project } from '@agent-tower/shared'
+import type { Project, ProjectGitCapability } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
 
@@ -61,6 +61,10 @@ export interface RestoreProjectResponse {
   warnings: string[]
 }
 
+interface RefreshProjectGitCapabilityInput {
+  id: string
+}
+
 // ============ Query Hooks ============
 
 /**
@@ -88,6 +92,14 @@ export function useProject(id: string) {
   return useQuery({
     queryKey: queryKeys.projects.detail(id),
     queryFn: () => apiClient.get<ProjectDetail>(`/projects/${id}`),
+    enabled: !!id,
+  })
+}
+
+export function useProjectGitCapability(id: string) {
+  return useQuery({
+    queryKey: queryKeys.projects.gitCapability(id),
+    queryFn: () => apiClient.get<ProjectGitCapability>(`/projects/${id}/git-capability`),
     enabled: !!id,
   })
 }
@@ -174,6 +186,21 @@ export function useRestoreProject() {
       })
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+    },
+  })
+}
+
+export function useRefreshProjectGitCapability() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ id }: RefreshProjectGitCapabilityInput) =>
+      apiClient.get<ProjectGitCapability>(`/projects/${id}/git-capability`),
+    onSuccess: (capability, variables) => {
+      queryClient.setQueryData(queryKeys.projects.gitCapability(variables.id), capability)
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(variables.id) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
     },
   })
 }

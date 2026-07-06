@@ -9,6 +9,7 @@ export const queryKeys = {
     list: (params?: Record<string, unknown>) =>
       ['projects', 'list', params] as const,
     detail: (id: string) => ['projects', 'detail', id] as const,
+    gitCapability: (id: string) => ['projects', 'gitCapability', id] as const,
   },
 
   tasks: {

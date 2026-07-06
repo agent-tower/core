@@ -198,7 +198,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const { data: roomMessages } = useRoomMessages(taskTeamRun?.id ?? '')
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
   const teamRun = taskTeamRun ?? null
-  const taskSupportsGit = task.isGitRepo !== false
+  const taskSupportsGit = task.isGitRepo !== false && task.worktreeReady !== false
   const tabConfig = useMemo(
     () => (teamRun ? TEAM_RUN_TAB_CONFIG : SOLO_TAB_CONFIG)
       .filter((tab) => taskSupportsGit || (tab.key !== 'changes' && tab.key !== 'history')),
@@ -1120,10 +1120,13 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
           isOpen={isStartDialogOpen}
           onClose={() => setIsStartDialogOpen(false)}
           taskId={task.id}
+          projectId={task.projectId}
           taskTitle={taskBody?.title ?? task.title}
           taskDescription={taskBody?.body ?? ''}
           taskPrompt={taskBody?.prompt}
-          projectIsGitRepo={taskSupportsGit}
+          projectIsGitRepo={task.isGitRepo}
+          projectWorktreeReady={task.worktreeReady}
+          projectGitReason={task.reason}
           onStarted={() => onAutoStartRecovered?.(task.id)}
         />
       )}

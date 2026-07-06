@@ -95,6 +95,41 @@ describe('ProjectService', () => {
     expect(fs.existsSync(path.join(projectPath, '.git'))).toBe(false);
   });
 
+  it('refreshes Git capability after a local project is initialized manually', async () => {
+    const service = new ProjectService();
+    const projectPath = fs.mkdtempSync(path.join(testDir, 'manual-git-project-'));
+    const project = await service.create({
+      name: 'Manual Git project',
+      repoPath: projectPath,
+    });
+
+    expect(project).toMatchObject({
+      isGitRepo: false,
+      worktreeReady: false,
+      reason: 'NO_GIT',
+    });
+
+    execFileSync('git', ['init'], { cwd: projectPath, stdio: 'pipe' });
+
+    await expect(service.refreshGitCapability(project.id)).resolves.toMatchObject({
+      isGitRepo: true,
+      worktreeReady: false,
+      reason: 'NO_HEAD',
+    });
+
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: projectPath, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: projectPath, stdio: 'pipe' });
+    fs.writeFileSync(path.join(projectPath, 'README.md'), 'ready\n', 'utf-8');
+    execFileSync('git', ['add', 'README.md'], { cwd: projectPath, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: projectPath, stdio: 'pipe' });
+
+    await expect(service.refreshGitCapability(project.id)).resolves.toMatchObject({
+      isGitRepo: true,
+      worktreeReady: true,
+      reason: 'READY',
+    });
+  });
+
   it('initializes an empty directory as Git when requested', async () => {
     const service = new ProjectService();
     const projectPath = fs.mkdtempSync(path.join(testDir, 'initializable-project-'));

@@ -287,6 +287,10 @@ export interface Project {
   repoRemoteUrl?: string | null
   /** 当前项目路径是否包含 Git 元数据。非 Git 项目首版仅支持本地 Solo。 */
   isGitRepo?: boolean
+  /** 当前 Git 仓库是否已经具备创建 worktree 所需的 HEAD commit。 */
+  worktreeReady?: boolean
+  /** Git/worktree 能力检测原因。 */
+  reason?: ProjectGitCapabilityReason
   /** 主分支名称，默认 "main" */
   mainBranch: string
   /** 逗号分隔的 glob/路径列表，worktree 创建后自动复制 */
@@ -299,6 +303,18 @@ export interface Project {
   repoDeletedAt?: string | null
   createdAt?: string
   updatedAt?: string
+}
+
+export type ProjectGitCapabilityReason =
+  | 'NO_GIT'
+  | 'NO_HEAD'
+  | 'READY'
+  | 'INVALID_REPOSITORY'
+
+export interface ProjectGitCapability {
+  isGitRepo: boolean
+  worktreeReady: boolean
+  reason: ProjectGitCapabilityReason
 }
 
 /** 任务 */

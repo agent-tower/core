@@ -481,6 +481,40 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(createWorktreeMock).not.toHaveBeenCalled();
   });
 
+  it('rejects worktree workspace creation for Git repositories without commits', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'empty-git-project-'));
+    fs.mkdirSync(path.join(repoPath, '.git'), { recursive: true });
+    execGitMock.mockImplementation(async (_repoPath: string, args: string[]) => {
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'HEAD') {
+        throw new Error('HEAD does not exist');
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+        return 'true\n';
+      }
+      return '';
+    });
+    const project = await prisma.project.create({
+      data: {
+        name: 'Empty Git project',
+        repoPath,
+      },
+    });
+    const task = await prisma.task.create({
+      data: {
+        title: 'Empty Git task',
+        projectId: project.id,
+      },
+    });
+
+    await expect(service.create(task.id, {
+      workspaceKind: WorkspaceKind.WORKTREE,
+    })).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: expect.stringContaining('has no commits'),
+    });
+    expect(createWorktreeMock).not.toHaveBeenCalled();
+  });
+
   it('rejects git-status for non-git main-directory workspaces', async () => {
     const repoPath = fs.mkdtempSync(path.join(testDir, 'local-git-status-project-'));
     const project = await prisma.project.create({

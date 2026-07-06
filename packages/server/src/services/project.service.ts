@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import type { ProjectGitCapability } from '@agent-tower/shared';
 import { prisma } from '../utils/index.js';
 import { NotFoundError, ValidationError } from '../errors.js';
 import { execGit } from '../git/git-cli.js';
 import { getWorkspaceGitWatcherService } from '../core/container.js';
-import { ensureProjectIsMutable, hasGitMetadata } from './project-guards.js';
+import { detectProjectGitCapability, ensureProjectIsMutable, hasGitMetadata } from './project-guards.js';
 import type { WorkspaceGitWatcherService } from './workspace-git-watcher.service.js';
 import {
   TaskStatus,
@@ -265,7 +266,7 @@ export class ProjectService {
     ]);
 
     return {
-      data: data.map((project) => this.withGitMetadata(project)),
+      data: await Promise.all(data.map((project) => this.withGitMetadata(project))),
       total,
       page,
       limit,
@@ -312,7 +313,7 @@ export class ProjectService {
       }
     }
 
-    return { ...this.withGitMetadata(project), taskStats };
+    return { ...await this.withGitMetadata(project), taskStats };
   }
 
   /**
@@ -382,10 +383,19 @@ export class ProjectService {
       }
     }
 
-    return prisma.project.update({
+    const updated = await prisma.project.update({
       where: { id },
       data: input,
     });
+    return this.withGitMetadata(updated);
+  }
+
+  async refreshGitCapability(id: string): Promise<ProjectGitCapability> {
+    const project = await prisma.project.findUnique({ where: { id } });
+    if (!project) {
+      throw new NotFoundError('Project', id);
+    }
+    return detectProjectGitCapability(project.repoPath);
   }
 
   /**
@@ -513,7 +523,7 @@ export class ProjectService {
     });
 
     return {
-      project: this.withGitMetadata(restored),
+      project: await this.withGitMetadata(restored),
       warnings,
     };
   }
@@ -532,10 +542,13 @@ export class ProjectService {
     }
   }
 
-  private withGitMetadata<T extends { repoPath: string }>(project: T): T & { isGitRepo: boolean } {
+  private async withGitMetadata<T extends { repoPath: string }>(
+    project: T
+  ): Promise<T & ProjectGitCapability> {
+    const capability = await detectProjectGitCapability(project.repoPath);
     return {
       ...project,
-      isGitRepo: hasGitMetadata(project.repoPath),
+      ...capability,
     };
   }
 }

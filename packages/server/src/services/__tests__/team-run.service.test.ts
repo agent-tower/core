@@ -66,7 +66,13 @@ function userMessagesPresetInput(name: string, aliases: string[] = [name.toLower
 
 function createGitRepoPath(label: string) {
   const repoPath = path.join(testDir, 'repos', `${label}-${gitRepoCounter++}`);
-  fs.mkdirSync(path.join(repoPath, '.git'), { recursive: true });
+  fs.mkdirSync(repoPath, { recursive: true });
+  execFileSync('git', ['init'], { cwd: repoPath, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoPath, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoPath, stdio: 'pipe' });
+  fs.writeFileSync(path.join(repoPath, 'README.md'), 'initial\n', 'utf-8');
+  execFileSync('git', ['add', 'README.md'], { cwd: repoPath, stdio: 'pipe' });
+  execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repoPath, stdio: 'pipe' });
   return repoPath;
 }
 

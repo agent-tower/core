@@ -196,7 +196,7 @@ export function ProjectSettingsPage() {
 
   const archiveProjectName = selectedProjectForAction?.name ?? t('this project')
   const restoreRequiresRepoPath = Boolean(selectedProjectForAction?.repoDeletedAt)
-  const selectedSupportsGit = selected?.isGitRepo !== false
+  const selectedSupportsGit = selected?.isGitRepo !== false && selected?.worktreeReady !== false
 
   return (
     <>

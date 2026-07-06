@@ -260,6 +260,44 @@ describe('TaskService', () => {
     expect(list.data[0]?.project?.isGitRepo).toBe(false);
   });
 
+  it('refreshes project Git capability in task lists after manual Git initialization', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const projectPath = fs.mkdtempSync(path.join(testDir, 'manual-git-task-project-'));
+    const project = await prisma.project.create({
+      data: {
+        name: 'Manual git task project',
+        repoPath: projectPath,
+      },
+    });
+    await prisma.task.create({
+      data: {
+        title: 'Manual git task',
+        projectId: project.id,
+      },
+    });
+
+    const before = await service.findByProjectId(project.id);
+    expect(before.data[0]?.project).toMatchObject({
+      isGitRepo: false,
+      worktreeReady: false,
+      reason: 'NO_GIT',
+    });
+
+    execFileSync('git', ['init'], { cwd: projectPath, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: projectPath, stdio: 'pipe' });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: projectPath, stdio: 'pipe' });
+    fs.writeFileSync(path.join(projectPath, 'README.md'), 'ready\n', 'utf-8');
+    execFileSync('git', ['add', 'README.md'], { cwd: projectPath, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: projectPath, stdio: 'pipe' });
+
+    const after = await service.findByProjectId(project.id);
+    expect(after.data[0]?.project).toMatchObject({
+      isGitRepo: true,
+      worktreeReady: true,
+      reason: 'READY',
+    });
+  });
+
   it('includes project Git metadata in task detail', async () => {
     const service = new TaskService(new EventBus(), {} as SessionManager);
     const projectPath = fs.mkdtempSync(path.join(testDir, 'local-task-detail-project-'));

@@ -350,6 +350,8 @@ export function ProjectKanbanPage() {
         mainBranch: 'main',
         description: task.description ?? '',
         isGitRepo: false,
+        worktreeReady: false,
+        reason: 'NO_GIT',
         projectArchivedAt: null,
         projectRepoDeletedAt: null,
       }
@@ -539,11 +541,6 @@ export function ProjectKanbanPage() {
   }) => {
     const { title, description, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks } = data
     const fullDescription = [description, attachmentLinks].filter(Boolean).join('\n\n')
-    const selectedProject = activeProjects.find(project => project.id === projectId)
-    const isGitProject = selectedProject?.isGitRepo !== false
-    const effectiveMode: CreateTaskMode = isGitProject ? mode : 'SOLO'
-    const effectiveWorkspaceMode: WorkspaceMode = isGitProject ? workspaceMode : WorkspaceKind.MAIN_DIRECTORY
-
     let createdTask: Task | null = null
 
     try {
@@ -555,7 +552,7 @@ export function ProjectKanbanPage() {
       createdTask = attachTaskProjectMetadata(created, activeProjects)
 
       localStorage.setItem('lastSelectedProjectId', projectId)
-      if (effectiveMode === 'SOLO' && providerId) {
+      if (mode === 'SOLO' && providerId) {
         localStorage.setItem('lastSelectedProviderId', providerId)
         const usageCountStr = localStorage.getItem('providerUsageCount')
         const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
@@ -563,7 +560,7 @@ export function ProjectKanbanPage() {
         localStorage.setItem('providerUsageCount', JSON.stringify(usageCount))
       }
 
-      if (effectiveMode === 'TEAM') {
+      if (mode === 'TEAM') {
         setCreateStep('creating-teamrun')
         await createTaskTeamRun.mutateAsync({
           taskId: createdTask.id,
@@ -572,7 +569,7 @@ export function ProjectKanbanPage() {
           ...(memberPresetIds.length > 0 ? { memberPresetIds } : {}),
         })
       } else if (providerId) {
-        startTaskInBackground(createdTask, providerId, effectiveWorkspaceMode)
+        startTaskInBackground(createdTask, providerId, workspaceMode)
       }
 
       if (effectiveFilterProjectId && projectId !== effectiveFilterProjectId) {
@@ -585,7 +582,7 @@ export function ProjectKanbanPage() {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
     } catch (error) {
       setCreateStep('idle')
-      if (createdTask && effectiveMode === 'TEAM') {
+      if (createdTask && mode === 'TEAM') {
         // TeamRun creation failed — clean up orphan task and treat as complete failure
         try { await deleteTask.mutateAsync(createdTask.id) } catch { /* best-effort cleanup */ }
         toast.error(t('TeamRun 创建失败，请检查团队配置后重试'))
@@ -613,6 +610,8 @@ export function ProjectKanbanPage() {
       name: p.name,
       color: uiProjects.find(u => u.id === p.id)?.color,
       isGitRepo: p.isGitRepo,
+      worktreeReady: p.worktreeReady,
+      reason: p.reason,
     })),
     [activeProjects, uiProjects],
   )

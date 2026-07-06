@@ -26,7 +26,11 @@ import type {
   WorkspaceVerdictKind,
   WorkspaceVerdictValue,
 } from '@agent-tower/shared';
-import { ensureProjectIsMutable, ensureProjectSupportsGit, hasGitMetadata } from './project-guards.js';
+import {
+  ensureProjectIsMutable,
+  ensureProjectSupportsWorktrees,
+  hasGitMetadata,
+} from './project-guards.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import {
   getWorkspaceWorkingDir,
@@ -1175,7 +1179,7 @@ export class WorkspaceService {
       return this.createMainDirectoryWorkspace(taskId, task, options);
     }
 
-    ensureProjectSupportsGit(task.project, 'create a worktree workspace');
+    await ensureProjectSupportsWorktrees(task.project, 'create a worktree workspace');
 
     const worktreeManager = new WorktreeManager(task.project.repoPath);
 
@@ -1377,7 +1381,7 @@ export class WorkspaceService {
     }
     ensureTaskNotDeleted(teamRun.task);
     ensureProjectIsMutable(teamRun.task.project, 'create workspaces');
-    ensureProjectSupportsGit(teamRun.task.project, 'create TeamRun workspaces');
+    await ensureProjectSupportsWorktrees(teamRun.task.project, 'create TeamRun workspaces');
 
     if (
       teamRun.mainWorkspace
@@ -1445,7 +1449,7 @@ export class WorkspaceService {
       throw new NotFoundError('TeamMember', memberId);
     }
     ensureProjectIsMutable(teamRun.task.project, 'create workspaces');
-    ensureProjectSupportsGit(teamRun.task.project, 'create TeamRun workspaces');
+    await ensureProjectSupportsWorktrees(teamRun.task.project, 'create TeamRun workspaces');
 
     const existing = await this.findDedicatedWorkspace(mainWorkspace.id, memberId);
     if (existing) {
@@ -1504,7 +1508,7 @@ export class WorkspaceService {
       throw new NotFoundError('TeamRun', input.teamRunId);
     }
     ensureTaskNotDeleted(teamRun.task);
-    ensureProjectSupportsGit(teamRun.task.project, 'prepare targeted TeamRun workspace');
+    await ensureProjectSupportsWorktrees(teamRun.task.project, 'prepare targeted TeamRun workspace');
 
     if (!sourceWorkspace) {
       throw new ServiceError(

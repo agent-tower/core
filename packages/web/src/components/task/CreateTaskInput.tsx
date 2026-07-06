@@ -1,9 +1,10 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users, Info } from 'lucide-react'
-import { WorkspaceKind, type AgentType, type TeamRunMode } from '@agent-tower/shared'
+import { WorkspaceKind, type AgentType, type ProjectGitCapability, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useAttachments } from '@/hooks/use-attachments'
+import { useRefreshProjectGitCapability } from '@/hooks/use-projects'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 import { AgentLogo } from '@/components/agent'
@@ -19,6 +20,8 @@ interface ProjectOption {
   name: string
   color?: string
   isGitRepo?: boolean
+  worktreeReady?: boolean
+  reason?: string
 }
 
 interface ProviderOption {
@@ -86,6 +89,7 @@ export function CreateTaskInput({
   const [providerId, setProviderId] = useState(defaultProviderId)
   const [mode, setMode] = useState<CreateTaskMode>('SOLO')
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(WorkspaceKind.WORKTREE)
+  const [detectedCapabilityByProjectId, setDetectedCapabilityByProjectId] = useState<Record<string, ProjectGitCapability>>({})
   const [teamRunMode, setTeamRunMode] = useState<TeamRunMode>('AUTO')
   const [teamTemplateId, setTeamTemplateId] = useState<string | null>(null)
   const [memberPresetIds, setMemberPresetIds] = useState<string[]>([])
@@ -102,6 +106,7 @@ export function CreateTaskInput({
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, getDoneAttachments, isUploading } = useAttachments()
+  const refreshProjectGitCapability = useRefreshProjectGitCapability()
   const isConversationMode = variant === 'conversation'
   const supportsAttachments = variant === 'task' || variant === 'conversation'
   const effectiveSubmitLabel = submitLabel ?? (isConversationMode ? t('开始') : t('创建'))
@@ -147,14 +152,20 @@ export function CreateTaskInput({
 
   const selectedProject = useMemo(() => projects.find(p => p.id === projectId), [projects, projectId])
   const selectedProvider = useMemo(() => providers.find(p => p.id === providerId), [providers, providerId])
-  const selectedProjectSupportsGit = selectedProject?.isGitRepo !== false
-  const localProjectOnly = !isConversationMode && !selectedProjectSupportsGit
+  const detectedCapability = projectId ? detectedCapabilityByProjectId[projectId] : undefined
+  const selectedProjectIsGitRepo = (detectedCapability?.isGitRepo ?? selectedProject?.isGitRepo) !== false
+  const selectedProjectWorktreeReady = (detectedCapability?.worktreeReady ?? selectedProject?.worktreeReady) !== false
+  const selectedProjectSupportsWorktree = selectedProjectIsGitRepo && selectedProjectWorktreeReady
+  const localProjectOnly = !isConversationMode && !selectedProjectSupportsWorktree
   const effectiveCreateMode: CreateTaskMode = localProjectOnly ? 'SOLO' : mode
   const effectiveWorkspaceMode: WorkspaceMode = localProjectOnly ? WorkspaceKind.MAIN_DIRECTORY : workspaceMode
   const selectedWorkspaceModeLabel = effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? t('本地模式') : t('工作树模式')
   const worktreeModeHint = t('工作树隔离改动，支持 TeamRun、Merge、Rebase 和冲突解决。')
   const mainDirectoryModeHint = t('本地模式会直接修改项目主目录，不会自动提交，也不能使用 Merge、Rebase 或冲突解决。')
-  const disabledWorktreeModeHint = t('初始化 Git 后可使用工作树模式。')
+  const selectedProjectGitReason = detectedCapability?.reason ?? selectedProject?.reason
+  const disabledWorktreeModeHint = selectedProjectGitReason === 'NO_HEAD'
+    ? t('已检测到 Git，但需要先提交一次才能使用工作树模式。')
+    : t('初始化 Git 后可使用工作树模式。')
 
   const isSubmitting = createStep !== 'idle'
   const hasTeamMembers = !!teamTemplateId || memberPresetIds.length > 0
@@ -172,6 +183,22 @@ export function CreateTaskInput({
     setShowTeamConfig(false)
     setShowWorkspaceModeMenu(false)
   }, [localProjectOnly])
+
+  useEffect(() => {
+    if (localProjectOnly || isConversationMode) return
+    setWorkspaceMode(WorkspaceKind.WORKTREE)
+  }, [isConversationMode, localProjectOnly, selectedProject?.id])
+
+  const handleRefreshGitCapability = useCallback(async () => {
+    if (!selectedProject || refreshProjectGitCapability.isPending) return
+    const capability = await refreshProjectGitCapability.mutateAsync({ id: selectedProject.id })
+    setDetectedCapabilityByProjectId(current => ({ ...current, [selectedProject.id]: capability }))
+    if (capability.worktreeReady) {
+      setMode('SOLO')
+      setWorkspaceMode(WorkspaceKind.WORKTREE)
+      setShowWorkspaceModeMenu(false)
+    }
+  }, [refreshProjectGitCapability, selectedProject])
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return
@@ -503,6 +530,16 @@ export function CreateTaskInput({
                             {worktreeModeHint}
                           </span>
                         </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRefreshGitCapability}
+                        disabled={refreshProjectGitCapability.isPending}
+                        className="flex w-full items-center px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {refreshProjectGitCapability.isPending
+                          ? t('检测中...')
+                          : t('重新检测 Git 状态')}
                       </button>
                     </div>
                   </Tooltip>

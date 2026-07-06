@@ -103,6 +103,15 @@ export async function projectRoutes(app: FastifyInstance) {
     }
   });
 
+  // 刷新/检测项目 Git 能力（不修改仓库）
+  app.get<{ Params: { id: string } }>('/:id/git-capability', async (request, reply) => {
+    try {
+      return await projectService.refreshGitCapability(request.params.id);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
   // 更新项目
   app.put<{ Params: { id: string } }>('/:id', async (request, reply) => {
     try {

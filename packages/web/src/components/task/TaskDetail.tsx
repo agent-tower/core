@@ -292,7 +292,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
   const teamRun = taskTeamRun ?? null
   const isTeamRunMode = Boolean(teamRun)
-  const taskSupportsGit = task?.isGitRepo !== false
+  const taskSupportsGit = task?.isGitRepo !== false && task?.worktreeReady !== false
   const showCreateTeamRunEntry = taskTeamRun === null && taskSupportsGit
   const shouldLoadTaskBody = Boolean(task?.id && taskTeamRun === null)
   const { data: taskBody, isLoading: isLoadingTaskBody } = useTaskBody(task?.id ?? '', shouldLoadTaskBody)
@@ -1494,10 +1494,13 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           isOpen={isStartDialogOpen}
           onClose={() => setIsStartDialogOpen(false)}
           taskId={task.id}
+          projectId={task.projectId}
           taskTitle={taskBody?.title ?? task.title}
           taskDescription={taskBody?.body ?? ''}
           taskPrompt={taskBody?.prompt}
-          projectIsGitRepo={taskSupportsGit}
+          projectIsGitRepo={task.isGitRepo}
+          projectWorktreeReady={task.worktreeReady}
+          projectGitReason={task.reason}
           onStarted={() => onAutoStartRecovered?.(task.id)}
         />
       )}

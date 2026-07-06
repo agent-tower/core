@@ -4,6 +4,7 @@ import { apiClient } from '@/lib/api-client'
 import { useCreateWorkspace } from '@/hooks/use-workspaces'
 import { useStartSession } from '@/hooks/use-sessions'
 import { useProviders } from '@/hooks/use-providers'
+import { useRefreshProjectGitCapability } from '@/hooks/use-projects'
 import { queryKeys } from '@/hooks/query-keys'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
@@ -11,17 +12,20 @@ import { Select } from '@/components/ui/select'
 import { Tooltip } from '@/components/ui/tooltip'
 import { AgentLogo } from '@/components/agent'
 import { useI18n } from '@/lib/i18n'
-import { WorkspaceKind } from '@agent-tower/shared'
+import { WorkspaceKind, type ProjectGitCapability } from '@agent-tower/shared'
 
 interface StartAgentDialogProps {
   isOpen: boolean
   onClose: () => void
   onStarted?: () => void
   taskId: string
+  projectId: string
   taskTitle: string
   taskDescription: string
   taskPrompt?: string
   projectIsGitRepo?: boolean
+  projectWorktreeReady?: boolean
+  projectGitReason?: string
 }
 
 type StartStep = 'idle' | 'creating-workspace' | 'creating-session' | 'starting-session'
@@ -32,22 +36,31 @@ export function StartAgentDialog({
   onClose,
   onStarted,
   taskId,
+  projectId,
   taskTitle,
   taskDescription,
   taskPrompt,
   projectIsGitRepo = true,
+  projectWorktreeReady = true,
+  projectGitReason,
 }: StartAgentDialogProps) {
   const { t } = useI18n()
   const [selectedProviderId, setSelectedProviderId] = useState<string>('')
   const [prompt, setPrompt] = useState('')
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(WorkspaceKind.WORKTREE)
+  const [detectedCapability, setDetectedCapability] = useState<ProjectGitCapability | null>(null)
   const [step, setStep] = useState<StartStep>('idle')
   const [error, setError] = useState<string | null>(null)
 
   const queryClient = useQueryClient()
   const createWorkspace = useCreateWorkspace(taskId)
   const startSession = useStartSession()
+  const refreshProjectGitCapability = useRefreshProjectGitCapability()
   const { data: providersData, isLoading } = useProviders()
+  const effectiveIsGitRepo = detectedCapability?.isGitRepo ?? projectIsGitRepo
+  const effectiveWorktreeReady = detectedCapability?.worktreeReady ?? projectWorktreeReady
+  const effectiveGitReason = detectedCapability?.reason ?? projectGitReason
+  const projectSupportsWorktree = effectiveIsGitRepo !== false && effectiveWorktreeReady !== false
 
   // 打开时选择第一个可用的 provider
   useEffect(() => {
@@ -64,17 +77,27 @@ export function StartAgentDialog({
       const parts = [taskTitle]
       if (taskDescription) parts.push(taskDescription)
       setPrompt(taskPrompt?.trim() || parts.join('\n\n'))
-      setWorkspaceMode(projectIsGitRepo ? WorkspaceKind.WORKTREE : WorkspaceKind.MAIN_DIRECTORY)
+      setDetectedCapability(null)
+      setWorkspaceMode(projectIsGitRepo !== false && projectWorktreeReady !== false ? WorkspaceKind.WORKTREE : WorkspaceKind.MAIN_DIRECTORY)
       setStep('idle')
       setError(null)
     }
-  }, [isOpen, projectIsGitRepo, taskTitle, taskDescription, taskPrompt])
+  }, [isOpen, projectIsGitRepo, projectWorktreeReady, taskId, taskTitle, taskDescription, taskPrompt])
 
   useEffect(() => {
-    if (!projectIsGitRepo) {
+    if (!projectSupportsWorktree) {
       setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY)
     }
-  }, [projectIsGitRepo])
+  }, [projectSupportsWorktree])
+
+  const handleRefreshGitCapability = async () => {
+    if (!projectId || refreshProjectGitCapability.isPending) return
+    const capability = await refreshProjectGitCapability.mutateAsync({ id: projectId })
+    setDetectedCapability(capability)
+    if (capability.worktreeReady) {
+      setWorkspaceMode(WorkspaceKind.WORKTREE)
+    }
+  }
 
   const isStarting = step !== 'idle'
 
@@ -87,7 +110,7 @@ export function StartAgentDialog({
       // Step 1: 创建 Workspace
       setStep('creating-workspace')
       const workspace = await createWorkspace.mutateAsync({
-        workspaceKind: projectIsGitRepo ? workspaceMode : WorkspaceKind.MAIN_DIRECTORY,
+        workspaceKind: projectSupportsWorktree ? workspaceMode : WorkspaceKind.MAIN_DIRECTORY,
       })
 
       // Step 2: 创建 Session (使用 providerId)
@@ -131,9 +154,11 @@ export function StartAgentDialog({
   })
   const worktreeModeHint = t('工作树隔离改动，支持 TeamRun、Merge、Rebase 和冲突解决。')
   const mainDirectoryModeHint = t('本地模式会直接修改项目主目录，不会自动提交，也不能使用 Merge、Rebase 或冲突解决。')
-  const nonGitProjectModeHint = t('非 Git 项目只能使用本地模式。')
+  const nonGitProjectModeHint = effectiveGitReason === 'NO_HEAD'
+    ? t('已检测到 Git，但需要先提交一次才能使用工作树模式。')
+    : t('非 Git 项目只能使用本地模式。')
   const workspaceModeOptions = [
-    { value: WorkspaceKind.WORKTREE, label: t('工作树模式'), description: worktreeModeHint, disabled: !projectIsGitRepo },
+    { value: WorkspaceKind.WORKTREE, label: t('工作树模式'), description: worktreeModeHint, disabled: !projectSupportsWorktree },
     { value: WorkspaceKind.MAIN_DIRECTORY, label: t('本地模式'), description: mainDirectoryModeHint },
   ]
 
@@ -175,7 +200,7 @@ export function StartAgentDialog({
               <label className="block text-sm font-medium text-neutral-700 mb-2">
                 {t('模式')}
               </label>
-              {!projectIsGitRepo ? (
+              {!projectSupportsWorktree ? (
                 <Tooltip side="bottom" className="w-full" content={nonGitProjectModeHint}>
                   <div
                     tabIndex={0}
@@ -188,6 +213,14 @@ export function StartAgentDialog({
                       options={workspaceModeOptions}
                       disabled
                     />
+                    <button
+                      type="button"
+                      onClick={handleRefreshGitCapability}
+                      disabled={isStarting || refreshProjectGitCapability.isPending}
+                      className="mt-2 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {refreshProjectGitCapability.isPending ? t('检测中...') : t('重新检测 Git 状态')}
+                    </button>
                   </div>
                 </Tooltip>
               ) : (

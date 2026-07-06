@@ -121,6 +121,8 @@ export function adaptProject(project: SharedProject): UIProject {
     name: project.name,
     color: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],
     isGitRepo: project.isGitRepo,
+    worktreeReady: project.worktreeReady,
+    reason: project.reason,
     archivedAt: project.archivedAt ?? null,
     repoDeletedAt: project.repoDeletedAt ?? null,
   }
@@ -174,6 +176,8 @@ export function adaptTaskForList(task: SharedTask): UITask {
     description: task.contentPreview ?? task.description ?? '',
     updatedAt: task.updatedAt,
     isGitRepo: project?.isGitRepo,
+    worktreeReady: project?.worktreeReady,
+    reason: project?.reason,
     projectArchivedAt: project?.archivedAt ?? null,
     projectRepoDeletedAt: project?.repoDeletedAt ?? null,
   }
@@ -206,6 +210,8 @@ export function adaptTaskForDetail(
     mainBranch: activeWorkspace?.baseBranch ?? project.mainBranch ?? 'main',
     description: task.description ?? '',
     isGitRepo: project.isGitRepo,
+    worktreeReady: project.worktreeReady,
+    reason: project.reason,
     projectArchivedAt: project.archivedAt ?? null,
     projectRepoDeletedAt: project.repoDeletedAt ?? null,
   }

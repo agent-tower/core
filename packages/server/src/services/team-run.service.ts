@@ -49,7 +49,7 @@ import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import { buildTextPreview, TASK_TITLE_MAX_LENGTH } from './task.service.js';
-import { ensureProjectSupportsGit } from './project-guards.js';
+import { ensureProjectSupportsWorktrees } from './project-guards.js';
 
 export interface CreateMemberPresetInput {
   name: string;
@@ -688,7 +688,7 @@ export class TeamRunService {
       throw new NotFoundError('Task', taskId);
     }
     ensureTaskNotDeleted(task);
-    ensureProjectSupportsGit(task.project, 'create TeamRun');
+    await ensureProjectSupportsWorktrees(task.project, 'create TeamRun');
     buildInitialTaskRoomMessageContent(task);
 
     const existing = await prisma.teamRun.findUnique({ where: { taskId } });
@@ -757,6 +757,16 @@ export class TeamRunService {
       throw new ValidationError('TeamRun must include at least one member');
     }
 
+    const taskForGitCheck = await prisma.task.findUnique({
+      where: { id: taskId },
+      include: { project: true },
+    });
+    if (!taskForGitCheck) {
+      throw new NotFoundError('Task', taskId);
+    }
+    ensureTaskNotDeleted(taskForGitCheck);
+    await ensureProjectSupportsWorktrees(taskForGitCheck.project, 'create TeamRun');
+
     let teamRunId = '';
     let projectId = '';
     let createdTeamRun: PrismaTeamRunWithRelations | null = null;
@@ -771,7 +781,6 @@ export class TeamRunService {
           throw new NotFoundError('Task', taskId);
         }
         ensureTaskNotDeleted(task);
-        ensureProjectSupportsGit(task.project, 'create TeamRun');
         projectId = task.projectId;
         const initialContent = buildInitialTaskRoomMessageContent(task);
         const initialMentionSource = buildInitialTaskMentionSource(task);

@@ -11,7 +11,7 @@ import type { SessionManager } from './session-manager.js';
 import type { TaskCleanupService, TaskCleanupSnapshot } from './task-cleanup.service.js';
 import type { WorkspaceGitWatcherService } from './workspace-git-watcher.service.js';
 import { getWorkspaceGitWatcherService } from '../core/container.js';
-import { ensureProjectIsMutable, hasGitMetadata } from './project-guards.js';
+import { detectProjectGitCapability, ensureProjectIsMutable } from './project-guards.js';
 import { defaultTeamLockService } from './team-lock.service.js';
 
 interface CreateTaskInput {
@@ -214,20 +214,28 @@ function withTaskPreviews<T extends { title: string; description?: string | null
   return base;
 }
 
-function withProjectGitMetadata<T extends { project: { repoPath: string } }>(
+async function withProjectGitMetadata<T extends { project: { repoPath: string } }>(
   task: T
-): Omit<T, 'project'> & { project: T['project'] & { isGitRepo: boolean } } {
+): Promise<Omit<T, 'project'> & { project: T['project'] & Awaited<ReturnType<typeof detectProjectGitCapability>> }> {
+  const capability = await detectProjectGitCapability(task.project.repoPath);
+  return withProjectGitCapability(task, capability);
+}
+
+function withProjectGitCapability<T extends { project: { repoPath: string } }>(
+  task: T,
+  capability: Awaited<ReturnType<typeof detectProjectGitCapability>>
+): Omit<T, 'project'> & { project: T['project'] & Awaited<ReturnType<typeof detectProjectGitCapability>> } {
   return {
     ...task,
     project: {
       ...task.project,
-      isGitRepo: hasGitMetadata(task.project.repoPath),
+      ...capability,
     },
   };
 }
 
-function buildProjectGitMetadata(project: { repoPath: string }): { isGitRepo: boolean } {
-  return { isGitRepo: hasGitMetadata(project.repoPath) };
+async function buildProjectGitMetadata(project: { repoPath: string }) {
+  return detectProjectGitCapability(project.repoPath);
 }
 
 function buildTaskPrompt(task: { title: string; description?: string | null }): string {
@@ -306,8 +314,12 @@ export class TaskService {
       return (a.position ?? 0) - (b.position ?? 0);
     });
 
+    const projectGitCapability = await detectProjectGitCapability(project.repoPath);
+
     return {
-      data: data.map((task) => withTaskPreviews(withProjectGitMetadata(task), { omitDescription: true })),
+      data: data.map((task) => (
+        withTaskPreviews(withProjectGitCapability(task, projectGitCapability), { omitDescription: true })
+      )),
       total,
       page,
       limit,
@@ -339,7 +351,7 @@ export class TaskService {
       throw new NotFoundError('Task', id);
     }
 
-    return withTaskPreviews(withProjectGitMetadata(task), { omitDescription: true });
+    return withTaskPreviews(await withProjectGitMetadata(task), { omitDescription: true });
   }
 
   async findBodyById(id: string) {
@@ -420,7 +432,7 @@ export class TaskService {
       ...created,
       project: {
         ...project,
-        ...buildProjectGitMetadata(project),
+        ...await buildProjectGitMetadata(project),
       },
     };
   }
@@ -448,7 +460,7 @@ export class TaskService {
       ...updated,
       project: {
         ...task.project,
-        ...buildProjectGitMetadata(task.project),
+        ...await buildProjectGitMetadata(task.project),
       },
     };
   }
@@ -501,7 +513,7 @@ export class TaskService {
       ...updated,
       project: {
         ...task.project,
-        ...buildProjectGitMetadata(task.project),
+        ...await buildProjectGitMetadata(task.project),
       },
     };
   }
@@ -543,7 +555,7 @@ export class TaskService {
       ...updated,
       project: {
         ...task.project,
-        ...buildProjectGitMetadata(task.project),
+        ...await buildProjectGitMetadata(task.project),
       },
     };
   }
@@ -800,7 +812,7 @@ export class TaskService {
       ...updated,
       project: {
         ...task.project,
-        ...buildProjectGitMetadata(task.project),
+        ...await buildProjectGitMetadata(task.project),
       },
     };
   }
