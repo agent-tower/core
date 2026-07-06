@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
-import type { StreamdownProps, UrlTransform } from 'streamdown'
+import type { UrlTransform } from 'streamdown'
 import type { AgentInvocation, Attachment, Provider, RoomMessage, StructuredMention, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
 import type { PostRoomMessageInput } from '@/hooks/use-team-run'
 import { useAttachmentMetadata, useAttachments } from '@/hooks/use-attachments'
@@ -52,6 +52,7 @@ import {
   streamdownComponents,
   streamdownMermaidControls,
 } from '@/lib/streamdown-components'
+import { useStreamdownMermaidPlugins } from '@/lib/streamdown-mermaid'
 import 'streamdown/styles.css'
 
 interface RoomTimelineProps {
@@ -69,46 +70,6 @@ interface RoomTimelineProps {
 
 const API_BASE_URL = getApiBaseUrl()
 const INLINE_PREVIEW_MAX_LENGTH = 240
-const MERMAID_CODE_BLOCK_PATTERN = /(^|\n)(```|~~~)[^\S\r\n]*mermaid(?:[\s\r\n]|$)/i
-
-let streamdownMermaidPluginsPromise: Promise<StreamdownProps['plugins']> | null = null
-
-export function hasMermaidCodeBlock(content: string) {
-  return MERMAID_CODE_BLOCK_PATTERN.test(content)
-}
-
-function loadStreamdownMermaidPlugins() {
-  streamdownMermaidPluginsPromise ??= import('@streamdown/mermaid').then(({ mermaid }) => ({ mermaid }))
-  return streamdownMermaidPluginsPromise
-}
-
-function useStreamdownMermaidPlugins(content: string) {
-  const shouldLoadMermaid = hasMermaidCodeBlock(content)
-  const [plugins, setPlugins] = useState<StreamdownProps['plugins']>()
-
-  useEffect(() => {
-    if (!shouldLoadMermaid) {
-      setPlugins(undefined)
-      return
-    }
-
-    let isActive = true
-    loadStreamdownMermaidPlugins()
-      .then((loadedPlugins) => {
-        if (isActive) setPlugins(loadedPlugins)
-      })
-      .catch(() => {
-        streamdownMermaidPluginsPromise = null
-        if (isActive) setPlugins(undefined)
-      })
-
-    return () => {
-      isActive = false
-    }
-  }, [shouldLoadMermaid])
-
-  return shouldLoadMermaid ? plugins : undefined
-}
 
 type PendingRoomMessageStatus = 'sending' | 'failed'
 type PendingRoomMessage = RoomMessage & {

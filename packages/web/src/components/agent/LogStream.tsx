@@ -5,7 +5,8 @@ import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { useI18n } from '@/lib/i18n'
 import { getApiBaseUrl } from '@/lib/api-base-url'
-import { streamdownComponents } from '@/lib/streamdown-components'
+import { streamdownComponents, streamdownMermaidControls } from '@/lib/streamdown-components'
+import { useStreamdownMermaidPlugins } from '@/lib/streamdown-mermaid'
 import 'streamdown/styles.css'
 
 interface LogStreamProps {
@@ -140,13 +141,36 @@ const attachmentUrlTransform: UrlTransform = (url) => {
 
 // ============ Components ============
 
+const MarkdownMessage = memo(({
+  content,
+  className,
+}: {
+  content: string
+  className?: string
+}) => {
+  const mermaidPlugins = useStreamdownMermaidPlugins(content)
+
+  return (
+    <Streamdown
+      className={className}
+      urlTransform={attachmentUrlTransform}
+      components={streamdownComponents}
+      plugins={mermaidPlugins}
+      controls={mermaidPlugins ? streamdownMermaidControls : undefined}
+    >
+      {content}
+    </Streamdown>
+  )
+})
+MarkdownMessage.displayName = 'MarkdownMessage'
+
 // 1. User Message — 右对齐聊天气泡
 const UserMessage = memo(({ content, compact }: { content: string; compact?: boolean }) => (
   <div className={compact ? 'flex justify-end mb-4 mt-2' : 'flex justify-end mb-8 mt-4'}>
     <div className={`relative bg-neutral-200 text-neutral-900 rounded-2xl rounded-tr-sm max-w-[85%] min-w-0 leading-relaxed ${
       compact ? 'px-3.5 py-2.5 text-[13px]' : 'px-5 py-3.5 text-sm'
     }`}>
-      <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>{content}</Streamdown>
+      <MarkdownMessage content={content} />
     </div>
   </div>
 ))
@@ -369,7 +393,7 @@ AgentText.displayName = 'AgentText'
 // 5. Assistant Message — Streamdown 渲染 markdown
 const AssistantMessage = memo(({ content, compact }: { content: string; compact?: boolean }) => (
   <div className={`text-neutral-900 min-w-0 ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
-    <Streamdown className="space-y-2"  urlTransform={attachmentUrlTransform} components={streamdownComponents}>{content}</Streamdown>
+    <MarkdownMessage className="space-y-2" content={content} />
   </div>
 ))
 AssistantMessage.displayName = 'AssistantMessage'

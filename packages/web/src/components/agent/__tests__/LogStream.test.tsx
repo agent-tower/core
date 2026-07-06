@@ -7,6 +7,22 @@ import { LogStream } from '../LogStream'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+const { streamdownRenderCalls, mermaidPlugin } = vi.hoisted(() => ({
+  streamdownRenderCalls: [] as Array<Record<string, unknown>>,
+  mermaidPlugin: () => null,
+}))
+
+vi.mock('streamdown', () => ({
+  Streamdown: (props: Record<string, unknown>) => {
+    streamdownRenderCalls.push(props)
+    return props.children
+  },
+}))
+
+vi.mock('@streamdown/mermaid', () => ({
+  mermaid: mermaidPlugin,
+}))
+
 vi.mock('@/lib/i18n', () => ({
   useI18n: () => ({ t: (source: string) => source }),
 }))
@@ -64,11 +80,57 @@ function infoEntry(id: string, content: string): LogEntry {
   }
 }
 
+function userEntry(id: string, content: string): LogEntry {
+  return {
+    id,
+    type: LogType.User,
+    content,
+  }
+}
+
+function assistantEntry(id: string, content: string): LogEntry {
+  return {
+    id,
+    type: LogType.Assistant,
+    content,
+  }
+}
+
+async function flushEffects() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+function findLastStreamdownCall(content: string) {
+  for (let index = streamdownRenderCalls.length - 1; index >= 0; index -= 1) {
+    const call = streamdownRenderCalls[index]
+    if (call?.children === content) return call
+  }
+  return undefined
+}
+
+async function findMermaidStreamdownCall(content: string) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const call = findLastStreamdownCall(content)
+    if (call?.plugins) return call
+
+    await act(async () => {
+      await Promise.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+  }
+
+  return findLastStreamdownCall(content)
+}
+
 describe('LogStream tool grouping', () => {
   let container: HTMLDivElement
   let root: Root
 
   beforeEach(() => {
+    streamdownRenderCalls.length = 0
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -181,5 +243,66 @@ describe('LogStream tool grouping', () => {
     ])
     expect(container.textContent).toContain('Tool')
     expect(container.textContent).toContain('MCP tool call: agent-tower/post_room_message')
+  })
+
+  it('does not attach mermaid plugins for regular assistant markdown', async () => {
+    const logs: LogEntry[] = [
+      assistantEntry('assistant-1', 'Regular **markdown** response'),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} />)
+    })
+    await flushEffects()
+
+    const assistantCall = streamdownRenderCalls.find((props) => props.children === logs[0].content)
+    expect(assistantCall?.plugins).toBeUndefined()
+    expect(assistantCall?.controls).toBeUndefined()
+  })
+
+  it('attaches mermaid plugins and controls for assistant markdown diagrams', async () => {
+    const content = '```mermaid\nflowchart TD\n  A --> B\n```'
+    const logs: LogEntry[] = [
+      assistantEntry('assistant-1', content),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} />)
+    })
+    await flushEffects()
+
+    const assistantCall = await findMermaidStreamdownCall(content)
+    expect(assistantCall?.plugins).toEqual({ mermaid: mermaidPlugin })
+    expect(assistantCall?.controls).toMatchObject({
+      mermaid: {
+        download: true,
+        copy: true,
+        fullscreen: true,
+        panZoom: true,
+      },
+    })
+  })
+
+  it('attaches mermaid plugins and controls for user markdown diagrams', async () => {
+    const content = '~~~MERMAID\nsequenceDiagram\n  A->>B: hi\n~~~'
+    const logs: LogEntry[] = [
+      userEntry('user-1', content),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} />)
+    })
+    await flushEffects()
+
+    const userCall = await findMermaidStreamdownCall(content)
+    expect(userCall?.plugins).toEqual({ mermaid: mermaidPlugin })
+    expect(userCall?.controls).toMatchObject({
+      mermaid: {
+        download: true,
+        copy: true,
+        fullscreen: true,
+        panZoom: true,
+      },
+    })
   })
 })
