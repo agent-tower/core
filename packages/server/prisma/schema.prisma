@@ -243,6 +243,8 @@ model AgentInvocation {
   status                  String    @default("QUEUED")
   roomReplyReminderCount  Int       @default(0)
   nextRoomReplyReminderAt DateTime?
+  lastHeartbeatAt         DateTime? // 最近一次真实进展（session:patch / room message）时间，心跳 watchdog 比对用
+  firstNudgeAt            DateTime? // 首次心跳唤醒时间，作为绝对兜底起点（收到 room message 或终态时清空）
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
 

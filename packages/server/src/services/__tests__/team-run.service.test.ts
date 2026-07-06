@@ -11,13 +11,26 @@ const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-team-run-'));
 const dbPath = path.join(testDir, 'test.db');
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
 
-const { appendAttachmentMarkdownContextMock } = vi.hoisted(() => ({
+const { appendAttachmentMarkdownContextMock, fakeEventBus } = vi.hoisted(() => ({
   appendAttachmentMarkdownContextMock: vi.fn(),
+  fakeEventBus: {
+    emit: vi.fn(),
+    on: vi.fn(),
+    off: vi.fn(),
+  },
 }));
 
 vi.mock('../attachment-context.js', () => ({
   appendAttachmentMarkdownContext: appendAttachmentMarkdownContextMock,
 }));
+
+vi.mock('../../core/container.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../core/container.js')>();
+  return {
+    ...actual,
+    getEventBus: vi.fn(() => fakeEventBus),
+  };
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -113,6 +126,9 @@ describe('TeamRunService', () => {
   });
 
   beforeEach(async () => {
+    fakeEventBus.emit.mockClear();
+    fakeEventBus.on.mockClear();
+    fakeEventBus.off.mockClear();
     appendAttachmentMarkdownContextMock.mockImplementation(async (content: string, attachmentIds?: string[] | null) => {
       const ids = Array.from(new Set((attachmentIds ?? []).map((id) => id.trim()).filter(Boolean)));
       if (ids.length === 0) return content.trim();
@@ -702,6 +718,185 @@ describe('TeamRunService', () => {
       statusCode: 400,
     });
     await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+  });
+
+  it('immediately completes a waiting invocation when its agent posts a RoomMessage and starts queued work', async () => {
+    const preset = await service.createMemberPreset({
+      ...presetInput('Coder'),
+      workspacePolicy: 'shared',
+    });
+    const task = await createTask();
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: '',
+        worktreePath: '',
+        workspaceKind: 'MAIN_DIRECTORY',
+        workingDir: testDir,
+        status: 'ACTIVE',
+      },
+    });
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+    await prisma.teamRun.update({
+      where: { id: teamRun.id },
+      data: { mainWorkspaceId: workspace.id },
+    });
+    const member = teamRun.members![0]!;
+    const firstRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'message-waiting',
+        instruction: 'Finish current work',
+        status: 'STARTED',
+      },
+    });
+    const queuedRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'message-queued',
+        instruction: 'Start next work',
+        status: 'QUEUED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        providerId: member.providerId,
+        prompt: 'current work',
+        status: 'COMPLETED',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: firstRequest.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        status: 'WAITING_ROOM_REPLY',
+        roomReplyReminderCount: 4,
+        nextRoomReplyReminderAt: new Date(Date.UTC(2026, 0, 1, 0, 5, 0)),
+        firstNudgeAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      },
+    });
+    const { TeamReconcilerService } = await import('../team-reconciler.service.js');
+    const scheduler = {
+      releaseInvocationLocks: vi.fn(),
+      startNextSessions: vi.fn(async () => []),
+    };
+    (service as unknown as { reconciler: InstanceType<typeof TeamReconcilerService> }).reconciler = new TeamReconcilerService({
+      scheduler,
+      eventBus: fakeEventBus,
+      scheduleReminders: false,
+    });
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'Result posted',
+      senderType: 'agent',
+      senderId: member.id,
+      senderInvocationId: invocation.id,
+    });
+
+    expect(message.senderInvocationId).toBe(invocation.id);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'COMPLETED',
+      roomReplyReminderCount: 0,
+      nextRoomReplyReminderAt: null,
+      firstNudgeAt: null,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: firstRequest.id } })).resolves.toMatchObject({
+      status: 'COMPLETED',
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: queuedRequest.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
+    expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+  });
+
+  it('does not complete a waiting invocation for user or system RoomMessages', async () => {
+    const preset = await service.createMemberPreset(presetInput('Coder'));
+    const task = await createTask();
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'team-shared',
+        worktreePath: testDir,
+        status: 'ACTIVE',
+      },
+    });
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+    const member = teamRun.members![0]!;
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'message-waiting-user',
+        instruction: 'Finish current work',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        providerId: member.providerId,
+        prompt: 'current work',
+        status: 'COMPLETED',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        status: 'WAITING_ROOM_REPLY',
+        roomReplyReminderCount: 4,
+        nextRoomReplyReminderAt: new Date(Date.UTC(2026, 0, 1, 0, 5, 0)),
+      },
+    });
+
+    const userMessage = await service.createRoomMessage(teamRun.id, {
+      content: 'Host note',
+      senderType: 'user',
+      senderInvocationId: invocation.id,
+    });
+    const systemMessage = await service.createRoomMessage(teamRun.id, {
+      content: 'System note',
+      senderType: 'system',
+      senderInvocationId: invocation.id,
+    });
+
+    expect(userMessage.senderInvocationId).toBeNull();
+    expect(systemMessage.senderInvocationId).toBeNull();
+    await expect(prisma.roomMessage.findMany({
+      where: { id: { in: [userMessage.id, systemMessage.id] } },
+      orderBy: { createdAt: 'asc' },
+    })).resolves.toEqual([
+      expect.objectContaining({ senderType: 'user', senderInvocationId: null }),
+      expect.objectContaining({ senderType: 'system', senderInvocationId: null }),
+    ]);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 4,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
   });
 
   it('creates private RoomMessages with participants and WorkRequests for recipients', async () => {

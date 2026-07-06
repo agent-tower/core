@@ -680,6 +680,12 @@ export class TeamSchedulerService {
         } catch (error) {
           await this.markInvocationStartFailed(createdInvocation.id, session.id);
           this.lockService.releaseByOwner(createdInvocation.id);
+          createdTerminalInvocation = true;
+          await this.emitTeamRunInvalidated(
+            context.teamRun,
+            ['work-requests', 'agent-invocations'],
+            'agent-invocation-updated'
+          );
           invocationId = null;
           throw error;
         }
@@ -690,6 +696,9 @@ export class TeamSchedulerService {
       } catch (error) {
         if (invocationId) {
           this.lockService.releaseByOwner(invocationId);
+        }
+        if (createdTerminalInvocation) {
+          await this.teamRunReviewAdvancer.maybeAdvanceTeamRunToReview(teamRunId);
         }
         throw error;
       } finally {
@@ -979,7 +988,7 @@ export class TeamSchedulerService {
           teamRunId: teamRun.id,
           status: 'QUEUED',
         },
-        data: { status: 'STARTED' },
+        data: { status: 'FAILED' },
       });
 
       if (claimed.count !== 1) {
@@ -1506,16 +1515,24 @@ export class TeamSchedulerService {
   }
 
   private async markInvocationStartFailed(invocationId: string, sessionId: string): Promise<void> {
-    await prisma.$transaction([
-      prisma.agentInvocation.update({
+    await prisma.$transaction(async (tx) => {
+      const invocation = await tx.agentInvocation.update({
         where: { id: invocationId },
         data: { status: 'FAILED' },
-      }),
-      prisma.session.update({
+        select: { workRequestId: true },
+      });
+      await tx.workRequest.updateMany({
+        where: {
+          id: invocation.workRequestId,
+          status: 'STARTED',
+        },
+        data: { status: 'FAILED' },
+      });
+      await tx.session.update({
         where: { id: sessionId },
         data: { status: 'FAILED' },
-      }),
-    ]);
+      });
+    });
   }
 
   private async emitTeamRunInvalidated(
@@ -1622,6 +1639,8 @@ export class TeamSchedulerService {
       nextRoomReplyReminderAt: invocation.nextRoomReplyReminderAt
         ? toIso(invocation.nextRoomReplyReminderAt)
         : null,
+      lastHeartbeatAt: invocation.lastHeartbeatAt ? toIso(invocation.lastHeartbeatAt) : null,
+      firstNudgeAt: invocation.firstNudgeAt ? toIso(invocation.firstNudgeAt) : null,
     };
   }
 }

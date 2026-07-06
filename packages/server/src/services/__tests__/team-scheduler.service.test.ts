@@ -2593,7 +2593,7 @@ describe('TeamSchedulerService', () => {
       status: 'FAILED',
     });
     await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
-      status: 'STARTED',
+      status: 'FAILED',
     });
     await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
   });
@@ -2617,7 +2617,7 @@ describe('TeamSchedulerService', () => {
     await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
 
     await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
-      status: 'STARTED',
+      status: 'FAILED',
     });
     await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: request.id } })).resolves.toMatchObject({
       status: 'FAILED',
@@ -2674,7 +2674,7 @@ describe('TeamSchedulerService', () => {
       sessionId: expect.any(String),
     });
     await expect(prisma.workRequest.findUnique({ where: { id: missingProviderRequest.id } })).resolves.toMatchObject({
-      status: 'STARTED',
+      status: 'FAILED',
     });
     await expect(prisma.agentInvocation.findFirst({
       where: { workRequestId: missingProviderRequest.id },
@@ -2691,9 +2691,10 @@ describe('TeamSchedulerService', () => {
   });
 
   it('marks invocation and session failed and releases locks when session start fails', async () => {
-    const { teamRun, members } = await createTeamRunFixture({
+    const { task, teamRun, members } = await createTeamRunFixture({
       memberCapabilities: [writeCapabilities],
       withWorkspace: false,
+      taskStatus: TaskStatus.IN_PROGRESS,
     });
     const request = await createWorkRequest({
       teamRunId: teamRun.id,
@@ -2720,7 +2721,13 @@ describe('TeamSchedulerService', () => {
       status: 'FAILED',
     });
     await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
-      status: 'STARTED',
+      status: 'FAILED',
+    });
+    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+      status: TaskStatus.IN_REVIEW,
+    });
+    await expect(prisma.teamRun.findUnique({ where: { id: teamRun.id } })).resolves.toMatchObject({
+      reviewReason: 'TEAM_QUIESCENT',
     });
     await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
     await expect(prisma.agentInvocation.count({ where: { workRequestId: request.id } })).resolves.toBe(1);

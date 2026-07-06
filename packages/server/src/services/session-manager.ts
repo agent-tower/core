@@ -41,6 +41,28 @@ function summarizeTextForLog(value: string): { length: number; sha256: string } 
   };
 }
 
+/**
+ * 判断一个 session:patch 是否代表 agent 侧真实进展。
+ *
+ * SessionManager.sendMessage()（包括 TeamRun 心跳唤醒）会在本地写入一条 user_message entry 并 emit
+ * session:patch。这类本地用户消息绝不能算作成员心跳，否则唤醒会刷新 lastHeartbeatAt 并在下一轮
+ * watchdog 扫描中清零计数，使“连续 N 次 + 指数退避”失效。这里过滤掉“仅由 user_message 写入组成”的 patch；
+ * 任何其它 op（agent entry 写入/替换、流式 content/metadata 更新等）都视为真实进展。
+ */
+function isAgentProgressPatch(patch: unknown): boolean {
+  if (!Array.isArray(patch) || patch.length === 0) {
+    return false;
+  }
+  return patch.some((op) => {
+    const value = (op as { value?: unknown } | null)?.value;
+    if (!value || typeof value !== 'object') {
+      // 非整条 entry 写入（如对 /entries/N/content 的流式更新）视为 agent 进展。
+      return true;
+    }
+    return (value as { entryType?: string }).entryType !== 'user_message';
+  });
+}
+
 interface StopSessionOptions {
   skipTeamRunReconcile?: boolean;
 }
@@ -59,13 +81,19 @@ export class SessionManager {
   private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private snapshotFlushChains = new Map<string, Promise<void>>();
   private pendingSnapshotStatus = new Map<string, SessionStatus>();
+  // 每个 session 上次写入 TeamRun 心跳时间戳的时刻，用于节流 lastHeartbeatAt 落库。
+  private heartbeatThrottle = new Map<string, number>();
   private readonly teamReconciler: TeamReconcilerService;
   private static readonly SNAPSHOT_DEBOUNCE_MS = 1200;
+  private static readonly HEARTBEAT_THROTTLE_MS = 30_000;
 
   constructor(private readonly eventBus: EventBus, teamReconciler?: TeamReconcilerService) {
     this.teamReconciler = teamReconciler ?? new TeamReconcilerService({
       eventBus,
       sessionMessenger: this,
+      // 续催/唤醒统一由 MemberHeartbeatScheduler 轮询驱动；这里关闭内部 setTimeout 避免双驱动重复触发。
+      // session 退出时的首次 reconcile（COMPLETED 判定 / 首次补催）仍即时执行，不依赖该定时器。
+      scheduleReminders: false,
     });
 
     // Debounced snapshot persistence: keep DB up-to-date without per-patch writes.
@@ -79,6 +107,8 @@ export class SessionManager {
         );
       }
       this.scheduleSnapshotPersist(sessionId);
+      // 仅 agent 侧真实进展用作 TeamRun 成员心跳信号（节流落库）；本地 user_message（含唤醒）被过滤。
+      this.maybeRecordTeamRunHeartbeat(sessionId, patch);
     });
 
     this.eventBus.on('session:exit', ({ sessionId, exitCode }) => {
@@ -94,6 +124,7 @@ export class SessionManager {
         this.pipelines.delete(sessionId);
       }
       this.cancelTokens.delete(sessionId);
+      this.heartbeatThrottle.delete(sessionId);
       this.handleSessionExit(sessionId, exitCode).catch((error) => {
         console.error(`[SessionManager] post-exit handling failed for ${sessionId}:`, error);
         writeErrorLog({
@@ -558,6 +589,36 @@ export class SessionManager {
     // 因此在这里释放 MsgStore。快照已在上方持久化（CANCELLED）。
     sessionMsgStoreManager.delete(id);
     return session;
+  }
+
+  /**
+   * 是否仍持有该 session 的活跃 PTY pipeline。
+   * 供 TeamRun 心跳 watchdog 判断 invocation 是真卡死（pipeline 存活）还是孤儿（进程已脱管）。
+   */
+  hasActivePipeline(sessionId: string): boolean {
+    return this.pipelines.has(sessionId);
+  }
+
+  /**
+   * 节流写入 TeamRun invocation 的心跳时间戳。非 TeamRun session 无对应 invocation，updateMany 命中 0 行无副作用。
+   */
+  private maybeRecordTeamRunHeartbeat(sessionId: string, patch: unknown): void {
+    // 过滤掉本地 user_message patch（含心跳唤醒注入的消息），只让 agent 真实进展刷新心跳。
+    if (!isAgentProgressPatch(patch)) {
+      return;
+    }
+    const now = Date.now();
+    const last = this.heartbeatThrottle.get(sessionId) ?? 0;
+    if (now - last < SessionManager.HEARTBEAT_THROTTLE_MS) {
+      return;
+    }
+    this.heartbeatThrottle.set(sessionId, now);
+    this.teamReconciler.recordHeartbeat(sessionId).catch((error) => {
+      console.warn(
+        `[SessionManager] Failed to record TeamRun heartbeat for ${sessionId}:`,
+        error instanceof Error ? error.message : error
+      );
+    });
   }
 
   writeInput(sessionId: string, data: string): void {

@@ -45,8 +45,10 @@ import type {
 } from '@prisma/client';
 import { ServiceError, NotFoundError, ValidationError } from '../errors.js';
 import { prisma } from '../utils/index.js';
+import { getEventBus } from '../core/container.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
+import { TeamReconcilerService } from './team-reconciler.service.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import { buildTextPreview, TASK_TITLE_MAX_LENGTH } from './task.service.js';
 import { ensureProjectSupportsWorktrees } from './project-guards.js';
@@ -526,6 +528,16 @@ async function buildWorkRequestTargetData(
 }
 
 export class TeamRunService {
+  private reconciler?: TeamReconcilerService;
+
+  // 懒加载 reconciler，用于 agent room message 的即时 reconcile（WAITING_ROOM_REPLY→COMPLETED / RUNNING 清零）。
+  private getReconciler(): TeamReconcilerService {
+    if (!this.reconciler) {
+      this.reconciler = new TeamReconcilerService({ eventBus: getEventBus() });
+    }
+    return this.reconciler;
+  }
+
   async listMemberPresets(): Promise<MemberPreset[]> {
     const presets = await prisma.memberPreset.findMany({
       orderBy: { createdAt: 'desc' },
@@ -1278,6 +1290,8 @@ export class TeamRunService {
 
     const mentions = input.mentions ?? [];
     const senderType = input.senderType ?? 'user';
+    const normalizedSenderId = senderType === 'system' ? null : (input.senderId ?? null);
+    const normalizedSenderInvocationId = senderType === 'agent' ? (input.senderInvocationId ?? null) : null;
     const kind = input.kind ?? (mentions.length > 0 ? 'work_request' : 'chat');
     const workRequestStatus: WorkRequestStatus = teamRun.mode === 'CONFIRM'
       ? 'PENDING_APPROVAL'
@@ -1310,10 +1324,10 @@ export class TeamRunService {
           throw new ValidationError('Agent RoomMessage senderId must be a TeamMember in this TeamRun');
         }
 
-        if (input.senderInvocationId) {
+        if (normalizedSenderInvocationId) {
           const invocation = await tx.agentInvocation.findFirst({
             where: {
-              id: input.senderInvocationId,
+              id: normalizedSenderInvocationId,
               teamRunId,
               memberId: input.senderId,
             },
@@ -1329,8 +1343,8 @@ export class TeamRunService {
         data: {
           teamRunId,
           senderType,
-          senderId: input.senderId ?? null,
-          senderInvocationId: input.senderInvocationId ?? null,
+          senderId: normalizedSenderId,
+          senderInvocationId: normalizedSenderInvocationId,
           kind,
           visibility: 'PUBLIC',
           content: input.content,
@@ -1376,6 +1390,13 @@ export class TeamRunService {
         });
       }
     });
+
+    // 成员（agent）就某次 invocation 发出 room message 后立即交给 reconciler 处理：
+    // WAITING_ROOM_REPLY → 转 COMPLETED、释放锁、推进调度/review；RUNNING → 清零唤醒计数/绝对兜底并刷新心跳（不终态）。
+    // user/system 消息不触发，避免误终态化或误清零。
+    if (senderType === 'agent' && normalizedSenderInvocationId) {
+      await this.getReconciler().handleAgentRoomMessage(normalizedSenderInvocationId);
+    }
 
     const message = await prisma.roomMessage.findUnique({ where: { id: messageId } });
     if (!message) {
@@ -1977,6 +1998,8 @@ export class TeamRunService {
       nextRoomReplyReminderAt: invocation.nextRoomReplyReminderAt
         ? toIso(invocation.nextRoomReplyReminderAt)
         : null,
+      lastHeartbeatAt: invocation.lastHeartbeatAt ? toIso(invocation.lastHeartbeatAt) : null,
+      firstNudgeAt: invocation.firstNudgeAt ? toIso(invocation.firstNudgeAt) : null,
     };
   }
 }

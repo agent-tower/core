@@ -138,6 +138,8 @@ export type WorkRequestStatus =
   | 'QUEUED'
   | 'STARTED'
   | 'REJECTED'
+  | 'COMPLETED'
+  | 'FAILED'
   | 'CANCELLED'
 
 /** Agent 调用状态 */
@@ -764,6 +766,8 @@ export interface AgentInvocation {
   status: AgentInvocationStatus
   roomReplyReminderCount: number
   nextRoomReplyReminderAt?: string | null
+  lastHeartbeatAt?: string | null
+  firstNudgeAt?: string | null
   createdAt?: string
   updatedAt?: string
 }

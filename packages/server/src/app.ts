@@ -9,13 +9,15 @@ import { registerRoutes } from './routes/index.js';
 import { initializeSocket, closeSocket } from './socket/index.js';
 import { WorkspaceService } from './services/workspace.service.js';
 import { HibernationScheduler } from './services/hibernation-scheduler.js';
+import { MemberHeartbeatScheduler } from './services/member-heartbeat-scheduler.js';
 import { TunnelService } from './services/tunnel.service.js';
-import { getTaskCleanupService, getWorkspaceGitWatcherService } from './core/container.js';
+import { getEventBus, getSessionManager, getTaskCleanupService, getWorkspaceGitWatcherService } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 import { accessAuthHook } from './middleware/access-auth.js';
 import { writeErrorLog } from './utils/error-log.js';
 
 let hibernationScheduler: HibernationScheduler | null = null;
+let memberHeartbeatScheduler: MemberHeartbeatScheduler | null = null;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -104,6 +106,15 @@ export async function buildApp() {
     hibernationScheduler.start();
     app.log.info(`[startup:onReady] hibernationScheduler started elapsed=${elapsed()}`);
 
+    // 启动 TeamRun 成员心跳 watchdog：唤醒无进展成员、推进 room reply 补催、回收 orphan invocation
+    app.log.info(`[startup:onReady] memberHeartbeatScheduler start elapsed=${elapsed()}`);
+    memberHeartbeatScheduler = new MemberHeartbeatScheduler({
+      eventBus: getEventBus(),
+      sessionManager: getSessionManager(),
+    });
+    memberHeartbeatScheduler.start();
+    app.log.info(`[startup:onReady] memberHeartbeatScheduler started elapsed=${elapsed()}`);
+
     // 启动任务删除后台资源清理 worker
     app.log.info(`[startup:onReady] taskCleanupService start elapsed=${elapsed()}`);
     getTaskCleanupService().start();
@@ -121,6 +132,7 @@ export async function buildApp() {
   // 服务器关闭时清理 Socket.IO、Tunnel、HibernationScheduler 和 watcher
   app.addHook('onClose', async () => {
     hibernationScheduler?.stop();
+    memberHeartbeatScheduler?.stop();
     getTaskCleanupService().stop();
     getWorkspaceGitWatcherService().stop();
     TunnelService.stop();

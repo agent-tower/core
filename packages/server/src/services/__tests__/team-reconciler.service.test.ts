@@ -403,6 +403,14 @@ describe('TeamReconcilerService', () => {
       workRequestId: request.id,
       memberId: members[0]!.id,
       workspaceId: workspace.id,
+      roomReplyReminderCount: 3,
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: {
+        nextRoomReplyReminderAt: new Date(Date.UTC(2026, 0, 1, 0, 5, 0)),
+        firstNudgeAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      },
     });
     expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
     await prisma.roomMessage.create({
@@ -424,7 +432,12 @@ describe('TeamReconcilerService', () => {
 
     await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'COMPLETED',
+      roomReplyReminderCount: 0,
       nextRoomReplyReminderAt: null,
+      firstNudgeAt: null,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'COMPLETED',
     });
     expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
     expect(lockService.listLocks()).toEqual([]);
@@ -449,6 +462,123 @@ describe('TeamReconcilerService', () => {
     expect(reloaded.nextRoomReplyReminderAt?.toISOString()).toBe('2026-01-01T00:00:01.000Z');
     expect(messenger.sendMessage).toHaveBeenCalledWith(invocation.sessionId, TEAM_ROOM_REPLY_REMINDER);
     expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+  });
+
+  it('ignores forged non-agent RoomMessages with senderInvocationId during reconcile', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { nextRoomReplyReminderAt: new Date(Date.UTC(2026, 0, 1, 0, 1, 0)) },
+    });
+    await prisma.roomMessage.createMany({
+      data: [
+        {
+          teamRunId: teamRun.id,
+          senderType: 'user',
+          senderId: null,
+          senderInvocationId: invocation.id,
+          kind: 'chat',
+          content: 'Host note should not count as result',
+          mentions: '[]',
+          workRequestIds: '[]',
+          artifactRefs: '[]',
+          attachmentIds: '[]',
+        },
+        {
+          teamRunId: teamRun.id,
+          senderType: 'system',
+          senderId: null,
+          senderInvocationId: invocation.id,
+          kind: 'system',
+          content: 'System note should not count as result',
+          mentions: '[]',
+          workRequestIds: '[]',
+          artifactRefs: '[]',
+          attachmentIds: '[]',
+        },
+      ],
+    });
+
+    await service.reconcileInvocation(invocation.id);
+
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+    expect(scheduler.startNextSessions).not.toHaveBeenCalled();
+  });
+
+  it('ignores private agent RoomMessages with senderInvocationId during reconcile', async () => {
+    const { workspace, teamRun, members } = await createFixture({ memberCount: 2 });
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { nextRoomReplyReminderAt: new Date(Date.UTC(2026, 0, 1, 0, 1, 0)) },
+    });
+    const privateMessage = await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'agent',
+        senderId: members[0]!.id,
+        senderInvocationId: invocation.id,
+        kind: 'work_request',
+        visibility: 'PRIVATE',
+        content: 'Private handoff should not count as a public result',
+        mentions: stringifyJson([]),
+        workRequestIds: stringifyJson([]),
+        artifactRefs: stringifyJson([]),
+        attachmentIds: stringifyJson([]),
+      },
+    });
+    await prisma.roomMessageParticipant.createMany({
+      data: [
+        {
+          teamRunId: teamRun.id,
+          roomMessageId: privateMessage.id,
+          memberId: members[0]!.id,
+          role: 'sender',
+        },
+        {
+          teamRunId: teamRun.id,
+          roomMessageId: privateMessage.id,
+          memberId: members[1]!.id,
+          role: 'recipient',
+        },
+      ],
+    });
+
+    await service.reconcileInvocation(invocation.id);
+
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+    expect(scheduler.startNextSessions).not.toHaveBeenCalled();
   });
 
   it('does not send another reminder before the backoff time is due', async () => {
@@ -509,10 +639,57 @@ describe('TeamReconcilerService', () => {
 
     await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'FAILED',
+      roomReplyReminderCount: 0,
       nextRoomReplyReminderAt: null,
+      firstNudgeAt: null,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
     });
     expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
     expect(lockService.listLocks()).toEqual([]);
+  });
+
+  it('does not complete due reminders from forged non-agent RoomMessages with senderInvocationId', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { nextRoomReplyReminderAt: new Date(Date.UTC(2025, 11, 31, 23, 59, 59)) },
+    });
+    await prisma.roomMessage.create({
+      data: {
+        teamRunId: teamRun.id,
+        senderType: 'user',
+        senderId: null,
+        senderInvocationId: invocation.id,
+        kind: 'chat',
+        content: 'Forged result',
+        mentions: '[]',
+        workRequestIds: '[]',
+        artifactRefs: '[]',
+        attachmentIds: '[]',
+      },
+    });
+
+    await expect(service.reconcileDueRoomReplyReminders()).resolves.toBe(1);
+
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 2,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
   });
 
   it('moves an idle TeamRun task from IN_PROGRESS to IN_REVIEW and writes reviewReason', async () => {
@@ -576,6 +753,9 @@ describe('TeamReconcilerService', () => {
       status: 'CANCELLED',
       nextRoomReplyReminderAt: null,
     });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
     expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
     expect(lockService.listLocks()).toEqual([]);
     expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
@@ -611,6 +791,9 @@ describe('TeamReconcilerService', () => {
     await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'CANCELLED',
     });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
     await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
       status: TaskStatus.IN_PROGRESS,
     });
@@ -643,6 +826,9 @@ describe('TeamReconcilerService', () => {
     await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'CANCELLED',
       nextRoomReplyReminderAt: null,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
     });
     expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
     expect(lockService.listLocks()).toEqual([]);
@@ -772,7 +958,7 @@ describe('TeamReconcilerService', () => {
         expect(createdRequest).toMatchObject({
           requesterType: 'agent',
           requesterMemberId: members[0]!.id,
-          status: 'STARTED',
+          status: 'FAILED',
         });
         createdRequestId = createdRequest!.id;
       });
@@ -1154,7 +1340,7 @@ describe('TeamReconcilerService', () => {
         expect(createdRequest).toMatchObject({
           requesterType: 'agent',
           requesterMemberId: members[0]!.id,
-          status: 'STARTED',
+          status: 'FAILED',
         });
         createdRequestId = createdRequest!.id;
       });
@@ -2114,7 +2300,7 @@ describe('TeamReconcilerService', () => {
         status: 'CANCELLED',
       });
       await expect(prisma.workRequest.findUnique({ where: { id: otherRequest.id } })).resolves.toMatchObject({
-        status: 'STARTED',
+        status: 'FAILED',
       });
       await expect(prisma.workRequest.findUnique({ where: { id: ownPendingRejection.id } })).resolves.toMatchObject({
         status: 'REJECTED',

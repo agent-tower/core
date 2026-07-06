@@ -7,6 +7,8 @@ const taskCleanupStartMock = vi.fn()
 const taskCleanupStopMock = vi.fn()
 const workspaceGitWatcherStartMock = vi.fn(() => Promise.resolve())
 const workspaceGitWatcherStopMock = vi.fn()
+const memberHeartbeatStartMock = vi.fn()
+const memberHeartbeatStopMock = vi.fn()
 
 vi.mock('./routes/index.js', () => ({
   registerRoutes: vi.fn(async () => {}),
@@ -24,6 +26,8 @@ vi.mock('./services/workspace.service.js', () => ({
 }))
 
 vi.mock('./core/container.js', () => ({
+  getEventBus: vi.fn(() => ({ on: vi.fn(), emit: vi.fn(), off: vi.fn() })),
+  getSessionManager: vi.fn(() => ({})),
   getTaskCleanupService: vi.fn(() => ({
     start: taskCleanupStartMock,
     stop: taskCleanupStopMock,
@@ -32,6 +36,15 @@ vi.mock('./core/container.js', () => ({
     start: workspaceGitWatcherStartMock,
     stop: workspaceGitWatcherStopMock,
   })),
+}))
+
+vi.mock('./services/member-heartbeat-scheduler.js', () => ({
+  MemberHeartbeatScheduler: vi.fn(function () {
+    return {
+      start: memberHeartbeatStartMock,
+      stop: memberHeartbeatStopMock,
+    };
+  }),
 }))
 
 vi.mock('./services/tunnel.service.js', () => ({

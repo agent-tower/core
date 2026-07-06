@@ -76,6 +76,25 @@ describe('process-launch', () => {
         AGENT_TOWER_URL: 'http://127.0.0.1:42232',
       },
       {
+        AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\resources\\runtime\\node\\node.exe',
+      },
+    )
+
+    expect(wrapperEnv).toMatchObject({
+      PATH: '/usr/bin',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      AGENT_TOWER_NODE_RUNTIME: 'C:\\Program Files\\Agent Tower\\resources\\runtime\\node\\node.exe',
+    })
+    expect(wrapperEnv).not.toHaveProperty('ELECTRON_RUN_AS_NODE')
+  })
+
+  it('should preserve Electron node-mode env only for packaged fallback runtimes', () => {
+    const wrapperEnv = buildPtyWrapperEnv(
+      {
+        PATH: '/usr/bin',
+        AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+      },
+      {
         AGENT_TOWER_NODE_RUNTIME: '/Applications/Agent Tower.app/Contents/MacOS/Agent Tower',
         ELECTRON_RUN_AS_NODE: '1',
       },

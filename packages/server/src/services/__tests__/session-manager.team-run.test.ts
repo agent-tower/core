@@ -589,4 +589,73 @@ describe('SessionManager TeamRun env injection', () => {
       status: SessionStatus.CANCELLED,
     });
   });
+
+  it('does not record a TeamRun heartbeat from the local user_message patch created by sendMessage', async () => {
+    const { task, workspace } = await createWorkspace();
+    const teamRun = await prisma.teamRun.create({
+      data: {
+        taskId: task.id,
+        mode: 'AUTO',
+      },
+    });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        presetId: null,
+        name: 'Member 1',
+        aliases: '["member-1"]',
+        providerId: 'codex-default',
+        rolePrompt: 'Role 1',
+        capabilities: '{}',
+        workspacePolicy: 'shared',
+        triggerPolicy: 'MENTION_ONLY',
+        avatar: null,
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterMemberId: null,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'message-heartbeat',
+        instruction: 'Do the work',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.COMPLETED,
+      },
+    });
+    const lastHeartbeatAt = new Date(Date.UTC(2026, 0, 1, 0, 0, 0));
+    const nextRoomReplyReminderAt = new Date(Date.UTC(2026, 0, 1, 0, 5, 0));
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        status: 'RUNNING',
+        lastHeartbeatAt,
+        roomReplyReminderCount: 3,
+        nextRoomReplyReminderAt,
+      },
+    });
+
+    await manager.sendMessage(session.id, 'heartbeat nudge');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const reloaded = await prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } });
+    expect(reloaded.lastHeartbeatAt?.toISOString()).toBe(lastHeartbeatAt.toISOString());
+    expect(reloaded.roomReplyReminderCount).toBe(3);
+    expect(reloaded.nextRoomReplyReminderAt?.toISOString()).toBe(nextRoomReplyReminderAt.toISOString());
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    manager.destroyAll();
+  });
 });

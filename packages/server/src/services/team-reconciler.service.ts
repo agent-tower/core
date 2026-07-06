@@ -10,8 +10,15 @@ import { prisma } from '../utils/index.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { isTaskDeleted } from './deleted-task-guard.js';
 
-const DEFAULT_REMINDER_DELAYS_MS = [60_000, 120_000, 240_000];
-const DEFAULT_MAX_ROOM_REPLY_REMINDERS = 3;
+// 统一补催/唤醒退避：指数增长（×2）封顶 5min，共 10 档（约 42min 触达上限）。
+const DEFAULT_REMINDER_DELAYS_MS = [
+  60_000, 120_000, 240_000, 300_000, 300_000, 300_000, 300_000, 300_000, 300_000, 300_000,
+];
+const DEFAULT_MAX_ROOM_REPLY_REMINDERS = 10;
+// RUNNING 成员超过该静默时长（无 session:patch 真实进展）视为无心跳，开始唤醒。
+const DEFAULT_HEARTBEAT_IDLE_THRESHOLD_MS = 5 * 60_000;
+// 绝对兜底：首次 nudge 起超过该时长仍未收到 room message（真实汇报）则强制释放，防止“吐假输出骗过清零”的活锁。
+const DEFAULT_ABSOLUTE_NUDGE_BUDGET_MS = 30 * 60_000;
 const TERMINAL_INVOCATION_STATUSES: AgentInvocationStatus[] = ['COMPLETED', 'FAILED', 'CANCELLED'];
 const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
   'QUEUED',
@@ -28,6 +35,12 @@ export const TEAM_ROOM_REPLY_REMINDER = [
   '如果任务还没有完成，请直接继续完成任务；不要只发送状态说明到 Team Room。',
 ].join('\n');
 
+export const TEAM_HEARTBEAT_NUDGE = [
+  '检测到你已较长时间没有任何进展输出，可能卡住了。',
+  '如果任务仍在进行，请立即继续推进；如果已经完成，请调用 post_room_message 汇报完成了什么、是否有代码/文件变更、遇到的问题以及建议的下一步。',
+  '如果你在等待某个会阻塞的操作，请改用非阻塞方式并继续推进，不要静默等待。',
+].join('\n');
+
 export interface TeamReconcilerScheduler {
   releaseInvocationLocks(invocationId: string): void;
   startNextSessions(teamRunId: string): Promise<unknown>;
@@ -35,6 +48,8 @@ export interface TeamReconcilerScheduler {
 
 export interface TeamReconcilerSessionMessenger {
   sendMessage(sessionId: string, message: string): Promise<unknown>;
+  stop?(sessionId: string, options?: { skipTeamRunReconcile?: boolean }): Promise<unknown>;
+  hasActivePipeline?(sessionId: string): boolean;
 }
 
 export interface TeamReconcilerDependencies {
@@ -45,6 +60,8 @@ export interface TeamReconcilerDependencies {
   reminderDelaysMs?: number[];
   maxRoomReplyReminders?: number;
   scheduleReminders?: boolean;
+  heartbeatIdleThresholdMs?: number;
+  absoluteNudgeBudgetMs?: number;
 }
 
 export class TeamReconcilerService {
@@ -56,6 +73,8 @@ export class TeamReconcilerService {
   private readonly reminderDelaysMs: number[];
   private readonly maxRoomReplyReminders: number;
   private readonly scheduleReminders: boolean;
+  private readonly heartbeatIdleThresholdMs: number;
+  private readonly absoluteNudgeBudgetMs: number;
 
   constructor(dependencies: TeamReconcilerDependencies = {}) {
     this.scheduler = dependencies.scheduler ?? null;
@@ -65,6 +84,8 @@ export class TeamReconcilerService {
     this.reminderDelaysMs = dependencies.reminderDelaysMs ?? DEFAULT_REMINDER_DELAYS_MS;
     this.maxRoomReplyReminders = dependencies.maxRoomReplyReminders ?? DEFAULT_MAX_ROOM_REPLY_REMINDERS;
     this.scheduleReminders = dependencies.scheduleReminders ?? true;
+    this.heartbeatIdleThresholdMs = dependencies.heartbeatIdleThresholdMs ?? DEFAULT_HEARTBEAT_IDLE_THRESHOLD_MS;
+    this.absoluteNudgeBudgetMs = dependencies.absoluteNudgeBudgetMs ?? DEFAULT_ABSOLUTE_NUDGE_BUDGET_MS;
   }
 
   async handleSessionExit(sessionId: string): Promise<boolean> {
@@ -103,6 +124,7 @@ export class TeamReconcilerService {
     await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
     this.clearReminderTimer(invocation.id);
     if (isTaskDeleted(invocation.teamRun.task)) {
+      await this.syncTerminalWorkRequest(invocation.id);
       const scheduler = await this.getScheduler();
       scheduler.releaseInvocationLocks(invocation.id);
       return true;
@@ -127,7 +149,12 @@ export class TeamReconcilerService {
     }
 
     const hasRoomReply = await prisma.roomMessage.count({
-      where: { senderInvocationId: invocation.id },
+      where: {
+        senderType: 'agent',
+        senderId: invocation.memberId,
+        senderInvocationId: invocation.id,
+        visibility: 'PUBLIC',
+      },
     }) > 0;
 
     if (hasRoomReply) {
@@ -135,7 +162,9 @@ export class TeamReconcilerService {
         where: { id: invocation.id },
         data: {
           status: 'COMPLETED',
+          roomReplyReminderCount: 0,
           nextRoomReplyReminderAt: null,
+          firstNudgeAt: null,
         },
       });
       await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
@@ -158,7 +187,9 @@ export class TeamReconcilerService {
         where: { id: invocation.id },
         data: {
           status: 'FAILED',
+          roomReplyReminderCount: 0,
           nextRoomReplyReminderAt: null,
+          firstNudgeAt: null,
         },
       });
       await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
@@ -202,6 +233,209 @@ export class TeamReconcilerService {
     }
 
     return dueInvocations.length;
+  }
+
+  /**
+   * 记录一次真实进展（session:patch / room message），刷新 RUNNING invocation 的心跳时间戳。
+   * 节流由调用方（SessionManager）控制，这里只做最小写入。
+   */
+  async recordHeartbeat(sessionId: string): Promise<void> {
+    await prisma.agentInvocation.updateMany({
+      where: { sessionId, status: 'RUNNING' },
+      data: { lastHeartbeatAt: this.now() },
+    });
+  }
+
+  /**
+   * 处理成员（agent）就某次 invocation 发出的 room message：
+   * - WAITING_ROOM_REPLY：已在等待汇报，立即 reconcile（hasRoomReply 成立 → 转 COMPLETED、释放锁、推进调度/review）。
+   * - RUNNING：进程仍在跑，room message 是真实进展，清零唤醒计数与绝对兜底并刷新心跳，但不终态。
+   * - 其它状态（已终态等）：不处理。
+   *
+   * 仅应由 agent 自己的 room message 触发；user/system 消息不得调用，避免误终态化或误清零。
+   */
+  async handleAgentRoomMessage(invocationId: string): Promise<void> {
+    const invocation = await prisma.agentInvocation.findUnique({
+      where: { id: invocationId },
+      select: { id: true, status: true },
+    });
+    if (!invocation) {
+      return;
+    }
+
+    if (invocation.status === 'WAITING_ROOM_REPLY') {
+      await this.reconcileInvocation(invocationId);
+      return;
+    }
+
+    if (invocation.status === 'RUNNING') {
+      await prisma.agentInvocation.updateMany({
+        where: { id: invocationId, status: 'RUNNING' },
+        data: {
+          lastHeartbeatAt: this.now(),
+          roomReplyReminderCount: 0,
+          nextRoomReplyReminderAt: null,
+          firstNudgeAt: null,
+        },
+      });
+    }
+  }
+
+  /**
+   * 心跳 watchdog：扫描 RUNNING 成员 invocation，对长时间无真实进展者按统一退避发送唤醒消息，
+   * 唤醒上限或绝对兜底超时后释放。与 room reply 补催复用同一 roomReplyReminderCount /
+   * nextRoomReplyReminderAt / 退避序列，避免计数系统分叉。
+   */
+  async reconcileStalledInvocations(): Promise<void> {
+    const candidates = await prisma.agentInvocation.findMany({
+      where: { status: 'RUNNING', sessionId: { not: null } },
+      include: { teamRun: { select: { task: { select: { deletedAt: true } } } } },
+    });
+    const now = this.now();
+
+    for (const invocation of candidates) {
+      if (isTaskDeleted(invocation.teamRun.task)) {
+        continue;
+      }
+      const sessionId = invocation.sessionId;
+      if (!sessionId) {
+        continue;
+      }
+      // 进程已不在内存管理中：交给首扫 orphan 或正常 exit 流程，避免运行期对刚退出瞬态的误判。
+      if (this.sessionMessenger?.hasActivePipeline && !this.sessionMessenger.hasActivePipeline(sessionId)) {
+        continue;
+      }
+
+      const lastActivity = invocation.lastHeartbeatAt ?? invocation.createdAt;
+      const idleMs = now.getTime() - lastActivity.getTime();
+
+      if (idleMs < this.heartbeatIdleThresholdMs) {
+        // 有真实进展（含被唤醒后恢复）：清零连续 nudge 计数，保留 firstNudgeAt 作为绝对兜底。
+        if (invocation.roomReplyReminderCount > 0 || invocation.nextRoomReplyReminderAt) {
+          await prisma.agentInvocation.update({
+            where: { id: invocation.id },
+            data: { roomReplyReminderCount: 0, nextRoomReplyReminderAt: null },
+          });
+          await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations'], 'agent-invocation-updated');
+        }
+        continue;
+      }
+
+      // 绝对兜底：首次 nudge 起超时仍无 room message 真实汇报 → 强制释放，防“吐假输出骗过清零”的活锁。
+      if (invocation.firstNudgeAt && now.getTime() - invocation.firstNudgeAt.getTime() > this.absoluteNudgeBudgetMs) {
+        await this.releaseStalledInvocation(invocation);
+        continue;
+      }
+
+      // 连续无进展唤醒达上限 → 释放。
+      if (invocation.roomReplyReminderCount >= this.maxRoomReplyReminders) {
+        await this.releaseStalledInvocation(invocation);
+        continue;
+      }
+
+      // 退避中，未到下次唤醒时间。
+      if (invocation.nextRoomReplyReminderAt && invocation.nextRoomReplyReminderAt.getTime() > now.getTime()) {
+        continue;
+      }
+
+      // 发出唤醒：递增计数、按退避排下次、记录首次 nudge 时间（lastHeartbeatAt 留给真实进展更新）。
+      const nextCount = invocation.roomReplyReminderCount + 1;
+      const nextAt = this.addDelay(now, this.getReminderDelayMs(nextCount));
+      await prisma.agentInvocation.update({
+        where: { id: invocation.id },
+        data: {
+          roomReplyReminderCount: nextCount,
+          nextRoomReplyReminderAt: nextAt,
+          firstNudgeAt: invocation.firstNudgeAt ?? now,
+        },
+      });
+      await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations'], 'agent-invocation-updated');
+      const nudgeSent = await this.sendHeartbeatNudge(sessionId);
+      if (!nudgeSent && this.isSessionPipelineMissing(sessionId)) {
+        const current = await prisma.agentInvocation.findUnique({
+          where: { id: invocation.id },
+          select: { id: true, teamRunId: true, sessionId: true, status: true },
+        });
+        if (current?.status === 'RUNNING') {
+          await this.releaseStalledInvocation(current);
+        }
+      }
+    }
+  }
+
+  /**
+   * 首扫处理：server 重启后内存 pipeline 全丢，DB 中遗留的 RUNNING invocation 会永久占用成员。
+   * 这类 invocation 进程已脱管，直接释放并走调度闭环，避免房间永久卡死。
+   */
+  async reconcileOrphanInvocations(): Promise<void> {
+    const candidates = await prisma.agentInvocation.findMany({
+      where: { status: 'RUNNING', sessionId: { not: null } },
+      include: { teamRun: { select: { task: { select: { deletedAt: true } } } } },
+    });
+
+    for (const invocation of candidates) {
+      if (isTaskDeleted(invocation.teamRun.task)) {
+        continue;
+      }
+      if (!invocation.sessionId) {
+        continue;
+      }
+      const alive = this.sessionMessenger?.hasActivePipeline?.(invocation.sessionId) ?? false;
+      if (alive) {
+        continue;
+      }
+      await this.releaseStalledInvocation(invocation);
+    }
+  }
+
+  private async releaseStalledInvocation(invocation: {
+    id: string;
+    teamRunId: string;
+    sessionId: string | null;
+  }): Promise<void> {
+    const sessionId = invocation.sessionId;
+    const alive = sessionId ? !this.isSessionPipelineMissing(sessionId) : false;
+
+    // 进程仍存活：走 stop，由 handleSessionStopped 置 CANCELLED 并触发 afterInvocationTerminal 闭环。
+    if (sessionId && alive && this.sessionMessenger?.stop) {
+      this.clearReminderTimer(invocation.id);
+      await this.sessionMessenger.stop(sessionId);
+      return;
+    }
+
+    // 无存活进程（已退出 / orphan）：直接置 FAILED 并手动走释放闭环。
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: {
+        status: 'FAILED',
+        roomReplyReminderCount: 0,
+        nextRoomReplyReminderAt: null,
+        firstNudgeAt: null,
+      },
+    });
+    await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
+    this.clearReminderTimer(invocation.id);
+    await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
+  }
+
+  private async sendHeartbeatNudge(sessionId: string): Promise<boolean> {
+    if (!this.sessionMessenger) {
+      return false;
+    }
+    try {
+      await this.sessionMessenger.sendMessage(sessionId, TEAM_HEARTBEAT_NUDGE);
+      return true;
+    } catch (error) {
+      console.warn(
+        `[TeamReconcilerService] Failed to send heartbeat nudge to session ${sessionId}:`,
+        error instanceof Error ? error.message : error
+      );
+      return false;
+    }
+  }
+
+  private isSessionPipelineMissing(sessionId: string): boolean {
+    return this.sessionMessenger?.hasActivePipeline?.(sessionId) === false;
   }
 
   async maybeAdvanceTeamRunToReview(teamRunId: string): Promise<boolean> {
@@ -306,6 +540,8 @@ export class TeamReconcilerService {
   }
 
   private async afterInvocationTerminal(teamRunId: string, invocationId: string): Promise<void> {
+    await this.syncTerminalWorkRequest(invocationId);
+
     const scheduler = await this.getScheduler();
     scheduler.releaseInvocationLocks(invocationId);
 
@@ -319,6 +555,35 @@ export class TeamReconcilerService {
     }
 
     await this.maybeAdvanceTeamRunToReview(teamRunId);
+  }
+
+  private async syncTerminalWorkRequest(invocationId: string): Promise<void> {
+    const invocation = await prisma.agentInvocation.findUnique({
+      where: { id: invocationId },
+      select: { status: true, workRequestId: true },
+    });
+    if (!invocation) {
+      return;
+    }
+    const terminalWorkRequestStatus = this.toTerminalWorkRequestStatus(invocation.status);
+    if (!terminalWorkRequestStatus) {
+      return;
+    }
+
+    await prisma.workRequest.updateMany({
+      where: {
+        id: invocation.workRequestId,
+        status: 'STARTED',
+      },
+      data: { status: terminalWorkRequestStatus },
+    });
+  }
+
+  private toTerminalWorkRequestStatus(status: string): 'COMPLETED' | 'FAILED' | 'CANCELLED' | null {
+    if (status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED') {
+      return status;
+    }
+    return null;
   }
 
   private async releaseTerminalInvocationLocks(invocations: Array<{ id: string; status: string }>): Promise<void> {
