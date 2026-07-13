@@ -24,6 +24,7 @@ function workRequest(input: Partial<WorkRequest> & Pick<WorkRequest, 'id'>): Wor
     ifBusy: 'queue',
     cancelQueued: false,
     status: 'PENDING_APPROVAL',
+    startAttemptCount: 0,
     ...input,
   }
 }
