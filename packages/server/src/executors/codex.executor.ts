@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
 import { parse as parseToml } from 'smol-toml';
+import { ExecutorConfigurationError } from './start-error.js';
 import { AgentType } from '../types/index.js';
 import { which } from '../utils/index.js';
 import {
@@ -265,9 +266,13 @@ export class CodexExecutor extends BaseExecutor {
 
     // settings (TOML) → -c 参数
     if (this.config.settings) {
-      const parsed = parseToml(this.config.settings);
-      for (const [key, value] of flattenObject(parsed as Record<string, unknown>)) {
-        args.push('-c', `${key}=${toTomlLiteral(value)}`);
+      try {
+        const parsed = parseToml(this.config.settings);
+        for (const [key, value] of flattenObject(parsed as Record<string, unknown>)) {
+          args.push('-c', `${key}=${toTomlLiteral(value)}`);
+        }
+      } catch (error) {
+        throw new ExecutorConfigurationError(this.agentType, error);
       }
     }
 

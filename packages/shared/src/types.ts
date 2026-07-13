@@ -738,6 +738,9 @@ export interface WorkRequest {
   ifBusy: IfBusyPolicy
   cancelQueued: boolean
   status: WorkRequestStatus
+  startAttemptCount: number
+  lastStartError?: string | null
+  nextStartRetryAt?: string | null
   createdAt?: string
   updatedAt?: string
 }

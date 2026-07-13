@@ -1453,7 +1453,7 @@ export class WorkspaceService {
 
     const existing = await this.findDedicatedWorkspace(mainWorkspace.id, memberId);
     if (existing) {
-      return this.activateDedicatedWorkspace(existing);
+      return this.activateDedicatedWorkspace(existing, mainWorkspace);
     }
 
     try {
@@ -1473,7 +1473,7 @@ export class WorkspaceService {
       if (!raced) {
         throw error;
       }
-      return this.activateDedicatedWorkspace(await this.waitForWorkspaceReady(raced));
+      return this.activateDedicatedWorkspace(await this.waitForWorkspaceReady(raced), mainWorkspace);
     }
   }
 
@@ -1544,7 +1544,19 @@ export class WorkspaceService {
     }
 
     const repoPath = teamRun.task.project.repoPath;
-    await execGit(repoPath, ['cat-file', '-e', `${input.targetHeadSha}^{commit}`]);
+    try {
+      await execGit(repoPath, ['cat-file', '-e', `${input.targetHeadSha}^{commit}`]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/(?:not a valid object|bad object|invalid object name)/i.test(message)) {
+        throw error;
+      }
+      throw new ServiceError(
+        `Target commit does not exist in the TeamRun repository: ${message}`,
+        'TARGET_COMMIT_NOT_FOUND',
+        400,
+      );
+    }
 
     const clean = await new WorktreeManager(repoPath).isWorktreeClean(executionWorkspace.worktreePath);
     if (!clean) {
@@ -1593,7 +1605,10 @@ export class WorkspaceService {
     });
   }
 
-  private async activateDedicatedWorkspace(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithVisibleSessions> {
+  private async activateDedicatedWorkspace(
+    workspace: WorkspaceWithTaskProject,
+    mainWorkspace: WorkspaceWithVisibleSessions,
+  ): Promise<WorkspaceWithVisibleSessions> {
     this.assertWorktreeWorkspace(workspace);
 
     if (!workspace.branchName) {
@@ -1608,11 +1623,78 @@ export class WorkspaceService {
       return this.restoreInactiveWorkspace(workspace);
     }
 
+    if (workspace.status === WorkspaceStatus.MERGED) {
+      return this.resetMergedDedicatedWorkspace(workspace, mainWorkspace);
+    }
+
     throw new ServiceError(
       `Cannot reuse dedicated workspace in ${workspace.status} status`,
       'DEDICATED_WORKSPACE_UNAVAILABLE',
       409
     );
+  }
+
+  private async resetMergedDedicatedWorkspace(
+    workspace: WorkspaceWithTaskProject,
+    mainWorkspace: WorkspaceWithVisibleSessions,
+  ): Promise<WorkspaceWithVisibleSessions> {
+    this.assertWorktreeWorkspace(workspace);
+    this.assertWorktreeWorkspace(mainWorkspace);
+
+    const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
+    const worktreePath = await worktreeManager.ensureWorktreeExists(workspace.branchName);
+    if (!(await worktreeManager.isWorktreeClean(worktreePath))) {
+      throw new ServiceError(
+        `Cannot start new work from merged workspace ${workspace.id} because it has uncommitted changes`,
+        'MERGED_WORKSPACE_DIRTY',
+        409,
+      );
+    }
+
+    const mainHead = (await execGit(mainWorkspace.worktreePath, ['rev-parse', 'HEAD'])).trim();
+    await execGit(worktreePath, ['reset', '--hard', mainHead]);
+
+    const actualHead = (await execGit(worktreePath, ['rev-parse', 'HEAD'])).trim();
+    if (!mainHead || actualHead !== mainHead || !(await worktreeManager.isWorktreeClean(worktreePath))) {
+      throw new ServiceError(
+        `Merged workspace ${workspace.id} could not be aligned to the TeamRun main workspace`,
+        'MERGED_WORKSPACE_RESET_FAILED',
+        500,
+      );
+    }
+
+    const updateResult = await prisma.workspace.updateMany({
+      where: {
+        id: workspace.id,
+        status: WorkspaceStatus.MERGED,
+        task: { deletedAt: null },
+      },
+      data: {
+        status: WorkspaceStatus.ACTIVE,
+        baseBranch: mainWorkspace.branchName,
+        worktreePath,
+        workingDir: worktreePath,
+        hibernatedAt: null,
+        commitMessage: null,
+      },
+    });
+    if (updateResult.count !== 1) {
+      throw new ServiceError(
+        `Merged workspace ${workspace.id} changed state while starting new work`,
+        'MERGED_WORKSPACE_STATE_CHANGED',
+        409,
+      );
+    }
+
+    this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
+    this.fireSetupScript(workspace.id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
+
+    const activated = await prisma.workspace.findUniqueOrThrow({
+      where: { id: workspace.id },
+      include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
+    });
+    this.refreshGitWatcher(activated.id);
+    return activated;
   }
 
   private async waitForWorkspaceReady(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithTaskProject> {

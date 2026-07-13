@@ -1953,6 +1953,7 @@ export class TeamRunService {
       targetPurpose: serializeTargetPurpose(workRequest.targetPurpose),
       ifBusy: workRequest.ifBusy as IfBusyPolicy,
       status: workRequest.status as WorkRequestStatus,
+      nextStartRetryAt: workRequest.nextStartRetryAt ? toIso(workRequest.nextStartRetryAt) : null,
       createdAt: toIso(workRequest.createdAt),
       updatedAt: toIso(workRequest.updatedAt),
     };

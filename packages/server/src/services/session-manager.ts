@@ -1,7 +1,15 @@
 import { prisma } from '../utils/index.js';
 import type { Prisma } from '@prisma/client';
 import { AgentType, SessionStatus, SessionPurpose, TaskStatus, SessionContext } from '../types/index.js';
-import { getExecutor, getExecutorByProvider, getProviderById, ExecutionEnv } from '../executors/index.js';
+import {
+  getExecutor,
+  getExecutorByProvider,
+  getProviderById,
+  ExecutionEnv,
+  ExecutorConfigurationError,
+  ExecutorNotFoundError,
+  normalizeExecutorStartError,
+} from '../executors/index.js';
 import { filterAgentSubprocessExternalEnv } from '../executors/execution-env.js';
 import {
   sessionMsgStoreManager,
@@ -12,7 +20,7 @@ import {
   addNormalizedEntry,
 } from '../output/index.js';
 import type { NormalizedConversation } from '../output/index.js';
-import type { SpawnedChild, CancellationToken } from '../executors/index.js';
+import type { BaseExecutor, SpawnedChild, CancellationToken } from '../executors/index.js';
 import { AgentPipeline, type OutputParser } from '../pipeline/agent-pipeline.js';
 import { execGit } from '../git/git-cli.js';
 import type { EventBus } from '../core/event-bus.js';
@@ -194,12 +202,7 @@ export class SessionManager {
     });
 
     const agentType = session.agentType as AgentType;
-    const executor = session.providerId
-      ? getExecutorByProvider(session.providerId)
-      : getExecutor(agentType, session.variant ?? 'DEFAULT');
-    if (!executor) {
-      throw new Error(`Executor not found for agent type: ${session.agentType}${session.providerId ? ` (provider: ${session.providerId})` : ''}`);
-    }
+    const executor = this.resolveExecutor(agentType, session.variant, session.providerId);
 
     console.log('[SessionManager] ✅ Executor found, spawning process...');
 
@@ -232,14 +235,10 @@ export class SessionManager {
         providerId: session.providerId,
         workingDir,
       });
-      throw error;
+      throw normalizeExecutorStartError(error);
     }
 
-    await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
-    this.attachPipeline(id, agentType, workingDir, spawnResult);
-    this.pendingSpawns.delete(id);
-    this.eventBus.emit('session:started', { sessionId: id });
-    await this.checkTaskAutoRevert(id);
+    await this.activateSpawnedSession(id, agentType, workingDir, spawnResult);
     return session;
   }
 
@@ -273,12 +272,7 @@ export class SessionManager {
     });
 
     const agentType = session.agentType as AgentType;
-    const executor = session.providerId
-      ? getExecutorByProvider(session.providerId)
-      : getExecutor(agentType, session.variant ?? 'DEFAULT');
-    if (!executor) {
-      throw new Error(`Executor not found for agent type: ${session.agentType}${session.providerId ? ` (provider: ${session.providerId})` : ''}`);
-    }
+    const executor = this.resolveExecutor(agentType, session.variant, session.providerId);
 
     const workingDir = this.getExecutionWorkingDir(session);
     const env = ExecutionEnv.default(workingDir);
@@ -333,7 +327,7 @@ export class SessionManager {
             providerId: session.providerId,
             workingDir,
           });
-          throw fallbackError;
+          throw normalizeExecutorStartError(fallbackError);
         }
       }
     } else {
@@ -347,15 +341,11 @@ export class SessionManager {
           providerId: session.providerId,
           workingDir,
         });
-        throw error;
+        throw normalizeExecutorStartError(error);
       }
     }
 
-    await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
-    this.attachPipeline(id, agentType, workingDir, spawnResult);
-    this.pendingSpawns.delete(id);
-    this.eventBus.emit('session:started', { sessionId: id });
-    await this.checkTaskAutoRevert(id);
+    await this.activateSpawnedSession(id, agentType, workingDir, spawnResult);
     return session;
   }
 
@@ -450,12 +440,7 @@ export class SessionManager {
     const agentType = session.agentType as AgentType;
     // 优先使用传入的 providerId，否则使用 session 中的 providerId
     const effectiveProviderId = providerId ?? session.providerId ?? undefined;
-    const executor = effectiveProviderId
-      ? getExecutorByProvider(effectiveProviderId)
-      : getExecutor(agentType, session.variant ?? 'DEFAULT');
-    if (!executor) {
-      throw new Error(`Executor not found for agent type: ${session.agentType}${effectiveProviderId ? ` (provider: ${effectiveProviderId})` : ''}`);
-    }
+    const executor = this.resolveExecutor(agentType, session.variant, effectiveProviderId);
 
     const workingDir = this.getExecutionWorkingDir(session);
     const env = ExecutionEnv.default(workingDir);
@@ -505,7 +490,7 @@ export class SessionManager {
             providerId: effectiveProviderId,
             workingDir,
           });
-          throw error;
+          throw normalizeExecutorStartError(error);
         }
       }
     } else {
@@ -518,15 +503,11 @@ export class SessionManager {
           providerId: effectiveProviderId,
           workingDir,
         });
-        throw error;
+        throw normalizeExecutorStartError(error);
       }
     }
 
-    await this.registerSpawnedSessionIfTaskLive(id, spawnResult);
-    this.attachPipeline(id, agentType, workingDir, spawnResult);
-    this.pendingSpawns.delete(id);
-    this.eventBus.emit('session:started', { sessionId: id });
-    await this.checkTaskAutoRevert(id);
+    await this.activateSpawnedSession(id, agentType, workingDir, spawnResult);
     return session;
   }
 
@@ -668,6 +649,43 @@ export class SessionManager {
     return null;
   }
 
+  private resolveExecutor(
+    agentType: AgentType,
+    variant: string | null,
+    providerId?: string | null,
+  ): BaseExecutor {
+    let executor: BaseExecutor | undefined;
+    try {
+      executor = providerId
+        ? getExecutorByProvider(providerId)
+        : getExecutor(agentType, variant ?? 'DEFAULT');
+    } catch (error) {
+      throw new ExecutorConfigurationError(agentType, error, providerId);
+    }
+    if (!executor) {
+      throw new ExecutorNotFoundError(agentType, providerId);
+    }
+    return executor;
+  }
+
+  private async activateSpawnedSession(
+    sessionId: string,
+    agentType: AgentType,
+    workingDir: string,
+    spawnResult: SpawnedChild,
+  ): Promise<void> {
+    try {
+      await this.registerSpawnedSessionIfTaskLive(sessionId, spawnResult);
+      this.attachPipeline(sessionId, agentType, workingDir, spawnResult);
+      this.pendingSpawns.delete(sessionId);
+      this.eventBus.emit('session:started', { sessionId });
+      await this.checkTaskAutoRevert(sessionId);
+    } catch (error) {
+      await this.cancelSpawnedSession(sessionId, spawnResult);
+      throw error;
+    }
+  }
+
   private attachPipeline(
     sessionId: string,
     agentType: AgentType,
@@ -761,7 +779,11 @@ export class SessionManager {
     }
     const pipeline = this.pipelines.get(sessionId);
     if (pipeline) {
-      pipeline.destroy();
+      try {
+        pipeline.destroy();
+      } catch {
+        // Continue with explicit PTY cancellation even if pipeline teardown fails.
+      }
       this.pipelines.delete(sessionId);
       this.cancelTokens.delete(sessionId);
     }

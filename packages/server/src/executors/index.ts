@@ -203,6 +203,12 @@ export { GeminiCliExecutor } from './gemini-cli.executor.js';
 export { CursorAgentExecutor } from './cursor-agent.executor.js';
 export { CodexExecutor } from './codex.executor.js';
 export { CommandBuilder } from './command-builder.js';
+export {
+  AgentCommandUnavailableError,
+  ExecutorConfigurationError,
+  ExecutorNotFoundError,
+  normalizeExecutorStartError,
+} from './start-error.js';
 export { ExecutionEnv } from './execution-env.js';
 
 // 导出 profiles (deprecated — 保留向后兼容)

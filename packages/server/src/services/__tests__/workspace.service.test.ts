@@ -19,6 +19,7 @@ const {
   deleteBranchIfSafeMock,
   mergeWorktreeMock,
   mergeIntoWorktreeMock,
+  isWorktreeCleanMock,
   getGitOperationStatusMock,
   execGitMock,
   refreshWorkspaceGitWatcherMock,
@@ -29,7 +30,8 @@ const {
   removeWorktreeMock: vi.fn(),
   deleteBranchIfSafeMock: vi.fn(),
   mergeWorktreeMock: vi.fn(),
-  mergeIntoWorktreeMock: vi.fn(),
+    mergeIntoWorktreeMock: vi.fn(),
+    isWorktreeCleanMock: vi.fn(),
   getGitOperationStatusMock: vi.fn(),
   execGitMock: vi.fn(),
   refreshWorkspaceGitWatcherMock: vi.fn(async () => undefined),
@@ -49,6 +51,7 @@ vi.mock('../../git/worktree.manager.js', () => ({
       abortOperation: vi.fn(),
       merge: mergeWorktreeMock,
       mergeIntoWorktree: mergeIntoWorktreeMock,
+      isWorktreeClean: isWorktreeCleanMock,
       prune: vi.fn(),
     };
   }),
@@ -339,6 +342,7 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     });
     createWorktreeMock.mockImplementation(async (branchName: string) => mockCreatedWorktreePath(branchName));
     ensureWorktreeExistsMock.mockImplementation(async (branchName: string) => mockRestoredWorktreePath(branchName));
+    isWorktreeCleanMock.mockResolvedValue(true);
     removeWorktreeMock.mockImplementation(async (worktreePath: string) => ({
       status: 'removed',
       path: worktreePath,
@@ -691,6 +695,95 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(workspace.worktreePath).toBe(mockRestoredWorktreePath('dedicated-child'));
     expect(ensureWorktreeExistsMock).toHaveBeenCalledWith('dedicated-child');
     expect(createWorktreeMock).not.toHaveBeenCalledWith(expect.stringContaining('member-'));
+  });
+
+  it('resets a merged dedicated workspace to the latest TeamRun main HEAD before reactivating it', async () => {
+    const { task, teamRun, member } = await createTeamRunWithMember();
+    const mainWorktreePath = path.join(testDir, 'merged-reset-main');
+    fs.mkdirSync(path.join(mainWorktreePath, '.git'), { recursive: true });
+    const mainWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'team-main-latest',
+        worktreePath: mainWorktreePath,
+        workingDir: mainWorktreePath,
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.teamRun.update({
+      where: { id: teamRun.id },
+      data: { mainWorkspaceId: mainWorkspace.id },
+    });
+    const child = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: member.id,
+        branchName: 'member-merged',
+        baseBranch: 'team-main-old',
+        worktreePath: path.join(testDir, 'old-member-worktree'),
+        workingDir: path.join(testDir, 'old-member-worktree'),
+        status: 'MERGED',
+        commitMessage: 'previous round',
+      },
+    });
+    const restoredPath = mockRestoredWorktreePath(child.branchName);
+    ensureWorktreeExistsMock.mockResolvedValue(restoredPath);
+    execGitMock.mockImplementation(async (cwd: string, args: string[]) => {
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+        return cwd === mainWorktreePath ? 'latest-main-head\n' : 'latest-main-head\n';
+      }
+      return '';
+    });
+
+    const workspace = await service.getOrCreateDedicatedWorkspace(teamRun.id, member.id);
+
+    expect(workspace).toMatchObject({
+      id: child.id,
+      status: 'ACTIVE',
+      baseBranch: mainWorkspace.branchName,
+      worktreePath: restoredPath,
+      workingDir: restoredPath,
+      commitMessage: null,
+    });
+    expect(isWorktreeCleanMock).toHaveBeenCalledTimes(2);
+    expect(execGitMock).toHaveBeenCalledWith(mainWorktreePath, ['rev-parse', 'HEAD']);
+    expect(execGitMock).toHaveBeenCalledWith(restoredPath, ['reset', '--hard', 'latest-main-head']);
+    expect(execGitMock).toHaveBeenCalledWith(restoredPath, ['rev-parse', 'HEAD']);
+  });
+
+  it('does not overwrite a dirty merged dedicated workspace when starting a new round', async () => {
+    const { task, teamRun, member } = await createTeamRunWithMember();
+    const mainWorktreePath = path.join(testDir, 'dirty-reset-main');
+    fs.mkdirSync(path.join(mainWorktreePath, '.git'), { recursive: true });
+    const mainWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'team-main',
+        worktreePath: mainWorktreePath,
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.teamRun.update({ where: { id: teamRun.id }, data: { mainWorkspaceId: mainWorkspace.id } });
+    const child = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        parentWorkspaceId: mainWorkspace.id,
+        ownerMemberId: member.id,
+        branchName: 'dirty-member-merged',
+        worktreePath: path.join(testDir, 'dirty-member-merged'),
+        status: 'MERGED',
+      },
+    });
+    isWorktreeCleanMock.mockResolvedValue(false);
+
+    await expect(service.getOrCreateDedicatedWorkspace(teamRun.id, member.id)).rejects.toMatchObject({
+      code: 'MERGED_WORKSPACE_DIRTY',
+    });
+    await expect(prisma.workspace.findUnique({ where: { id: child.id } })).resolves.toMatchObject({
+      status: 'MERGED',
+    });
+    expect(execGitMock).not.toHaveBeenCalledWith(expect.any(String), expect.arrayContaining(['reset']));
   });
 
   it('clears workingDir on hibernate and restores it on reactivate', async () => {

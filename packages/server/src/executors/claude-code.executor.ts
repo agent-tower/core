@@ -21,6 +21,7 @@ import {
 } from './command-builder.js';
 import { which } from '../utils/index.js';
 import { parsePromptWithImages, buildUserMessageNDJSON } from './image-utils.js';
+import { ExecutorConfigurationError } from './start-error.js';
 
 /**
  * Claude Code 权限模式
@@ -155,12 +156,23 @@ export class ClaudeCodeExecutor extends BaseExecutor {
 
     if (this.config.settings) {
       // 有 settings 时：以 settings 为基础，将 ANTHROPIC_* env 合并进去
-      const settings = JSON.parse(this.config.settings) as Record<string, unknown>;
-      if (Object.keys(anthropicEnv).length > 0) {
-        const existingEnv = (settings.env as Record<string, string>) ?? {};
-        settings.env = { ...existingEnv, ...anthropicEnv };
+      try {
+        const parsed = JSON.parse(this.config.settings) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('Claude settings must be a JSON object');
+        }
+        const settings = parsed as Record<string, unknown>;
+        if (settings.env != null && (typeof settings.env !== 'object' || Array.isArray(settings.env))) {
+          throw new Error('Claude settings.env must be a JSON object');
+        }
+        if (Object.keys(anthropicEnv).length > 0) {
+          const existingEnv = (settings.env as Record<string, string> | undefined) ?? {};
+          settings.env = { ...existingEnv, ...anthropicEnv };
+        }
+        return ['--settings', JSON.stringify(settings)];
+      } catch (error) {
+        throw new ExecutorConfigurationError(this.agentType, error);
       }
-      return ['--settings', JSON.stringify(settings)];
     }
 
     // fallback: 无 settings 时，仅注入 ANTHROPIC_* 变量

@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { PrismaClient } from '@prisma/client';
 import { EventBus } from '../../core/event-bus.js';
 import { TeamLockService } from '../team-lock.service.js';
+import type { SessionManager as SessionManagerInstance } from '../session-manager.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-heartbeat-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -27,6 +28,7 @@ let prisma: PrismaClient;
 let TeamReconcilerService: typeof import('../team-reconciler.service.js').TeamReconcilerService;
 type TeamReconcilerServiceInstance = InstanceType<typeof import('../team-reconciler.service.js').TeamReconcilerService>;
 let SessionManager: typeof import('../session-manager.js').SessionManager;
+let MemberHeartbeatScheduler: typeof import('../member-heartbeat-scheduler.js').MemberHeartbeatScheduler;
 let TEAM_HEARTBEAT_NUDGE: string;
 let invocationSequence = 0;
 
@@ -170,6 +172,7 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
     prisma = utilsModule.prisma;
     TeamReconcilerService = reconcilerModule.TeamReconcilerService;
     SessionManager = (await import('../session-manager.js')).SessionManager;
+    MemberHeartbeatScheduler = (await import('../member-heartbeat-scheduler.js')).MemberHeartbeatScheduler;
     TEAM_HEARTBEAT_NUDGE = reconcilerModule.TEAM_HEARTBEAT_NUDGE;
   });
 
@@ -179,6 +182,7 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
     lockService = new TeamLockService();
     scheduler = createSchedulerMock(lockService);
     eventBus = new EventBus();
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS fail_work_request_terminal_sync');
     await prisma.agentInvocation.deleteMany();
     await prisma.workRequest.deleteMany();
     await prisma.session.deleteMany();
@@ -387,6 +391,202 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
     expect(messenger.stop).not.toHaveBeenCalled();
     expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
     expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+  });
+
+  it('retries a real orphan candidate on the next heartbeat tick after a transient item failure', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { teamRun, workspace, member } = await createFixture();
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workspaceId: workspace.id,
+      memberId: member.id,
+      lastHeartbeatAt: new Date(NOW.getTime() - 10_000),
+    });
+    expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
+    const messenger = createMessengerMock({ alive: false });
+    messenger.hasActivePipeline.mockImplementationOnce(() => {
+      throw new Error('temporary pipeline probe failure');
+    });
+    const reconciler = createService(messenger);
+    const queuePump = { reconcileQueuedWork: vi.fn(async () => 0) };
+    const heartbeat = new MemberHeartbeatScheduler({
+      eventBus,
+      sessionManager: messenger as unknown as SessionManagerInstance,
+      reconciler,
+      queuePump,
+    });
+    const heartbeatInternals = heartbeat as unknown as { tick(): Promise<void> };
+
+    await heartbeatInternals.tick();
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'RUNNING',
+    });
+
+    await heartbeatInternals.tick();
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+    });
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
+    expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+    expect(queuePump.reconcileQueuedWork).toHaveBeenCalledTimes(2);
+  });
+
+  it('repairs a runtime half-completed terminal transition after the orphan scan idempotently', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { teamRun, workspace, member } = await createFixture();
+    const messenger = createMessengerMock({ alive: false });
+    const reconciler = createService(messenger);
+    const orphanSpy = vi.spyOn(reconciler, 'reconcileOrphanInvocations');
+    const terminalRecoverySpy = vi.spyOn(reconciler, 'reconcileIncompleteTerminalInvocations');
+    const queuePump = { reconcileQueuedWork: vi.fn(async () => 0) };
+    const heartbeat = new MemberHeartbeatScheduler({
+      eventBus,
+      sessionManager: messenger as unknown as SessionManagerInstance,
+      reconciler,
+      queuePump,
+    });
+    const heartbeatInternals = heartbeat as unknown as { tick(): Promise<void> };
+
+    // Complete the one-time orphan scan before the runtime inconsistency exists.
+    await heartbeatInternals.tick();
+    expect(orphanSpy).toHaveBeenCalledTimes(1);
+    expect(terminalRecoverySpy).toHaveBeenCalledTimes(1);
+
+    const terminalInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workspaceId: workspace.id,
+      memberId: member.id,
+      status: 'FAILED',
+    });
+    const queuedWorkRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'queued-after-half-terminal',
+        instruction: 'Run after terminal repair',
+        status: 'QUEUED',
+      },
+    });
+    expect(lockService.acquire(terminalInvocation.id, ['workspace:task:write'])).toBe(true);
+    scheduler.startNextSessions.mockImplementation(async () => {
+      const repaired = await prisma.workRequest.findUniqueOrThrow({
+        where: { id: terminalInvocation.workRequestId },
+      });
+      if (repaired.status !== 'FAILED') {
+        throw new Error('terminal WorkRequest was not repaired before scheduling');
+      }
+      await prisma.workRequest.update({
+        where: { id: queuedWorkRequest.id },
+        data: { status: 'STARTED' },
+      });
+      await prisma.agentInvocation.create({
+        data: {
+          teamRunId: teamRun.id,
+          workRequestId: queuedWorkRequest.id,
+          memberId: member.id,
+          workspaceId: workspace.id,
+          status: 'RUNNING',
+        },
+      });
+      return [];
+    });
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER fail_work_request_terminal_sync
+      BEFORE UPDATE OF status ON WorkRequest
+      WHEN OLD.id = '${terminalInvocation.workRequestId}' AND NEW.status = 'FAILED'
+      BEGIN
+        SELECT RAISE(FAIL, 'temporary terminal sync failure');
+      END
+    `);
+
+    await heartbeatInternals.tick();
+    expect(orphanSpy).toHaveBeenCalledTimes(1);
+    expect(terminalRecoverySpy).toHaveBeenCalledTimes(2);
+    await expect(prisma.workRequest.findUniqueOrThrow({
+      where: { id: terminalInvocation.workRequestId },
+    })).resolves.toMatchObject({ status: 'STARTED' });
+    expect(scheduler.startNextSessions).not.toHaveBeenCalled();
+
+    await prisma.$executeRawUnsafe('DROP TRIGGER fail_work_request_terminal_sync');
+    await heartbeatInternals.tick();
+    expect(orphanSpy).toHaveBeenCalledTimes(1);
+    expect(terminalRecoverySpy).toHaveBeenCalledTimes(3);
+    await expect(prisma.workRequest.findUniqueOrThrow({
+      where: { id: terminalInvocation.workRequestId },
+    })).resolves.toMatchObject({ status: 'FAILED' });
+    await expect(prisma.workRequest.findUniqueOrThrow({ where: { id: queuedWorkRequest.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    expect(lockService.listLocks()).toEqual([]);
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(3);
+    expect(scheduler.startNextSessions).toHaveBeenCalledTimes(1);
+
+    await heartbeatInternals.tick();
+    expect(orphanSpy).toHaveBeenCalledTimes(1);
+    expect(terminalRecoverySpy).toHaveBeenCalledTimes(4);
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(3);
+    expect(scheduler.startNextSessions).toHaveBeenCalledTimes(1);
+    await expect(prisma.agentInvocation.count({ where: { workRequestId: queuedWorkRequest.id } })).resolves.toBe(1);
+  });
+
+  it('does not treat an old failed retry diagnostic as an incomplete terminal transition', async () => {
+    const { teamRun, workspace, member } = await createFixture();
+    const workRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'active-retry-with-old-diagnostic',
+        instruction: 'Continue the retry',
+        status: 'STARTED',
+      },
+    });
+    const oldSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        prompt: 'old failed attempt',
+        status: 'FAILED',
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: workRequest.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: oldSession.id,
+        status: 'FAILED',
+      },
+    });
+    const activeSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        prompt: 'active retry',
+        status: 'RUNNING',
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: workRequest.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: activeSession.id,
+        status: 'RUNNING',
+      },
+    });
+    const service = createService(createMessengerMock({ alive: true }));
+
+    await service.reconcileIncompleteTerminalInvocations();
+
+    await expect(prisma.workRequest.findUniqueOrThrow({ where: { id: workRequest.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+    expect(scheduler.startNextSessions).not.toHaveBeenCalled();
   });
 
   it('records a heartbeat timestamp for a running invocation', async () => {

@@ -7,7 +7,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { PrismaClient } from '@prisma/client';
 import { AgentType, SessionStatus } from '../../types/index.js';
 import { EventBus } from '../../core/event-bus.js';
-import type { ExecutorSpawnConfig } from '../../executors/index.js';
+import type { BaseExecutor, ExecutorSpawnConfig, SpawnedChild } from '../../executors/index.js';
+import { TeamLockService } from '../team-lock.service.js';
 import {
   AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
   AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
@@ -87,6 +88,11 @@ const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let prisma: PrismaClient;
 let SessionManager: typeof import('../session-manager.js').SessionManager;
+let getExecutorByProvider: typeof import('../../executors/index.js').getExecutorByProvider;
+let CommandBuildError: typeof import('../../executors/command-builder.js').CommandBuildError;
+let CodexExecutor: typeof import('../../executors/codex.executor.js').CodexExecutor;
+let ClaudeCodeExecutor: typeof import('../../executors/claude-code.executor.js').ClaudeCodeExecutor;
+let TeamSchedulerService: typeof import('../team-scheduler.service.js').TeamSchedulerService;
 
 function seedServiceEnv(): void {
   process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
@@ -179,8 +185,18 @@ describe('SessionManager TeamRun env injection', () => {
 
     const utilsModule = await import('../../utils/index.js');
     const sessionManagerModule = await import('../session-manager.js');
+    const executorsModule = await import('../../executors/index.js');
+    const commandBuilderModule = await import('../../executors/command-builder.js');
+    const codexModule = await import('../../executors/codex.executor.js');
+    const claudeModule = await import('../../executors/claude-code.executor.js');
+    const schedulerModule = await import('../team-scheduler.service.js');
     prisma = utilsModule.prisma;
     SessionManager = sessionManagerModule.SessionManager;
+    getExecutorByProvider = executorsModule.getExecutorByProvider;
+    CommandBuildError = commandBuilderModule.CommandBuildError;
+    CodexExecutor = codexModule.CodexExecutor;
+    ClaudeCodeExecutor = claudeModule.ClaudeCodeExecutor;
+    TeamSchedulerService = schedulerModule.TeamSchedulerService;
   });
 
   beforeEach(async () => {
@@ -509,6 +525,188 @@ describe('SessionManager TeamRun env injection', () => {
     });
 
     expect(pty.kill).toHaveBeenCalled();
+    await expect(prisma.executionProcess.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.CANCELLED,
+    });
+  });
+
+  it('normalizes a real CommandBuildError as a deterministic start error', async () => {
+    const { workspace } = await createWorkspace();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.PENDING,
+      },
+    });
+    spawnMock.mockRejectedValueOnce(new CommandBuildError("Executable 'codex' not found in PATH"));
+
+    await expect(manager.start(session.id)).rejects.toMatchObject({
+      code: 'AGENT_COMMAND_UNAVAILABLE',
+      statusCode: 400,
+    });
+  });
+
+  it('reports a missing executor as a deterministic start error', async () => {
+    const { workspace } = await createWorkspace();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.PENDING,
+      },
+    });
+    vi.mocked(getExecutorByProvider).mockReturnValueOnce(undefined);
+
+    await expect(manager.start(session.id)).rejects.toMatchObject({
+      code: 'EXECUTOR_NOT_FOUND',
+      statusCode: 400,
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('reports invalid static executor configuration as a deterministic start error', async () => {
+    const { workspace } = await createWorkspace();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.PENDING,
+      },
+    });
+    vi.mocked(getExecutorByProvider).mockImplementationOnce(() => {
+      throw new Error('Unknown agent type: INVALID');
+    });
+
+    await expect(manager.start(session.id)).rejects.toMatchObject({
+      code: 'EXECUTOR_CONFIGURATION_INVALID',
+      statusCode: 400,
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  async function expectInvalidExecutorSettingsToTerminate(
+    agentType: AgentType,
+    executor: BaseExecutor,
+  ): Promise<void> {
+    const { task, workspace } = await createWorkspace();
+    const teamRun = await prisma.teamRun.create({ data: { taskId: task.id, mode: 'AUTO' } });
+    const providerId = `invalid-settings-${agentType}`;
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        name: `${agentType} member`,
+        aliases: '[]',
+        providerId,
+        rolePrompt: 'Role',
+        capabilities: JSON.stringify({
+          readRoom: true,
+          postRoomMessage: true,
+          mentionMembers: true,
+          stopMemberWork: false,
+          markReadyForReview: false,
+          readFiles: true,
+          writeFiles: true,
+          runCommands: false,
+          readDiff: true,
+          mergeWorkspace: false,
+        }),
+        workspacePolicy: 'shared',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
+        queueManagementPolicy: 'own_only',
+      },
+    });
+    const workRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: `invalid-settings-${agentType}`,
+        instruction: 'Start with invalid provider settings',
+        status: 'QUEUED',
+      },
+    });
+    vi.mocked(getExecutorByProvider).mockReturnValueOnce(executor);
+    const scheduler = new TeamSchedulerService(new TeamLockService(), {
+      workspaceService: { create: vi.fn(async () => workspace) },
+      sessionManager: manager,
+      getProviderById: vi.fn(() => ({
+        id: providerId,
+        name: `${agentType} invalid settings`,
+        agentType,
+        env: {},
+        config: {},
+        isDefault: false,
+      })),
+    });
+
+    await expect(scheduler.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    await expect(prisma.workRequest.findUnique({ where: { id: workRequest.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      startAttemptCount: 1,
+      lastStartError: expect.stringContaining('EXECUTOR_CONFIGURATION_INVALID'),
+      nextStartRetryAt: null,
+    });
+    await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: workRequest.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      sessionId: expect.any(String),
+    });
+  }
+
+  it('terminates real invalid Codex TOML through SessionManager and scheduler', async () => {
+    await expectInvalidExecutorSettingsToTerminate(
+      AgentType.CODEX,
+      new CodexExecutor({ settings: 'invalid = [' }),
+    );
+  });
+
+  it('terminates real invalid Claude settings JSON through SessionManager and scheduler', async () => {
+    await expectInvalidExecutorSettingsToTerminate(
+      AgentType.CLAUDE_CODE,
+      new ClaudeCodeExecutor({ settings: '{"env":' }),
+    );
+  });
+
+  it('compensates a partially attached pipeline before rejecting session start', async () => {
+    const { workspace } = await createWorkspace();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.PENDING,
+      },
+    });
+    const pty = createPty();
+    spawnMock.mockResolvedValueOnce({ pid: 52345, pty });
+    const managerInternals = manager as unknown as {
+      attachPipeline: (
+        sessionId: string,
+        agentType: AgentType,
+        workingDir: string,
+        spawnResult: SpawnedChild,
+      ) => void;
+    };
+    const attachPipeline = managerInternals.attachPipeline.bind(manager);
+    vi.spyOn(managerInternals, 'attachPipeline').mockImplementationOnce((...args) => {
+      attachPipeline(...args);
+      throw new Error('attach pipeline post-step failed');
+    });
+
+    await expect(manager.start(session.id)).rejects.toThrow('attach pipeline post-step failed');
+
+    expect(pty.kill).toHaveBeenCalled();
+    expect(manager.hasActivePipeline(session.id)).toBe(false);
     await expect(prisma.executionProcess.count({ where: { sessionId: session.id } })).resolves.toBe(0);
     await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
       status: SessionStatus.CANCELLED,

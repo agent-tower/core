@@ -209,6 +209,9 @@ model WorkRequest {
   ifBusy            String   @default("queue")
   cancelQueued      Boolean  @default(false)
   status            String   @default("QUEUED")
+  startAttemptCount Int      @default(0)
+  lastStartError    String?
+  nextStartRetryAt  DateTime?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -217,6 +220,7 @@ model WorkRequest {
   @@index([targetSourceWorkspaceId])
   @@index([targetHeadSha])
   @@index([status])
+  @@index([status, nextStartRetryAt])
 }
 
 model AgentInvocation {

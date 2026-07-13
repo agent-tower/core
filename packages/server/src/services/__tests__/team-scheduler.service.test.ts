@@ -13,6 +13,7 @@ import type {
   WorkRequestStatus,
 } from '@agent-tower/shared';
 import { AgentType, TaskStatus } from '../../types/index.js';
+import { ServiceError } from '../../errors.js';
 import { TEAM_ROOM_SYSTEM_SHARED_PROTOCOL } from '../../prompts/team-room-system-shared-protocol.js';
 import { TeamLockService } from '../team-lock.service.js';
 
@@ -27,6 +28,9 @@ const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let TeamSchedulerService: typeof import('../team-scheduler.service.js').TeamSchedulerService;
 let prisma: PrismaClient;
+let CommandBuildError: typeof import('../../executors/command-builder.js').CommandBuildError;
+let ExecutorNotFoundError: typeof import('../../executors/start-error.js').ExecutorNotFoundError;
+let normalizeExecutorStartError: typeof import('../../executors/start-error.js').normalizeExecutorStartError;
 type TeamSchedulerServiceInstance = InstanceType<typeof import('../team-scheduler.service.js').TeamSchedulerService>;
 let workRequestSequence = 0;
 let createdWorkspaceSequence = 0;
@@ -292,8 +296,13 @@ describe('TeamSchedulerService', () => {
 
     const serviceModule = await import('../team-scheduler.service.js');
     const utilsModule = await import('../../utils/index.js');
+    const commandBuilderModule = await import('../../executors/command-builder.js');
+    const startErrorModule = await import('../../executors/start-error.js');
     TeamSchedulerService = serviceModule.TeamSchedulerService;
     prisma = utilsModule.prisma;
+    CommandBuildError = commandBuilderModule.CommandBuildError;
+    ExecutorNotFoundError = startErrorModule.ExecutorNotFoundError;
+    normalizeExecutorStartError = startErrorModule.normalizeExecutorStartError;
   });
 
   beforeEach(async () => {
@@ -539,9 +548,10 @@ describe('TeamSchedulerService', () => {
     expect(workspaceService.create).not.toHaveBeenCalled();
     expect(sessionManager.create).not.toHaveBeenCalled();
     await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
-      status: 'QUEUED',
+      status: 'FAILED',
+      lastStartError: expect.stringContaining('MEMBER_NOT_FOUND'),
     });
-    await expect(prisma.agentInvocation.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(0);
+    await expect(prisma.agentInvocation.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(1);
   });
 
   it('rejects approving a WorkRequest for a deleted task', async () => {
@@ -1227,7 +1237,8 @@ describe('TeamSchedulerService', () => {
       workRequestIds: JSON.stringify([request.id]),
     });
     await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
-      status: 'STARTED',
+      status: 'FAILED',
+      lastStartError: expect.stringContaining('workspacePolicy=dedicated'),
     });
   });
 
@@ -2690,7 +2701,8 @@ describe('TeamSchedulerService', () => {
     expect(lockService.listLocks()).toEqual([]);
   });
 
-  it('marks invocation and session failed and releases locks when session start fails', async () => {
+  it('keeps a transient session start failure queued while retaining failed diagnostics', async () => {
+    let now = new Date(Date.UTC(2026, 0, 2, 0, 0, 0));
     const { task, teamRun, members } = await createTeamRunFixture({
       memberCapabilities: [writeCapabilities],
       withWorkspace: false,
@@ -2700,13 +2712,16 @@ describe('TeamSchedulerService', () => {
       teamRunId: teamRun.id,
       targetMemberId: members[0]!.id,
     });
+    const sessionManager = createSessionManagerMock();
+    sessionManager.start.mockRejectedValueOnce(new Error('session start failed'));
     service = new TeamSchedulerService(lockService, {
       workspaceService: createWorkspaceServiceMock(),
-      sessionManager: createSessionManagerMock({ failStart: true }),
+      sessionManager,
       getProviderById: createProviderLookup(),
+      now: () => now,
     });
 
-    await expect(service.startNextSessions(teamRun.id)).rejects.toThrow('session start failed');
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
 
     expect(lockService.listLocks()).toEqual([]);
     const invocation = await prisma.agentInvocation.findFirstOrThrow({
@@ -2721,15 +2736,380 @@ describe('TeamSchedulerService', () => {
       status: 'FAILED',
     });
     await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
-      status: 'FAILED',
+      status: 'QUEUED',
+      startAttemptCount: 1,
+      lastStartError: expect.stringContaining('session start failed'),
+      nextStartRetryAt: new Date(now.getTime() + 1_000),
     });
     await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
-      status: TaskStatus.IN_REVIEW,
+      status: TaskStatus.IN_PROGRESS,
     });
     await expect(prisma.teamRun.findUnique({ where: { id: teamRun.id } })).resolves.toMatchObject({
-      reviewReason: 'TEAM_QUIESCENT',
+      reviewReason: null,
     });
     await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
     await expect(prisma.agentInvocation.count({ where: { workRequestId: request.id } })).resolves.toBe(1);
+
+    now = new Date(now.getTime() + 1_000);
+    await expect(service.reconcileQueuedWork()).resolves.toBe(1);
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+      lastStartError: null,
+      nextStartRetryAt: null,
+    });
+    await expect(prisma.agentInvocation.count({ where: { workRequestId: request.id } })).resolves.toBe(2);
+  });
+
+  it('does not requeue a real CommandBuildError normalized by the session boundary', async () => {
+    const { teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const sessionManager = createSessionManagerMock();
+    sessionManager.start.mockRejectedValueOnce(
+      normalizeExecutorStartError(new CommandBuildError("Executable 'codex' not found in PATH")),
+    );
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      startAttemptCount: 1,
+      lastStartError: expect.stringContaining('AGENT_COMMAND_UNAVAILABLE'),
+      nextStartRetryAt: null,
+    });
+    await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      sessionId: expect.any(String),
+    });
+  });
+
+  it('does not requeue an executor-not-found start error', async () => {
+    const { teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const sessionManager = createSessionManagerMock();
+    sessionManager.start.mockRejectedValueOnce(
+      new ExecutorNotFoundError(AgentType.CODEX, members[0]!.providerId),
+    );
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      startAttemptCount: 1,
+      lastStartError: expect.stringContaining('EXECUTOR_NOT_FOUND'),
+      nextStartRetryAt: null,
+    });
+    await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      sessionId: expect.any(String),
+    });
+  });
+
+  it('fails a deterministic poisoned queue head without blocking another member', async () => {
+    const { teamRun, workspace, members } = await createTeamRunFixture({
+      memberCapabilities: [writeCapabilities, writeCapabilities],
+      workspacePolicies: ['dedicated', 'dedicated'],
+    });
+    const poisoned = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const healthy = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[1]!.id,
+    });
+    const workspaceService = {
+      create: vi.fn(),
+      getOrCreateDedicatedWorkspace: vi.fn(async (_teamRunId: string, memberId: string) => {
+        if (memberId === members[0]!.id) {
+          throw new ServiceError('merged workspace is dirty', 'MERGED_WORKSPACE_DIRTY', 409);
+        }
+        return workspace!;
+      }),
+    };
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+    });
+
+    const started = await service.startNextSessions(teamRun.id);
+
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ workRequestId: healthy.id, memberId: members[1]!.id });
+    await expect(prisma.workRequest.findUnique({ where: { id: poisoned.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      startAttemptCount: 1,
+      lastStartError: expect.stringContaining('MERGED_WORKSPACE_DIRTY'),
+      nextStartRetryAt: null,
+    });
+    await expect(prisma.agentInvocation.findFirst({ where: { workRequestId: poisoned.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      sessionId: null,
+    });
+  });
+
+  it('backs off a transient queue head without blocking another member', async () => {
+    const now = new Date(Date.UTC(2026, 0, 2, 0, 0, 0));
+    const { teamRun, workspace, members } = await createTeamRunFixture({
+      memberCapabilities: [writeCapabilities, writeCapabilities],
+      workspacePolicies: ['dedicated', 'dedicated'],
+    });
+    const retrying = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const healthy = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[1]!.id });
+    const workspaceService = {
+      create: vi.fn(),
+      getOrCreateDedicatedWorkspace: vi.fn(async (_teamRunId: string, memberId: string) => {
+        if (memberId === members[0]!.id) {
+          throw new Error('temporary filesystem failure');
+        }
+        return workspace!;
+      }),
+    };
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+      now: () => now,
+    });
+
+    const started = await service.startNextSessions(teamRun.id);
+
+    expect(started).toHaveLength(1);
+    expect(started[0]!.workRequestId).toBe(healthy.id);
+    await expect(prisma.workRequest.findUnique({ where: { id: retrying.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+      startAttemptCount: 1,
+      lastStartError: expect.stringContaining('temporary filesystem failure'),
+      nextStartRetryAt: new Date(now.getTime() + 1_000),
+    });
+    await expect(prisma.agentInvocation.count({ where: { workRequestId: retrying.id } })).resolves.toBe(0);
+  });
+
+  it('backs off a transient targeted workspace sync failure', async () => {
+    let now = new Date(Date.UTC(2026, 0, 2, 0, 0, 0));
+    const { teamRun, workspace, members } = await createTeamRunFixture({
+      memberCapabilities: [commandCapabilities],
+      workspacePolicies: ['dedicated'],
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      target: {
+        targetKind: 'WORKSPACE_COMMIT',
+        targetPurpose: 'REVIEW',
+        targetSourceWorkspaceId: workspace!.id,
+        targetHeadSha: 'a'.repeat(40),
+        targetBranchName: workspace!.branchName,
+      },
+    });
+    const sessionManager = createSessionManagerMock();
+    const prepareTargetedExecutionWorkspace = vi.fn(async () => ({ executionBranch: 'target-retry-branch' }));
+    prepareTargetedExecutionWorkspace.mockRejectedValueOnce(new Error('temporary target sync failure'));
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: {
+        create: vi.fn(),
+        getOrCreateDedicatedWorkspace: vi.fn(async () => workspace!),
+        prepareTargetedExecutionWorkspace,
+      },
+      sessionManager,
+      getProviderById: createProviderLookup(),
+      now: () => now,
+    });
+
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+      startAttemptCount: 1,
+      lastStartError: expect.stringContaining('temporary target sync failure'),
+      nextStartRetryAt: new Date(now.getTime() + 1_000),
+    });
+    await expect(prisma.agentInvocation.count({ where: { workRequestId: request.id } })).resolves.toBe(0);
+    expect(sessionManager.create).not.toHaveBeenCalled();
+    expect(lockService.listLocks()).toEqual([]);
+
+    now = new Date(now.getTime() + 1_000);
+    await expect(service.reconcileQueuedWork()).resolves.toBe(1);
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+      lastStartError: null,
+      nextStartRetryAt: null,
+    });
+    expect(prepareTargetedExecutionWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries due naked AUTO work', async () => {
+    let now = new Date(Date.UTC(2026, 0, 2, 0, 0, 0));
+    const { teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    let createAttempts = 0;
+    const workspaceService = createWorkspaceServiceMock();
+    workspaceService.create.mockImplementation(async (taskId: string) => {
+      createAttempts++;
+      if (createAttempts === 1) {
+        throw new Error('temporary workspace failure');
+      }
+      const sequence = createdWorkspaceSequence++;
+      return prisma.workspace.create({
+        data: {
+          taskId,
+          branchName: `retry-workspace-${sequence}`,
+          worktreePath: path.join(testDir, `retry-workspace-${sequence}`),
+          status: 'ACTIVE',
+        },
+      });
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+      now: () => now,
+    });
+
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+    await expect(service.reconcileQueuedWork()).resolves.toBe(0);
+    now = new Date(now.getTime() + 1_000);
+    await expect(service.reconcileQueuedWork()).resolves.toBe(1);
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+      lastStartError: null,
+      nextStartRetryAt: null,
+    });
+  });
+
+  it('retries approved CONFIRM work but never starts PENDING_APPROVAL requests', async () => {
+    let now = new Date(Date.UTC(2026, 0, 2, 0, 0, 0));
+    const { teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    await prisma.teamRun.update({ where: { id: teamRun.id }, data: { mode: 'CONFIRM' } });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'PENDING_APPROVAL',
+    });
+    let createAttempts = 0;
+    const workspaceService = createWorkspaceServiceMock();
+    workspaceService.create.mockImplementation(async (taskId: string) => {
+      createAttempts++;
+      if (createAttempts === 1) {
+        throw new Error('temporary approved workspace failure');
+      }
+      const sequence = createdWorkspaceSequence++;
+      return prisma.workspace.create({
+        data: {
+          taskId,
+          branchName: `confirm-retry-${sequence}`,
+          worktreePath: path.join(testDir, `confirm-retry-${sequence}`),
+          status: 'ACTIVE',
+        },
+      });
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+      now: () => now,
+    });
+
+    await expect(service.reconcileQueuedWork()).resolves.toBe(0);
+    expect(workspaceService.create).not.toHaveBeenCalled();
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'PENDING_APPROVAL',
+    });
+
+    const approved = await service.approveWorkRequestAndStartNext(request.id);
+    expect(approved.startedInvocations).toEqual([]);
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+      startAttemptCount: 1,
+      nextStartRetryAt: new Date(now.getTime() + 1_000),
+    });
+
+    await expect(service.reconcileQueuedWork()).resolves.toBe(0);
+    now = new Date(now.getTime() + 1_000);
+    await expect(service.reconcileQueuedWork()).resolves.toBe(1);
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+      lastStartError: null,
+      nextStartRetryAt: null,
+    });
+  });
+
+  it('keeps concurrent AUTO queue pumps idempotent', async () => {
+    const { teamRun, members } = await createTeamRunFixture({ withWorkspace: false });
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const workspaceService = createWorkspaceServiceMock();
+    const sessionManager = createSessionManagerMock();
+    const firstService = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+    const secondService = new TeamSchedulerService(lockService, {
+      workspaceService,
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const counts = await Promise.all([
+      firstService.reconcileQueuedWork(),
+      secondService.reconcileQueuedWork(),
+    ]);
+
+    expect(counts.reduce((sum, count) => sum + count, 0)).toBe(1);
+    await expect(prisma.agentInvocation.count({ where: { workRequestId: request.id } })).resolves.toBe(1);
+    await expect(prisma.session.count()).resolves.toBe(1);
+  });
+
+  it('scans beyond a busy first page without starving later TeamRuns', async () => {
+    const fixtures = await Promise.all(Array.from({ length: 51 }, () => (
+      createTeamRunFixture({ withWorkspace: false })
+    )));
+    const ordered = [...fixtures].sort((left, right) => left.teamRun.id.localeCompare(right.teamRun.id));
+    const requests = new Map<string, Awaited<ReturnType<typeof createWorkRequest>>>();
+    for (const fixture of ordered) {
+      const request = await createWorkRequest({
+        teamRunId: fixture.teamRun.id,
+        targetMemberId: fixture.members[0]!.id,
+      });
+      requests.set(fixture.teamRun.id, request);
+    }
+    for (const fixture of ordered.slice(0, 50)) {
+      await prisma.agentInvocation.create({
+        data: {
+          teamRunId: fixture.teamRun.id,
+          workRequestId: `busy-${fixture.teamRun.id}`,
+          memberId: fixture.members[0]!.id,
+          status: 'RUNNING',
+        },
+      });
+    }
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.reconcileQueuedWork(50)).resolves.toBe(1);
+
+    const last = ordered[50]!;
+    await expect(prisma.workRequest.findUnique({
+      where: { id: requests.get(last.teamRun.id)!.id },
+    })).resolves.toMatchObject({ status: 'STARTED' });
   });
 });

@@ -132,11 +132,19 @@ type InvocationTargetStartData = Partial<TargetPortAllocation> & {
   targetExecutionBranch?: string | null;
 };
 
+type WorkRequestStartFailureContext = {
+  workspaceId?: string | null;
+  targetSyncError?: string | null;
+  targetSyncStatus?: AgentInvocationTargetSyncStatus | null;
+  targetStartData?: InvocationTargetStartData;
+};
+
 interface TeamSchedulerDependencies {
   workspaceService?: WorkspaceStarter;
   sessionManager?: SessionStarter;
   getProviderById?: (providerId: string) => Provider | null;
   teamRunReviewAdvancer?: TeamRunReviewAdvancer;
+  now?: () => Date;
 }
 
 const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
@@ -170,6 +178,13 @@ const DEFAULT_CAPABILITIES: TeamMemberCapabilities = {
 };
 const DEFAULT_QUEUE_MANAGEMENT_POLICY: TeamMemberQueueManagementPolicy = 'own_only';
 const TARGET_REVIEW_TEST_PURPOSES = new Set(['REVIEW', 'TEST']);
+const WORK_REQUEST_START_RETRY_DELAYS_MS = [1_000, 5_000, 30_000, 120_000, 300_000];
+const TRANSIENT_START_ERROR_CODES = new Set([
+  'WORKSPACE_INITIALIZING',
+  'MERGED_WORKSPACE_RESET_FAILED',
+  'MERGED_WORKSPACE_STATE_CHANGED',
+]);
+const MAX_START_ERROR_LENGTH = 2_000;
 
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
   if (value == null || value === '') {
@@ -241,6 +256,29 @@ function targetErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function startErrorMessage(error: unknown): string {
+  const code = error instanceof ServiceError
+    ? error.code
+    : (typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : 'START_FAILED');
+  const message = error instanceof Error ? error.message : String(error);
+  return `[${code}] ${message}`.slice(0, MAX_START_ERROR_LENGTH);
+}
+
+function isDeterministicStartError(error: unknown): boolean {
+  return error instanceof ServiceError
+    && error.statusCode >= 400
+    && error.statusCode < 500
+    && !TRANSIENT_START_ERROR_CODES.has(error.code);
+}
+
+function startRetryDelayMs(attemptCount: number): number {
+  return WORK_REQUEST_START_RETRY_DELAYS_MS[
+    Math.min(Math.max(attemptCount - 1, 0), WORK_REQUEST_START_RETRY_DELAYS_MS.length - 1)
+  ]!;
+}
+
 function targetedWorkspacePolicyError(
   member: Pick<PrismaTeamMember, 'name' | 'workspacePolicy'>,
   target: WorkRequestTargetSnapshot
@@ -304,6 +342,7 @@ export class TeamSchedulerService {
   private readonly sessionManager: SessionStarter;
   private readonly providerLookup: (providerId: string) => Provider | null;
   private readonly teamRunReviewAdvancer: TeamRunReviewAdvancer;
+  private readonly now: () => Date;
 
   constructor(
     private readonly lockService = defaultTeamLockService,
@@ -312,6 +351,7 @@ export class TeamSchedulerService {
     this.workspaceService = dependencies.workspaceService ?? new WorkspaceService();
     this.sessionManager = dependencies.sessionManager ?? getSessionManager();
     this.providerLookup = dependencies.getProviderById ?? getProviderById;
+    this.now = dependencies.now ?? (() => new Date());
     this.teamRunReviewAdvancer = dependencies.teamRunReviewAdvancer ?? new TeamReconcilerService({
       eventBus: getEventBus(),
       scheduler: {
@@ -497,10 +537,22 @@ export class TeamSchedulerService {
     const context = await this.getSchedulingContext(teamRunId);
     const startedInvocations: AgentInvocation[] = [];
     let createdTerminalInvocation = false;
+    const retryBlockedMemberIds = new Set<string>();
 
     for (const workRequest of context.workRequests) {
       const member = context.memberById.get(workRequest.targetMemberId);
       if (!member) {
+        if (await this.failWorkRequestWithoutActiveMember(context.teamRun, workRequest)) {
+          createdTerminalInvocation = true;
+        }
+        continue;
+      }
+
+      if (retryBlockedMemberIds.has(member.id)) {
+        continue;
+      }
+      if (workRequest.nextStartRetryAt && workRequest.nextStartRetryAt.getTime() > this.now().getTime()) {
+        retryBlockedMemberIds.add(member.id);
         continue;
       }
 
@@ -545,7 +597,11 @@ export class TeamSchedulerService {
             member,
             freshWorkRequest,
             invocationId,
-            null
+            null,
+            null,
+            null,
+            {},
+            `Provider not found: ${member.providerId}`
           );
           this.lockService.releaseByOwner(invocationId);
           invocationId = null;
@@ -570,7 +626,9 @@ export class TeamSchedulerService {
             invocationId,
             null,
             targetSyncError,
-            'FAILED'
+            'FAILED',
+            {},
+            targetSyncError,
           );
           this.lockService.releaseByOwner(invocationId);
           invocationId = null;
@@ -613,28 +671,28 @@ export class TeamSchedulerService {
           } catch (error) {
             targetSyncStatus = 'FAILED';
             targetSyncError = targetErrorMessage(error);
-            const failedInvocation = await this.createFailedInvocationForClaimedWorkRequest(
+            const failureResult = await this.handleWorkRequestStartFailure(
               context.teamRun,
               member,
               freshWorkRequest,
+              error,
               invocationId,
-              workspace.id,
-              targetSyncError,
-              targetSyncStatus,
               {
-                targetExecutionBranch,
-                ...targetPorts,
-              }
+                workspaceId: workspace.id,
+                targetSyncError,
+                targetSyncStatus,
+                targetStartData: {
+                  targetExecutionBranch,
+                  ...targetPorts,
+                },
+              },
             );
             this.lockService.releaseByOwner(invocationId);
             invocationId = null;
-            if (failedInvocation) {
+            if (failureResult === 'terminal') {
               createdTerminalInvocation = true;
-              await this.emitTeamRunInvalidated(
-                context.teamRun,
-                ['work-requests', 'agent-invocations', 'workspaces'],
-                'agent-invocation-updated'
-              );
+            } else if (failureResult === 'retry') {
+              retryBlockedMemberIds.add(member.id);
             }
             continue;
           }
@@ -678,16 +736,24 @@ export class TeamSchedulerService {
             await this.sessionManager.start(session.id);
           }
         } catch (error) {
-          await this.markInvocationStartFailed(createdInvocation.id, session.id);
+          const failureResult = await this.markInvocationStartFailed(
+            createdInvocation.id,
+            session.id,
+            error,
+          );
           this.lockService.releaseByOwner(createdInvocation.id);
-          createdTerminalInvocation = true;
+          if (failureResult === 'terminal') {
+            createdTerminalInvocation = true;
+          } else if (failureResult === 'retry') {
+            retryBlockedMemberIds.add(member.id);
+          }
           await this.emitTeamRunInvalidated(
             context.teamRun,
             ['work-requests', 'agent-invocations'],
             'agent-invocation-updated'
           );
           invocationId = null;
-          throw error;
+          continue;
         }
 
         startedInvocations.push(this.serializeAgentInvocation(createdInvocation));
@@ -697,10 +763,26 @@ export class TeamSchedulerService {
         if (invocationId) {
           this.lockService.releaseByOwner(invocationId);
         }
-        if (createdTerminalInvocation) {
-          await this.teamRunReviewAdvancer.maybeAdvanceTeamRunToReview(teamRunId);
+        try {
+          const failureResult = await this.handleWorkRequestStartFailure(
+            context.teamRun,
+            member,
+            workRequest,
+            error,
+            invocationId,
+          );
+          if (failureResult === 'terminal') {
+            createdTerminalInvocation = true;
+          } else if (failureResult === 'retry') {
+            retryBlockedMemberIds.add(member.id);
+          }
+        } catch (recordError) {
+          console.warn(
+            `[TeamSchedulerService] Failed to record start failure for WorkRequest ${workRequest.id}:`,
+            startErrorMessage(recordError),
+          );
+          retryBlockedMemberIds.add(member.id);
         }
-        throw error;
       } finally {
         this.releaseMemberSchedulingLock(memberLockKey);
       }
@@ -711,6 +793,50 @@ export class TeamSchedulerService {
     }
 
     return startedInvocations;
+  }
+
+  async reconcileQueuedWork(pageSize = 50): Promise<number> {
+    const now = this.now();
+    const take = Math.max(1, Math.floor(pageSize));
+    const teamRunIds: string[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const page = await prisma.teamRun.findMany({
+        where: {
+          mode: { in: ['AUTO', 'CONFIRM'] },
+          task: { deletedAt: null },
+          workRequests: {
+            some: {
+              status: 'QUEUED',
+              OR: [
+                { nextStartRetryAt: null },
+                { nextStartRetryAt: { lte: now } },
+              ],
+            },
+          },
+        },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      });
+      teamRunIds.push(...page.map((teamRun) => teamRun.id));
+      cursor = page.length === take ? page[page.length - 1]!.id : undefined;
+    } while (cursor);
+
+    let started = 0;
+    for (const teamRunId of teamRunIds) {
+      try {
+        started += (await this.startNextSessions(teamRunId)).length;
+      } catch (error) {
+        console.warn(
+          `[TeamSchedulerService] Failed to reconcile queued work for ${teamRunId}:`,
+          startErrorMessage(error),
+        );
+      }
+    }
+    return started;
   }
 
   async approveWorkRequest(
@@ -860,6 +986,102 @@ export class TeamSchedulerService {
     this.lockService.releaseByOwner(invocationId);
   }
 
+  private async handleWorkRequestStartFailure(
+    teamRun: SchedulerTeamRun,
+    member: PrismaTeamMember,
+    workRequest: PrismaWorkRequest,
+    error: unknown,
+    invocationId: string | null,
+    failureContext: WorkRequestStartFailureContext = {},
+  ): Promise<'terminal' | 'retry' | 'unchanged'> {
+    const current = await prisma.workRequest.findUnique({ where: { id: workRequest.id } });
+    if (!current || current.status !== 'QUEUED') {
+      return current?.status === 'FAILED' ? 'terminal' : 'unchanged';
+    }
+
+    const errorMessage = startErrorMessage(error);
+    if (isDeterministicStartError(error)) {
+      const failedInvocation = await this.createFailedInvocationForClaimedWorkRequest(
+        teamRun,
+        member,
+        current,
+        invocationId ?? randomUUID(),
+        failureContext.workspaceId ?? null,
+        failureContext.targetSyncError ?? null,
+        failureContext.targetSyncStatus ?? null,
+        failureContext.targetStartData ?? {},
+        errorMessage,
+      );
+      if (failedInvocation) {
+        await this.emitTeamRunInvalidated(
+          teamRun,
+          ['work-requests', 'agent-invocations'],
+          'agent-invocation-updated',
+        );
+        return 'terminal';
+      }
+      return 'unchanged';
+    }
+
+    const nextAttemptCount = current.startAttemptCount + 1;
+    const nextStartRetryAt = new Date(this.now().getTime() + startRetryDelayMs(nextAttemptCount));
+    const updated = await prisma.workRequest.updateMany({
+      where: { id: current.id, teamRunId: teamRun.id, status: 'QUEUED' },
+      data: {
+        startAttemptCount: { increment: 1 },
+        lastStartError: errorMessage,
+        nextStartRetryAt,
+      },
+    });
+    if (updated.count === 1) {
+      await this.emitTeamRunInvalidated(teamRun, ['work-requests'], 'work-request-updated');
+      return 'retry';
+    }
+    return 'unchanged';
+  }
+
+  private async failWorkRequestWithoutActiveMember(
+    teamRun: SchedulerTeamRun,
+    workRequest: PrismaWorkRequest,
+  ): Promise<boolean> {
+    const errorMessage = `[MEMBER_NOT_FOUND] Active TeamRun member not found: ${workRequest.targetMemberId}`;
+    const invocationId = randomUUID();
+    const failed = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.workRequest.updateMany({
+        where: { id: workRequest.id, teamRunId: teamRun.id, status: 'QUEUED' },
+        data: {
+          status: 'FAILED',
+          startAttemptCount: { increment: 1 },
+          lastStartError: errorMessage,
+          nextStartRetryAt: null,
+        },
+      });
+      if (claimed.count !== 1) {
+        return false;
+      }
+
+      await tx.agentInvocation.create({
+        data: {
+          id: invocationId,
+          teamRunId: teamRun.id,
+          workRequestId: workRequest.id,
+          memberId: workRequest.targetMemberId,
+          ...targetDataFromWorkRequest(workRequest),
+          status: 'FAILED',
+        },
+      });
+      return true;
+    });
+    if (failed) {
+      await this.emitTeamRunInvalidated(
+        teamRun,
+        ['work-requests', 'agent-invocations'],
+        'agent-invocation-updated',
+      );
+    }
+    return failed;
+  }
+
   private async createInvocationForClaimedWorkRequest(
     teamRun: SchedulerTeamRun,
     member: PrismaTeamMember,
@@ -875,7 +1097,11 @@ export class TeamSchedulerService {
           teamRunId: teamRun.id,
           status: 'QUEUED',
         },
-        data: { status: 'STARTED' },
+        data: {
+          status: 'STARTED',
+          lastStartError: null,
+          nextStartRetryAt: null,
+        },
       });
 
       if (claimed.count !== 1) {
@@ -931,7 +1157,11 @@ export class TeamSchedulerService {
           teamRunId: teamRun.id,
           status: 'QUEUED',
         },
-        data: { status: 'STARTED' },
+        data: {
+          status: 'STARTED',
+          lastStartError: null,
+          nextStartRetryAt: null,
+        },
       });
 
       if (claimed.count !== 1) {
@@ -979,7 +1209,8 @@ export class TeamSchedulerService {
     workspaceId: string | null,
     targetSyncError: string | null = null,
     targetSyncStatus: AgentInvocationTargetSyncStatus | null = null,
-    targetStartData: InvocationTargetStartData = {}
+    targetStartData: InvocationTargetStartData = {},
+    workRequestError: string | null = targetSyncError,
   ): Promise<PrismaAgentInvocation | null> {
     return prisma.$transaction(async (tx) => {
       const claimed = await tx.workRequest.updateMany({
@@ -988,7 +1219,12 @@ export class TeamSchedulerService {
           teamRunId: teamRun.id,
           status: 'QUEUED',
         },
-        data: { status: 'FAILED' },
+        data: {
+          status: 'FAILED',
+          startAttemptCount: { increment: 1 },
+          lastStartError: workRequestError,
+          nextStartRetryAt: null,
+        },
       });
 
       if (claimed.count !== 1) {
@@ -1514,24 +1750,57 @@ export class TeamSchedulerService {
     return previousInvocation.sessionId;
   }
 
-  private async markInvocationStartFailed(invocationId: string, sessionId: string): Promise<void> {
-    await prisma.$transaction(async (tx) => {
-      const invocation = await tx.agentInvocation.update({
+  private async markInvocationStartFailed(
+    invocationId: string,
+    sessionId: string,
+    error: unknown,
+  ): Promise<'terminal' | 'retry' | 'unchanged'> {
+    return prisma.$transaction(async (tx) => {
+      const invocation = await tx.agentInvocation.findUnique({
         where: { id: invocationId },
-        data: { status: 'FAILED' },
         select: { workRequestId: true },
       });
-      await tx.workRequest.updateMany({
+      if (!invocation) {
+        return 'unchanged';
+      }
+
+      const workRequest = await tx.workRequest.findUnique({
+        where: { id: invocation.workRequestId },
+        select: { startAttemptCount: true },
+      });
+      if (!workRequest) {
+        return 'unchanged';
+      }
+
+      const deterministic = isDeterministicStartError(error);
+      const nextAttemptCount = workRequest.startAttemptCount + 1;
+      const claimed = await tx.workRequest.updateMany({
         where: {
           id: invocation.workRequestId,
           status: 'STARTED',
         },
+        data: {
+          status: deterministic ? 'FAILED' : 'QUEUED',
+          startAttemptCount: { increment: 1 },
+          lastStartError: startErrorMessage(error),
+          nextStartRetryAt: deterministic
+            ? null
+            : new Date(this.now().getTime() + startRetryDelayMs(nextAttemptCount)),
+        },
+      });
+      if (claimed.count !== 1) {
+        return 'unchanged';
+      }
+
+      await tx.agentInvocation.update({
+        where: { id: invocationId },
         data: { status: 'FAILED' },
       });
       await tx.session.update({
         where: { id: sessionId },
         data: { status: 'FAILED' },
       });
+      return deterministic ? 'terminal' : 'retry';
     });
   }
 
@@ -1622,6 +1891,7 @@ export class TeamSchedulerService {
       targetPurpose: serializeTargetPurpose(workRequest.targetPurpose),
       ifBusy: workRequest.ifBusy as IfBusyPolicy,
       status: workRequest.status as WorkRequestStatus,
+      nextStartRetryAt: workRequest.nextStartRetryAt ? toIso(workRequest.nextStartRetryAt) : null,
       createdAt: toIso(workRequest.createdAt),
       updatedAt: toIso(workRequest.updatedAt),
     };
