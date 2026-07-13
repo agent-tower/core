@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type {
   AgentCliCommandSpec,
-  AgentCliDownloadedScriptInstall,
+  AgentCliDownloadedScriptInstallSpec,
   AgentCliInstallPreview,
   AgentCliPlatform,
   AgentCliRedirectStep,
@@ -32,7 +32,7 @@ function normalizeHost(host: string): string {
   return host.toLowerCase();
 }
 
-function assertAllowedUrl(url: URL, install: AgentCliDownloadedScriptInstall): void {
+function assertAllowedUrl(url: URL, install: AgentCliDownloadedScriptInstallSpec): void {
   if (url.protocol !== 'https:') {
     throw new ValidationError('Installer download URL must use HTTPS');
   }
@@ -108,7 +108,7 @@ export class AgentCliDownloader {
   async createPreview(
     toolId: AgentCliToolId,
     platform: AgentCliPlatform,
-    install: AgentCliDownloadedScriptInstall
+    install: AgentCliDownloadedScriptInstallSpec
   ): Promise<AgentCliStoredPreview> {
     let current = new URL(install.downloadUrl);
     const redirectChain: AgentCliRedirectStep[] = [];
@@ -152,17 +152,12 @@ export class AgentCliDownloader {
     const sha256 = createHash('sha256').update(script).digest('hex');
 
     const tempDir = await fs.promises.mkdtemp(path.join(this.tmpDir, 'agent-tower-agent-cli-'));
-    const tempFilePath = path.join(tempDir, `${toolId}-${randomUUID()}.sh`);
+    const tempFilePath = path.join(tempDir, `${toolId}-${randomUUID()}${install.scriptExtension}`);
     await fs.promises.writeFile(tempFilePath, script, { mode: 0o600 });
     await fs.promises.chmod(tempFilePath, 0o600);
 
     const now = this.now();
     const expiresAt = new Date(now.getTime() + this.ttlMs);
-    const interpreter = install.interpreters[platform];
-    if (!interpreter) {
-      await removePreviewFile(tempFilePath);
-      throw new ValidationError(`Installer is unsupported on platform: ${platform}`);
-    }
 
     return {
       id: `agent-cli-preview-${randomUUID()}`,
@@ -174,10 +169,11 @@ export class AgentCliDownloader {
       sizeBytes: script.byteLength,
       sha256,
       interpreter: {
-        command: interpreter.command,
-        args: [...interpreter.args],
+        command: install.interpreter.command,
+        args: [...install.interpreter.args],
       },
       fixedArgs: [...install.fixedArgs],
+      env: install.env ? { ...install.env } : undefined,
       riskNotes: [...install.riskNotes],
       createdAt: now.toISOString(),
       expiresAt: expiresAt.toISOString(),

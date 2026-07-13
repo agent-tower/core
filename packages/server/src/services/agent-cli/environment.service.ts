@@ -9,7 +9,8 @@ import type {
   AgentCliToolId,
 } from '@agent-tower/shared';
 import { NotFoundError, ServiceError, ValidationError } from '../../errors.js';
-import { AgentCliDetector, type AgentCliExecFile } from './detection.js';
+import { AgentCliDetector } from './detection.js';
+import type { AgentCliExecFile } from './command-runner.js';
 import {
   AgentCliDownloader,
   type AgentCliDownloadOptions,
@@ -61,26 +62,31 @@ function toPublicManifestItem(item: AgentCliInstallManifestItem): AgentCliPublic
     };
   }
 
-  const {
-    verifyCommand: _verifyCommand,
-    ...install
-  } = item.install;
+  const install = item.install;
 
   return {
     ...base,
     install: {
-      ...install,
-      allowedRedirectHosts: [...install.allowedRedirectHosts],
-      allowedExactPaths: [...install.allowedExactPaths],
-      allowedPathPrefixes: [...install.allowedPathPrefixes],
-      interpreters: Object.fromEntries(
-        Object.entries(install.interpreters).map(([platform, interpreter]) => [
-          platform,
-          interpreter ? { command: interpreter.command, args: [...interpreter.args] } : interpreter,
-        ])
+      kind: install.kind,
+      platforms: Object.fromEntries(
+        Object.entries(install.platforms).map(([platform, spec]) => {
+          if (!spec) return [platform, spec];
+          const { verifyCommand: _verifyCommand, ...publicSpec } = spec;
+          return [
+            platform,
+            {
+              ...publicSpec,
+              allowedRedirectHosts: [...spec.allowedRedirectHosts],
+              allowedExactPaths: [...spec.allowedExactPaths],
+              allowedPathPrefixes: [...spec.allowedPathPrefixes],
+              interpreter: { command: spec.interpreter.command, args: [...spec.interpreter.args] },
+              fixedArgs: [...spec.fixedArgs],
+              env: spec.env ? { ...spec.env } : undefined,
+              riskNotes: [...spec.riskNotes],
+            },
+          ];
+        })
       ),
-      fixedArgs: [...install.fixedArgs],
-      riskNotes: [...install.riskNotes],
     },
   };
 }
@@ -125,8 +131,12 @@ export class AgentCliEnvironmentService {
     if (item.install.kind !== 'downloaded-script') {
       throw new ServiceError('Agent CLI tool is detect-only', 'AGENT_CLI_INSTALL_UNAVAILABLE', 400);
     }
+    const install = item.install.platforms[this.platform];
+    if (!install) {
+      throw new ServiceError('Agent CLI installer unsupported on this platform', 'AGENT_CLI_UNSUPPORTED_PLATFORM', 400);
+    }
 
-    const preview = await this.downloader.createPreview(item.id, this.platform, item.install);
+    const preview = await this.downloader.createPreview(item.id, this.platform, install);
     this.previews.set(preview.id, preview);
     return toPublicPreview(preview);
   }

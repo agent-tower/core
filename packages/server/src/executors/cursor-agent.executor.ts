@@ -34,8 +34,24 @@ export interface CursorAgentConfig {
 /**
  * 获取基础命令
  */
-function getBaseCommand(): string {
-  return 'cursor-agent';
+const CURSOR_AGENT_COMMANDS = ['agent', 'cursor-agent'] as const;
+
+async function resolveCursorAgentCommand(): Promise<string | null> {
+  for (const command of CURSOR_AGENT_COMMANDS) {
+    if (await which(command)) return command;
+  }
+  return null;
+}
+
+function getDefaultBaseCommand(): string {
+  return CURSOR_AGENT_COMMANDS[0];
+}
+
+function getInstallHint(): string {
+  if (process.platform === 'win32') {
+    return "Cursor Agent CLI not installed. Run the official Windows installer in PowerShell: irm 'https://cursor.com/install?win32=true' | iex";
+  }
+  return 'Cursor Agent CLI not installed. Run: curl https://cursor.com/install -fsS | bash';
 }
 
 export class CursorAgentExecutor extends BaseExecutor {
@@ -54,10 +70,10 @@ export class CursorAgentExecutor extends BaseExecutor {
    * 获取可用性信息
    */
   async getAvailabilityInfo(): Promise<AvailabilityInfo> {
-    // 检查 cursor-agent 命令是否可用
-    const cursorAgentPath = await which(getBaseCommand());
+    // 官方新命令是 agent；兼容旧版 cursor-agent。
+    const cursorAgentPath = await resolveCursorAgentCommand();
     if (!cursorAgentPath) {
-      return { type: 'NOT_FOUND', error: 'Cursor Agent CLI not installed. Run: curl https://cursor.com/install -fsS | bash' };
+      return { type: 'NOT_FOUND', error: getInstallHint() };
     }
 
     // 检查 MCP 配置文件是否存在（作为安装标识）
@@ -87,8 +103,8 @@ export class CursorAgentExecutor extends BaseExecutor {
   /**
    * 构建命令
    */
-  protected buildCommandBuilder(): CommandBuilder {
-    let builder = CommandBuilder.new(getBaseCommand());
+  protected buildCommandBuilder(baseCommand = getDefaultBaseCommand()): CommandBuilder {
+    let builder = CommandBuilder.new(baseCommand);
 
     // Headless print 模式不传位置参数时从 stdin 读取 prompt。
     builder.setParams(['--print', '--output-format=stream-json']);
@@ -107,12 +123,19 @@ export class CursorAgentExecutor extends BaseExecutor {
     return applyOverrides(builder, this.cmdOverrides);
   }
 
+  private async buildResolvedCommandBuilder(): Promise<CommandBuilder> {
+    if (this.cmdOverrides?.baseCommandOverride) {
+      return this.buildCommandBuilder();
+    }
+    return this.buildCommandBuilder(await resolveCursorAgentCommand() ?? getDefaultBaseCommand());
+  }
+
   /**
    * 启动新会话
    * Cursor Agent 通过 stdin 接收 prompt，不同于 Claude Code 通过参数传递
    */
   async spawn(config: ExecutorSpawnConfig): Promise<SpawnedChild> {
-    const commandBuilder = this.buildCommandBuilder();
+    const commandBuilder = await this.buildResolvedCommandBuilder();
     const commandParts = commandBuilder.buildInitial();
 
     // 组合 prompt
@@ -130,7 +153,7 @@ export class CursorAgentExecutor extends BaseExecutor {
     sessionId: string,
     _resetToMessageId?: string
   ): Promise<SpawnedChild> {
-    const commandBuilder = this.buildCommandBuilder();
+    const commandBuilder = await this.buildResolvedCommandBuilder();
 
     const additionalArgs = ['--resume', sessionId];
     const commandParts = commandBuilder.buildFollowUp(additionalArgs);

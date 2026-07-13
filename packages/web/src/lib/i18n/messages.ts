@@ -583,6 +583,10 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '无法从本机加载模型列表（{error}）。仍可手动输入；或在安装 cursor-agent 的机器上运行':
       'Could not load models from the local machine ({error}). You can still enter one manually, or run',
     '查看 ID。': 'to inspect available IDs.',
+    'Windows 将下载并执行官方 PowerShell 安装脚本；不会使用复制粘贴式 shell pipeline。':
+      'Windows will download and run the official PowerShell installer script; no copy-paste shell pipeline is used.',
+    '安装器可能已完成，但当前 Agent Tower 进程尚未刷新 PATH；请重启 Agent Tower 后重新检测。':
+      'The installer may have completed, but the current Agent Tower process has not refreshed PATH. Restart Agent Tower and detect again.',
     'JSON 格式错误': 'Invalid JSON format',
     '删除 Profile Variant': 'Delete Profile Variant',
     '确定删除 {agentType} / {variant}？': 'Delete {agentType} / {variant}?',

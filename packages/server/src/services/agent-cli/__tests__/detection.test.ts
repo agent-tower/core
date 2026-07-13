@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentCliInstallManifestItem } from '@agent-tower/shared';
-import { AgentCliDetector, type AgentCliExecFile } from '../detection.js';
+import { AgentCliDetector } from '../detection.js';
+import type { AgentCliExecFile } from '../command-runner.js';
 
 const manifest: AgentCliInstallManifestItem[] = [
   {
@@ -21,6 +22,28 @@ const manifest: AgentCliInstallManifestItem[] = [
       command: 'codex',
       args: ['login', 'status'],
       timeoutMs: 5000,
+    },
+    lastVerifiedAt: '2026-06-18',
+  },
+];
+
+const cursorManifest: AgentCliInstallManifestItem[] = [
+  {
+    id: 'cursor-agent',
+    displayName: 'Cursor Agent',
+    legacy: false,
+    officialSources: [],
+    supportedPlatforms: ['win32'],
+    install: { kind: 'detect-only', reason: 'test' },
+    detectionCommands: [
+      { command: 'agent', args: ['--version'], timeoutMs: 5000 },
+      { command: 'cursor-agent', args: ['--version'], timeoutMs: 5000 },
+    ],
+    versionCommand: {
+      command: 'agent',
+      args: ['--version'],
+      timeoutMs: 5000,
+      versionPattern: String.raw`\d+\.\d+\.\d+`,
     },
     lastVerifiedAt: '2026-06-18',
   },
@@ -83,5 +106,47 @@ describe('AgentCliDetector', () => {
       authStatus: 'unknown',
     });
     expect(JSON.stringify(status)).not.toContain('spawn codex ENOENT');
+  });
+
+  it('uses Windows where lookup and falls back from agent to cursor-agent.cmd', async () => {
+    const execFileImpl = vi.fn<AgentCliExecFile>(async (command, args, options) => {
+      expect(options.shell).toBe(false);
+      if (command === 'where' && args[0] === 'agent') {
+        throw Object.assign(new Error('agent not found'), { code: 1 });
+      }
+      if (command === 'where' && args[0] === 'cursor-agent') {
+        return {
+          stdout: 'C:\\Users\\alice\\AppData\\Roaming\\npm\\cursor-agent.cmd\r\n',
+          stderr: '',
+        };
+      }
+      if (command.endsWith('cmd.exe')) {
+        return { stdout: 'cursor-agent 0.3.0', stderr: '' };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const detector = new AgentCliDetector(execFileImpl, 'win32');
+
+    const status = await detector.refresh(cursorManifest);
+
+    expect(status.tools[0]).toMatchObject({
+      installStatus: 'installed',
+      versionStatus: 'unknown',
+    });
+    expect(execFileImpl).toHaveBeenCalledWith(
+      'where',
+      ['agent'],
+      expect.objectContaining({ shell: false, windowsHide: true })
+    );
+    expect(execFileImpl).toHaveBeenCalledWith(
+      'where',
+      ['cursor-agent'],
+      expect.objectContaining({ shell: false, windowsHide: true })
+    );
+    expect(execFileImpl).toHaveBeenCalledWith(
+      expect.stringMatching(/cmd\.exe$/i),
+      expect.arrayContaining(['/d', '/s', '/c']),
+      expect.objectContaining({ shell: false, windowsHide: true })
+    );
   });
 });

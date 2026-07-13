@@ -10,7 +10,9 @@ import { CursorAgentExecutor } from '../cursor-agent.executor.js';
 import { GeminiCliExecutor } from '../gemini-cli.executor.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
-const whichMock = vi.hoisted(() => vi.fn(async (command: string) => `/mock/bin/${command}`));
+const whichMock = vi.hoisted(() => vi.fn<(command: string) => Promise<string | null>>(
+  async (command: string) => `/mock/bin/${command}`
+));
 
 vi.mock('@shitiandmw/node-pty', () => ({
   spawn: spawnMock,
@@ -152,6 +154,21 @@ describe('executor prompt stdin transport', () => {
       '--output-format=stream-json',
     ]));
     expect(childArgs).not.toContain(spawnConfig.prompt);
+  });
+
+  it('Cursor Agent resolves legacy cursor-agent command when official agent command is absent', async () => {
+    whichMock.mockImplementation(async (command: string) => (
+      command === 'agent' ? null : `/mock/bin/${command}`
+    ));
+    const executor = new CursorAgentExecutor();
+
+    await executor.spawn(spawnConfig);
+    const args = lastWrapperArgs();
+    const modeIndex = args.indexOf('pipe-file');
+
+    expect(args[modeIndex + 1]).toBe('/mock/bin/cursor-agent');
+    expect(whichMock).toHaveBeenCalledWith('agent');
+    expect(whichMock).toHaveBeenCalledWith('cursor-agent');
   });
 
   it('Gemini CLI uses non-interactive stdin and does not start ACP mode', async () => {

@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import type {
   AgentCliCommandSpec,
   AgentCliEnvironmentStatus,
@@ -6,52 +5,14 @@ import type {
   AgentCliPlatform,
   AgentCliToolStatus,
 } from '@agent-tower/shared';
-import { buildCleanAgentCliEnv, parseWhitelistedVersion } from './security.js';
-
-export interface AgentCliExecFileResult {
-  stdout: string
-  stderr: string
-}
-
-export type AgentCliExecFile = (
-  command: string,
-  args: string[],
-  options: {
-    timeout: number
-    maxBuffer: number
-    env: NodeJS.ProcessEnv
-    shell: false
-    windowsHide: true
-    encoding: 'utf8'
-  }
-) => Promise<AgentCliExecFileResult>;
-
-const DEFAULT_MAX_BUFFER = 256 * 1024;
-
-function defaultExecFile(
-  command: string,
-  args: string[],
-  options: Parameters<AgentCliExecFile>[2]
-): Promise<AgentCliExecFileResult> {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, options, (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
-    });
-  });
-}
-
-function isCommandMissing(error: unknown): boolean {
-  return !!(
-    error
-    && typeof error === 'object'
-    && 'code' in error
-    && (error as { code?: unknown }).code === 'ENOENT'
-  );
-}
+import { parseWhitelistedVersion } from './security.js';
+import {
+  defaultExecFile,
+  isCommandMissing,
+  runAgentCliCommand,
+  type AgentCliExecFile,
+  type AgentCliExecFileResult,
+} from './command-runner.js';
 
 export class AgentCliDetector {
   private cache: AgentCliEnvironmentStatus | null = null;
@@ -95,13 +56,9 @@ export class AgentCliDetector {
   }
 
   async runCommand(spec: AgentCliCommandSpec): Promise<AgentCliExecFileResult> {
-    return this.execFileImpl(spec.command, [...spec.args], {
-      timeout: spec.timeoutMs,
-      maxBuffer: DEFAULT_MAX_BUFFER,
-      env: buildCleanAgentCliEnv(),
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
+    return runAgentCliCommand(spec, {
+      execFileImpl: this.execFileImpl,
+      platform: this.platform,
     });
   }
 

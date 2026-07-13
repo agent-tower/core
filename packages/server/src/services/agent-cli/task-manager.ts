@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentCliCommandSpec,
@@ -12,6 +12,7 @@ import {
   buildCleanAgentCliEnv,
 } from './security.js';
 import { type AgentCliStoredPreview, removePreviewFile } from './downloader.js';
+import { runAgentCliCommand } from './command-runner.js';
 
 export interface AgentCliRunnerProcess {
   pid?: number
@@ -51,23 +52,8 @@ function defaultRunner(
   return spawn(command, args, options);
 }
 
-function defaultVerifier(spec: AgentCliCommandSpec): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(spec.command, [...spec.args], {
-      timeout: spec.timeoutMs,
-      maxBuffer: 256 * 1024,
-      env: buildCleanAgentCliEnv(),
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
-    }, (error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
+async function defaultVerifier(spec: AgentCliCommandSpec): Promise<void> {
+  await runAgentCliCommand(spec, { platform: process.platform === 'win32' ? 'win32' : null });
 }
 
 function publicTask(task: AgentCliInstallTask): AgentCliInstallTask {
@@ -121,7 +107,10 @@ export class AgentCliInstallTaskManager {
     const command = preview.interpreter.command;
     const args = [...preview.interpreter.args, preview.tempFilePath, ...preview.fixedArgs];
     const child = this.runner(command, args, {
-      env: buildCleanAgentCliEnv(),
+      env: {
+        ...buildCleanAgentCliEnv(undefined, preview.platform),
+        ...(preview.env ?? {}),
+      },
       detached: process.platform !== 'win32',
       stdio: 'pipe',
       windowsHide: true,

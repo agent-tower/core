@@ -101,4 +101,29 @@ describe('provider availability', () => {
     expect(whichMock).toHaveBeenCalledWith('claude');
     expect(whichMock).not.toHaveBeenCalledWith('custom-claude');
   });
+
+  it('recognizes Cursor Agent when the official agent command is installed', async () => {
+    writeUserProviders([
+      {
+        id: 'cursor-agent-default',
+        name: 'Cursor Agent Default',
+        agentType: AgentType.CURSOR_AGENT,
+        env: {},
+        config: {},
+        isDefault: true,
+      },
+    ]);
+    reloadProviders();
+
+    whichMock.mockImplementation(async (command) => (
+      command === 'agent' ? '/mock/bin/agent' : null
+    ));
+
+    const results = await getAllProvidersAvailability();
+    const cursor = results.find(item => item.provider.id === 'cursor-agent-default');
+
+    expect(cursor?.availability).toEqual({ type: 'INSTALLATION_FOUND' });
+    expect(whichMock).toHaveBeenCalledWith('agent');
+    expect(whichMock).not.toHaveBeenCalledWith('cursor-agent');
+  });
 });

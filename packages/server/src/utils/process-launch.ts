@@ -120,7 +120,7 @@ function escapeArgForCmd(arg) {
 
 function spawnCmd(args, stdioOpt) {
   const cmdLine = [programPath, ...args].map(escapeArgForCmd).join(' ');
-  return spawn(process.env.ComSpec || 'cmd.exe', ['/s', '/c', '"' + cmdLine + '"'], {
+  return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"' + cmdLine + '"'], {
     stdio: stdioOpt,
     env: getChildEnv(),
     windowsVerbatimArguments: true,
@@ -276,6 +276,47 @@ export function buildWindowsCmdShimCommandLine(programPath: string, args: string
   return [programPath, ...args].map(escapeArgForWindowsCmd).join(' ');
 }
 
+function appendPath(paths: string[], value: string | undefined): void {
+  if (!value) return;
+  const normalized = value.trim();
+  if (!normalized || paths.some((item) => item.toLowerCase() === normalized.toLowerCase())) return;
+  paths.push(normalized);
+}
+
+function getWindowsPathValue(env: NodeJS.ProcessEnv): string | undefined {
+  return env.PATH ?? env.Path ?? env.path;
+}
+
+export function buildWindowsPathWithUserBinFallbacks(env: NodeJS.ProcessEnv): string | undefined {
+  const paths = (getWindowsPathValue(env) ?? '')
+    .split(';')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  const userProfile = env.USERPROFILE;
+  const localAppData = env.LOCALAPPDATA;
+  const appData = env.APPDATA;
+
+  appendPath(paths, userProfile ? `${userProfile}\\.local\\bin` : undefined);
+  appendPath(paths, localAppData ? `${localAppData}\\Programs\\codex\\bin` : undefined);
+  appendPath(paths, localAppData ? `${localAppData}\\Programs\\Claude\\bin` : undefined);
+  appendPath(paths, localAppData ? `${localAppData}\\Programs\\Cursor\\bin` : undefined);
+  appendPath(paths, localAppData ? `${localAppData}\\cursor-agent` : undefined);
+  appendPath(paths, appData ? `${appData}\\npm` : undefined);
+
+  return paths.length > 0 ? paths.join(';') : undefined;
+}
+
+export function withWindowsUserPathFallbacks(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const next = { ...env };
+  const nextPath = buildWindowsPathWithUserBinFallbacks(env);
+  if (nextPath) {
+    next.PATH = nextPath;
+    next.Path = nextPath;
+  }
+  return next;
+}
+
 export function getDefaultTerminalShell(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env
@@ -297,7 +338,10 @@ export function getPtyLogFilePath(tmpDir: string = os.tmpdir()): string {
   return path.join(tmpDir, 'agent-tower-pty.log');
 }
 
-export function normalizeCommandLookupOutput(stdout: string): string | null {
+export function normalizeCommandLookupOutput(
+  stdout: string,
+  platform: NodeJS.Platform = process.platform
+): string | null {
   const lines = stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -307,9 +351,9 @@ export function normalizeCommandLookupOutput(stdout: string): string | null {
 
   // On Windows, `where` may return multiple hits (e.g. `claude`, `claude.cmd`,
   // `claude.ps1`). The extensionless POSIX shim is not directly executable by
-  // Node's child_process.spawn, so prefer .cmd/.bat/.exe which the PTY wrapper
-  // can handle correctly (with `shell: true` for .cmd/.bat, or natively for .exe).
-  if (process.platform === 'win32' && lines.length > 1) {
+  // Node's child_process.spawn, so prefer .cmd/.bat/.exe. The PTY wrapper and
+  // Agent CLI command runner execute .cmd/.bat through controlled cmd.exe argv.
+  if (platform === 'win32' && lines.length > 1) {
     const preferred = lines.find((l) => /\.(cmd|bat|exe)$/i.test(l));
     if (preferred) return preferred;
   }

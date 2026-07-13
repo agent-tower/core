@@ -1,5 +1,6 @@
 import type {
   AgentCliCommandSpec,
+  AgentCliDownloadedScriptInstallSpec,
   AgentCliInstallManifestItem,
   AgentCliPlatform,
   AgentCliToolId,
@@ -21,6 +22,56 @@ function command(
   };
 }
 
+function shInstaller(
+  downloadUrl: string,
+  allowedRedirectHosts: string[],
+  allowedExactPaths: string[],
+  allowedPathPrefixes: string[],
+  verifyCommand: AgentCliCommandSpec,
+  riskNotes: string[],
+  bash = false
+): AgentCliDownloadedScriptInstallSpec {
+  return {
+    downloadUrl,
+    allowedRedirectHosts,
+    allowedExactPaths,
+    allowedPathPrefixes,
+    scriptExtension: '.sh',
+    interpreter: { command: bash ? '/bin/bash' : '/bin/sh', args: [] },
+    fixedArgs: [],
+    maxBytes: 1024 * 1024,
+    riskNotes,
+    verifyCommand,
+  };
+}
+
+function powershellInstaller(
+  downloadUrl: string,
+  allowedRedirectHosts: string[],
+  allowedExactPaths: string[],
+  allowedPathPrefixes: string[],
+  verifyCommand: AgentCliCommandSpec,
+  riskNotes: string[],
+  env?: Record<string, string>
+): AgentCliDownloadedScriptInstallSpec {
+  return {
+    downloadUrl,
+    allowedRedirectHosts,
+    allowedExactPaths,
+    allowedPathPrefixes,
+    scriptExtension: '.ps1',
+    interpreter: {
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File'],
+    },
+    fixedArgs: [],
+    env,
+    maxBytes: 1024 * 1024,
+    riskNotes,
+    verifyCommand,
+  };
+}
+
 export const AGENT_CLI_MANIFEST: readonly AgentCliInstallManifestItem[] = [
   {
     id: 'codex',
@@ -29,25 +80,47 @@ export const AGENT_CLI_MANIFEST: readonly AgentCliInstallManifestItem[] = [
     legacy: false,
     officialSources: [
       { label: 'Codex installer', url: 'https://chatgpt.com/codex/install.sh' },
+      { label: 'Codex Windows installer', url: 'https://chatgpt.com/codex/install.ps1' },
     ],
-    supportedPlatforms: ['darwin', 'linux'],
+    supportedPlatforms: ['darwin', 'linux', 'win32'],
     install: {
       kind: 'downloaded-script',
-      downloadUrl: 'https://chatgpt.com/codex/install.sh',
-      allowedRedirectHosts: ['chatgpt.com'],
-      allowedExactPaths: ['/codex/install.sh'],
-      allowedPathPrefixes: [],
-      interpreters: {
-        darwin: { command: '/bin/sh', args: [] },
-        linux: { command: '/bin/sh', args: [] },
+      platforms: {
+        darwin: shInstaller(
+          'https://chatgpt.com/codex/install.sh',
+          ['chatgpt.com', 'github.com', 'release-assets.githubusercontent.com'],
+          ['/codex/install.sh'],
+          ['/openai/codex/releases/', '/github-production-release-asset/965415649/'],
+          command('codex'),
+          [
+            '将从 chatgpt.com 下载官方安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH、shell profile 或用户目录下的 CLI 配置。',
+          ],
+        ),
+        linux: shInstaller(
+          'https://chatgpt.com/codex/install.sh',
+          ['chatgpt.com', 'github.com', 'release-assets.githubusercontent.com'],
+          ['/codex/install.sh'],
+          ['/openai/codex/releases/', '/github-production-release-asset/965415649/'],
+          command('codex'),
+          [
+            '将从 chatgpt.com 下载官方安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH、shell profile 或用户目录下的 CLI 配置。',
+          ],
+        ),
+        win32: powershellInstaller(
+          'https://chatgpt.com/codex/install.ps1',
+          ['chatgpt.com', 'github.com', 'release-assets.githubusercontent.com'],
+          ['/codex/install.ps1'],
+          ['/openai/codex/releases/', '/github-production-release-asset/965415649/'],
+          command('codex'),
+          [
+            '将从 chatgpt.com 下载官方 Windows PowerShell 安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH 或用户目录下的 Codex CLI 配置。',
+          ],
+          { CODEX_NON_INTERACTIVE: '1' },
+        ),
       },
-      fixedArgs: [],
-      maxBytes: 1024 * 1024,
-      riskNotes: [
-        '将从 chatgpt.com 下载官方安装脚本并在本机用户环境执行。',
-        '安装器可能修改 PATH、shell profile 或用户目录下的 CLI 配置。',
-      ],
-      verifyCommand: command('codex'),
     },
     detectionCommands: [command('codex')],
     versionCommand: command('codex'),
@@ -65,25 +138,48 @@ export const AGENT_CLI_MANIFEST: readonly AgentCliInstallManifestItem[] = [
     legacy: false,
     officialSources: [
       { label: 'Claude Code installer', url: 'https://claude.ai/install.sh' },
+      { label: 'Claude Code Windows installer', url: 'https://claude.ai/install.ps1' },
     ],
-    supportedPlatforms: ['darwin', 'linux'],
+    supportedPlatforms: ['darwin', 'linux', 'win32'],
     install: {
       kind: 'downloaded-script',
-      downloadUrl: 'https://claude.ai/install.sh',
-      allowedRedirectHosts: ['claude.ai'],
-      allowedExactPaths: ['/install.sh'],
-      allowedPathPrefixes: [],
-      interpreters: {
-        darwin: { command: '/bin/bash', args: [] },
-        linux: { command: '/bin/bash', args: [] },
+      platforms: {
+        darwin: shInstaller(
+          'https://claude.ai/install.sh',
+          ['claude.ai', 'downloads.claude.ai'],
+          ['/install.sh', '/claude-code-releases/bootstrap.sh'],
+          [],
+          command('claude'),
+          [
+            '将从 claude.ai 下载官方安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH、shell profile 或用户目录下的 Claude Code 配置。',
+          ],
+          true,
+        ),
+        linux: shInstaller(
+          'https://claude.ai/install.sh',
+          ['claude.ai', 'downloads.claude.ai'],
+          ['/install.sh', '/claude-code-releases/bootstrap.sh'],
+          [],
+          command('claude'),
+          [
+            '将从 claude.ai 下载官方安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH、shell profile 或用户目录下的 Claude Code 配置。',
+          ],
+          true,
+        ),
+        win32: powershellInstaller(
+          'https://claude.ai/install.ps1',
+          ['claude.ai', 'downloads.claude.ai'],
+          ['/install.ps1', '/claude-code-releases/bootstrap.ps1'],
+          [],
+          command('claude'),
+          [
+            '将从 claude.ai 下载官方 Windows PowerShell 安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH 或用户目录下的 Claude Code 配置。',
+          ],
+        ),
       },
-      fixedArgs: [],
-      maxBytes: 1024 * 1024,
-      riskNotes: [
-        '将从 claude.ai 下载官方安装脚本并在本机用户环境执行。',
-        '安装器可能修改 PATH、shell profile 或用户目录下的 Claude Code 配置。',
-      ],
-      verifyCommand: command('claude'),
     },
     detectionCommands: [command('claude')],
     versionCommand: command('claude'),
@@ -101,25 +197,48 @@ export const AGENT_CLI_MANIFEST: readonly AgentCliInstallManifestItem[] = [
     legacy: false,
     officialSources: [
       { label: 'Cursor installer', url: 'https://cursor.com/install' },
+      { label: 'Cursor Windows installer', url: 'https://cursor.com/install?win32=true' },
     ],
-    supportedPlatforms: ['darwin', 'linux'],
+    supportedPlatforms: ['darwin', 'linux', 'win32'],
     install: {
       kind: 'downloaded-script',
-      downloadUrl: 'https://cursor.com/install',
-      allowedRedirectHosts: ['cursor.com'],
-      allowedExactPaths: ['/install'],
-      allowedPathPrefixes: [],
-      interpreters: {
-        darwin: { command: '/bin/bash', args: [] },
-        linux: { command: '/bin/bash', args: [] },
+      platforms: {
+        darwin: shInstaller(
+          'https://cursor.com/install',
+          ['cursor.com'],
+          ['/install'],
+          [],
+          command('agent'),
+          [
+            '将从 cursor.com 下载官方安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH、shell profile 或用户目录下的 Cursor 配置。',
+          ],
+          true,
+        ),
+        linux: shInstaller(
+          'https://cursor.com/install',
+          ['cursor.com'],
+          ['/install'],
+          [],
+          command('agent'),
+          [
+            '将从 cursor.com 下载官方安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH、shell profile 或用户目录下的 Cursor 配置。',
+          ],
+          true,
+        ),
+        win32: powershellInstaller(
+          'https://cursor.com/install?win32=true',
+          ['cursor.com'],
+          ['/install'],
+          [],
+          command('agent'),
+          [
+            '将从 cursor.com 下载官方 Windows PowerShell 安装脚本并在本机用户环境执行。',
+            '安装器可能修改 PATH 或用户目录下的 Cursor 配置。',
+          ],
+        ),
       },
-      fixedArgs: [],
-      maxBytes: 1024 * 1024,
-      riskNotes: [
-        '将从 cursor.com 下载官方安装脚本并在本机用户环境执行。',
-        '安装器可能修改 PATH、shell profile 或用户目录下的 Cursor 配置。',
-      ],
-      verifyCommand: command('agent'),
     },
     detectionCommands: [command('agent'), command('cursor-agent')],
     versionCommand: command('agent'),
@@ -168,17 +287,28 @@ export function getAgentCliManifest(): AgentCliInstallManifestItem[] {
       : undefined,
     install: item.install.kind === 'downloaded-script'
       ? {
-        ...item.install,
-        allowedRedirectHosts: [...item.install.allowedRedirectHosts],
-        allowedExactPaths: [...item.install.allowedExactPaths],
-        allowedPathPrefixes: [...item.install.allowedPathPrefixes],
-        fixedArgs: [...item.install.fixedArgs],
-        riskNotes: [...item.install.riskNotes],
-        interpreters: { ...item.install.interpreters },
-        verifyCommand: {
-          ...item.install.verifyCommand,
-          args: [...item.install.verifyCommand.args],
-        },
+        kind: item.install.kind,
+        platforms: Object.fromEntries(
+          Object.entries(item.install.platforms).map(([platform, spec]) => [
+            platform,
+            spec
+              ? {
+                ...spec,
+                allowedRedirectHosts: [...spec.allowedRedirectHosts],
+                allowedExactPaths: [...spec.allowedExactPaths],
+                allowedPathPrefixes: [...spec.allowedPathPrefixes],
+                interpreter: { ...spec.interpreter, args: [...spec.interpreter.args] },
+                fixedArgs: [...spec.fixedArgs],
+                env: spec.env ? { ...spec.env } : undefined,
+                riskNotes: [...spec.riskNotes],
+                verifyCommand: {
+                  ...spec.verifyCommand,
+                  args: [...spec.verifyCommand.args],
+                },
+              }
+              : spec,
+          ])
+        ),
       }
       : { ...item.install },
   }));

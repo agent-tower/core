@@ -1,5 +1,3 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,11 +6,12 @@ import { stripAnsiSequences } from '../output/utils/ansi.js';
 import { discoverSkillCatalog, discoverSlashCommandCatalog } from '../services/slash-command-catalog.service.js';
 import { buildMcpConfigResponse } from '../services/mcp-config.service.js';
 import { prisma } from '../utils/index.js';
+import { runAgentCliCommand } from '../services/agent-cli/command-runner.js';
 
-const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverPackageRoot = path.resolve(__dirname, '../..');
 const serverDistDir = path.join(serverPackageRoot, 'dist');
+const CURSOR_AGENT_MODEL_COMMANDS = ['agent', 'cursor-agent'] as const;
 
 /** 解析 `cursor-agent --list-models`  stdout（strip ANSI 后按行解析） */
 export function parseCursorAgentListModelsOutput(stdout: string): Array<{ id: string; label: string }> {
@@ -60,15 +59,25 @@ export async function systemRoutes(app: FastifyInstance) {
 
   /** Cursor Agent CLI 可用模型（与 `cursor-agent --list-models` 一致，供 Provider 配置 UI 使用） */
   app.get('/system/cursor-agent-models', async () => {
+    let lastError: unknown = null;
+    for (const command of CURSOR_AGENT_MODEL_COMMANDS) {
+      try {
+        const { stdout } = await runAgentCliCommand(
+          { command, args: ['--list-models'], timeoutMs: 25_000 },
+          {
+            platform: process.platform === 'win32' ? 'win32' : null,
+            env: process.env,
+          }
+        );
+        const models = parseCursorAgentListModelsOutput(stdout);
+        return { models };
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
     try {
-      const { stdout } = await execFileAsync('cursor-agent', ['--list-models'], {
-        timeout: 25_000,
-        maxBuffer: 8 * 1024 * 1024,
-        encoding: 'utf-8',
-        ...(process.platform === 'win32' ? { shell: true } : {}),
-      });
-      const models = parseCursorAgentListModelsOutput(stdout);
-      return { models };
+      throw lastError ?? new Error('Cursor Agent CLI not found');
     } catch (e) {
       return {
         models: [] as Array<{ id: string; label: string }>,

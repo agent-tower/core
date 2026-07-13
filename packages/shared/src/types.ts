@@ -850,17 +850,23 @@ export interface AgentCliInterpreterSpec {
   args: string[]
 }
 
-export interface AgentCliDownloadedScriptInstall {
-  kind: 'downloaded-script'
+export interface AgentCliDownloadedScriptInstallSpec {
   downloadUrl: string
   allowedRedirectHosts: string[]
   allowedExactPaths: string[]
   allowedPathPrefixes: string[]
-  interpreters: Partial<Record<AgentCliPlatform, AgentCliInterpreterSpec>>
+  scriptExtension: string
+  interpreter: AgentCliInterpreterSpec
   fixedArgs: string[]
+  env?: Record<string, string>
   maxBytes: number
   riskNotes: string[]
   verifyCommand: AgentCliCommandSpec
+}
+
+export interface AgentCliDownloadedScriptInstall {
+  kind: 'downloaded-script'
+  platforms: Partial<Record<AgentCliPlatform, AgentCliDownloadedScriptInstallSpec>>
 }
 
 export interface AgentCliDetectOnlyInstall {
@@ -887,7 +893,9 @@ export interface AgentCliInstallManifestItem {
 }
 
 export type AgentCliPublicDownloadedScriptInstall =
-  Omit<AgentCliDownloadedScriptInstall, 'verifyCommand'>
+  Omit<AgentCliDownloadedScriptInstall, 'platforms'> & {
+    platforms: Partial<Record<AgentCliPlatform, Omit<AgentCliDownloadedScriptInstallSpec, 'verifyCommand'>>>
+  }
 
 export type AgentCliPublicInstallPlan =
   | AgentCliPublicDownloadedScriptInstall
@@ -952,6 +960,7 @@ export interface AgentCliInstallPreview {
   sha256: string
   interpreter: AgentCliInterpreterSpec
   fixedArgs: string[]
+  env?: Record<string, string>
   riskNotes: string[]
   createdAt: string
   expiresAt: string

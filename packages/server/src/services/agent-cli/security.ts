@@ -1,4 +1,5 @@
 import type { AgentCliInstallLogEntry } from '@agent-tower/shared';
+import { buildWindowsPathWithUserBinFallbacks } from '../../utils/process-launch.js';
 
 export const SENSITIVE_ENV_KEY_PATTERN = /(?:^|_)(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH)(?:_|$)/i;
 
@@ -28,9 +29,14 @@ export function redactAgentCliLog(data: string): string {
   return redacted;
 }
 
-export function buildCleanAgentCliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function buildCleanAgentCliEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | 'darwin' | 'linux' | 'win32' | null = process.platform
+): NodeJS.ProcessEnv {
   const allowedKeys = new Set([
     'PATH',
+    'Path',
+    'path',
     'HOME',
     'USER',
     'LOGNAME',
@@ -54,6 +60,14 @@ export function buildCleanAgentCliEnv(env: NodeJS.ProcessEnv = process.env): Nod
     if (key.startsWith('AGENT_TOWER_')) continue;
     if (SENSITIVE_ENV_KEY_PATTERN.test(key)) continue;
     cleaned[key] = value;
+  }
+
+  if (platform === 'win32') {
+    const nextPath = buildWindowsPathWithUserBinFallbacks(env);
+    if (nextPath) {
+      cleaned.PATH = nextPath;
+      cleaned.Path = nextPath;
+    }
   }
 
   return cleaned;

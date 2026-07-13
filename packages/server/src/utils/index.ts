@@ -1,27 +1,45 @@
 import pkg from '@prisma/client';
-import { normalizeCommandLookupOutput } from './process-launch.js';
+import { execFile, type ExecOptions } from 'child_process';
+import { promisify } from 'util';
+import { normalizeCommandLookupOutput, withWindowsUserPathFallbacks } from './process-launch.js';
 const { PrismaClient } = pkg;
+const execFileAsync = promisify(execFile);
 
 export const prisma = new PrismaClient();
 
 export async function execAsync(
-  command: string
+  command: string,
+  options?: ExecOptions
 ): Promise<{ stdout: string; stderr: string }> {
   const { exec } = await import('child_process');
   const { promisify } = await import('util');
   const execPromise = promisify(exec);
-  return execPromise(command);
+  const { stdout, stderr } = await execPromise(command, options);
+  return { stdout: String(stdout ?? ''), stderr: String(stderr ?? '') };
 }
 
 /**
  * 查找可执行文件路径
  * 类似于 Unix 的 which 命令
  */
-export async function which(command: string): Promise<string | null> {
+export async function which(
+  command: string,
+  options: {
+    platform?: NodeJS.Platform
+    env?: NodeJS.ProcessEnv
+  } = {}
+): Promise<string | null> {
   try {
-    const whichCmd = process.platform === 'win32' ? 'where' : 'which';
-    const { stdout } = await execAsync(`${whichCmd} ${command}`);
-    return normalizeCommandLookupOutput(stdout);
+    const platform = options.platform ?? process.platform;
+    const lookupCommand = platform === 'win32' ? 'where' : 'which';
+    const { stdout } = await execFileAsync(lookupCommand, [command], {
+      encoding: 'utf-8',
+      windowsHide: true,
+      env: platform === 'win32'
+        ? withWindowsUserPathFallbacks(options.env ?? process.env)
+        : options.env ?? process.env,
+    });
+    return normalizeCommandLookupOutput(String(stdout ?? ''), platform);
   } catch {
     return null;
   }

@@ -304,6 +304,12 @@ function PreviewPanel({
         </div>
       </dl>
 
+      {preview.platform === 'win32' && (
+        <div className="mt-4 rounded-lg border border-info/25 bg-info/10 px-3 py-2.5 text-xs leading-relaxed text-foreground">
+          {t('Windows 将下载并执行官方 PowerShell 安装脚本；不会使用复制粘贴式 shell pipeline。')}
+        </div>
+      )}
+
       {item?.officialSources.length ? (
         <div className="mt-4">
           <div className="text-xs font-medium text-muted-foreground">{t('官方来源')}</div>
@@ -417,6 +423,12 @@ function TaskPanel({
       {task?.errorMessage && (
         <div className="mt-3 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {task.errorMessage}
+        </div>
+      )}
+
+      {task?.errorCode === 'VERIFY_FAILED' && (
+        <div className="mt-3 rounded-md border border-warning/25 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-foreground">
+          {t('安装器可能已完成，但当前 Agent Tower 进程尚未刷新 PATH；请重启 Agent Tower 后重新检测。')}
         </div>
       )}
 

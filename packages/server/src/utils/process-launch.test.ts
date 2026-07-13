@@ -8,6 +8,7 @@ import {
   buildPtyWrapperEnv,
   buildPtyCommand,
   buildPtyCommandWithStdin,
+  buildWindowsPathWithUserBinFallbacks,
   getDefaultTerminalShell,
   getNodeRuntimeCommand,
   normalizeCommandLookupOutput,
@@ -287,13 +288,40 @@ describe('process-launch', () => {
   })
 
   it('should normalize Windows command lookup output', () => {
-    expect(normalizeCommandLookupOutput('C:\\Tools\\codex.cmd\r\nC:\\Other\\codex.cmd\r\n')).toBe('C:\\Tools\\codex.cmd')
+    expect(normalizeCommandLookupOutput('C:\\Tools\\codex.cmd\r\nC:\\Other\\codex.cmd\r\n', 'win32')).toBe('C:\\Tools\\codex.cmd')
   })
 
   it('should prefer .cmd/.exe over extensionless paths on Windows', () => {
     expect(normalizeCommandLookupOutput(
-      'C:\\nvm4w\\nodejs\\claude\r\nC:\\nvm4w\\nodejs\\claude.cmd\r\n'
-    )).toBe(process.platform === 'win32' ? 'C:\\nvm4w\\nodejs\\claude.cmd' : 'C:\\nvm4w\\nodejs\\claude')
+      'C:\\nvm4w\\nodejs\\claude\r\nC:\\nvm4w\\nodejs\\claude.cmd\r\n',
+      'win32',
+    )).toBe('C:\\nvm4w\\nodejs\\claude.cmd')
+  })
+
+  it('should keep extensionless lookup preference on Unix', () => {
+    expect(normalizeCommandLookupOutput(
+      '/usr/local/bin/claude\n/usr/local/bin/claude.cmd\n',
+      'linux',
+    )).toBe('/usr/local/bin/claude')
+  })
+
+  it('should append common Windows user bin directories without duplicating PATH entries', () => {
+    const nextPath = buildWindowsPathWithUserBinFallbacks({
+      Path: 'C:\\Windows\\System32;C:\\Users\\alice\\AppData\\Roaming\\npm',
+      USERPROFILE: 'C:\\Users\\alice',
+      LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local',
+      APPDATA: 'C:\\Users\\alice\\AppData\\Roaming',
+    })
+
+    expect(nextPath?.split(';')).toEqual([
+      'C:\\Windows\\System32',
+      'C:\\Users\\alice\\AppData\\Roaming\\npm',
+      'C:\\Users\\alice\\.local\\bin',
+      'C:\\Users\\alice\\AppData\\Local\\Programs\\codex\\bin',
+      'C:\\Users\\alice\\AppData\\Local\\Programs\\Claude\\bin',
+      'C:\\Users\\alice\\AppData\\Local\\Programs\\Cursor\\bin',
+      'C:\\Users\\alice\\AppData\\Local\\cursor-agent',
+    ])
   })
 
   it('should resolve terminal shells per platform', () => {
