@@ -209,7 +209,24 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string; rea
   const { t } = useI18n()
   const [tabs, setTabs] = useState<OpenTab[]>([])
   const [activePath, setActivePath] = useState<string | null>(null)
+  const [editorReady, setEditorReady] = useState(false)
+  const [editorLoadFailed, setEditorLoadFailed] = useState(false)
   const saveMutation = useSaveFile()
+
+  useEffect(() => {
+    let cancelled = false
+    void import('@/lib/monaco')
+      .then(({ preloadMonaco }) => preloadMonaco())
+      .then(() => {
+        if (!cancelled) setEditorReady(true)
+      })
+      .catch(() => {
+        if (!cancelled) setEditorLoadFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // File tree width & collapse state
   const [treeWidth, setTreeWidth] = useState(280)
@@ -461,6 +478,15 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string; rea
             </div>
           ) : activeTab.isImage ? (
             <ImagePreview workingDir={workingDir} filePath={activeTab.path} />
+          ) : editorLoadFailed ? (
+            <div className="h-full flex items-center justify-center text-red-600 text-sm">
+              {t('Failed to load editor.')}
+            </div>
+          ) : !editorReady ? (
+            <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
+              <Loader2 size={14} className="animate-spin mr-2" />
+              {t('Loading editor...')}
+            </div>
           ) : (
             <>
               <Editor
