@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { FSWatcher } from 'node:fs';
 import type { WorkspaceGitChangeReason } from '@agent-tower/shared/socket';
@@ -45,10 +45,13 @@ type ManagedWorkspaceWatcher = {
   workspace: WatchableWorkspace;
   targets: WatchTarget[];
   watchers: FSWatcher[];
+  watcherByPath: Map<string, FSWatcher>;
   watchedPaths: Set<string>;
   timers: Set<ReturnType<typeof setTimeout>>;
   changeTimer: ReturnType<typeof setTimeout> | null;
+  rebuildTimer: ReturnType<typeof setTimeout> | null;
   pendingReason: GitWatchReason;
+  ignoreCache: Map<string, boolean>;
   stopped: boolean;
 };
 
@@ -186,10 +189,13 @@ export class WorkspaceGitWatcherService {
       workspace: normalizedWorkspace,
       targets,
       watchers: [],
+      watcherByPath: new Map(),
       watchedPaths: new Set(),
       timers: new Set(),
       changeTimer: null,
+      rebuildTimer: null,
       pendingReason: 'unknown',
+      ignoreCache: new Map(),
       stopped: false,
     };
 
@@ -197,6 +203,7 @@ export class WorkspaceGitWatcherService {
     for (const target of managed.targets) {
       this.openWatcher(managed, target);
     }
+    this.watchIgnoreSources(managed);
   }
 
   unwatchWorkspace(workspaceId: string): void {
@@ -218,6 +225,7 @@ export class WorkspaceGitWatcherService {
     if (managed.changeTimer) {
       clearTimeout(managed.changeTimer);
     }
+    if (managed.rebuildTimer) clearTimeout(managed.rebuildTimer);
     this.watchers.delete(workspaceId);
   }
 
@@ -287,7 +295,7 @@ export class WorkspaceGitWatcherService {
   }
 
   private async buildWatchTargets(workingDir: string): Promise<WatchTarget[]> {
-    const targets: WatchTarget[] = [{ path: workingDir, recursive: true, kind: 'worktree' }];
+    const targets: WatchTarget[] = [{ path: workingDir, recursive: false, kind: 'worktree' }];
     const gitDirs = await this.resolveGitDirs(workingDir);
 
     for (const gitDir of gitDirs) {
@@ -350,6 +358,12 @@ export class WorkspaceGitWatcherService {
   private openWatcher(managed: ManagedWorkspaceWatcher, target: WatchTarget): void {
     if (managed.stopped) return;
     if (managed.watchedPaths.has(target.path)) return;
+    if (target.kind === 'worktree') {
+      this.openDirectoryTreeWatchers(managed, target.path, target.kind).catch((error) => {
+        console.warn(`[WorkspaceGitWatcher] failed to open directory tree watchers for ${target.path}:`, error);
+      });
+      return;
+    }
 
     try {
       const watcher = fs.watch(
@@ -372,14 +386,12 @@ export class WorkspaceGitWatcherService {
         );
       });
       managed.watchers.push(watcher);
+      managed.watcherByPath.set(normalizePath(target.path), watcher);
       managed.watchedPaths.add(target.path);
     } catch (error) {
       if (target.recursive && this.isRecursiveWatchUnsupported(error)) {
         this.openDirectoryTreeWatchers(managed, target.path, target.kind).catch((err) => {
-          console.warn(
-            `[WorkspaceGitWatcher] failed to open directory tree watchers for ${target.path}:`,
-            err instanceof Error ? err.message : err,
-          );
+          console.warn(`[WorkspaceGitWatcher] failed to open directory tree watchers for ${target.path}:`, err);
         });
         return;
       }
@@ -412,10 +424,14 @@ export class WorkspaceGitWatcherService {
     if (managed.stopped) return;
 
     this.openNonRecursiveWatcher(managed, rootPath, kind);
+    this.watchIgnoreSource(managed, path.join(rootPath, '.gitignore'));
+    const candidates = entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(rootPath, entry.name));
+    const ignored = await this.batchIgnoredByGit(managed, candidates);
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      if (this.shouldIgnorePath(path.join(rootPath, entry.name))) continue;
-      await this.openDirectoryTreeWatchers(managed, path.join(rootPath, entry.name), kind);
+      const childPath = path.join(rootPath, entry.name);
+      if (ignored.has(normalizePath(childPath))) continue;
+      await this.openDirectoryTreeWatchers(managed, childPath, kind);
     }
   }
 
@@ -431,16 +447,30 @@ export class WorkspaceGitWatcherService {
     try {
       const watcher = fs.watch(normalizedTarget, (eventType, filename) => {
         const childPath = filename ? path.join(normalizedTarget, filename.toString()) : normalizedTarget;
-        if (this.shouldIgnorePath(childPath)) return;
+        if (eventType === 'rename' && !filename) {
+          managed.ignoreCache.clear();
+          this.scheduleRebuild(managed);
+          return;
+        }
+        if (filename && filename.toString() === '.gitignore') {
+          managed.ignoreCache.clear();
+          this.scheduleRebuild(managed);
+        }
+        if (kind === 'worktree' && this.shouldIgnorePath(childPath)) return;
         this.scheduleChange(managed, kind === 'git-dir' ? 'git-dir' : 'worktree');
         if (eventType === 'rename') {
+          this.closeWatcherSubtree(managed, childPath);
+          managed.ignoreCache.delete(normalizePath(childPath));
           fsPromises.stat(childPath)
             .then((stat) => {
               if (stat.isDirectory()) {
-                return this.openDirectoryTreeWatchers(managed, childPath, kind);
+                return this.isIgnoredByGit(managed, childPath).then((ignored) => {
+                  if (!ignored) return this.openDirectoryTreeWatchers(managed, childPath, kind);
+                  return undefined;
+                });
               }
             })
-            .catch(() => undefined);
+            .catch(() => this.closeWatcherSubtree(managed, childPath));
         }
       });
       watcher.on('error', (error) => {
@@ -452,6 +482,7 @@ export class WorkspaceGitWatcherService {
         );
       });
       managed.watchers.push(watcher);
+      managed.watcherByPath.set(normalizedTarget, watcher);
       managed.watchedPaths.add(normalizedTarget);
     } catch (error) {
       if (isNotFoundLike(error)) return;
@@ -460,6 +491,55 @@ export class WorkspaceGitWatcherService {
         error instanceof Error ? error.message : error,
       );
     }
+  }
+
+  private closeWatcherSubtree(managed: ManagedWorkspaceWatcher, rootPath: string): void {
+    const root = normalizePath(rootPath);
+    for (const [watchedPath, watcher] of managed.watcherByPath) {
+      if (watchedPath !== root && !watchedPath.startsWith(`${root}${path.sep}`)) continue;
+      watcher.close();
+      managed.watcherByPath.delete(watchedPath);
+      managed.watchedPaths.delete(watchedPath);
+      const index = managed.watchers.indexOf(watcher);
+      if (index >= 0) managed.watchers.splice(index, 1);
+    }
+  }
+
+  private watchIgnoreSources(managed: ManagedWorkspaceWatcher): void {
+    this.watchIgnoreSource(managed, path.join(managed.workspace.workingDir, '.gitignore'));
+  }
+
+  private watchIgnoreSource(managed: ManagedWorkspaceWatcher, source: string): void {
+      if (!fs.existsSync(source)) return;
+      try {
+        const watcher = fs.watch(source, () => {
+          if (managed.stopped) return;
+          managed.ignoreCache.clear();
+          this.scheduleRebuild(managed);
+        });
+        managed.watchers.push(watcher);
+        managed.watcherByPath.set(normalizePath(source), watcher);
+        managed.watchedPaths.add(normalizePath(source));
+      } catch (error) {
+        console.warn(`[WorkspaceGitWatcher] failed to watch ignore source ${source}:`, error);
+      }
+  }
+
+  private scheduleRebuild(managed: ManagedWorkspaceWatcher): void {
+    if (managed.rebuildTimer) clearTimeout(managed.rebuildTimer);
+    const timer = setTimeout(() => {
+      managed.timers.delete(timer);
+      managed.rebuildTimer = null;
+      if (managed.stopped) return;
+      const workspace = managed.workspace;
+      this.closeManagedWorkspace(workspace.id, managed);
+      void this.watchWorkspaceInternal(workspace).catch((error) => {
+        console.warn(`[WorkspaceGitWatcher] failed to rebuild ${workspace.id}:`, error);
+      });
+    }, this.debounceMs);
+    managed.timers.add(timer);
+    managed.rebuildTimer = timer;
+    timer.unref?.();
   }
 
   private scheduleRetry(managed: ManagedWorkspaceWatcher, target: WatchTarget): void {
@@ -477,6 +557,65 @@ export class WorkspaceGitWatcherService {
       .replace(/\\/g, '/')
       .split('/')
       .some((segment) => IGNORED_PATH_SEGMENTS.has(segment));
+  }
+
+  private async isIgnoredByGit(managed: ManagedWorkspaceWatcher, targetPath: string): Promise<boolean> {
+    if (managed.stopped) return true;
+    const normalized = normalizePath(targetPath);
+    const cached = managed.ignoreCache.get(normalized);
+    if (cached !== undefined) return cached;
+    const relative = path.relative(managed.workspace.workingDir, normalized);
+    if (!relative || relative.startsWith('..')) return false;
+    try {
+      const { stdout } = await execFileAsync('git', ['check-ignore', '--no-index', '--', relative], {
+        cwd: managed.workspace.workingDir,
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
+      const ignored = Boolean(stdout);
+      managed.ignoreCache.set(normalized, ignored);
+      return ignored;
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code === 1) {
+        managed.ignoreCache.set(normalized, false);
+        return false;
+      }
+      console.warn(`[WorkspaceGitWatcher] git ignore check failed for ${normalized}:`, error);
+      return false;
+    }
+  }
+
+  private async batchIgnoredByGit(managed: ManagedWorkspaceWatcher, paths: string[]): Promise<Set<string>> {
+    const result = new Set<string>();
+    const pending = paths.filter((candidate) => !managed.ignoreCache.has(normalizePath(candidate)));
+    for (const candidate of paths) {
+      if (managed.ignoreCache.get(normalizePath(candidate))) result.add(normalizePath(candidate));
+    }
+    if (!pending.length) return result;
+    const relative = pending.map((candidate) => path.relative(managed.workspace.workingDir, candidate));
+    try {
+      const child = spawnSync('git', ['check-ignore', '--no-index', '--stdin', '-z'], {
+        cwd: managed.workspace.workingDir,
+        input: `${relative.join('\0')}\0`,
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      if (child.error) throw child.error;
+      if (child.signal) throw new Error(`git check-ignore terminated by ${child.signal}`);
+      if (child.status !== 0 && child.status !== 1) {
+        throw new Error(`git check-ignore exited ${child.status}: ${String(child.stderr ?? '').trim()}`);
+      }
+      const ignoredRel = new Set(String(child.stdout ?? '').split('\0').filter(Boolean));
+      pending.forEach((candidate, index) => {
+        const ignored = ignoredRel.has(relative[index]);
+        managed.ignoreCache.set(normalizePath(candidate), ignored);
+        if (ignored) result.add(normalizePath(candidate));
+      });
+    } catch (error) {
+      console.warn('[WorkspaceGitWatcher] batch git ignore check failed:', error);
+    }
+    return result;
   }
 
   private scheduleChange(managed: ManagedWorkspaceWatcher, reason: GitWatchReason): void {
