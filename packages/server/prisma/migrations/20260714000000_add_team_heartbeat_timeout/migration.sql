@@ -1,0 +1,2 @@
+ALTER TABLE "TeamTemplate" ADD COLUMN "heartbeatTimeoutMinutes" INTEGER NOT NULL DEFAULT 10;
+ALTER TABLE "TeamRun" ADD COLUMN "heartbeatTimeoutMinutes" INTEGER NOT NULL DEFAULT 10;

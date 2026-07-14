@@ -10,20 +10,20 @@ datasource db {
 
 // 项目
 model Project {
-  id          String   @id @default(uuid())
-  name        String
-  description String?
-  repoPath    String
+  id            String    @id @default(uuid())
+  name          String
+  description   String?
+  repoPath      String
   repoRemoteUrl String?
-  mainBranch  String   @default("main")
-  copyFiles     String?  // 逗号分隔的 glob/路径列表，worktree 创建后自动复制
-  setupScript   String?  // 多行命令文本，worktree 创建后自动执行
-  quickCommands String?  // JSON: [{ name, command }]，终端快捷命令
-  archivedAt  DateTime?
+  mainBranch    String    @default("main")
+  copyFiles     String? // 逗号分隔的 glob/路径列表，worktree 创建后自动复制
+  setupScript   String? // 多行命令文本，worktree 创建后自动执行
+  quickCommands String? // JSON: [{ name, command }]，终端快捷命令
+  archivedAt    DateTime?
   repoDeletedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tasks       Task[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  tasks         Task[]
 
   @@index([archivedAt])
   @@index([repoDeletedAt])
@@ -54,18 +54,18 @@ model Task {
 // 后台任务删除资源清理
 // TaskCleanupJobStatus: PENDING, RUNNING, COMPLETED, FAILED
 model TaskCleanupJob {
-  id           String    @id @default(uuid())
-  taskId       String
-  projectId    String
-  payload      String    // JSON cleanup snapshot: project/workspaces/sessions
-  status       String    @default("PENDING")
-  attempts     Int       @default(0)
-  lastError    String?
-  nextRetryAt  DateTime?
-  startedAt    DateTime?
-  completedAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id          String    @id @default(uuid())
+  taskId      String
+  projectId   String
+  payload     String // JSON cleanup snapshot: project/workspaces/sessions
+  status      String    @default("PENDING")
+  attempts    Int       @default(0)
+  lastError   String?
+  nextRetryAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([taskId])
   @@index([status, nextRetryAt])
@@ -73,27 +73,28 @@ model TaskCleanupJob {
 }
 
 model MemberPreset {
-  id              String   @id @default(uuid())
-  name            String
-  aliases         String // JSON string: string[]
-  providerId      String
-  rolePrompt      String
-  capabilities    String // JSON TeamMemberCapabilities
-  workspacePolicy String
-  triggerPolicy   String
-  sessionPolicy   String   @default("new_per_request")
-  queueManagementPolicy String @default("own_only")
-  avatar          String? // JSON or string ref
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                    String   @id @default(uuid())
+  name                  String
+  aliases               String // JSON string: string[]
+  providerId            String
+  rolePrompt            String
+  capabilities          String // JSON TeamMemberCapabilities
+  workspacePolicy       String
+  triggerPolicy         String
+  sessionPolicy         String   @default("new_per_request")
+  queueManagementPolicy String   @default("own_only")
+  avatar                String? // JSON or string ref
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 }
 
 model TeamTemplate {
-  id        String               @id @default(uuid())
-  name      String
-  members   TeamTemplateMember[]
-  createdAt DateTime             @default(now())
-  updatedAt DateTime             @updatedAt
+  id                      String               @id @default(uuid())
+  name                    String
+  heartbeatTimeoutMinutes Int                  @default(10)
+  members                 TeamTemplateMember[]
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
 }
 
 model TeamTemplateMember {
@@ -108,66 +109,67 @@ model TeamTemplateMember {
 }
 
 model TeamRun {
-  id              String            @id @default(uuid())
-  taskId          String            @unique
-  task            Task              @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  mainWorkspaceId String?
-  mainWorkspace   Workspace?        @relation("TeamRunMainWorkspace", fields: [mainWorkspaceId], references: [id], onDelete: SetNull)
-  mode            String
-  reviewReason    String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  members         TeamMember[]
-  messages        RoomMessage[]
-  workRequests    WorkRequest[]
-  invocations     AgentInvocation[]
-  verdicts        WorkspaceVerdict[]
+  id                      String             @id @default(uuid())
+  taskId                  String             @unique
+  task                    Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  mainWorkspaceId         String?
+  mainWorkspace           Workspace?         @relation("TeamRunMainWorkspace", fields: [mainWorkspaceId], references: [id], onDelete: SetNull)
+  mode                    String
+  heartbeatTimeoutMinutes Int                @default(10)
+  reviewReason            String?
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+  members                 TeamMember[]
+  messages                RoomMessage[]
+  workRequests            WorkRequest[]
+  invocations             AgentInvocation[]
+  verdicts                WorkspaceVerdict[]
 
   @@index([mainWorkspaceId])
 }
 
 model TeamMember {
-  id              String   @id @default(uuid())
-  teamRunId       String
-  teamRun         TeamRun  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
-  presetId        String?
-  name            String
-  aliases         String // JSON string: string[]
-  providerId      String
-  rolePrompt      String
-  capabilities    String // JSON TeamMemberCapabilities
-  workspacePolicy String
-  triggerPolicy   String
-  sessionPolicy   String   @default("new_per_request")
-  queueManagementPolicy String @default("own_only")
-  membershipStatus String  @default("ACTIVE")
-  avatar          String?
-  status          String   @default("IDLE")
-  ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
+  id                      String                   @id @default(uuid())
+  teamRunId               String
+  teamRun                 TeamRun                  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  presetId                String?
+  name                    String
+  aliases                 String // JSON string: string[]
+  providerId              String
+  rolePrompt              String
+  capabilities            String // JSON TeamMemberCapabilities
+  workspacePolicy         String
+  triggerPolicy           String
+  sessionPolicy           String                   @default("new_per_request")
+  queueManagementPolicy   String                   @default("own_only")
+  membershipStatus        String                   @default("ACTIVE")
+  avatar                  String?
+  status                  String                   @default("IDLE")
+  ownedWorkspaces         Workspace[]              @relation("WorkspaceOwner")
   roomMessageParticipants RoomMessageParticipant[]
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
 
   @@index([teamRunId])
   @@index([teamRunId, membershipStatus])
 }
 
 model RoomMessage {
-  id                 String   @id @default(uuid())
+  id                 String                   @id @default(uuid())
   teamRunId          String
-  teamRun            TeamRun  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  teamRun            TeamRun                  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
   senderType         String
   senderId           String?
   senderInvocationId String?
   kind               String
-  visibility         String   @default("PUBLIC")
+  visibility         String                   @default("PUBLIC")
   content            String
   mentions           String // JSON StructuredMention[]
   workRequestIds     String? // JSON string[]
   artifactRefs       String? // JSON string[]
   attachmentIds      String? // JSON string[]
   participants       RoomMessageParticipant[]
-  createdAt          DateTime @default(now())
+  createdAt          DateTime                 @default(now())
 
   @@index([teamRunId])
   @@index([teamRunId, visibility])
@@ -191,29 +193,29 @@ model RoomMessageParticipant {
 }
 
 model WorkRequest {
-  id                String   @id @default(uuid())
-  teamRunId         String
-  teamRun           TeamRun  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
-  requesterMemberId String?
-  requesterType     String
-  targetMemberId    String
-  targetKind        String?
-  targetPurpose     String?
+  id                      String    @id @default(uuid())
+  teamRunId               String
+  teamRun                 TeamRun   @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  requesterMemberId       String?
+  requesterType           String
+  targetMemberId          String
+  targetKind              String?
+  targetPurpose           String?
   targetSourceWorkspaceId String?
-  targetSourceMemberId String?
-  targetHeadSha     String?
-  targetBranchName  String?
-  targetPlanItemId  String?
-  triggerMessageId  String
-  instruction       String
-  ifBusy            String   @default("queue")
-  cancelQueued      Boolean  @default(false)
-  status            String   @default("QUEUED")
-  startAttemptCount Int      @default(0)
-  lastStartError    String?
-  nextStartRetryAt  DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  targetSourceMemberId    String?
+  targetHeadSha           String?
+  targetBranchName        String?
+  targetPlanItemId        String?
+  triggerMessageId        String
+  instruction             String
+  ifBusy                  String    @default("queue")
+  cancelQueued            Boolean   @default(false)
+  status                  String    @default("QUEUED")
+  startAttemptCount       Int       @default(0)
+  lastStartError          String?
+  nextStartRetryAt        DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@index([teamRunId])
   @@index([targetMemberId])
@@ -265,36 +267,36 @@ model AgentInvocation {
 // WorkspaceStatus: ACTIVE, MERGED, ABANDONED, HIBERNATED
 // WorkspaceKind: WORKTREE, MAIN_DIRECTORY
 model Workspace {
-  id            String    @id @default(uuid())
-  taskId        String
-  task          Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  id                String             @id @default(uuid())
+  taskId            String
+  task              Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
   parentWorkspaceId String?
-  parentWorkspace   Workspace?  @relation("WorkspaceChildren", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
-  childWorkspaces   Workspace[] @relation("WorkspaceChildren")
+  parentWorkspace   Workspace?         @relation("WorkspaceChildren", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
+  childWorkspaces   Workspace[]        @relation("WorkspaceChildren")
   ownerMemberId     String?
-  ownerMember       TeamMember? @relation("WorkspaceOwner", fields: [ownerMemberId], references: [id], onDelete: SetNull)
-  mainForTeamRuns   TeamRun[]   @relation("TeamRunMainWorkspace")
-  branchName    String
-  baseBranch    String?
-  worktreePath  String
-  workspaceKind String    @default("WORKTREE")
-  workingDir    String    @default("")
-  status        String    @default("ACTIVE")
-  commitMessage String?   // AI 生成的 commit message（合并时使用）
-  previewTarget String?   // Preview 代理目标（仅允许 loopback 地址）
-  hibernatedAt  DateTime? // 自动休眠时间
-  sessions      Session[]
-  verdicts      WorkspaceVerdict[]
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  ownerMember       TeamMember?        @relation("WorkspaceOwner", fields: [ownerMemberId], references: [id], onDelete: SetNull)
+  mainForTeamRuns   TeamRun[]          @relation("TeamRunMainWorkspace")
+  branchName        String
+  baseBranch        String?
+  worktreePath      String
+  workspaceKind     String             @default("WORKTREE")
+  workingDir        String             @default("")
+  status            String             @default("ACTIVE")
+  commitMessage     String? // AI 生成的 commit message（合并时使用）
+  previewTarget     String? // Preview 代理目标（仅允许 loopback 地址）
+  hibernatedAt      DateTime? // 自动休眠时间
+  sessions          Session[]
+  verdicts          WorkspaceVerdict[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
 
+  @@unique([parentWorkspaceId, ownerMemberId])
   @@index([taskId])
   @@index([parentWorkspaceId])
   @@index([ownerMemberId])
   @@index([taskId, parentWorkspaceId])
   @@index([workspaceKind])
   @@index([workingDir])
-  @@unique([parentWorkspaceId, ownerMemberId])
 }
 
 // 工作区审查/测试记录
@@ -342,23 +344,23 @@ model Conversation {
 // SessionStatus: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
 // SessionPurpose: CHAT, COMMIT_MSG
 model Session {
-  id           String             @id @default(uuid())
-  workspaceId  String?
-  workspace    Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  conversationId String?          @unique
-  conversation Conversation?      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  context      String             @default("WORKSPACE") // WORKSPACE: 项目工作区, CONVERSATION: 独立对话
-  agentType    String
-  variant      String             @default("DEFAULT")
-  providerId   String?
-  prompt       String
-  status       String             @default("PENDING")
-  purpose      String             @default("CHAT")  // CHAT: 正常会话, COMMIT_MSG: 生成提交消息
-  logSnapshot  String?            // 序列化的 NormalizedConversation JSON，session 结束时持久化
-  tokenUsage   String?            // JSON: { totalTokens, modelContextWindow? }
-  processes    ExecutionProcess[]
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  id             String             @id @default(uuid())
+  workspaceId    String?
+  workspace      Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversationId String?            @unique
+  conversation   Conversation?      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  context        String             @default("WORKSPACE") // WORKSPACE: 项目工作区, CONVERSATION: 独立对话
+  agentType      String
+  variant        String             @default("DEFAULT")
+  providerId     String?
+  prompt         String
+  status         String             @default("PENDING")
+  purpose        String             @default("CHAT") // CHAT: 正常会话, COMMIT_MSG: 生成提交消息
+  logSnapshot    String? // 序列化的 NormalizedConversation JSON，session 结束时持久化
+  tokenUsage     String? // JSON: { totalTokens, modelContextWindow? }
+  processes      ExecutionProcess[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
 
   @@index([workspaceId])
   @@index([context])
@@ -402,8 +404,8 @@ model Attachment {
 
 // 应用设置 (单例，只有一行)
 model AppSettings {
-  id     String @id @default("singleton")
-  locale String?
+  id                      String  @id @default("singleton")
+  locale                  String?
   commitMessageProviderId String?
   commitMessagePrompt     String?
 }
@@ -431,6 +433,6 @@ model NotificationSettings {
   thirdPartyBaseUrl String?
 
   // 通知模板
-  taskInReviewTitleTemplate String  @default("Agent Tower")
-  taskInReviewBodyTemplate  String  @default("✅ \"{taskTitle}\" 已完成，等待审查")
+  taskInReviewTitleTemplate String @default("Agent Tower")
+  taskInReviewBodyTemplate  String @default("✅ \"{taskTitle}\" 已完成，等待审查")
 }

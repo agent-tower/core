@@ -75,12 +75,14 @@ export interface TeamTemplateMemberInput {
 
 export interface CreateTeamTemplateInput {
   name: string;
+  heartbeatTimeoutMinutes?: number;
   memberPresetIds?: string[];
   members?: TeamTemplateMemberInput[];
 }
 
 export interface UpdateTeamTemplateInput {
   name?: string;
+  heartbeatTimeoutMinutes?: number;
   memberPresetIds?: string[];
   members?: TeamTemplateMemberInput[];
 }
@@ -635,6 +637,7 @@ export class TeamRunService {
     const template = await prisma.teamTemplate.create({
       data: {
         name: input.name,
+        heartbeatTimeoutMinutes: input.heartbeatTimeoutMinutes ?? 10,
         members: {
           create: members,
         },
@@ -649,6 +652,7 @@ export class TeamRunService {
     await this.getTeamTemplateById(id);
     if (
       input.name === undefined
+      && input.heartbeatTimeoutMinutes === undefined
       && input.memberPresetIds === undefined
       && input.members === undefined
     ) {
@@ -662,10 +666,15 @@ export class TeamRunService {
     }
 
     await prisma.$transaction(async (tx) => {
-      if (input.name !== undefined) {
+      if (input.name !== undefined || input.heartbeatTimeoutMinutes !== undefined) {
         await tx.teamTemplate.update({
           where: { id },
-          data: { name: input.name },
+          data: {
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(input.heartbeatTimeoutMinutes !== undefined
+              ? { heartbeatTimeoutMinutes: input.heartbeatTimeoutMinutes }
+              : {}),
+          },
         });
       }
 
@@ -709,6 +718,7 @@ export class TeamRunService {
     }
 
     const snapshots = applyStableInstanceNames(await this.buildTeamMemberSnapshots(input));
+    const heartbeatTimeoutMinutes = await this.resolveHeartbeatTimeoutMinutes(input);
     if (snapshots.length === 0) {
       throw new ValidationError('TeamRun must include at least one member');
     }
@@ -720,6 +730,7 @@ export class TeamRunService {
           data: {
             taskId,
             mode: input.mode,
+            heartbeatTimeoutMinutes,
           },
         });
         teamRunId = teamRun.id;
@@ -765,6 +776,7 @@ export class TeamRunService {
 
   async createTeamRunWithInitialRoomMessage(taskId: string, input: CreateTeamRunInput): Promise<TeamRun> {
     const snapshots = applyStableInstanceNames(await this.buildTeamMemberSnapshots(input));
+    const heartbeatTimeoutMinutes = await this.resolveHeartbeatTimeoutMinutes(input);
     if (snapshots.length === 0) {
       throw new ValidationError('TeamRun must include at least one member');
     }
@@ -806,6 +818,7 @@ export class TeamRunService {
           data: {
             taskId,
             mode: input.mode,
+            heartbeatTimeoutMinutes,
           },
         });
         teamRunId = teamRun.id;
@@ -1617,6 +1630,20 @@ export class TeamRunService {
     }
 
     return snapshots;
+  }
+
+  private async resolveHeartbeatTimeoutMinutes(input: CreateTeamRunInput): Promise<number> {
+    if (!input.teamTemplateId) {
+      return 10;
+    }
+    const template = await prisma.teamTemplate.findUnique({
+      where: { id: input.teamTemplateId },
+      select: { heartbeatTimeoutMinutes: true },
+    });
+    if (!template) {
+      throw new NotFoundError('TeamTemplate', input.teamTemplateId);
+    }
+    return template.heartbeatTimeoutMinutes;
   }
 
   private async buildAddTeamRunMemberSnapshot(input: AddTeamRunMemberInput): Promise<TeamMemberSnapshot> {

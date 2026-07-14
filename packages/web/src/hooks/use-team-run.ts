@@ -81,6 +81,7 @@ export type UpdateMemberPresetInput = Partial<CreateMemberPresetInput>
 
 export type CreateTeamTemplateInput = {
   name: string
+  heartbeatTimeoutMinutes?: number
   memberPresetIds?: string[]
   members?: Array<{
     memberPresetId: string

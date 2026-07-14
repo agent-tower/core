@@ -64,6 +64,7 @@ interface MemberPresetFormState {
 
 interface TeamTemplateFormState {
   name: string
+  heartbeatTimeoutMinutes: number
   memberPresetIds: string[]
 }
 
@@ -106,8 +107,8 @@ function memberPresetToForm(preset: MemberPreset): MemberPresetFormState {
   return { name: preset.name, aliasesText: preset.aliases.join(', '), providerId: preset.providerId, rolePrompt: preset.rolePrompt, capabilities: { ...DEFAULT_CAPABILITIES, ...preset.capabilities }, workspacePolicy: preset.workspacePolicy, triggerPolicy: preset.triggerPolicy, sessionPolicy: preset.sessionPolicy, queueManagementPolicy: preset.queueManagementPolicy, avatar: preset.avatar ?? '' }
 }
 
-function createBlankTemplateForm(): TeamTemplateFormState { return { name: '', memberPresetIds: [] } }
-function teamTemplateToForm(template: TeamTemplate): TeamTemplateFormState { return { name: template.name, memberPresetIds: template.members?.map(member => member.memberPresetId) ?? [] } }
+function createBlankTemplateForm(): TeamTemplateFormState { return { name: '', heartbeatTimeoutMinutes: 10, memberPresetIds: [] } }
+function teamTemplateToForm(template: TeamTemplate): TeamTemplateFormState { return { name: template.name, heartbeatTimeoutMinutes: template.heartbeatTimeoutMinutes ?? 10, memberPresetIds: template.members?.map(member => member.memberPresetId) ?? [] } }
 
 function getInstanceLabel(name: string, index: number, ids: string[], id: string): string {
   const totalForId = ids.filter(item => item === id).length
@@ -282,7 +283,7 @@ export function TeamSettingsPage() {
   }
 
   const handleTemplateSave = async () => {
-    const payload = { name: templateForm.name.trim(), memberPresetIds: templateForm.memberPresetIds }
+    const payload = { name: templateForm.name.trim(), heartbeatTimeoutMinutes: templateForm.heartbeatTimeoutMinutes, memberPresetIds: templateForm.memberPresetIds }
     try {
       if (templateMode === 'create' || !selectedTemplateId) { const c = await createTemplate.mutateAsync(payload); applyTemplateSelection('edit', c); toast.success(t('已创建')) }
       else { const u = await updateTemplate.mutateAsync({ id: selectedTemplateId, data: payload }); applyTemplateSelection('edit', u); toast.success(t('已保存')) }
@@ -565,6 +566,19 @@ export function TeamSettingsPage() {
               <div>
                 <label className="block text-[12px] font-medium text-muted-foreground mb-1">{t('模板名称')}</label>
                 <input value={templateForm.name} onChange={e => updateTemplateField('name', e.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors focus:border-ring focus:outline-none" />
+              </div>
+
+              <div>
+                <label className="block text-[12px] font-medium text-muted-foreground mb-1">{t('成员心跳检测时间（分钟）')}</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={120}
+                  step={1}
+                  value={templateForm.heartbeatTimeoutMinutes}
+                  onChange={e => updateTemplateField('heartbeatTimeoutMinutes', Math.min(120, Math.max(1, Number(e.target.value) || 1)))}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors focus:border-ring focus:outline-none"
+                />
               </div>
 
               <div className="grid gap-4 xl:grid-cols-2">

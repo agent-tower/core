@@ -219,6 +219,32 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
     expect(messenger.stop).not.toHaveBeenCalled();
   });
 
+  it('uses the TeamRun heartbeat timeout when no test override is provided', async () => {
+    const { teamRun, workspace, member } = await createFixture();
+    await prisma.teamRun.update({
+      where: { id: teamRun.id },
+      data: { heartbeatTimeoutMinutes: 10 },
+    });
+    await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workspaceId: workspace.id,
+      memberId: member.id,
+      lastHeartbeatAt: new Date(NOW.getTime() - 9 * 60_000),
+    });
+    const messenger = createMessengerMock({ alive: true });
+    const service = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: messenger,
+      eventBus,
+      now: () => NOW,
+      scheduleReminders: false,
+    });
+
+    await service.reconcileStalledInvocations();
+
+    expect(messenger.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('does not treat watchdog-updated timestamps as real heartbeat progress', async () => {
     const { teamRun, workspace, member } = await createFixture();
     const firstScanAt = NOW;

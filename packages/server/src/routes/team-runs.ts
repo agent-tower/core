@@ -73,6 +73,7 @@ const teamTemplateMemberSchema = z.object({
 
 const createTeamTemplateSchema = z.object({
   name: z.string().min(1),
+  heartbeatTimeoutMinutes: z.number().int().min(1).max(120).default(10),
   memberPresetIds: z.array(z.string().min(1)).optional(),
   members: z.array(teamTemplateMemberSchema).optional(),
 });

@@ -128,6 +128,7 @@ vi.mock('@/hooks/use-attachments', async () => {
 const teamRun: TeamRun = {
   id: 'team-run-1',
   taskId: 'task-1',
+  heartbeatTimeoutMinutes: 10,
   mode: 'AUTO',
   members: [],
   invocations: [],

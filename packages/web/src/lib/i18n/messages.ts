@@ -1014,6 +1014,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '仅支持 PNG、JPG、WebP 头像。': 'Only PNG, JPG, and WebP avatars are supported.',
     '可用预设': 'Available presets',
     '模板名称': 'Template name',
+    '成员心跳检测时间（分钟）': 'Member heartbeat timeout (minutes)',
     '内容': 'Content',
     '能力': 'capabilities',
     '启动 Agent 失败': 'Failed to start Agent',

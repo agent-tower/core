@@ -17,7 +17,7 @@ const DEFAULT_REMINDER_DELAYS_MS = [
 ];
 const DEFAULT_MAX_ROOM_REPLY_REMINDERS = 10;
 // RUNNING 成员超过该静默时长（无 session:patch 真实进展）视为无心跳，开始唤醒。
-const DEFAULT_HEARTBEAT_IDLE_THRESHOLD_MS = 5 * 60_000;
+const DEFAULT_HEARTBEAT_IDLE_THRESHOLD_MS = 10 * 60_000;
 // 绝对兜底：首次 nudge 起超过该时长仍未收到 room message（真实汇报）则强制释放，防止“吐假输出骗过清零”的活锁。
 const DEFAULT_ABSOLUTE_NUDGE_BUDGET_MS = 30 * 60_000;
 const TERMINAL_INVOCATION_STATUSES: AgentInvocationStatus[] = ['COMPLETED', 'FAILED', 'CANCELLED'];
@@ -34,6 +34,7 @@ type InvocationWithTaskState = Prisma.AgentInvocationGetPayload<{
   include: {
     teamRun: {
       select: {
+        heartbeatTimeoutMinutes: true;
         task: {
           select: { deletedAt: true };
         };
@@ -86,7 +87,7 @@ export class TeamReconcilerService {
   private readonly reminderDelaysMs: number[];
   private readonly maxRoomReplyReminders: number;
   private readonly scheduleReminders: boolean;
-  private readonly heartbeatIdleThresholdMs: number;
+  private readonly heartbeatIdleThresholdMs?: number;
   private readonly absoluteNudgeBudgetMs: number;
 
   constructor(dependencies: TeamReconcilerDependencies = {}) {
@@ -97,7 +98,7 @@ export class TeamReconcilerService {
     this.reminderDelaysMs = dependencies.reminderDelaysMs ?? DEFAULT_REMINDER_DELAYS_MS;
     this.maxRoomReplyReminders = dependencies.maxRoomReplyReminders ?? DEFAULT_MAX_ROOM_REPLY_REMINDERS;
     this.scheduleReminders = dependencies.scheduleReminders ?? true;
-    this.heartbeatIdleThresholdMs = dependencies.heartbeatIdleThresholdMs ?? DEFAULT_HEARTBEAT_IDLE_THRESHOLD_MS;
+    this.heartbeatIdleThresholdMs = dependencies.heartbeatIdleThresholdMs;
     this.absoluteNudgeBudgetMs = dependencies.absoluteNudgeBudgetMs ?? DEFAULT_ABSOLUTE_NUDGE_BUDGET_MS;
   }
 
@@ -149,7 +150,7 @@ export class TeamReconcilerService {
   async reconcileInvocation(invocationId: string): Promise<void> {
     const invocation = await prisma.agentInvocation.findUnique({
       where: { id: invocationId },
-      include: { teamRun: { select: { task: { select: { deletedAt: true } } } } },
+      include: { teamRun: { select: { heartbeatTimeoutMinutes: true, task: { select: { deletedAt: true } } } } },
     });
     if (!invocation) {
       return;
@@ -306,7 +307,7 @@ export class TeamReconcilerService {
   async reconcileStalledInvocations(): Promise<void> {
     const candidates = await prisma.agentInvocation.findMany({
       where: { status: 'RUNNING', sessionId: { not: null } },
-      include: { teamRun: { select: { task: { select: { deletedAt: true } } } } },
+      include: { teamRun: { select: { heartbeatTimeoutMinutes: true, task: { select: { deletedAt: true } } } } },
     });
     const now = this.now();
 
@@ -326,7 +327,7 @@ export class TeamReconcilerService {
   async reconcileOrphanInvocations(): Promise<void> {
     const candidates = await prisma.agentInvocation.findMany({
       where: { status: 'RUNNING', sessionId: { not: null } },
-      include: { teamRun: { select: { task: { select: { deletedAt: true } } } } },
+      include: { teamRun: { select: { heartbeatTimeoutMinutes: true, task: { select: { deletedAt: true } } } } },
     });
     const failures: unknown[] = [];
 
@@ -435,7 +436,10 @@ export class TeamReconcilerService {
     const lastActivity = invocation.lastHeartbeatAt ?? invocation.createdAt;
     const idleMs = now.getTime() - lastActivity.getTime();
 
-    if (idleMs < this.heartbeatIdleThresholdMs) {
+    const configuredThresholdMs = invocation.teamRun.heartbeatTimeoutMinutes * 60_000;
+    const heartbeatIdleThresholdMs = this.heartbeatIdleThresholdMs
+      ?? (configuredThresholdMs > 0 ? configuredThresholdMs : DEFAULT_HEARTBEAT_IDLE_THRESHOLD_MS);
+    if (idleMs < heartbeatIdleThresholdMs) {
       if (invocation.roomReplyReminderCount > 0 || invocation.nextRoomReplyReminderAt) {
         await prisma.agentInvocation.update({
           where: { id: invocation.id },

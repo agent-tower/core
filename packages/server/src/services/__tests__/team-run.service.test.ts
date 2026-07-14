@@ -265,6 +265,24 @@ describe('TeamRunService', () => {
     expect(teamRun.members?.map((member) => member.presetId)).toEqual([first.id, second.id]);
   });
 
+  it('snapshots the TeamTemplate heartbeat timeout into the TeamRun', async () => {
+    const preset = await service.createMemberPreset(presetInput('Planner', ['planner']));
+    const template = await service.createTeamTemplate({
+      name: 'Patient team',
+      heartbeatTimeoutMinutes: 20,
+      memberPresetIds: [preset.id],
+    });
+    const task = await createTask();
+
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      teamTemplateId: template.id,
+    });
+
+    expect(template.heartbeatTimeoutMinutes).toBe(20);
+    expect(teamRun.heartbeatTimeoutMinutes).toBe(20);
+  });
+
   it('creates stable instance names when the same MemberPreset is selected more than once', async () => {
     const preset = await service.createMemberPreset(presetInput('Implementer', ['impl']));
     const task = await createTask();

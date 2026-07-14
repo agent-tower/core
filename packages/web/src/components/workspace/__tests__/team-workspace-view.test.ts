@@ -26,6 +26,7 @@ function workspace(input: Partial<Workspace> & Pick<Workspace, 'id' | 'branchNam
 const teamRun = {
   id: 'team-run-1',
   taskId: 'task-1',
+  heartbeatTimeoutMinutes: 10,
   mainWorkspaceId: 'main-ws',
   mode: 'AUTO',
   members: [

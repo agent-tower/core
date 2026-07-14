@@ -630,6 +630,7 @@ export interface MemberPreset {
 export interface TeamTemplate {
   id: string
   name: string
+  heartbeatTimeoutMinutes: number
   members?: TeamTemplateMember[]
   createdAt?: string
   updatedAt?: string
@@ -648,6 +649,7 @@ export interface TeamTemplateMember {
 export interface TeamRun {
   id: string
   taskId: string
+  heartbeatTimeoutMinutes: number
   /** Root workspace used as TeamRun main workspace for shared/none members and child workspace parent. */
   mainWorkspaceId?: string | null
   mode: TeamRunMode
