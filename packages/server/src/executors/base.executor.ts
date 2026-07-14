@@ -39,6 +39,13 @@ function ptyLog(pid: number, msg: string): void {
   try { appendFileSync(PTY_LOG_FILE, line); } catch { /* ignore */ }
 }
 
+function logPtyOutput(pid: number, data: string): void {
+  const cleaned = stripAnsiSequences(data).replace(/\s+/g, ' ').trim();
+  if (cleaned) {
+    ptyLog(pid, `PTY> ${cleaned.slice(0, 300)}`);
+  }
+}
+
 function hashForLog(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 12);
 }
@@ -333,10 +340,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       if (outputBuffer.length < OUTPUT_BUFFER_LIMIT) {
         outputBuffer += data;
       }
-      const cleaned = stripAnsiSequences(data).replace(/\s+/g, ' ').trim();
-      if (cleaned) {
-        ptyLog(shell.pid, `PTY> ${cleaned.slice(0, 300)}`);
-      }
+      logPtyOutput(shell.pid, data);
     });
 
     shell.onExit(({ exitCode, signal }) => {
@@ -430,10 +434,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         if (outputBuffer.length < OUTPUT_BUFFER_LIMIT) {
           outputBuffer += data;
         }
-        const byteLength = Buffer.byteLength(data, 'utf8');
-        if (byteLength > 0) {
-          ptyLog(spawnedShell.pid, `PTY> <${byteLength} bytes>`);
-        }
+        logPtyOutput(spawnedShell.pid, data);
       });
 
       // 监听退出事件

@@ -300,6 +300,28 @@ describe('BaseExecutor.spawnWithStdin', () => {
     expect(logs).toContain('sha256=');
   });
 
+  it('logs sanitized PTY output instead of only its byte length', async () => {
+    const stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let onDataCallback: ((data: string) => void) | undefined;
+    spawnMock.mockReturnValueOnce({
+      pid: 12345,
+      onData: vi.fn((callback: (data: string) => void) => {
+        onDataCallback = callback;
+        return { dispose: vi.fn() };
+      }),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+      kill: vi.fn(),
+    });
+
+    const executor = new TestExecutor();
+    await executor.spawnForTest({ program: 'mock-agent', args: ['--json'] }, '{"message":"hello"}');
+    onDataCallback?.('\u001b[32mfirst line\u001b[0m\r\nsecond line');
+
+    const logs = stdoutWriteSpy.mock.calls.map(([line]) => String(line)).join('\n');
+    expect(logs).toContain('PTY> first line second line');
+    expect(logs).not.toMatch(/PTY> <\d+ bytes>/);
+  });
+
   it('redacts token-like config override values from spawn logs', async () => {
     const stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     spawnMock.mockReturnValueOnce({
