@@ -6,6 +6,7 @@ ARG PNPM_VERSION
 
 WORKDIR /app
 ENV CI=1
+ENV NODE_OPTIONS=--max-old-space-size=4096
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
