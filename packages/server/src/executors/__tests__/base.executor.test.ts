@@ -265,6 +265,43 @@ describe('BaseExecutor.spawnWithStdin', () => {
     expect(exitDispose).toHaveBeenCalledTimes(1);
   });
 
+  it('buffers PTY events fired before pipeline attach and hands them over exactly once', async () => {
+    // 模拟支持多 listener 的 PTY（真实 node-pty 语义），
+    // 以便 early-event collector 和日志 listener 同时收到事件
+    const dataListeners: Array<(data: string) => void> = [];
+    const exitListeners: Array<(e: { exitCode: number; signal?: number }) => void> = [];
+    spawnMock.mockReturnValueOnce({
+      pid: 12345,
+      onData: vi.fn((cb: (data: string) => void) => {
+        dataListeners.push(cb);
+        return { dispose: () => dataListeners.splice(dataListeners.indexOf(cb), 1) };
+      }),
+      onExit: vi.fn((cb: (e: { exitCode: number; signal?: number }) => void) => {
+        exitListeners.push(cb);
+        return { dispose: () => exitListeners.splice(exitListeners.indexOf(cb), 1) };
+      }),
+      kill: vi.fn(),
+    });
+
+    const executor = new TestExecutor();
+    const result = await executor.spawnForTest({ program: 'mock-agent', args: [] }, '{"message":"hello"}');
+
+    // spawn 返回后、pipeline attach 前，进程输出并退出（快速失败场景）
+    for (const l of [...dataListeners]) l('{"type":"thread.started","thread_id":"t1"}\n');
+    for (const l of [...exitListeners]) l({ exitCode: 2 });
+
+    const early = result.takeEarlyEvents?.() ?? [];
+    expect(early).toEqual([
+      { type: 'data', data: '{"type":"thread.started","thread_id":"t1"}\n' },
+      { type: 'exit', exitCode: 2 },
+    ]);
+
+    // 二次取走返回空；取走后事件不再缓存（实时 listener 已接管）
+    expect(result.takeEarlyEvents?.()).toEqual([])
+    for (const l of [...dataListeners]) l('late data');
+    expect(result.takeEarlyEvents?.()).toEqual([])
+  });
+
   it('leaves the stdin temp file for the wrapper cleanup after successful spawn', async () => {
     spawnMock.mockReturnValueOnce({
       pid: 12345,

@@ -133,6 +133,15 @@ export enum ExecutorExitResult {
 export type ExecutorExitSignal = Promise<ExecutorExitResult>;
 
 /**
+ * PTY 事件在 spawn 返回后、AgentPipeline 挂载 listener 前就可能触发
+ * （node-pty 不重放事件）。executor 在此窗口内缓存事件，pipeline 挂载后重放，
+ * 否则启动即失败的进程会丢失 exit 事件，session 永远停留在 RUNNING。
+ */
+export type EarlyPtyEvent =
+  | { type: 'data'; data: string }
+  | { type: 'exit'; exitCode: number };
+
+/**
  * 生成的子进程
  */
 export interface SpawnedChild {
@@ -144,6 +153,11 @@ export interface SpawnedChild {
   exitSignal?: ExecutorExitSignal;
   /** Container -> Executor: 容器想要取消执行时发出信号 */
   cancel?: CancellationToken;
+  /**
+   * 取走 spawn 与 pipeline attach 之间缓存的 PTY 事件并停止缓存。
+   * 必须在实时 listener 注册完成后调用（同步同一 tick 内无事件空窗）。
+   */
+  takeEarlyEvents?: () => EarlyPtyEvent[];
 }
 
 /**
@@ -279,6 +293,30 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
   }
 
   /**
+   * 缓存 spawn 返回后、AgentPipeline attach 前的 PTY 事件。
+   * 返回一次性的取走函数（取走即停止缓存并解除监听）。
+   */
+  private collectEarlyPtyEvents(shell: IPty): () => EarlyPtyEvent[] {
+    let events: EarlyPtyEvent[] = [];
+    let handedOff = false;
+    const offData = shell.onData((data) => {
+      if (!handedOff) events.push({ type: 'data', data });
+    });
+    const offExit = shell.onExit(({ exitCode }) => {
+      if (!handedOff) events.push({ type: 'exit', exitCode });
+    });
+    return () => {
+      if (handedOff) return [];
+      handedOff = true;
+      offData.dispose();
+      offExit.dispose();
+      const taken = events;
+      events = [];
+      return taken;
+    };
+  }
+
+  /**
    * 内部启动方法
    */
   protected async spawnInternal(
@@ -334,6 +372,8 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
 
     ptyLog(shell.pid, `Process spawned`);
 
+    const takeEarlyEvents = this.collectEarlyPtyEvents(shell);
+
     // 收集并实时记录 PTY 输出（写入系统临时目录日志方便诊断）
     let outputBuffer = '';
     const offData = shell.onData((data) => {
@@ -378,6 +418,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       pid: shell.pid,
       pty: shell,
       cancel,
+      takeEarlyEvents,
     };
   }
 
@@ -429,6 +470,8 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
 
       ptyLog(spawnedShell.pid, `Process spawned with stdin`);
 
+      const takeEarlyEvents = this.collectEarlyPtyEvents(spawnedShell);
+
       let outputBuffer = '';
       offData = spawnedShell.onData((data) => {
         if (outputBuffer.length < OUTPUT_BUFFER_LIMIT) {
@@ -469,6 +512,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         pid: spawnedShell.pid,
         pty: spawnedShell,
         cancel,
+        takeEarlyEvents,
       };
     } catch (error) {
       writeErrorLog({

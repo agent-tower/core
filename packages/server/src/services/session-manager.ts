@@ -694,10 +694,23 @@ export class SessionManager {
   ): void {
     const msgStore = sessionMsgStoreManager.getOrCreate(sessionId);
     const parser = this.createParser(agentType, workingDir, msgStore);
-    const pipeline = new AgentPipeline(sessionId, spawnResult.pty, parser, msgStore, this.eventBus);
-    this.pipelines.set(sessionId, pipeline);
-    if (spawnResult.cancel) {
-      this.cancelTokens.set(sessionId, spawnResult.cancel);
+    // takeEarlyEvents 交回 spawn→attach 窗口内触发的 PTY data/exit 事件；
+    // AgentPipeline 构造时同步重放，避免快速退出的进程丢失 exit（session 永久 RUNNING）。
+    const pipeline = new AgentPipeline(
+      sessionId,
+      spawnResult.pty,
+      parser,
+      msgStore,
+      this.eventBus,
+      spawnResult.takeEarlyEvents?.(),
+    );
+    // 重放的 exit 会让 pipeline 在构造期间就自毁；已死的 pipeline 不能进 map，
+    // 否则 hasActivePipeline 会误报存活。
+    if (pipeline.isAlive) {
+      this.pipelines.set(sessionId, pipeline);
+      if (spawnResult.cancel) {
+        this.cancelTokens.set(sessionId, spawnResult.cancel);
+      }
     }
   }
 

@@ -10,6 +10,8 @@ const DEBUG_PARSER = process.env.DEBUG_PARSER === 'true';
 import {
   type NormalizedEntry,
   type ToolStatus,
+  type FileChange,
+  type TodoItem,
   createAssistantMessage,
   createToolUse,
   createTokenUsageInfo,
@@ -60,6 +62,10 @@ interface CodexItem {
   arguments?: unknown;
   result?: unknown;
   error?: unknown;
+  /** file_change item: 变更文件列表 */
+  changes?: Array<{ path?: string; kind?: string }>;
+  /** todo_list item: 计划条目 */
+  items?: Array<{ text?: string; completed?: boolean }>;
 }
 
 /**
@@ -79,8 +85,8 @@ export class CodexParser {
   private pushedErrors = new Set<string>();
   /** 重试类错误的 entry index（用于原地更新而非创建新条目） */
   private retryErrorIndex: number | null = null;
-  /** mcp_tool_call item.id -> entry index */
-  private mcpToolEntryMap = new Map<string, number>();
+  /** 按 item.id upsert 的 entry（mcp_tool_call / file_change / todo_list）item.id -> entry index */
+  private itemEntryMap = new Map<string, number>();
 
   constructor(msgStore: MsgStore) {
     this.msgStore = msgStore;
@@ -223,6 +229,10 @@ export class CodexParser {
         this.handleItemStarted(event);
         break;
 
+      case 'item.updated':
+        this.handleItemUpdated(event);
+        break;
+
       case 'turn.completed':
         if (event.usage) {
           this.handleUsage(event.usage);
@@ -240,6 +250,23 @@ export class CodexParser {
   }
 
   /**
+   * 处理 item.updated 事件（如 todo_list 勾选进度）
+   * 复用 upsert 语义：已存在则原地 replace，未见过则新增。
+   */
+  private handleItemUpdated(event: CodexEvent): void {
+    const item = event.item;
+    if (!item) return;
+
+    if (item.type === 'mcp_tool_call') {
+      this.upsertMcpToolEntry(item, this.getMcpToolStatus(item));
+    } else if (item.type === 'file_change') {
+      this.upsertFileChangeEntry(item);
+    } else if (item.type === 'todo_list') {
+      this.upsertTodoListEntry(item);
+    }
+  }
+
+  /**
    * 处理 item.started 事件
    */
   private handleItemStarted(event: CodexEvent): void {
@@ -248,6 +275,10 @@ export class CodexParser {
 
     if (item.type === 'mcp_tool_call') {
       this.upsertMcpToolEntry(item, this.getMcpToolStatus(item));
+    } else if (item.type === 'file_change') {
+      this.upsertFileChangeEntry(item);
+    } else if (item.type === 'todo_list') {
+      this.upsertTodoListEntry(item);
     } else if (item.type === 'command_execution' && item.command) {
       // 创建工具使用记录
       const toolUse = createToolUse(
@@ -282,6 +313,10 @@ export class CodexParser {
       this.msgStore.pushPatch(patch);
     } else if (item.type === 'mcp_tool_call') {
       this.upsertMcpToolEntry(item, this.getMcpToolStatus(item));
+    } else if (item.type === 'file_change') {
+      this.upsertFileChangeEntry(item);
+    } else if (item.type === 'todo_list') {
+      this.upsertTodoListEntry(item);
     } else if (item.type === 'command_execution') {
       if (this.currentToolUseId === item.id && this.currentToolIndex !== null) {
         const status = item.exit_code === 0 ? 'success' : 'failed';
@@ -300,8 +335,15 @@ export class CodexParser {
   }
 
   private upsertMcpToolEntry(item: CodexItem, status: ToolStatus): void {
-    const entry = this.createMcpToolEntry(item, status);
-    const existingIndex = this.mcpToolEntryMap.get(item.id);
+    this.upsertItemEntry(item.id, this.createMcpToolEntry(item, status));
+  }
+
+  /**
+   * 按 item.id upsert entry：同一 item 的 started/updated/completed 原地更新，
+   * 避免长任务期间重复刷条目，同时保证每次状态变化都有 patch 推送到前端。
+   */
+  private upsertItemEntry(itemId: string, entry: NormalizedEntry): void {
+    const existingIndex = this.itemEntryMap.get(itemId);
 
     if (existingIndex !== undefined) {
       const patch = replaceNormalizedEntry(existingIndex, entry);
@@ -310,9 +352,65 @@ export class CodexParser {
     }
 
     const index = this.indexProvider.next();
-    this.mcpToolEntryMap.set(item.id, index);
+    this.itemEntryMap.set(itemId, index);
     const patch = addNormalizedEntry(index, entry);
     this.msgStore.pushPatch(patch);
+  }
+
+  /**
+   * file_change item → file_edit 工具 entry。
+   * Codex 修改文件阶段可能持续很久，这些事件曾被丢弃，导致 UI 长时间零输出。
+   */
+  private upsertFileChangeEntry(item: CodexItem): void {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const fileChanges: FileChange[] = changes.flatMap((change): FileChange[] => {
+      const path = typeof change?.path === 'string' ? change.path : '';
+      if (!path) return [];
+      const kind = change?.kind?.toLowerCase();
+      if (kind === 'add') return [{ type: 'write', path }];
+      if (kind === 'delete') return [{ type: 'delete', path }];
+      return [{ type: 'edit', path }];
+    });
+
+    const summary = fileChanges.length > 0
+      ? fileChanges
+          .map((c) => ('path' in c ? `${c.type}: ${c.path}` : `${c.type}: ${c.from} → ${c.to}`))
+          .join('\n')
+      : 'File changes';
+
+    const entry = createToolUse('apply_patch', summary, 'file_edit', item.id, item.id);
+    this.upsertItemEntry(item.id, {
+      ...entry,
+      metadata: {
+        ...entry.metadata,
+        status: this.getMcpToolStatus(item),
+        ...(fileChanges.length > 0 ? { fileChanges } : {}),
+      },
+    });
+  }
+
+  /**
+   * todo_list item → todo_management entry（item.updated 勾选进度原地刷新）。
+   */
+  private upsertTodoListEntry(item: CodexItem): void {
+    const items = Array.isArray(item.items) ? item.items : [];
+    const todos: TodoItem[] = items.map((t) => ({
+      content: typeof t?.text === 'string' ? stripAnsiSequences(t.text) : '',
+      status: t?.completed ? 'completed' : 'pending',
+    }));
+
+    const summary = todos.length > 0
+      ? todos.map((t) => `${t.status === 'completed' ? '[x]' : '[ ]'} ${t.content}`).join('\n')
+      : 'Todo list';
+
+    const entry = createToolUse('update_plan', summary, 'todo_management', item.id, item.id);
+    this.upsertItemEntry(item.id, {
+      ...entry,
+      metadata: {
+        ...entry.metadata,
+        ...(todos.length > 0 ? { todos } : {}),
+      },
+    });
   }
 
   private createMcpToolEntry(item: CodexItem, status: ToolStatus): NormalizedEntry {
@@ -459,10 +557,14 @@ export class CodexParser {
 
   /**
    * 完成解析
+   * 幂等：残留 buffer 消费后立即清空。PTY exit 与 pipeline destroy 都会走到
+   * finish，双调用不能把最后一段无换行输出重复解析成重复条目。
    */
   finish(exitCode?: number): void {
-    if (this.buffer.trim()) {
-      this.parseJsonSegments(this.buffer);
+    const tail = this.buffer;
+    this.buffer = '';
+    if (tail.trim()) {
+      this.parseJsonSegments(tail);
     }
 
     // 进程异常退出且没有通过 JSON 事件推送过错误时，才用 nonJsonLines 作为兜底
