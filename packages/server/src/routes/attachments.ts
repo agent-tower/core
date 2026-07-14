@@ -152,7 +152,8 @@ export async function attachmentRoutes(app: FastifyInstance) {
 
   /**
    * GET /by-path?path=/abs/path/to/file
-   * 通过磁盘路径获取附件（仅允许 data/attachments/ 目录下的文件）
+   * 通过磁盘路径获取附件或会话产物。
+   * 仅允许 data/attachments 和 data/conversations 目录下的文件。
    */
   app.get('/by-path', async (request, reply) => {
     const { path: filePath } = request.query as { path?: string };
@@ -161,12 +162,17 @@ export async function attachmentRoutes(app: FastifyInstance) {
       return { error: 'path query parameter is required' };
     }
 
-    // 安全校验：必须在 attachments 存储目录下
+    // 安全校验：必须在附件或会话产物目录下
     const storageDir = path.resolve(getStorageDir());
+    const conversationsDir = path.resolve(path.dirname(storageDir), 'conversations');
     const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(storageDir)) {
+    const isWithin = (root: string) => {
+      const relative = path.relative(root, resolved);
+      return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    };
+    if (!isWithin(storageDir) && !isWithin(conversationsDir)) {
       reply.code(403);
-      return { error: 'Access denied: path is outside attachments directory' };
+      return { error: 'Access denied: path is outside artifact directories' };
     }
 
     if (!fssync.existsSync(resolved)) {

@@ -2,15 +2,15 @@ import { useState, useMemo, useImperativeHandle, forwardRef, memo, useRef, useEf
 import { type LogEntry, LogType, type ToolStatus } from '@agent-tower/shared/log-adapter'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
-import type { UrlTransform } from 'streamdown'
 import { useI18n } from '@/lib/i18n'
-import { getApiBaseUrl } from '@/lib/api-base-url'
-import { streamdownComponents, streamdownMermaidControls } from '@/lib/streamdown-components'
+import { createMessageStreamdownComponents, streamdownMermaidControls } from '@/lib/streamdown-components'
 import { useStreamdownMermaidPlugins } from '@/lib/streamdown-mermaid'
 import 'streamdown/styles.css'
 
 interface LogStreamProps {
   logs: LogEntry[]
+  workingDir?: string
+  onOpenWorkspaceFile?: (path: string) => void
   /** 外部滚动容器 ref，用于滚动到底部（可选，仅 legacy 用法需要） */
   scrollElementRef?: React.RefObject<HTMLDivElement | null>
 }
@@ -111,50 +111,29 @@ function groupExecutionDetails(logs: LogEntry[]): RenderItem[] {
   return items
 }
 
-// ============ URL Transform ============
-
-const API_BASE_URL = getApiBaseUrl()
-
-/**
- * 将磁盘绝对路径转换为 HTTP URL，使浏览器能显示附件图片。
- * 转换逻辑：排除 HTTP URL 和 API 路径，将绝对路径转为 /api/attachments/by-path?path=... 请求。
- */
-const attachmentUrlTransform: UrlTransform = (url) => {
-  // 1. 如果是 HTTP/HTTPS URL，直接返回
-  if (url.includes('://')) {
-    return url
-  }
-
-  // 2. 如果已经是 API 路径，直接返回
-  if (url.startsWith('/api/')) {
-    return url
-  }
-
-  // 3. 如果是绝对路径（以 / 开头），转换为 HTTP URL
-  if (url.startsWith('/')) {
-    return `${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`
-  }
-
-  // 4. 相对路径保持原样
-  return url
-}
-
 // ============ Components ============
 
 const MarkdownMessage = memo(({
   content,
   className,
+  workingDir,
+  onOpenWorkspaceFile,
 }: {
   content: string
   className?: string
+  workingDir?: string
+  onOpenWorkspaceFile?: (path: string) => void
 }) => {
   const mermaidPlugins = useStreamdownMermaidPlugins(content)
+  const components = useMemo(
+    () => createMessageStreamdownComponents({ workingDir, onOpenWorkspaceFile }),
+    [onOpenWorkspaceFile, workingDir],
+  )
 
   return (
     <Streamdown
       className={className}
-      urlTransform={attachmentUrlTransform}
-      components={streamdownComponents}
+      components={components}
       plugins={mermaidPlugins}
       controls={mermaidPlugins ? streamdownMermaidControls : undefined}
     >
@@ -165,12 +144,12 @@ const MarkdownMessage = memo(({
 MarkdownMessage.displayName = 'MarkdownMessage'
 
 // 1. User Message — 右对齐聊天气泡
-const UserMessage = memo(({ content, compact }: { content: string; compact?: boolean }) => (
+const UserMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string) => void }) => (
   <div className={compact ? 'flex justify-end mb-4 mt-2' : 'flex justify-end mb-8 mt-4'}>
     <div className={`relative bg-neutral-200 text-neutral-900 rounded-2xl rounded-tr-sm max-w-[85%] min-w-0 leading-relaxed ${
       compact ? 'px-3.5 py-2.5 text-[13px]' : 'px-5 py-3.5 text-sm'
     }`}>
-      <MarkdownMessage content={content} />
+      <MarkdownMessage content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
     </div>
   </div>
 ))
@@ -391,9 +370,9 @@ const AgentText = memo(({ content, compact }: { content: string; compact?: boole
 AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
-const AssistantMessage = memo(({ content, compact }: { content: string; compact?: boolean }) => (
+const AssistantMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string) => void }) => (
   <div className={`text-neutral-900 min-w-0 ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
-    <MarkdownMessage className="space-y-2" content={content} />
+    <MarkdownMessage className="space-y-2" content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
   </div>
 ))
 AssistantMessage.displayName = 'AssistantMessage'
@@ -413,7 +392,7 @@ ErrorMessage.displayName = 'ErrorMessage'
 
 // ============ RenderItem renderer ============
 
-function renderItem(item: RenderItem, compact?: boolean): React.ReactNode {
+function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, onOpenWorkspaceFile?: (path: string) => void): React.ReactNode {
   if (item.kind === 'execution-group') {
     return <ExecutionDetailsGroup logs={item.logs} />
   }
@@ -434,7 +413,7 @@ function renderItem(item: RenderItem, compact?: boolean): React.ReactNode {
 
   switch (log.type) {
     case LogType.User:
-      return <UserMessage content={log.content} compact={compact} />
+      return <UserMessage content={log.content} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
 
     case LogType.Tool:
       return <ToolBlock type={log.type} title={log.title || 'Tool'} content={log.content} />
@@ -443,7 +422,7 @@ function renderItem(item: RenderItem, compact?: boolean): React.ReactNode {
       return <ToolBlock type={log.type} title="Action" content={log.content} />
 
     case LogType.Assistant:
-      return <AssistantMessage content={log.content} compact={compact} />
+      return <AssistantMessage content={log.content} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
 
     case LogType.Info:
             // 跳过 token_usage_info 条目的文本渲染（已由 TokenUsageIndicator 聚合展示）
@@ -466,7 +445,7 @@ function renderItem(item: RenderItem, compact?: boolean): React.ReactNode {
 // ============ Main Component ============
 
 export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
-  function LogStream({ logs, scrollElementRef }, ref) {
+  function LogStream({ logs, scrollElementRef, workingDir, onOpenWorkspaceFile }, ref) {
     const items = useMemo(() => groupExecutionDetails(logs), [logs])
 
     // 暴露 scrollToBottom 给父组件（仅在传入 scrollElementRef 时有效）
@@ -483,7 +462,7 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
     return (
       <div className="w-full mx-auto pb-4 min-w-0" style={{ overflowWrap: 'anywhere' }}>
         {items.map((item) => {
-          const node = renderItem(item)
+          const node = renderItem(item, false, workingDir, onOpenWorkspaceFile)
           return node ? <div key={item.key}>{node}</div> : null
         })}
       </div>

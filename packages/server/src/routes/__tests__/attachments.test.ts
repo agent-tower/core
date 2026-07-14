@@ -97,4 +97,42 @@ describe('attachment routes', () => {
       await app.close();
     }
   });
+
+  it('serves files from the conversation artifact directory', async () => {
+    const artifactPath = path.join(testDir, 'conversations', 'thread-1', 'result.png');
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, Buffer.from('image-content'));
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/by-path?path=${encodeURIComponent(artifactPath)}`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('image/png');
+      expect(response.body).toBe('image-content');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects files from directories that only share an artifact path prefix', async () => {
+    const outsidePath = path.join(testDir, 'conversations-private', 'secret.txt');
+    fs.mkdirSync(path.dirname(outsidePath), { recursive: true });
+    fs.writeFileSync(outsidePath, 'secret');
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/by-path?path=${encodeURIComponent(outsidePath)}`,
+      });
+
+      expect(response.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
 });

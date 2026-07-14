@@ -19,7 +19,7 @@ import { Paperclip, ArrowUp, ArrowDown, ArrowLeft, Play, Square, Code2, Trash2, 
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
-import { WorkspacePanel, type WorkspaceTab } from '@/components/workspace/WorkspacePanel'
+import { WorkspacePanel, type WorkspacePanelHandle } from '@/components/workspace/WorkspacePanel'
 import {
   canRunWorkspaceGitOperations,
   getWorkspaceBranchLabel,
@@ -260,7 +260,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const [isRetrying, setIsRetrying] = useState(false)
   const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
   const [pendingConflictDetails, setPendingConflictDetails] = useState<ConflictDetails | null>(null)
-  const workspacePanelTabRef = useRef<{ setTab: (tab: WorkspaceTab) => void } | null>(null)
+  const workspacePanelTabRef = useRef<WorkspacePanelHandle | null>(null)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const [focusedInvocationSessionId, setFocusedInvocationSessionId] = useState<string | null>(null)
   const [explicitWorkspaceId, setExplicitWorkspaceId] = useState<string | undefined>(undefined)
@@ -282,6 +282,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const startResizeXRef = useRef<number>(0)
   const startWorkspaceWidthRef = useRef<number>(WORKSPACE_PANEL_MIN_WIDTH)
   const mainAreaRef = useRef<HTMLDivElement>(null)
+  const handleOpenWorkspaceFile = useCallback((path: string) => {
+    workspacePanelTabRef.current?.openFile(path)
+  }, [])
 
   // ============ Session Discovery ============
 
@@ -1111,7 +1114,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
                       ) : (
-                        <LogStream logs={logs} />
+                        <LogStream logs={logs} workingDir={workingDir} onOpenWorkspaceFile={handleOpenWorkspaceFile} />
                       )}
                     </div>
                   </div>
@@ -1145,6 +1148,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 onViewInvocationSession={handleViewInvocationSession}
                 changeSummaryBar={workspaceChangeSummaryBar}
                 centered
+                workingDir={workingDir}
+                onOpenWorkspaceFile={handleOpenWorkspaceFile}
               />
             )
           ) : (
@@ -1224,7 +1229,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                   </div>
                 ) : (
-                  <LogStream logs={logs} />
+                  <LogStream logs={logs} workingDir={workingDir} onOpenWorkspaceFile={handleOpenWorkspaceFile} />
                 )
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 text-center">

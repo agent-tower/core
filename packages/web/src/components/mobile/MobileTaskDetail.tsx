@@ -831,6 +831,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                 onViewInvocationSession={handleViewInvocationSession}
                 changeSummaryBar={workspaceChangeSummaryBar}
                 compactComposer
+                workingDir={workingDir}
               />
             )}
           </main>

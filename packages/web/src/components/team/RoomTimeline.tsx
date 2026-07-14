@@ -19,7 +19,6 @@ import {
   X,
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
-import type { UrlTransform } from 'streamdown'
 import type { AgentInvocation, Attachment, Provider, RoomMessage, StructuredMention, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
 import type { PostRoomMessageInput } from '@/hooks/use-team-run'
 import { useAttachmentMetadata, useAttachments } from '@/hooks/use-attachments'
@@ -49,7 +48,7 @@ import {
 import { ACTIVE_ROOM_INVOCATION_STATUSES, buildRoomTimelineItems } from './room-timeline-items'
 import { ActiveWorkList } from './ActiveWorkList'
 import {
-  streamdownComponents,
+  createMessageStreamdownComponents,
   streamdownMermaidControls,
 } from '@/lib/streamdown-components'
 import { useStreamdownMermaidPlugins } from '@/lib/streamdown-mermaid'
@@ -66,6 +65,8 @@ interface RoomTimelineProps {
   compactComposer?: boolean
   /** Constrain content width and center horizontally (e.g. when side panel is hidden) */
   centered?: boolean
+  workingDir?: string
+  onOpenWorkspaceFile?: (path: string) => void
 }
 
 const API_BASE_URL = getApiBaseUrl()
@@ -101,15 +102,6 @@ function createPendingRoomMessage(teamRunId: string, input: PostRoomMessageInput
 
 function isPendingRoomMessage(message: RoomMessage): message is PendingRoomMessage {
   return 'pendingStatus' in message
-}
-
-const attachmentUrlTransform: UrlTransform = (url) => {
-  if (url.includes('://')) return url
-  if (url.startsWith('/api/')) return url
-  if (url.startsWith('/')) {
-    return `${API_BASE_URL}/attachments/by-path?path=${encodeURIComponent(url)}`
-  }
-  return url
 }
 
 function formatAttachmentSize(bytes: number): string {
@@ -231,11 +223,19 @@ function resolveSenderMember(
 function RoomMessageMarkdown({
   content,
   isUser,
+  workingDir,
+  onOpenWorkspaceFile,
 }: {
   content: string
   isUser?: boolean
+  workingDir?: string
+  onOpenWorkspaceFile?: (path: string) => void
 }) {
   const mermaidPlugins = useStreamdownMermaidPlugins(content)
+  const components = useMemo(
+    () => createMessageStreamdownComponents({ workingDir, onOpenWorkspaceFile }),
+    [onOpenWorkspaceFile, workingDir],
+  )
 
   return (
     <div
@@ -259,8 +259,7 @@ function RoomMessageMarkdown({
       )}
     >
       <Streamdown
-        urlTransform={attachmentUrlTransform}
-        components={streamdownComponents}
+        components={components}
         plugins={mermaidPlugins}
         controls={mermaidPlugins ? streamdownMermaidControls : undefined}
       >
@@ -351,6 +350,8 @@ function RoomMessageBody({
   isUser,
   tone,
   onOpenImage,
+  workingDir,
+  onOpenWorkspaceFile,
 }: {
   message: RoomMessage
   content: string
@@ -358,6 +359,8 @@ function RoomMessageBody({
   isUser?: boolean
   tone?: RoomMessageTone
   onOpenImage: (attachments: Attachment[], index: number) => void
+  workingDir?: string
+  onOpenWorkspaceFile?: (path: string) => void
 }) {
   const ids = useMemo(() => Array.from(new Set(attachmentIds ?? [])), [attachmentIds])
   const { data: attachments = [], isLoading } = useAttachmentMetadata(ids)
@@ -374,6 +377,8 @@ function RoomMessageBody({
           attachments={attachments}
           isUser={isUser}
           tone={tone}
+          workingDir={workingDir}
+          onOpenWorkspaceFile={onOpenWorkspaceFile}
         />
       )}
       <MessageAttachments
@@ -490,12 +495,16 @@ function CollapsibleRoomMessageContent({
   attachments,
   isUser,
   tone = isUser ? 'user' : 'agent',
+  workingDir,
+  onOpenWorkspaceFile,
 }: {
   message: RoomMessage
   content: string
   attachments: Array<Pick<Attachment, 'originalName' | 'mimeType' | 'storagePath'>>
   isUser?: boolean
   tone?: RoomMessageTone
+  workingDir?: string
+  onOpenWorkspaceFile?: (path: string) => void
 }) {
   const { t } = useI18n()
   const contentId = useId()
@@ -580,7 +589,7 @@ function CollapsibleRoomMessageContent({
         )}
         style={isCollapsed ? { maxHeight: ROOM_MESSAGE_COLLAPSED_MAX_HEIGHT } : undefined}
       >
-        <RoomMessageMarkdown content={renderContent} isUser={isUser} />
+        <RoomMessageMarkdown content={renderContent} isUser={isUser} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
         {isCollapsed && (
           <div
             className={cn(
@@ -730,6 +739,8 @@ function RoomChatMessage({
   memberById,
   displayContent,
   onOpenImage,
+  workingDir,
+  onOpenWorkspaceFile,
 }: {
   message: RoomMessage
   senderName: string
@@ -738,6 +749,8 @@ function RoomChatMessage({
   memberById: Map<string, TeamMember>
   displayContent: string
   onOpenImage: (attachments: Attachment[], index: number) => void
+  workingDir?: string
+  onOpenWorkspaceFile?: (path: string) => void
 }) {
   const { t } = useI18n()
   const isUser = message.senderType === 'user'
@@ -797,6 +810,8 @@ function RoomChatMessage({
         isUser={isUser && pendingStatus !== 'failed'}
         tone={isSystem ? 'system' : undefined}
         onOpenImage={onOpenImage}
+        workingDir={workingDir}
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
       />
     </RoomMessageRow>
   )
@@ -879,6 +894,8 @@ export function RoomTimeline({
   changeSummaryBar,
   compactComposer,
   centered,
+  workingDir,
+  onOpenWorkspaceFile,
 }: RoomTimelineProps) {
   const { t } = useI18n()
   const approveWorkRequest = useApproveWorkRequest(teamRun.id)
@@ -1245,6 +1262,8 @@ export function RoomTimeline({
                     memberById={memberById}
                     displayContent={displayContent}
                     onOpenImage={(images, index) => setLightboxState({ images, index })}
+                    workingDir={workingDir}
+                    onOpenWorkspaceFile={onOpenWorkspaceFile}
                   />
                 )
               })

@@ -5,7 +5,7 @@ import type { TeamRun, Workspace } from "@agent-tower/shared"
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
 import { TerminalTabs } from "./TerminalTabs"
-import { EditorView } from "./EditorView"
+import { EditorView, type EditorViewHandle } from "./EditorView"
 import { ReviewView } from "./ReviewView"
 import { HistoryView } from "./HistoryView"
 import { PreviewPanel } from "./PreviewPanel"
@@ -17,6 +17,11 @@ import type { QuickCommand } from "@agent-tower/shared"
 
 export type WorkspaceTab = "editor" | "terminal" | "preview" | "review" | "history"
 type WorkspaceTabWithTeam = WorkspaceTab | "team-status"
+
+export interface WorkspacePanelHandle {
+  setTab: (tab: WorkspaceTab) => void
+  openFile: (path: string) => void
+}
 
 export interface WorkspacePanelProps {
   /** 自定义类名 */
@@ -54,7 +59,7 @@ export interface WorkspacePanelProps {
   onExpandedChange?: (expanded: boolean) => void
   minContentWidth?: number
   /** Imperative ref to switch tabs from parent */
-  tabRef?: React.RefObject<{ setTab: (tab: WorkspaceTab) => void } | null>
+  tabRef?: React.RefObject<WorkspacePanelHandle | null>
 }
 
 // ============================================================
@@ -180,6 +185,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
         : availableTabs
     }, [gitAvailable, hideChanges, readOnly, teamRun])
     const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(gitAvailable ? (hideChanges ? "history" : "review") : "editor")
+    const editorRef = useRef<EditorViewHandle | null>(null)
 
     const selectTab = useCallback((tab: WorkspaceTabWithTeam) => {
       setActiveTab(tab)
@@ -190,6 +196,10 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
     useImperativeHandle(tabRef, () => ({
       setTab: (tab: WorkspaceTab) => selectTab(tab),
+      openFile: (path: string) => {
+        selectTab('editor')
+        requestAnimationFrame(() => editorRef.current?.openFile(path))
+      },
     }), [selectTab])
 
     // Fetch project to get quickCommands
@@ -271,7 +281,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
           )}
 
           {activeTab === "editor" && (
-            <EditorView workingDir={workingDir} readOnly={readOnly} />
+            <EditorView ref={editorRef} workingDir={workingDir} readOnly={readOnly} />
           )}
 
           {terminalDirs.map(dir => {

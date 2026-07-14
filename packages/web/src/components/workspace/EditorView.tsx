@@ -201,11 +201,15 @@ const FileTabButton: React.FC<{
   )
 }
 
-export const EditorView: React.FC<{ workingDir?: string; className?: string; readOnly?: boolean }> = ({
+export interface EditorViewHandle {
+  openFile: (path: string) => void
+}
+
+export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: string; className?: string; readOnly?: boolean }>(function EditorView({
   workingDir,
   className,
   readOnly = false,
-}) => {
+}, ref) {
   const { t } = useI18n()
   const [tabs, setTabs] = useState<OpenTab[]>([])
   const [activePath, setActivePath] = useState<string | null>(null)
@@ -320,6 +324,8 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string; rea
     })
     setActivePath(filePath)
   }, [])
+
+  React.useImperativeHandle(ref, () => ({ openFile }), [openFile])
 
   const closeTab = useCallback((filePath: string) => {
     setTabs((prev) => {
@@ -527,4 +533,4 @@ export const EditorView: React.FC<{ workingDir?: string; className?: string; rea
       </div>
     </div>
   )
-}
+})
