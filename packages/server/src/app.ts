@@ -11,7 +11,7 @@ import { WorkspaceService } from './services/workspace.service.js';
 import { HibernationScheduler } from './services/hibernation-scheduler.js';
 import { MemberHeartbeatScheduler } from './services/member-heartbeat-scheduler.js';
 import { TunnelService } from './services/tunnel.service.js';
-import { getEventBus, getSessionManager, getTaskCleanupService, getWorkspaceGitWatcherService } from './core/container.js';
+import { getEventBus, getSessionManager, getTaskCleanupService } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 import { accessAuthHook } from './middleware/access-auth.js';
 import { writeErrorLog } from './utils/error-log.js';
@@ -120,21 +120,14 @@ export async function buildApp() {
     getTaskCleanupService().start();
     app.log.info(`[startup:onReady] taskCleanupService started elapsed=${elapsed()}`);
 
-    // 启动 workspace git 变化监听，补齐外部终端/IDE 手动 git 操作的实时刷新链路。
-    // 全量 watcher 初始化会扫描所有 ACTIVE worktree，不能阻塞 Fastify ready/listen。
-    app.log.info(`[startup:onReady] workspaceGitWatcher start scheduled elapsed=${elapsed()}`);
-    void getWorkspaceGitWatcherService().start().catch((err) => {
-      app.log.warn(`Workspace git watcher startup failed: ${err instanceof Error ? err.message : err}`);
-    });
     app.log.info(`[startup:onReady] complete elapsed=${elapsed()}`);
   });
 
-  // 服务器关闭时清理 Socket.IO、Tunnel、HibernationScheduler 和 watcher
+  // 服务器关闭时清理 Socket.IO、Tunnel 和后台调度器
   app.addHook('onClose', async () => {
     hibernationScheduler?.stop();
     memberHeartbeatScheduler?.stop();
     getTaskCleanupService().stop();
-    getWorkspaceGitWatcherService().stop();
     TunnelService.stop();
     await closeSocket();
   });

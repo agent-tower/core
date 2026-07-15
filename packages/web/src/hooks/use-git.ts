@@ -1,5 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
+import {
+  getGitChangesRefreshInterval,
+  getGitHistoryRefreshInterval,
+} from '@/lib/git-refresh-policy'
+import { useGitVisibilityStore } from '@/stores/git-visibility-store'
 import { queryKeys } from './query-keys'
 
 export type GitChangeEntry = {
@@ -37,6 +42,9 @@ export type GitCommitFilesResponse = {
 }
 
 export function useGitChanges(workingDir: string | undefined, options: { enabled?: boolean } = {}) {
+  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
+  const refreshInterval = getGitChangesRefreshInterval(workingDir, visibleContext)
+
   return useQuery({
     queryKey: queryKeys.git.changes(workingDir || ''),
     queryFn: () =>
@@ -44,6 +52,10 @@ export function useGitChanges(workingDir: string | undefined, options: { enabled
         params: { workingDir: workingDir || '' },
       }),
     enabled: !!workingDir && (options.enabled ?? true),
+    refetchInterval: refreshInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refreshInterval ? 'always' : false,
+    refetchOnReconnect: refreshInterval ? 'always' : false,
   })
 }
 
@@ -52,6 +64,9 @@ export function useGitDiff(
   filePath: string | null,
   type: 'uncommitted' | 'committed'
 ) {
+  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
+  const refreshInterval = getGitChangesRefreshInterval(workingDir, visibleContext)
+
   return useQuery({
     queryKey: queryKeys.git.diff(workingDir || '', filePath || '', type),
     queryFn: () =>
@@ -63,10 +78,17 @@ export function useGitDiff(
         },
       }),
     enabled: !!workingDir && !!filePath,
+    refetchInterval: refreshInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refreshInterval ? 'always' : false,
+    refetchOnReconnect: refreshInterval ? 'always' : false,
   })
 }
 
 export function useGitLog(workingDir: string | undefined) {
+  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
+  const refreshInterval = getGitHistoryRefreshInterval(workingDir, visibleContext)
+
   return useQuery({
     queryKey: queryKeys.git.log(workingDir || ''),
     queryFn: () =>
@@ -74,6 +96,10 @@ export function useGitLog(workingDir: string | undefined) {
         params: { workingDir: workingDir || '', limit: '50' },
       }),
     enabled: !!workingDir,
+    refetchInterval: refreshInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refreshInterval ? 'always' : false,
+    refetchOnReconnect: refreshInterval ? 'always' : false,
   })
 }
 

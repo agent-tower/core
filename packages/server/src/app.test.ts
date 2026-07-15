@@ -5,8 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const taskCleanupStartMock = vi.fn()
 const taskCleanupStopMock = vi.fn()
-const workspaceGitWatcherStartMock = vi.fn(() => Promise.resolve())
-const workspaceGitWatcherStopMock = vi.fn()
 const memberHeartbeatStartMock = vi.fn()
 const memberHeartbeatStopMock = vi.fn()
 
@@ -31,10 +29,6 @@ vi.mock('./core/container.js', () => ({
   getTaskCleanupService: vi.fn(() => ({
     start: taskCleanupStartMock,
     stop: taskCleanupStopMock,
-  })),
-  getWorkspaceGitWatcherService: vi.fn(() => ({
-    start: workspaceGitWatcherStartMock,
-    stop: workspaceGitWatcherStopMock,
   })),
 }))
 
@@ -68,9 +62,6 @@ describe('buildApp static web hosting', () => {
     tempWebDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-web-'))
     taskCleanupStartMock.mockClear()
     taskCleanupStopMock.mockClear()
-    workspaceGitWatcherStartMock.mockReset()
-    workspaceGitWatcherStartMock.mockResolvedValue(undefined)
-    workspaceGitWatcherStopMock.mockClear()
   })
 
   afterEach(() => {
@@ -127,9 +118,6 @@ describe('buildApp startup services', () => {
     delete process.env.AGENT_TOWER_WEB_DIR
     taskCleanupStartMock.mockClear()
     taskCleanupStopMock.mockClear()
-    workspaceGitWatcherStartMock.mockReset()
-    workspaceGitWatcherStartMock.mockResolvedValue(undefined)
-    workspaceGitWatcherStopMock.mockClear()
   })
 
   afterEach(() => {
@@ -140,37 +128,13 @@ describe('buildApp startup services', () => {
     }
   })
 
-  it('does not block Fastify ready on workspace git watcher startup', async () => {
-    let resolveWatcherStart!: () => void
-    workspaceGitWatcherStartMock.mockReturnValue(new Promise<void>((resolve) => {
-      resolveWatcherStart = resolve
-    }))
-
+  it('starts and stops the task cleanup worker with the app lifecycle', async () => {
     const app = await buildApp()
 
-    try {
-      await expect(app.ready()).resolves.toBe(app)
-      expect(workspaceGitWatcherStartMock).toHaveBeenCalledTimes(1)
-    } finally {
-      resolveWatcherStart()
-      await app.close()
-    }
-  })
+    await expect(app.ready()).resolves.toBe(app)
+    expect(taskCleanupStartMock).toHaveBeenCalledTimes(1)
 
-  it('logs workspace git watcher startup failures without failing Fastify ready', async () => {
-    workspaceGitWatcherStartMock.mockRejectedValue(new Error('watcher failed'))
-
-    const app = await buildApp()
-    const warnSpy = vi.spyOn(app.log, 'warn')
-
-    try {
-      await expect(app.ready()).resolves.toBe(app)
-      await vi.waitFor(() => {
-        expect(warnSpy).toHaveBeenCalledWith('Workspace git watcher startup failed: watcher failed')
-      })
-    } finally {
-      await app.close()
-      warnSpy.mockRestore()
-    }
+    await app.close()
+    expect(taskCleanupStopMock).toHaveBeenCalledTimes(1)
   })
 })

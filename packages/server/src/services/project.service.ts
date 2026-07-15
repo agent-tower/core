@@ -5,9 +5,7 @@ import type { ProjectGitCapability } from '@agent-tower/shared';
 import { prisma } from '../utils/index.js';
 import { NotFoundError, ValidationError } from '../errors.js';
 import { execGit } from '../git/git-cli.js';
-import { getWorkspaceGitWatcherService } from '../core/container.js';
 import { detectProjectGitCapability, ensureProjectIsMutable, hasGitMetadata } from './project-guards.js';
-import type { WorkspaceGitWatcherService } from './workspace-git-watcher.service.js';
 import {
   TaskStatus,
   SessionStatus,
@@ -242,10 +240,6 @@ function buildRepoIdentityWarnings(
 }
 
 export class ProjectService {
-  constructor(
-    private readonly workspaceGitWatcher: Pick<WorkspaceGitWatcherService, 'unwatchWorkspace'> = getWorkspaceGitWatcherService(),
-  ) {}
-
   /**
    * 获取项目列表（支持分页）
    */
@@ -442,7 +436,6 @@ export class ProjectService {
       .map((workspace) => workspace.id);
 
     if (activeWorkspaceIds.length > 0) {
-      this.unwatchWorkspaces(activeWorkspaceIds);
       await prisma.workspace.updateMany({
         where: { id: { in: activeWorkspaceIds } },
         data: { status: WorkspaceStatus.ABANDONED },
@@ -534,12 +527,6 @@ export class ProjectService {
   async delete(id: string) {
     await this.archive(id, { deleteRepo: false });
     return true;
-  }
-
-  private unwatchWorkspaces(workspaceIds: string[]): void {
-    for (const workspaceId of workspaceIds) {
-      this.workspaceGitWatcher.unwatchWorkspace(workspaceId);
-    }
   }
 
   private async withGitMetadata<T extends { repoPath: string }>(

@@ -3,7 +3,7 @@ import { WorkspaceKind, WorkspaceStatus, TaskStatus, SessionStatus, SessionPurpo
 import { WorktreeManager } from '../git/worktree.manager.js';
 import { execGit, MergeConflictError } from '../git/git-cli.js';
 import { NotFoundError, ServiceError } from '../errors.js';
-import { getSessionManager, getEventBus, getWorkspaceGitWatcherService } from '../core/container.js';
+import { getSessionManager, getEventBus } from '../core/container.js';
 import { copyProjectFiles } from './copy-files.service.js';
 import { defaultTeamLockService, type TeamLockService } from './team-lock.service.js';
 import { exec } from 'node:child_process';
@@ -394,22 +394,8 @@ export class WorkspaceService {
   private static readonly dedicatedWorkspaceClaims = new Map<string, Promise<WorkspaceWithVisibleSessions>>();
   private sessionService = getSessionManager();
   private eventBus: EventBus = getEventBus();
-  private workspaceGitWatcher = getWorkspaceGitWatcherService();
 
   constructor(private readonly lockService: TeamLockService = defaultTeamLockService) {}
-
-  private refreshGitWatcher(workspaceId: string): void {
-    this.workspaceGitWatcher.refreshWorkspace(workspaceId).catch((error) => {
-      console.warn(
-        `[WorkspaceService] failed to refresh git watcher for workspace ${workspaceId}:`,
-        error instanceof Error ? error.message : error,
-      );
-    });
-  }
-
-  private unwatchGitWorkspace(workspaceId: string): void {
-    this.workspaceGitWatcher.unwatchWorkspace(workspaceId);
-  }
 
   private getBaseBranch(workspace: {
     baseBranch: string | null;
@@ -1268,7 +1254,6 @@ export class WorkspaceService {
         include: { sessions: true, task: { include: { project: true } } },
       });
 
-      this.refreshGitWatcher(updated.id);
       return updated;
     } catch (err) {
       // 回滚：删除已创建的数据库记录
@@ -1586,8 +1571,6 @@ export class WorkspaceService {
         baseBranch: input.targetBranchName,
       },
     });
-    this.refreshGitWatcher(executionWorkspace.id);
-
     return { executionBranch };
   }
 
@@ -1693,7 +1676,6 @@ export class WorkspaceService {
       where: { id: workspace.id },
       include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
-    this.refreshGitWatcher(activated.id);
     return activated;
   }
 
@@ -1741,7 +1723,6 @@ export class WorkspaceService {
           where: { id: workspace.id },
           include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
         });
-        this.refreshGitWatcher(active.id);
         return active;
       }
     }
@@ -1777,7 +1758,6 @@ export class WorkspaceService {
       where: { id: workspace.id },
       include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
-    this.refreshGitWatcher(restored.id);
     return restored;
   }
 
@@ -1816,8 +1796,6 @@ export class WorkspaceService {
         // 忽略停止失败
       }
     }
-
-    this.unwatchGitWorkspace(id);
 
     if (isWorktreeWorkspace(workspace) && workspace.worktreePath) {
       // 清理 worktree
@@ -2171,9 +2149,6 @@ export class WorkspaceService {
       where: { id: workspace.id },
       data: { status: WorkspaceStatus.MERGED },
     });
-    this.unwatchGitWorkspace(workspace.id);
-    this.refreshGitWatcher(parentWorkspace.id);
-
     return sha;
   }
 
@@ -2205,8 +2180,6 @@ export class WorkspaceService {
       where: { id: workspace.id },
       data: { status: WorkspaceStatus.MERGED },
     });
-    this.unwatchGitWorkspace(workspace.id);
-
     const advanceableStatuses = [TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW];
     if (advanceableStatuses.includes(workspace.task.status as TaskStatus)) {
       await prisma.task.update({
@@ -2339,7 +2312,6 @@ export class WorkspaceService {
       data: { status: WorkspaceStatus.ABANDONED },
       include: { sessions: true, task: { include: { project: true } } },
     });
-    this.unwatchGitWorkspace(id);
     return archived;
   }
 
@@ -2381,8 +2353,6 @@ export class WorkspaceService {
         409,
       );
     }
-
-    this.unwatchGitWorkspace(id);
 
     // Auto-commit any dirty changes before removing worktree
     if (workspace.worktreePath) {
@@ -2468,7 +2438,6 @@ export class WorkspaceService {
       include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
 
-    this.refreshGitWatcher(updated.id);
     console.log(`[WorkspaceService] Workspace ${id} reactivated at ${worktreePath}`);
     return updated;
   }
@@ -2602,7 +2571,6 @@ export class WorkspaceService {
 
     for (const workspace of workspaces) {
       try {
-        this.unwatchGitWorkspace(workspace.id);
         if (isMainDirectoryWorkspace(workspace)) {
           await prisma.workspace.delete({ where: { id: workspace.id } });
           cleaned++;

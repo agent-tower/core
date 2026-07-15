@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Workspace, GitOperationStatus, WorkspaceKind } from '@agent-tower/shared'
 import { apiClient } from '../lib/api-client'
+import { getGitStatusRefreshInterval } from '../lib/git-refresh-policy'
+import { useGitVisibilityStore } from '../stores/git-visibility-store'
 import { queryKeys } from './query-keys'
 
 // ============ Queries ============
@@ -120,10 +122,17 @@ export function useOpenInEditor() {
 
 /** 获取 workspace 的 Git 操作状态 */
 export function useGitStatus(workspaceId: string, options: { enabled?: boolean } = {}) {
+  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
+  const refreshInterval = getGitStatusRefreshInterval(workspaceId, visibleContext)
+
   return useQuery({
     queryKey: queryKeys.workspaces.gitStatus(workspaceId),
     queryFn: () => apiClient.get<GitOperationStatus>(`/workspaces/${workspaceId}/git-status`),
     enabled: !!workspaceId && (options.enabled ?? true),
+    refetchInterval: refreshInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refreshInterval ? 'always' : false,
+    refetchOnReconnect: refreshInterval ? 'always' : false,
   })
 }
 

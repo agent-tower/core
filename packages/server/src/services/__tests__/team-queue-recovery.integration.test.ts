@@ -181,14 +181,13 @@ describe('TeamRun queued work recovery integration', () => {
       },
     );
 
-    const [utilsModule, typesModule, workspaceModule, schedulerModule, lockModule, heartbeatModule, watcherModule] = await Promise.all([
+    const [utilsModule, typesModule, workspaceModule, schedulerModule, lockModule, heartbeatModule] = await Promise.all([
       import('../../utils/index.js'),
       import('../../types/index.js'),
       import('../workspace.service.js'),
       import('../team-scheduler.service.js'),
       import('../team-lock.service.js'),
       import('../member-heartbeat-scheduler.js'),
-      import('../workspace-git-watcher.service.js'),
     ]);
     prisma = utilsModule.prisma;
     AgentType = typesModule.AgentType;
@@ -196,7 +195,6 @@ describe('TeamRun queued work recovery integration', () => {
     TeamSchedulerService = schedulerModule.TeamSchedulerService;
     TeamLockService = lockModule.TeamLockService;
     MemberHeartbeatScheduler = heartbeatModule.MemberHeartbeatScheduler;
-    vi.spyOn(watcherModule.WorkspaceGitWatcherService.prototype, 'refreshWorkspace').mockResolvedValue();
   });
 
   beforeEach(async () => {

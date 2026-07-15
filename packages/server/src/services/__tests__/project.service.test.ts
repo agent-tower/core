@@ -176,18 +176,17 @@ describe('ProjectService', () => {
     });
   });
 
-  it('unwatches active workspaces before archiving them', async () => {
-    const unwatchWorkspaceMock = vi.fn();
-    const service = new ProjectService({ unwatchWorkspace: unwatchWorkspaceMock });
+  it('abandons active workspaces when archiving a project', async () => {
+    const service = new ProjectService();
     const project = await prisma.project.create({
       data: {
-        name: 'Project archive watcher cleanup',
+        name: 'Project archive workspace cleanup',
         repoPath: testDir,
       },
     });
     const task = await prisma.task.create({
       data: {
-        title: 'Archive watcher task',
+        title: 'Archive workspace task',
         projectId: project.id,
       },
     });
@@ -214,29 +213,28 @@ describe('ProjectService', () => {
 
     await service.archive(project.id);
 
-    expect(unwatchWorkspaceMock).toHaveBeenCalledTimes(1);
-    expect(unwatchWorkspaceMock).toHaveBeenCalledWith(activeWorkspace.id);
-    expect(unwatchWorkspaceMock).not.toHaveBeenCalledWith(abandonedWorkspace.id);
     await expect(prisma.workspace.findUnique({ where: { id: activeWorkspace.id } })).resolves.toMatchObject({
+      status: 'ABANDONED',
+    });
+    await expect(prisma.workspace.findUnique({ where: { id: abandonedWorkspace.id } })).resolves.toMatchObject({
       status: 'ABANDONED',
     });
   });
 
-  it('unwatches active workspaces before deleting archived repo paths', async () => {
-    const unwatchWorkspaceMock = vi.fn();
-    const service = new ProjectService({ unwatchWorkspace: unwatchWorkspaceMock });
+  it('cleans workspace paths when deleting an archived repository', async () => {
+    const service = new ProjectService();
     const repoPath = fs.mkdtempSync(path.join(testDir, 'archive-delete-repo-'));
     const worktreePath = path.join(testDir, 'archive-delete-worktree');
     fs.mkdirSync(worktreePath, { recursive: true });
     const project = await prisma.project.create({
       data: {
-        name: 'Project delete repo watcher cleanup',
+        name: 'Project delete repo workspace cleanup',
         repoPath,
       },
     });
     const task = await prisma.task.create({
       data: {
-        title: 'Archive delete repo watcher task',
+        title: 'Archive delete repo workspace task',
         projectId: project.id,
       },
     });
@@ -253,8 +251,6 @@ describe('ProjectService', () => {
 
     await service.archive(project.id, { deleteRepo: true });
 
-    expect(unwatchWorkspaceMock).toHaveBeenCalledTimes(1);
-    expect(unwatchWorkspaceMock).toHaveBeenCalledWith(activeWorkspace.id);
     expect(fs.existsSync(worktreePath)).toBe(false);
     expect(fs.existsSync(repoPath)).toBe(false);
     await expect(prisma.workspace.findUnique({ where: { id: activeWorkspace.id } })).resolves.toMatchObject({

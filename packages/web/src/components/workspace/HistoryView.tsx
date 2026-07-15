@@ -4,7 +4,9 @@ import { History, Loader2, FileCode2, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useGitCommitFiles, useGitCommitDiff, type GitChangeEntry } from '@/hooks/use-git'
 import { apiClient } from '@/lib/api-client'
+import { getGitHistoryRefreshInterval } from '@/lib/git-refresh-policy'
 import { queryKeys } from '@/hooks/query-keys'
+import { useGitVisibilityStore } from '@/stores/git-visibility-store'
 import type { GitLogResponse } from '@/hooks/use-git'
 import { translate, useI18n } from '@/lib/i18n'
 
@@ -121,6 +123,8 @@ const CommitFileList: React.FC<{
 /** History Tab main component */
 export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) => {
   const { t } = useI18n()
+  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
+  const refreshInterval = getGitHistoryRefreshInterval(workingDir, visibleContext)
   const {
     data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
@@ -133,6 +137,10 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
     getNextPageParam: (lastPage, allPages) =>
       lastPage.commits.length < PAGE_SIZE ? undefined : allPages.length * PAGE_SIZE,
     enabled: !!workingDir,
+    refetchInterval: refreshInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: refreshInterval ? 'always' : false,
+    refetchOnReconnect: refreshInterval ? 'always' : false,
   })
 
   const commits = data?.pages.flatMap(p => p.commits) || []

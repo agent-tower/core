@@ -681,24 +681,21 @@ describe('TaskService', () => {
     expect(stats.todo).toBe(1);
   });
 
-  it('unwatches active workspaces when retry abandons them', async () => {
+  it('stops active sessions and abandons active workspaces on retry', async () => {
     const stopSessionMock = vi.fn();
-    const unwatchWorkspaceMock = vi.fn();
     const service = new TaskService(
       new EventBus(),
       { stop: stopSessionMock } as unknown as SessionManager,
-      undefined,
-      { unwatchWorkspace: unwatchWorkspaceMock },
     );
     const project = await prisma.project.create({
       data: {
-        name: 'Task retry watcher project',
+        name: 'Task retry workspace project',
         repoPath: testDir,
       },
     });
     const task = await prisma.task.create({
       data: {
-        title: 'Retry releases watcher',
+        title: 'Retry abandons workspace',
         projectId: project.id,
         status: 'IN_PROGRESS',
       },
@@ -737,10 +734,10 @@ describe('TaskService', () => {
     expect(updated.status).toBe('TODO');
     expect(updated.project?.isGitRepo).toBe(false);
     expect(stopSessionMock).toHaveBeenCalledWith(runningSession.id);
-    expect(unwatchWorkspaceMock).toHaveBeenCalledTimes(1);
-    expect(unwatchWorkspaceMock).toHaveBeenCalledWith(workspace.id);
-    expect(unwatchWorkspaceMock).not.toHaveBeenCalledWith(inactiveWorkspace.id);
     await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({
+      status: 'ABANDONED',
+    });
+    await expect(prisma.workspace.findUnique({ where: { id: inactiveWorkspace.id } })).resolves.toMatchObject({
       status: 'ABANDONED',
     });
   });

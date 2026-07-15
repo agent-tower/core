@@ -9,8 +9,6 @@ import {
 import type { EventBus } from '../core/event-bus.js';
 import type { SessionManager } from './session-manager.js';
 import type { TaskCleanupService, TaskCleanupSnapshot } from './task-cleanup.service.js';
-import type { WorkspaceGitWatcherService } from './workspace-git-watcher.service.js';
-import { getWorkspaceGitWatcherService } from '../core/container.js';
 import { detectProjectGitCapability, ensureProjectIsMutable } from './project-guards.js';
 import { defaultTeamLockService } from './team-lock.service.js';
 
@@ -251,7 +249,6 @@ export class TaskService {
     private readonly eventBus: EventBus,
     private readonly sessionManager: SessionManager,
     private readonly cleanupService: Pick<TaskCleanupService, 'trigger'> | undefined = undefined,
-    private readonly workspaceGitWatcher: Pick<WorkspaceGitWatcherService, 'unwatchWorkspace'> = getWorkspaceGitWatcherService(),
   ) {}
 
   /**
@@ -797,7 +794,6 @@ export class TaskService {
         where: { id: workspace.id },
         data: { status: WorkspaceStatus.ABANDONED },
       });
-      this.workspaceGitWatcher.unwatchWorkspace(workspace.id);
     }
 
     // 重置 Task 到 TODO

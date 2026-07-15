@@ -3,7 +3,6 @@ import { SessionManager } from '../services/session-manager.js';
 import { CommitMessageService } from '../services/commit-message.service.js';
 import { NotificationService } from '../services/notifications/index.js';
 import { TaskCleanupService } from '../services/task-cleanup.service.js';
-import { WorkspaceGitWatcherService } from '../services/workspace-git-watcher.service.js';
 import { AgentCliEnvironmentService } from '../services/agent-cli/environment.service.js';
 import { prisma } from '../utils/index.js';
 // TerminalManager is lazy-imported to avoid eager native module (node-pty) loading
@@ -16,7 +15,6 @@ let terminalManager: TerminalManager | null = null;
 let commitMessageService: CommitMessageService | null = null;
 let notificationService: NotificationService | null = null;
 let taskCleanupService: TaskCleanupService | null = null;
-let workspaceGitWatcherService: WorkspaceGitWatcherService | null = null;
 let agentCliEnvironmentService: AgentCliEnvironmentService | null = null;
 
 export function getEventBus(): EventBus {
@@ -42,16 +40,9 @@ export function getCommitMessageService(): CommitMessageService {
 
 export function getTaskCleanupService(): TaskCleanupService {
   if (!taskCleanupService) {
-    taskCleanupService = new TaskCleanupService(getSessionManager(), getWorkspaceGitWatcherService());
+    taskCleanupService = new TaskCleanupService(getSessionManager());
   }
   return taskCleanupService;
-}
-
-export function getWorkspaceGitWatcherService(): WorkspaceGitWatcherService {
-  if (!workspaceGitWatcherService) {
-    workspaceGitWatcherService = new WorkspaceGitWatcherService(getEventBus());
-  }
-  return workspaceGitWatcherService;
 }
 
 export async function getTerminalManager(): Promise<TerminalManager> {
