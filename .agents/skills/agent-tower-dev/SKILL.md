@@ -1,106 +1,53 @@
 ---
 name: agent-tower-dev
 description: >-
-  Agent Tower 项目开发指南。在 Agent Tower 项目中进行任何开发工作时自动加载：添加 REST API 路由、编写 Service、
-  创建前端 TanStack Query hooks、添加 Socket.IO 事件、修改 Prisma schema、实现新的 Agent Executor/Parser、
-  或扩展 MCP tools。涵盖后端（Fastify + Prisma + Socket.IO）、前端（React + TanStack Query + Zustand）、
-  Pipeline（PTY + Parser + MsgStore）三层架构的开发模式与约定。
+  Agent Tower 仓库开发指南。处理该项目中的代码、测试、数据库、公开文档或架构变更时使用，包括 Fastify/Prisma/Socket.IO、
+  Agent Pipeline、Git workspace、TeamRun、MCP、React/TanStack Query/Zustand、Electron 和 Docusaurus。指导识别跨层契约、
+  沿用真实代码模式、按风险验证，并在项目边界变化时同步维护本 skill。
 ---
 
 # Agent Tower 开发指南
 
-## 架构概览
+## 工作流程
 
-```
-Project → Task → Workspace (git worktree) → Session (AI agent) → ExecutionProcess
-```
+1. 读取与任务对应的 reference，再检查同领域最近的实现和测试；以代码为准，历史设计可能过时。
+2. 标出受影响的共享类型、数据库、Service/Route、Socket/MCP、前端 cache/store、生命周期和测试。
+3. 沿用邻近模块的错误响应和依赖模式。新旧模式并存时，不借局部改动统一全仓库。
+4. 将业务不变量放 Service，将进程生命周期放 `SessionManager`/`AgentPipeline`，让 HTTP 层只解析和响应。
+5. 先运行最窄测试，再构建受影响包；跨层契约变化时扩大验证。
 
-三层分包：`packages/shared`（类型）、`packages/server`（后端）、`packages/web`（前端）。
+## 按需读取
 
-## 开发命令
+- Route/Service、Prisma、Socket、workspace、认证、preview、MCP：[backend-patterns.md](references/backend-patterns.md)
+- React、Query cache、Zustand、实时同步、i18n：[frontend-patterns.md](references/frontend-patterns.md)
+- Session、PTY、Executor、Parser、MsgStore、新增 Agent：[pipeline-patterns.md](references/pipeline-patterns.md)
+- TeamRun、成员、消息、WorkRequest、Invocation、成员 workspace：[teamrun-patterns.md](references/teamrun-patterns.md)
+- Electron runtime、打包、公开文档站：[desktop-docs-patterns.md](references/desktop-docs-patterns.md)
 
-```bash
-pnpm install                                    # 安装依赖
-pnpm --filter @agent-tower/shared build         # 构建共享包（改类型后必须先构建）
-pnpm --filter @agent-tower/server dev           # 后端开发
-pnpm --filter web dev                           # 前端开发
-```
+## 必守边界
 
-## 后端开发
+- 将跨端实体、状态和 Socket payload 放在 `@agent-tower/shared`；server ESM import 保留 `.js` 后缀。
+- Prisma 业务状态通常存为 `String`，由 shared enum/union 约束；JSON string 在 Service 边界转换。
+- 实时变更同时检查 `EventMap`、shared Socket contract、`SocketGateway` 和前端重连/缓存失效。
+- 不绕过 tunnel/access/Socket auth、CSRF、internal token、local-only、preview token 或 loopback 限制。
+- 同时支持 `WORKTREE` 与 `MAIN_DIRECTORY`；不要假设每个项目都是 Git 仓库或每个任务只有一个 workspace。
+- 保留 PTY early-event handoff、parser exactly-once finish、原始 stdout 兜底和日志脱敏。
+- 列表热路径使用 preview/truncated DTO；完整 task/message 正文按需加载。
 
-后端分层：`Routes → Services → Prisma/EventBus`。详见 [references/backend-patterns.md](references/backend-patterns.md)。
+## 自动维护本 Skill
 
-### 添加新 API 端点
+完成每个开发任务前，检查本次变更是否改变了可复用的项目边界：包或模块职责、跨包类型/API/Socket/MCP 契约、生命周期或状态机、认证与信任边界、workspace/session/TeamRun/desktop runtime 语义、标准目录或开发命令。
 
-1. 在 `packages/server/src/services/` 创建 `{resource}.service.ts`，注入 `EventBus`/`SessionManager`
-2. 在 `packages/server/src/routes/` 创建路由文件，使用 Zod 校验 + `handleError()` 统一错误处理
-3. 在 `packages/server/src/routes/index.ts` 的 `registerRoutes()` 中注册路由
-4. 如需实时推送，在 `EventBus` 的 `EventMap` 中添加事件类型
+若改变任一边界，必须在同一变更中更新本 `SKILL.md` 或对应 reference，删除已失效说明，并运行 skill validator。局部算法、一次性 bug 修复或容易继续变化的实现细节不写入 skill；只记录会影响后续 Agent 决策的稳定且非显然规则。
 
-### 关键约定
-
-- 服务通过 `packages/server/src/core/container.ts` 单例获取：`getEventBus()`, `getSessionManager()` 等
-- 错误使用 `packages/server/src/errors.ts` 中的 `ServiceError` 子类：`NotFoundError`, `ValidationError`, `InvalidStateTransitionError`
-- 数据库操作直接使用 `prisma` 全局实例（从 `../utils/index.js` 导入）
-- 数据库 status/agentType 等使用 `String` 类型，由 TypeScript enum 控制（不用 Prisma enum）
-
-## 前端开发
-
-前端分层：`Pages → Components → Hooks → Stores → API`。详见 [references/frontend-patterns.md](references/frontend-patterns.md)。
-
-### 添加新数据查询/操作
-
-1. 在 `packages/web/src/hooks/query-keys.ts` 添加 query key
-2. 在 `packages/web/src/hooks/use-{resource}.ts` 编写 `useQuery`/`useMutation` hooks
-3. API 调用通过 `apiClient`（`@/lib/api-client`）
-
-### 关键约定
-
-- Query hooks 用 `enabled: !!id` 控制条件查询
-- Mutation 成功后通过 `queryClient.invalidateQueries()` 刷新缓存
-- 共享类型从 `@agent-tower/shared` 导入
-- UI 组件使用 shadcn/ui（Radix UI），样式用 TailwindCSS v4
-- 客户端状态用 Zustand（`packages/web/src/stores/`）
-
-## Socket.IO 事件
-
-命名空间 `/events`，通过 room 订阅区分 topic。详见 [references/backend-patterns.md](references/backend-patterns.md) 的 Socket.IO 部分。
-
-添加新事件：
-1. 在 `packages/server/src/core/event-bus.ts` 的 `EventMap` 添加事件类型
-2. 在 `packages/shared/src/socket/events.ts` 添加事件常量
-3. 在 `packages/server/src/socket/socket-gateway.ts` 添加 EventBus → Socket.IO 转发
-
-## Pipeline 与 Executor
-
-添加新的 Agent 类型或修改 Parser。详见 [references/pipeline-patterns.md](references/pipeline-patterns.md)。
-
-### Pipeline 生命周期
-
-```
-PTY.onData → MsgStore.pushStdout + Parser.processData()
-PTY.onExit → Parser.finish() + MsgStore.pushFinished()
-MsgStore.onPatch → EventBus.emit('session:patch')
-```
-
-### 添加新 Agent Executor
-
-1. 在 `packages/server/src/executors/` 创建 `{agent}.executor.ts`，继承 `BaseExecutor`
-2. 实现 `getAvailabilityInfo()`, `getCapabilities()`, `spawn()`, `spawnFollowUp()`
-3. 在 `packages/server/src/executors/index.ts` 注册到 factory
-
-## 数据库变更
+## 验证
 
 ```bash
-# 修改 packages/server/prisma/schema.prisma 后
-cd packages/server && npx prisma migrate dev --name <migration-name>
-```
-
-## 共享类型
-
-修改 `packages/shared/src/` 下的类型后，必须先构建共享包：
-```bash
+pnpm exec vitest run <test-file>
 pnpm --filter @agent-tower/shared build
+pnpm --filter @agent-tower/server build
+pnpm --filter web build
+pnpm build
 ```
 
-导出路径：`@agent-tower/shared`, `@agent-tower/shared/socket`, `@agent-tower/shared/types`, `@agent-tower/shared/log-adapter`。
+公开行为变化同步 `packages/docs-site/docs/`；内部计划和专项排障才写顶层 `docs/`。跨包构建遵循 `shared -> server -> web/desktop`。
