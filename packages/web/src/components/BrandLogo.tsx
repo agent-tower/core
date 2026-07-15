@@ -8,7 +8,7 @@ interface BrandLogoTitleProps {
   className?: string
 }
 
-export function BrandLogo({ className = 'h-7 w-7' }: BrandLogoProps) {
+export function BrandLogo({ className = 'h-6 w-6' }: BrandLogoProps) {
   return (
     <img
       src={logoUrl}
