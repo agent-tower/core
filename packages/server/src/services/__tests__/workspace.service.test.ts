@@ -1551,7 +1551,7 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     });
   });
 
-  it('releases the project merge lock after batch member merge failure', async () => {
+  it('releases the target workspace merge lock after batch member merge failure', async () => {
     const lockService = new TeamLockService();
     service = new WorkspaceService(lockService);
     const { teamRun, invocation, merger } = await createTeamRunChildMergeFixture({
@@ -1567,13 +1567,13 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(lockService.listLocks()).toEqual([]);
   });
 
-  it('reuses an existing project merge lock held by the same invocation', async () => {
+  it('reuses an existing target workspace merge lock held by the same invocation', async () => {
     const lockService = new TeamLockService();
     service = new WorkspaceService(lockService);
-    const { task, teamRun, childWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
+    const { teamRun, mainWorkspace, childWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
       reviewVerdict: 'APPROVED',
     });
-    const lockKey = `project:${task.projectId}:merge`;
+    const lockKey = `workspace:${mainWorkspace.id}:merge`;
     expect(lockService.acquire(invocation.id, [lockKey])).toBe(true);
 
     const result = await service.mergeTeamRunMembers(teamRun.id, {
@@ -1587,6 +1587,46 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     });
     expect(lockService.isHeldBy(invocation.id, lockKey)).toBe(true);
     lockService.release(invocation.id, [lockKey]);
+  });
+
+  it('does not block a TeamRun member merge when a different target workspace is locked', async () => {
+    const lockService = new TeamLockService();
+    service = new WorkspaceService(lockService);
+    const { teamRun, childWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    const unrelatedLockKey = 'workspace:other-task-main:merge';
+    expect(lockService.acquire('other-task-owner', [unrelatedLockKey])).toBe(true);
+
+    const result = await service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+    });
+
+    expect(result.results[0]).toMatchObject({
+      workspaceId: childWorkspace.id,
+      status: 'MERGED',
+    });
+    expect(lockService.isHeldBy('other-task-owner', unrelatedLockKey)).toBe(true);
+    lockService.release('other-task-owner', [unrelatedLockKey]);
+  });
+
+  it('rejects a TeamRun member merge when its target workspace is locked by another owner', async () => {
+    const lockService = new TeamLockService();
+    service = new WorkspaceService(lockService);
+    const { teamRun, mainWorkspace, invocation, merger } = await createTeamRunChildMergeFixture({
+      reviewVerdict: 'APPROVED',
+    });
+    const lockKey = `workspace:${mainWorkspace.id}:merge`;
+    expect(lockService.acquire('other-merge-owner', [lockKey])).toBe(true);
+
+    await expect(service.mergeTeamRunMembers(teamRun.id, {
+      invocationId: invocation.id,
+      requesterMemberId: merger.id,
+    })).rejects.toMatchObject({
+      code: 'WORKSPACE_MERGE_LOCKED',
+    });
+    expect(mergeIntoWorktreeMock).not.toHaveBeenCalled();
   });
 
   it('records workspace review and test verdicts for the current HEAD', async () => {
@@ -2060,7 +2100,7 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     });
   });
 
-  it('uses the shared project merge lock and allows the current invocation owner to merge', async () => {
+  it('locks the project main worktree only during a root workspace merge', async () => {
     const lockService = new TeamLockService();
     const lockedService = new WorkspaceService(lockService);
     const { project, task } = await createTask('locked merge task');
@@ -2074,13 +2114,36 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
       },
     });
 
-    expect(lockService.acquire('external-owner', [`project:${project.id}:merge`])).toBe(true);
+    const lockKey = `project:${project.id}:main-worktree:merge`;
+    expect(lockService.acquire('external-owner', [lockKey])).toBe(true);
     await expect(lockedService.merge(workspace.id)).rejects.toMatchObject({
       code: 'PROJECT_MERGE_LOCKED',
     });
 
     const sha = await lockedService.merge(workspace.id, { lockOwnerId: 'external-owner' });
     expect(sha).toBe('root-merge-sha');
+    expect(lockService.isHeldBy('external-owner', lockKey)).toBe(true);
+    lockService.release('external-owner', [lockKey]);
+  });
+
+  it('releases the project main worktree lock when a root workspace merge fails', async () => {
+    const lockService = new TeamLockService();
+    const lockedService = new WorkspaceService(lockService);
+    const { task } = await createTask('failed root merge task');
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'failed-root-merge',
+        baseBranch: 'main',
+        worktreePath: path.join(testDir, 'failed-root-merge'),
+        status: 'ACTIVE',
+      },
+    });
+    mergeWorktreeMock.mockRejectedValueOnce(new Error('git merge failed'));
+
+    await expect(lockedService.merge(workspace.id)).rejects.toThrow('git merge failed');
+
+    expect(lockService.listLocks()).toEqual([]);
   });
 
   it('cleans up stale managed worktree records and deletes their branches', async () => {

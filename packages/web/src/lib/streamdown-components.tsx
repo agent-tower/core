@@ -5,7 +5,7 @@ import { localImageUrl, resolveMessageResource, workspaceImageUrl } from '@/lib/
 
 interface MessageComponentOptions {
   workingDir?: string
-  onOpenWorkspaceFile?: (path: string) => void
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
 }
 
 const BaseMarkdownImage = ({
@@ -51,7 +51,7 @@ const MarkdownLink = ({
       onClick?.(event)
       if (event.defaultPrevented) return
       event.preventDefault()
-      onOpenWorkspaceFile(resource.path)
+      onOpenWorkspaceFile(resource.path, resource.line, resource.column)
     }
     return <a href={href} onClick={handleClick} className={linkClassName} {...linkProps}>{children}</a>
   }

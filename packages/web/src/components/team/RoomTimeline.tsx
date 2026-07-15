@@ -66,7 +66,7 @@ interface RoomTimelineProps {
   /** Constrain content width and center horizontally (e.g. when side panel is hidden) */
   centered?: boolean
   workingDir?: string
-  onOpenWorkspaceFile?: (path: string) => void
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
 }
 
 const API_BASE_URL = getApiBaseUrl()
@@ -229,7 +229,7 @@ function RoomMessageMarkdown({
   content: string
   isUser?: boolean
   workingDir?: string
-  onOpenWorkspaceFile?: (path: string) => void
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
 }) {
   const mermaidPlugins = useStreamdownMermaidPlugins(content)
   const components = useMemo(
@@ -360,7 +360,7 @@ function RoomMessageBody({
   tone?: RoomMessageTone
   onOpenImage: (attachments: Attachment[], index: number) => void
   workingDir?: string
-  onOpenWorkspaceFile?: (path: string) => void
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
 }) {
   const ids = useMemo(() => Array.from(new Set(attachmentIds ?? [])), [attachmentIds])
   const { data: attachments = [], isLoading } = useAttachmentMetadata(ids)
@@ -504,7 +504,7 @@ function CollapsibleRoomMessageContent({
   isUser?: boolean
   tone?: RoomMessageTone
   workingDir?: string
-  onOpenWorkspaceFile?: (path: string) => void
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
 }) {
   const { t } = useI18n()
   const contentId = useId()
@@ -750,7 +750,7 @@ function RoomChatMessage({
   displayContent: string
   onOpenImage: (attachments: Attachment[], index: number) => void
   workingDir?: string
-  onOpenWorkspaceFile?: (path: string) => void
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
 }) {
   const { t } = useI18n()
   const isUser = message.senderType === 'user'

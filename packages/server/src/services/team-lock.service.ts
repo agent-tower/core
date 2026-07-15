@@ -4,7 +4,6 @@ export interface LockRequest {
   teamRunId: string;
   memberId: string;
   workspaceId?: string | null;
-  projectId?: string | null;
   capabilities: TeamMemberCapabilities;
   workspacePolicy: WorkspacePolicy;
 }
@@ -27,10 +26,6 @@ export class TeamLockService {
 
     if (usesWorkspaceLocks && request.capabilities.runCommands) {
       lockKeys.add(`workspace:${request.workspaceId}:command`);
-    }
-
-    if (request.capabilities.mergeWorkspace && request.projectId != null) {
-      lockKeys.add(`project:${request.projectId}:merge`);
     }
 
     return [...lockKeys];

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Editor from '@monaco-editor/react'
+import Editor, { type OnMount } from '@monaco-editor/react'
+import type { editor as MonacoEditor } from 'monaco-editor'
 import { Loader2, X, PanelLeftOpen, ZoomIn, ZoomOut, Maximize } from 'lucide-react'
 import { TransformWrapper, TransformComponent, useControls, useTransformComponent } from 'react-zoom-pan-pinch'
 import { cn } from '@/lib/utils'
@@ -202,7 +203,13 @@ const FileTabButton: React.FC<{
 }
 
 export interface EditorViewHandle {
-  openFile: (path: string) => void
+  openFile: (path: string, line?: number, column?: number) => void
+}
+
+type PendingLocation = {
+  path: string
+  line: number
+  column?: number
 }
 
 export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: string; className?: string; readOnly?: boolean }>(function EditorView({
@@ -215,6 +222,9 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
   const [activePath, setActivePath] = useState<string | null>(null)
   const [editorReady, setEditorReady] = useState(false)
   const [editorLoadFailed, setEditorLoadFailed] = useState(false)
+  const [editorMountVersion, setEditorMountVersion] = useState(0)
+  const [pendingLocation, setPendingLocation] = useState<PendingLocation | null>(null)
+  const editorInstanceRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null)
   const saveMutation = useSaveFile()
 
   useEffect(() => {
@@ -271,6 +281,7 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
   useEffect(() => {
     setTabs([])
     setActivePath(null)
+    setPendingLocation(null)
   }, [workingDir])
 
   const activeTab = useMemo(
@@ -303,7 +314,7 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
     )
   }, [activePath, data])
 
-  const openFile = useCallback((filePath: string) => {
+  const openFile = useCallback((filePath: string, line?: number, column?: number) => {
     setTabs((prev) => {
       const existing = prev.find((t) => t.path === filePath)
       if (existing) return prev
@@ -323,6 +334,7 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
       ]
     })
     setActivePath(filePath)
+    setPendingLocation(line ? { path: filePath, line, column } : null)
   }, [])
 
   React.useImperativeHandle(ref, () => ({ openFile }), [openFile])
@@ -386,11 +398,28 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [readOnly])
 
-  const monacoOnMount = useCallback((editor: any, monaco: any) => {
+  const monacoOnMount: OnMount = useCallback((editor, monaco) => {
+    editorInstanceRef.current = editor
+    setEditorMountVersion((version) => version + 1)
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       saveRef.current()
     })
   }, [])
+
+  useEffect(() => {
+    if (!pendingLocation || pendingLocation.path !== activePath || !activeTab?.loaded) return
+    const editor = editorInstanceRef.current
+    const model = editor?.getModel()
+    if (!editor || !model) return
+
+    const lineNumber = Math.min(pendingLocation.line, model.getLineCount())
+    const column = Math.min(pendingLocation.column ?? 1, model.getLineMaxColumn(lineNumber))
+    const position = { lineNumber, column }
+    editor.setPosition(position)
+    editor.revealPositionInCenter(position)
+    editor.focus()
+    setPendingLocation(null)
+  }, [activePath, activeTab?.loaded, editorMountVersion, pendingLocation])
 
   return (
     <div className={cn('flex h-full overflow-hidden bg-white', className)} style={isDragging ? { userSelect: 'none', cursor: 'col-resize' } : undefined}>

@@ -282,8 +282,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const startResizeXRef = useRef<number>(0)
   const startWorkspaceWidthRef = useRef<number>(WORKSPACE_PANEL_MIN_WIDTH)
   const mainAreaRef = useRef<HTMLDivElement>(null)
-  const handleOpenWorkspaceFile = useCallback((path: string) => {
-    workspacePanelTabRef.current?.openFile(path)
+  const handleOpenWorkspaceFile = useCallback((path: string, line?: number, column?: number) => {
+    workspacePanelTabRef.current?.openFile(path, line, column)
   }, [])
 
   // ============ Session Discovery ============

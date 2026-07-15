@@ -20,7 +20,7 @@ type WorkspaceTabWithTeam = WorkspaceTab | "team-status"
 
 export interface WorkspacePanelHandle {
   setTab: (tab: WorkspaceTab) => void
-  openFile: (path: string) => void
+  openFile: (path: string, line?: number, column?: number) => void
 }
 
 export interface WorkspacePanelProps {
@@ -196,9 +196,9 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
     useImperativeHandle(tabRef, () => ({
       setTab: (tab: WorkspaceTab) => selectTab(tab),
-      openFile: (path: string) => {
+      openFile: (path: string, line?: number, column?: number) => {
         selectTab('editor')
-        requestAnimationFrame(() => editorRef.current?.openFile(path))
+        requestAnimationFrame(() => editorRef.current?.openFile(path, line, column))
       },
     }), [selectTab])
 

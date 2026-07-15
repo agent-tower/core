@@ -23,7 +23,6 @@ function lockRequest(
     teamRunId: 'team-run-1',
     memberId: 'member-1',
     workspaceId: 'workspace-1',
-    projectId: 'project-1',
     workspacePolicy,
     capabilities: { ...readOnlyCapabilities, ...capabilities },
   };
@@ -52,20 +51,16 @@ describe('TeamLockService', () => {
     ]);
   });
 
-  it('requires a project merge lock for mergeWorkspace members', () => {
+  it('does not reserve merge resources for mergeWorkspace members', () => {
     const service = new TeamLockService();
 
-    expect(service.getRequiredLocks(lockRequest({ mergeWorkspace: true }))).toEqual([
-      'project:project-1:merge',
-    ]);
+    expect(service.getRequiredLocks(lockRequest({ mergeWorkspace: true }))).toEqual([]);
   });
 
-  it('keeps project merge locks when workspacePolicy is none', () => {
+  it('does not reserve merge resources for none-policy members', () => {
     const service = new TeamLockService();
 
-    expect(service.getRequiredLocks(lockRequest({ mergeWorkspace: true }, 'none'))).toEqual([
-      'project:project-1:merge',
-    ]);
+    expect(service.getRequiredLocks(lockRequest({ mergeWorkspace: true }, 'none'))).toEqual([]);
   });
 
   it('does not require workspace write or command locks when workspacePolicy is none', () => {

@@ -10,7 +10,7 @@ import 'streamdown/styles.css'
 interface LogStreamProps {
   logs: LogEntry[]
   workingDir?: string
-  onOpenWorkspaceFile?: (path: string) => void
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
   /** 外部滚动容器 ref，用于滚动到底部（可选，仅 legacy 用法需要） */
   scrollElementRef?: React.RefObject<HTMLDivElement | null>
 }
@@ -122,7 +122,7 @@ const MarkdownMessage = memo(({
   content: string
   className?: string
   workingDir?: string
-  onOpenWorkspaceFile?: (path: string) => void
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
 }) => {
   const mermaidPlugins = useStreamdownMermaidPlugins(content)
   const components = useMemo(
@@ -144,7 +144,7 @@ const MarkdownMessage = memo(({
 MarkdownMessage.displayName = 'MarkdownMessage'
 
 // 1. User Message — 右对齐聊天气泡
-const UserMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string) => void }) => (
+const UserMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void }) => (
   <div className={compact ? 'flex justify-end mb-4 mt-2' : 'flex justify-end mb-8 mt-4'}>
     <div className={`relative bg-neutral-200 text-neutral-900 rounded-2xl rounded-tr-sm max-w-[85%] min-w-0 leading-relaxed ${
       compact ? 'px-3.5 py-2.5 text-[13px]' : 'px-5 py-3.5 text-sm'
@@ -370,7 +370,7 @@ const AgentText = memo(({ content, compact }: { content: string; compact?: boole
 AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
-const AssistantMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string) => void }) => (
+const AssistantMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void }) => (
   <div className={`text-neutral-900 min-w-0 ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
     <MarkdownMessage className="space-y-2" content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
   </div>
@@ -392,7 +392,7 @@ ErrorMessage.displayName = 'ErrorMessage'
 
 // ============ RenderItem renderer ============
 
-function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, onOpenWorkspaceFile?: (path: string) => void): React.ReactNode {
+function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void): React.ReactNode {
   if (item.kind === 'execution-group') {
     return <ExecutionDetailsGroup logs={item.logs} />
   }

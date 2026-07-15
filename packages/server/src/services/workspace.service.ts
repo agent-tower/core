@@ -217,6 +217,12 @@ type MergeableComputationContext = {
 
 type NormalizedCreateWorkspaceOptions = Required<CreateWorkspaceOptions>;
 
+type MergeLockTarget = {
+  key: string;
+  code: string;
+  message: string;
+};
+
 function normalizeCreateOptions(input?: string | CreateWorkspaceOptions): NormalizedCreateWorkspaceOptions {
   if (typeof input === 'string') {
     return {
@@ -570,8 +576,13 @@ export class WorkspaceService {
       return run();
     }
 
-    return this.withProjectMergeLock(
-      initialContext.projectId,
+    const mainWorkspaceId = initialContext.mainWorkspace.id;
+    if (!mainWorkspaceId) {
+      return run();
+    }
+
+    return this.withMergeTargetLock(
+      this.getParentWorkspaceMergeLockTarget(mainWorkspaceId),
       options.invocationId,
       run
     );
@@ -1929,8 +1940,8 @@ export class WorkspaceService {
     ensureProjectIsMutable(workspace.task.project, 'merge workspaces');
     this.assertWorktreeWorkspace(workspace);
 
-    return this.withProjectMergeLock(
-      workspace.task.projectId,
+    return this.withMergeTargetLock(
+      this.getMergeLockTarget(workspace),
       options.lockOwnerId,
       () => this.mergeWithLock(workspace, options)
     );
@@ -2246,18 +2257,37 @@ export class WorkspaceService {
     }
   }
 
-  private async withProjectMergeLock<T>(
-    projectId: string,
+  private getMergeLockTarget(workspace: MergeWorkspaceRecord): MergeLockTarget {
+    if (workspace.parentWorkspaceId) {
+      return this.getParentWorkspaceMergeLockTarget(workspace.parentWorkspaceId);
+    }
+
+    return {
+      key: `project:${workspace.task.projectId}:main-worktree:merge`,
+      code: 'PROJECT_MERGE_LOCKED',
+      message: 'Another workspace merge into the project main worktree is already running',
+    };
+  }
+
+  private getParentWorkspaceMergeLockTarget(parentWorkspaceId: string): MergeLockTarget {
+    return {
+      key: `workspace:${parentWorkspaceId}:merge`,
+      code: 'WORKSPACE_MERGE_LOCKED',
+      message: 'Another merge into the target workspace is already running',
+    };
+  }
+
+  private async withMergeTargetLock<T>(
+    target: MergeLockTarget,
     requestedOwnerId: string | undefined,
     fn: () => Promise<T>
   ): Promise<T> {
-    const lockKey = `project:${projectId}:merge`;
-    const ownerId = requestedOwnerId ?? `workspace-merge:${randomUUID()}`;
-    const alreadyHeldByOwner = this.lockService.isHeldBy(ownerId, lockKey);
-    if (!alreadyHeldByOwner && !this.lockService.acquire(ownerId, [lockKey])) {
+    const ownerId = requestedOwnerId ?? `merge-operation:${randomUUID()}`;
+    const alreadyHeldByOwner = this.lockService.isHeldBy(ownerId, target.key);
+    if (!alreadyHeldByOwner && !this.lockService.acquire(ownerId, [target.key])) {
       throw new ServiceError(
-        'Another workspace merge is already running for this project',
-        'PROJECT_MERGE_LOCKED',
+        target.message,
+        target.code,
         409
       );
     }
@@ -2266,7 +2296,7 @@ export class WorkspaceService {
       return await fn();
     } finally {
       if (!alreadyHeldByOwner) {
-        this.lockService.release(ownerId, [lockKey]);
+        this.lockService.release(ownerId, [target.key]);
       }
     }
   }

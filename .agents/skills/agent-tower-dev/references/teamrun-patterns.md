@@ -21,7 +21,7 @@ MemberPreset/TeamTemplate 是配置；创建 TeamRun 时将成员配置快照到
 - `team-run.service.ts`：配置、成员、消息、请求、权限和 DTO。
 - `team-scheduler.service.ts`：队列、invocation/session/workspace 启动、重试和 target sync。
 - `team-reconciler.service.ts`：恢复派生状态，处理 session end、room reply 和 review。
-- `team-lock.service.ts`：按 invocation 持有 shared workspace write/command 与 project merge 资源锁。
+- `team-lock.service.ts`：按 invocation 持有 shared workspace write/command 资源锁；`mergeWorkspace` 仅表示授权，不在 invocation 生命周期预占合并锁。
 - `team-run-events.ts`：发射 scope-based invalidation。
 - `member-heartbeat-scheduler.ts`：无进展唤醒、room reply 补催和 orphan 回收。
 
@@ -41,6 +41,8 @@ TeamRun 身份由 SessionManager 注入 `AGENT_TOWER_TEAM_RUN_ID`、`AGENT_TOWER
 `workspacePolicy` 为 `none`、`shared` 或 `dedicated`。Dedicated workspace 是 main workspace 的 member-owned child worktree；review/test target 绑定 source workspace、branch 和 HEAD SHA。
 
 合并前复用 merge readiness，检查 workspace/git/activity 与绑定当前 HEAD 的 review/test verdict。代码变化后旧 verdict 失效；批量合并返回逐 workspace 结果，部分失败不能伪装成原子成功。
+
+合并锁由 `WorkspaceService` 在实际 Git 操作期间按目标持有：dedicated child 合并锁定其父 workspace，任务根 workspace 最终合并锁定项目主工作树。不同任务/TeamRun 的父 workspace 合并互不阻塞；项目主工作树的 checkout/merge/commit 仍需短时串行。
 
 所有状态变化通过 `team-run:invalidated` 的 scopes/reason 通知前端。前端 Socket 与轮询只是失效/补偿机制，最终状态以 REST 为准。
 

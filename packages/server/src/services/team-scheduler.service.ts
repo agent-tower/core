@@ -1838,7 +1838,6 @@ export class TeamSchedulerService {
       teamRunId: teamRun.id,
       memberId: member.id,
       workspaceId: this.resolveLockWorkspaceId(teamRun, member),
-      projectId: teamRun.task.projectId,
       capabilities: parseJsonField<TeamMemberCapabilities>(member.capabilities, DEFAULT_CAPABILITIES),
       workspacePolicy: member.workspacePolicy as WorkspacePolicy,
     };

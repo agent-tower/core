@@ -9,6 +9,10 @@ describe('resolveMessageResource', () => {
       type: 'external',
       url: 'https://example.com/file.png',
     })
+    expect(resolveMessageResource('http://localhost:12580/tasks/123', workingDir)).toEqual({
+      type: 'external',
+      url: 'http://localhost:12580/tasks/123',
+    })
     expect(resolveMessageResource('/tasks/123', workingDir)).toEqual({
       type: 'internal',
       url: '/tasks/123',
@@ -27,6 +31,33 @@ describe('resolveMessageResource', () => {
     expect(resolveMessageResource('./src/app.tsx', workingDir)).toEqual({
       type: 'workspace-file',
       path: 'src/app.tsx',
+    })
+  })
+
+  it('separates line and column locations from workspace file paths', () => {
+    expect(resolveMessageResource('/Users/example/project/src/app.tsx:87', workingDir)).toEqual({
+      type: 'workspace-file',
+      path: 'src/app.tsx',
+      line: 87,
+      column: undefined,
+    })
+    expect(resolveMessageResource('./src/app.tsx:87:12', workingDir)).toEqual({
+      type: 'workspace-file',
+      path: 'src/app.tsx',
+      line: 87,
+      column: 12,
+    })
+    expect(resolveMessageResource('src/app.tsx#L87C12', workingDir)).toEqual({
+      type: 'workspace-file',
+      path: 'src/app.tsx',
+      line: 87,
+      column: 12,
+    })
+    expect(resolveMessageResource('C:\\project\\src\\app.tsx:87', 'C:\\project')).toEqual({
+      type: 'workspace-file',
+      path: 'src/app.tsx',
+      line: 87,
+      column: undefined,
     })
   })
 

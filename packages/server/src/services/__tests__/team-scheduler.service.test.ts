@@ -918,6 +918,27 @@ describe('TeamSchedulerService', () => {
     expect(reloaded.map((request) => request.status).sort()).toEqual(['QUEUED', 'STARTED']);
   });
 
+  it('does not reserve a project merge lock for a merge-capable invocation', async () => {
+    const mergeCapabilities: TeamMemberCapabilities = {
+      ...readOnlyCapabilities,
+      mergeWorkspace: true,
+    };
+    const { teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [mergeCapabilities],
+      workspacePolicies: ['none'],
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+
+    const invocations = await service.startNext(teamRun.id);
+
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]!.workRequestId).toBe(request.id);
+    expect(lockService.listLocks()).toEqual([]);
+  });
+
   it('starts only one member when two members need the shared workspace write lock', async () => {
     const { task, teamRun, members } = await createTeamRunFixture({
       memberCapabilities: [writeCapabilities, writeCapabilities],
