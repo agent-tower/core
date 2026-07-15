@@ -59,3 +59,8 @@ export function workspaceImageUrl(workingDir: string, filePath: string): string 
   const params = new URLSearchParams({ workingDir, path: filePath })
   return `${getApiBaseUrl()}/files/image?${params.toString()}`
 }
+
+export function localImageUrl(filePath: string): string {
+  const params = new URLSearchParams({ path: filePath })
+  return `${getApiBaseUrl()}/files/image?${params.toString()}`
+}

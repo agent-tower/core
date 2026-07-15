@@ -112,7 +112,7 @@
 - 如果需要并行，必须确保任务范围互不冲突。
 - 不要让多个具有写权限的成员同时修改同一范围。
 - 不要让多个具有合并权限或发布权限的成员并行处理同一工作流。
-- 需要中断成员当前工作并立即派新活时，在 `mentions` 中设置 `ifBusy: "cancel_current_and_start"` 和 `cancelQueued: true`，一步完成中断+清理排队+派活，不需要先调用 `stop_member_work`。
+- 需要中断成员当前工作并立即派新活时，先调用 `stop_member_work`；如果还要清理旧的 pending/queued 请求，设置 `cancel_queued: true`。停止成功后，再通过带目标成员 `mentions` 的 `post_room_message` 派发新工作，不要用 mention 消息代替停止操作。
 </assignment_prerequisites>
 
 <assignment_message_contract>

@@ -1,7 +1,7 @@
 import type { AnchorHTMLAttributes, ImgHTMLAttributes, LiHTMLAttributes, MouseEvent } from 'react'
 import type { Components, ExtraProps, StreamdownProps } from 'streamdown'
 import { cn } from '@/lib/utils'
-import { resolveMessageResource, workspaceImageUrl } from '@/lib/message-resource'
+import { localImageUrl, resolveMessageResource, workspaceImageUrl } from '@/lib/message-resource'
 
 interface MessageComponentOptions {
   workingDir?: string
@@ -100,7 +100,9 @@ export function createMessageStreamdownComponents({
         ? workspaceImageUrl(workingDir, resource.path)
         : resource.type === 'attachment'
           ? resource.url
-          : props.src
+          : resource.type === 'unknown-local'
+            ? localImageUrl(resource.path)
+            : props.src
       return <BaseMarkdownImage {...props} src={src} />
     },
   }

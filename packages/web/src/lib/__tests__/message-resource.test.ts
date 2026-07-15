@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveMessageResource, workspaceImageUrl } from '@/lib/message-resource'
+import { localImageUrl, resolveMessageResource, workspaceImageUrl } from '@/lib/message-resource'
 
 describe('resolveMessageResource', () => {
   const workingDir = '/Users/example/project'
@@ -49,5 +49,12 @@ describe('resolveMessageResource', () => {
     expect(url).toContain('/files/image?')
     expect(url).toContain('workingDir=%2FUsers%2Fexample%2Fproject')
     expect(url).toContain('path=screenshots%2Fresult+image.png')
+  })
+
+  it('builds local image URLs for absolute filesystem paths', () => {
+    const url = localImageUrl('/Users/example/elsewhere/result image.png')
+    expect(url).toContain('/files/image?')
+    expect(url).toContain('path=%2FUsers%2Fexample%2Felsewhere%2Fresult+image.png')
+    expect(url).not.toContain('workingDir=')
   })
 })

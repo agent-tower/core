@@ -54,6 +54,42 @@ describe('files routes', () => {
     }
   });
 
+  it('serves images from absolute filesystem paths without a workingDir', async () => {
+    const imagePath = path.join(tempRoot, 'result.png');
+    const imageContent = Buffer.from('absolute-image-content');
+    fs.writeFileSync(imagePath, imageContent);
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/image?path=${encodeURIComponent(imagePath)}`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('image/png');
+      expect(response.rawPayload).toEqual(imageContent);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('still requires a workingDir for relative image paths', async () => {
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/image?path=artifacts%2Fresult.png',
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ code: 'WORKING_DIR_REQUIRED' });
+    } finally {
+      await app.close();
+    }
+  });
+
   it('blocks browser-readable file APIs from reading the internal API token', async () => {
     fs.writeFileSync(path.join(dataDir, 'internal-api-token'), 'secret-internal-token\n', 'utf-8');
     const app = await buildTestApp();

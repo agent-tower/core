@@ -1617,6 +1617,8 @@ describe('TeamSchedulerService', () => {
     const prompt = sessionManager.create.mock.calls[0]?.[2] ?? '';
     expect(prompt.indexOf(TEAM_ROOM_SYSTEM_SHARED_PROTOCOL)).toBe(0);
     expect(prompt.indexOf('\n\nRole 1\n\nTask:\n')).toBe(TEAM_ROOM_SYSTEM_SHARED_PROTOCOL.length);
+    expect(prompt).toContain('带目标成员的 `mentions` 会创建新的 WorkRequest');
+    expect(prompt).toContain('必须调用 `stop_member_work`');
     expect(sessionManager.start).toHaveBeenCalledWith(invocations[0]!.sessionId);
     expect(sessionManager.startFollowUp).not.toHaveBeenCalled();
     expect(invocations).toHaveLength(1);

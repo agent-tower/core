@@ -198,6 +198,18 @@ const readQuerySchema = z.object({
     }),
 });
 
+const imageQuerySchema = z.object({
+  path: z.string().min(1, 'path is required'),
+  workingDir: z
+    .string()
+    .min(1, 'workingDir is required')
+    .refine((v) => path.isAbsolute(v), { message: 'workingDir must be absolute' })
+    .refine((v) => !v.split(path.sep).includes('..'), {
+      message: 'Path traversal (..) is not allowed',
+    })
+    .optional(),
+});
+
 const writeBodySchema = z.object({
   path: z.string().min(1, 'path is required'),
   workingDir: z
@@ -341,23 +353,34 @@ export async function filesRoutes(app: FastifyInstance) {
 
   /**
    * GET /image?path=assets/logo.png&workingDir=/abs/path
-   * 返回图片文件的原始二进制数据
+   * GET /image?path=/abs/path/to/image.png
+   * 返回 workspace 相对路径或任意绝对路径图片的原始二进制数据
    */
   app.get('/image', async (request, reply) => {
     try {
-      const { path: userFilePath, workingDir } = readQuerySchema.parse(request.query);
-      if (!fssync.existsSync(workingDir)) {
-        reply.code(400);
-        return { error: `workingDir does not exist: ${workingDir}`, code: 'WORKING_DIR_NOT_FOUND' };
-      }
+      const { path: userFilePath, workingDir } = imageQuerySchema.parse(request.query);
+      let fileReal: string;
 
-      const { baseReal, abs } = await resolveInWorkingDir(workingDir, userFilePath);
-      const fileReal = await fs.realpath(abs);
-      await assertNotInternalPath(fileReal);
-      const relative = path.relative(baseReal, fileReal);
-      if (relative.startsWith('..') || path.isAbsolute(relative)) {
-        reply.code(400);
-        return { error: 'Path is outside workingDir', code: 'OUTSIDE_WORKING_DIR' };
+      if (path.isAbsolute(userFilePath)) {
+        fileReal = await fs.realpath(userFilePath);
+      } else {
+        if (!workingDir) {
+          reply.code(400);
+          return { error: 'workingDir is required for relative image paths', code: 'WORKING_DIR_REQUIRED' };
+        }
+        if (!fssync.existsSync(workingDir)) {
+          reply.code(400);
+          return { error: `workingDir does not exist: ${workingDir}`, code: 'WORKING_DIR_NOT_FOUND' };
+        }
+
+        const { baseReal, abs } = await resolveInWorkingDir(workingDir, userFilePath);
+        fileReal = await fs.realpath(abs);
+        await assertNotInternalPath(fileReal);
+        const relative = path.relative(baseReal, fileReal);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) {
+          reply.code(400);
+          return { error: 'Path is outside workingDir', code: 'OUTSIDE_WORKING_DIR' };
+        }
       }
 
       const stat = await fs.stat(fileReal);
