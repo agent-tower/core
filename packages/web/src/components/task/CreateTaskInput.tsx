@@ -9,6 +9,8 @@ import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 import { AgentLogo } from '@/components/agent'
 import { Tooltip } from '@/components/ui/tooltip'
+import { SlashCommandPopover } from './SlashCommandPopover'
+import { useSlashCommandMenu } from './useSlashCommandMenu'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -19,6 +21,7 @@ interface ProjectOption {
   id: string
   name: string
   color?: string
+  repoPath?: string
   isGitRepo?: boolean
   worktreeReady?: boolean
   reason?: string
@@ -102,6 +105,7 @@ export function CreateTaskInput({
   const projectMenuRef = useRef<HTMLDivElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
   const workspaceModeMenuRef = useRef<HTMLDivElement>(null)
+  const inputContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -166,6 +170,18 @@ export function CreateTaskInput({
   const disabledWorktreeModeHint = selectedProjectGitReason === 'NO_HEAD'
     ? t('已检测到 Git，但需要先提交一次才能使用工作树模式。')
     : t('初始化 Git 后可使用工作树模式。')
+  const slashCommandAgentType = isConversationMode || effectiveCreateMode === 'SOLO'
+    ? selectedProvider?.agentType
+    : null
+  const slashCommandMenu = useSlashCommandMenu({
+    agentType: slashCommandAgentType,
+    workingDir: isConversationMode ? undefined : selectedProject?.repoPath,
+    input: title,
+    setInput: setTitle,
+    textareaRef: inputRef,
+    minHeight: 76,
+    maxHeight: 220,
+  })
 
   const isSubmitting = createStep !== 'idle'
   const hasTeamMembers = !!teamTemplateId || memberPresetIds.length > 0
@@ -226,11 +242,12 @@ export function CreateTaskInput({
   }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, clearAttachments])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashCommandMenu.handleKeyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
       e.preventDefault()
       handleSubmit()
     }
-  }, [handleSubmit])
+  }, [handleSubmit, slashCommandMenu])
 
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files
@@ -290,6 +307,7 @@ export function CreateTaskInput({
     <div className="w-full">
       {/* Input box — matches session input style */}
       <div
+        ref={inputContainerRef}
         className={cn(
           'relative bg-background rounded-xl border transition-colors duration-200',
           'shadow-[0_1px_2px_rgba(0,0,0,0.05)]',
@@ -398,6 +416,16 @@ export function CreateTaskInput({
           </div>
         </div>
       </div>
+      <SlashCommandPopover
+        open={Boolean(slashCommandAgentType) && slashCommandMenu.query !== null}
+        anchorRef={inputContainerRef}
+        commands={slashCommandMenu.filteredCommands}
+        selectedIndex={slashCommandMenu.selectedIndex}
+        query={slashCommandMenu.query ?? ''}
+        hasCatalog={slashCommandMenu.allCommands.length > 0}
+        compact
+        onSelect={slashCommandMenu.applyCommand}
+      />
 
       {/* Control row — chips aligned to card edges */}
       <div className="flex items-center flex-wrap gap-1.5 mt-2.5 px-0.5">

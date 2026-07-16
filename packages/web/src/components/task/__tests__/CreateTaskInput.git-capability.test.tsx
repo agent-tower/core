@@ -32,6 +32,11 @@ vi.mock('@/hooks/use-projects', () => ({
   }),
 }))
 
+vi.mock('@/hooks/use-slash-command-catalog', () => ({
+  useSlashCommandCatalog: () => ({ data: [] }),
+  mergeSlashCommandCatalog: (builtinCommands: unknown[]) => builtinCommands,
+}))
+
 vi.mock('@/components/team/TeamRunCreateForm', () => ({
   TeamRunCreateForm: () => null,
 }))

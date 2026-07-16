@@ -609,6 +609,7 @@ export function ProjectKanbanPage() {
       id: p.id,
       name: p.name,
       color: uiProjects.find(u => u.id === p.id)?.color,
+      repoPath: p.repoPath,
       isGitRepo: p.isGitRepo,
       worktreeReady: p.worktreeReady,
       reason: p.reason,
