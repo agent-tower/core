@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
-import { AgentType, SessionStatus } from '../../types/index.js';
+import { AgentType, SessionStatus, TaskStatus } from '../../types/index.js';
 import { EventBus } from '../../core/event-bus.js';
 import type { EarlyPtyEvent } from '../../executors/base.executor.js';
 
@@ -22,7 +22,11 @@ const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-session-lifec
 const dbPath = path.join(testDir, 'test.db');
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
 
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, getProviderByIdMock, getExecutorByProviderMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  getProviderByIdMock: vi.fn(),
+  getExecutorByProviderMock: vi.fn(),
+}));
 
 vi.mock('../../executors/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../executors/index.js')>();
@@ -36,7 +40,8 @@ vi.mock('../../executors/index.js', async (importOriginal) => {
       spawn: spawnMock,
       // 无 spawnFollowUp —— sendMessage 走全新 spawn 路径
     })),
-    getProviderById: vi.fn(() => null),
+    getExecutorByProvider: getExecutorByProviderMock,
+    getProviderById: getProviderByIdMock,
   };
 });
 
@@ -92,7 +97,7 @@ function spawnResultFor(pty: ControlledPty, earlyEvents: EarlyPtyEvent[] = []) {
   };
 }
 
-async function createSessionFixture() {
+async function createSessionFixture(options: { providerId?: string } = {}) {
   const project = await prisma.project.create({
     data: { name: 'lifecycle project', repoPath: testDir },
   });
@@ -112,6 +117,7 @@ async function createSessionFixture() {
       workspaceId: workspace.id,
       agentType: AgentType.CODEX,
       variant: 'DEFAULT',
+      providerId: options.providerId ?? null,
       prompt: 'do something',
       status: SessionStatus.PENDING,
     },
@@ -151,6 +157,8 @@ describe('SessionManager session status vs real process state', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    getProviderByIdMock.mockReturnValue(null);
+    getExecutorByProviderMock.mockReset();
     await prisma.executionProcess.deleteMany();
     await prisma.session.deleteMany();
     await prisma.workspace.deleteMany();
@@ -251,6 +259,309 @@ describe('SessionManager session status vs real process state', () => {
     expect(persisted?.status).toBe(SessionStatus.COMPLETED);
     const finalSnapshot = JSON.parse(persisted?.logSnapshot ?? '{}');
     expect(finalSnapshot.entries.map((entry: { content: string }) => entry.content)).toContain('final only');
+  });
+
+  it('completes on turn.completed before a slow PTY exit and cleans it in the background', async () => {
+    const { session } = await createSessionFixture();
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+
+    await manager.start(session.id);
+    pty.emitData(JSON.stringify({
+      type: 'item.completed',
+      item: { id: 'm1', type: 'agent_message', text: 'fast logical completion' },
+    }) + '\n');
+    pty.emitData(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 2, output_tokens: 3 },
+    }) + '\n');
+
+    const payload = await completed;
+    expect(payload.status).toBe(SessionStatus.COMPLETED);
+    expect((await prisma.session.findUnique({ where: { id: session.id } }))?.status)
+      .toBe(SessionStatus.COMPLETED);
+    expect(manager.hasActivePipeline(session.id)).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(pty.killed).toBe(true);
+      expect(manager.hasActivePipeline(session.id)).toBe(false);
+    }, { timeout: 2000 });
+
+    const persisted = await prisma.session.findUnique({ where: { id: session.id } });
+    const snapshot = JSON.parse(persisted?.logSnapshot ?? '{}');
+    expect(snapshot.entries.map((entry: { content: string }) => entry.content))
+      .toContain('fast logical completion');
+  });
+
+  it('waits for the completed generation auto-commit before starting an immediate follow-up', async () => {
+    const { session } = await createSessionFixture();
+    const firstPty = new ControlledPty();
+    const secondPty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(firstPty)).mockResolvedValueOnce(spawnResultFor(secondPty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    let releaseAutoCommit!: () => void;
+    const autoCommit = new Promise<void>((resolve) => { releaseAutoCommit = resolve; });
+    const autoCommitSpy = vi.spyOn(manager as any, 'autoCommitChanges').mockReturnValue(autoCommit);
+    const waitForAutoCommitSpy = vi.spyOn(manager as any, 'waitForPendingAutoCommit');
+
+    await manager.start(session.id);
+    waitForAutoCommitSpy.mockClear();
+    firstPty.emitData(JSON.stringify({
+      type: 'item.completed',
+      item: { id: 'm1', type: 'agent_message', text: 'first turn' },
+    }) + '\n');
+    firstPty.emitData(JSON.stringify({ type: 'turn.completed' }) + '\n');
+    await completed;
+
+    const followUp = manager.sendMessage(session.id, 'follow-up');
+    await vi.waitFor(() => {
+      expect(waitForAutoCommitSpy).toHaveBeenCalledWith(session.id);
+      expect(autoCommitSpy).toHaveBeenCalledTimes(1);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+    });
+
+    releaseAutoCommit();
+    await followUp;
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(autoCommitSpy.mock.calls[0]?.[0]).toBe(session.id);
+    expect(autoCommitSpy.mock.calls[0]?.[1]).toBe(1);
+  });
+
+  it('accepts a follow-up that explicitly reuses the session provider', async () => {
+    const provider = {
+      id: 'same-provider',
+      name: 'Same provider',
+      agentType: AgentType.CODEX,
+      env: {},
+      config: {},
+      isDefault: false,
+    };
+    const executor = {
+      agentType: AgentType.CODEX,
+      displayName: 'Mock Codex',
+      getAvailabilityInfo: vi.fn(),
+      getCapabilities: vi.fn(() => []),
+      spawn: spawnMock,
+    };
+    getProviderByIdMock.mockReturnValue(provider);
+    getExecutorByProviderMock.mockReturnValue(executor);
+
+    const { session } = await createSessionFixture({ providerId: provider.id });
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const manager = new SessionManager(new EventBus());
+    await manager.sendMessage(session.id, 'reuse provider', provider.id);
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      providerId: provider.id,
+      status: SessionStatus.RUNNING,
+    });
+    manager.destroyAll();
+  });
+
+  it('keeps completed-turn post-processing alive when a follow-up provider was deleted', async () => {
+    const { task, workspace, session } = await createSessionFixture();
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    let releaseAutoCommit!: () => void;
+    const autoCommit = new Promise<void>((resolve) => { releaseAutoCommit = resolve; });
+    const autoCommitSpy = vi.spyOn(manager as any, 'autoCommitChanges').mockReturnValue(autoCommit);
+    const reconcileSpy = vi
+      .spyOn((manager as any).teamReconciler, 'handleSessionExit')
+      .mockResolvedValue(false);
+    const commitMessageSpy = vi
+      .spyOn(manager as any, 'triggerCommitMessageGeneration')
+      .mockImplementation(() => {});
+
+    await manager.start(session.id);
+    pty.emitData(JSON.stringify({ type: 'turn.completed' }) + '\n');
+    await completed;
+
+    await expect(manager.sendMessage(session.id, 'follow-up', 'deleted-provider'))
+      .rejects.toThrow('Provider not found: deleted-provider');
+    expect(autoCommitSpy).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    releaseAutoCommit();
+    await vi.waitFor(async () => {
+      expect(reconcileSpy).toHaveBeenCalledWith(session.id);
+      expect((await prisma.task.findUnique({ where: { id: task.id } }))?.status)
+        .toBe(TaskStatus.IN_REVIEW);
+      expect(commitMessageSpy).toHaveBeenCalledWith(workspace.id);
+    });
+  });
+
+  it('keeps completed-turn post-processing alive when the session provider was deleted and omitted', async () => {
+    const { task, workspace, session } = await createSessionFixture({ providerId: 'deleted-provider' });
+    const pty = new ControlledPty();
+    const executor = {
+      agentType: AgentType.CODEX,
+      displayName: 'Mock Codex',
+      getAvailabilityInfo: vi.fn(),
+      getCapabilities: vi.fn(() => []),
+      spawn: spawnMock,
+    };
+    getExecutorByProviderMock.mockReturnValue(executor);
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    let releaseAutoCommit!: () => void;
+    const autoCommit = new Promise<void>((resolve) => { releaseAutoCommit = resolve; });
+    const autoCommitSpy = vi.spyOn(manager as any, 'autoCommitChanges').mockReturnValue(autoCommit);
+    const reconcileSpy = vi
+      .spyOn((manager as any).teamReconciler, 'handleSessionExit')
+      .mockResolvedValue(false);
+    const commitMessageSpy = vi
+      .spyOn(manager as any, 'triggerCommitMessageGeneration')
+      .mockImplementation(() => {});
+
+    await manager.start(session.id);
+    pty.emitData(JSON.stringify({ type: 'turn.completed' }) + '\n');
+    await completed;
+
+    await expect(manager.sendMessage(session.id, 'follow-up')).rejects
+      .toThrow('Provider not found: deleted-provider');
+    expect(autoCommitSpy).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    releaseAutoCommit();
+    await vi.waitFor(async () => {
+      expect(reconcileSpy).toHaveBeenCalledWith(session.id);
+      expect((await prisma.task.findUnique({ where: { id: task.id } }))?.status)
+        .toBe(TaskStatus.IN_REVIEW);
+      expect(commitMessageSpy).toHaveBeenCalledWith(workspace.id);
+    });
+  });
+
+  it('holds reconciliation while valid follow-up provider validation is delayed', async () => {
+    const provider = {
+      id: 'delayed-provider',
+      name: 'Delayed provider',
+      agentType: AgentType.CODEX,
+      env: {},
+      config: {},
+      isDefault: false,
+    };
+    const executor = {
+      agentType: AgentType.CODEX,
+      displayName: 'Mock Codex',
+      getAvailabilityInfo: vi.fn(),
+      getCapabilities: vi.fn(() => []),
+      spawn: spawnMock,
+    };
+    getProviderByIdMock.mockReturnValue(provider);
+    getExecutorByProviderMock.mockReturnValue(executor);
+
+    const { session } = await createSessionFixture({ providerId: provider.id });
+    const firstPty = new ControlledPty();
+    const secondPty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(firstPty)).mockResolvedValueOnce(spawnResultFor(secondPty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    const autoCommitSpy = vi.spyOn(manager as any, 'autoCommitChanges').mockResolvedValue(undefined);
+    const reconcileSpy = vi
+      .spyOn((manager as any).teamReconciler, 'handleSessionExit')
+      .mockResolvedValue(false);
+
+    await manager.start(session.id);
+    firstPty.emitData(JSON.stringify({ type: 'turn.completed' }) + '\n');
+    await completed;
+
+    const originalFind = (manager as any).findSessionExecutionRecord.bind(manager);
+    let releaseValidation!: () => void;
+    let markValidationStarted!: () => void;
+    const validationStarted = new Promise<void>((resolve) => { markValidationStarted = resolve; });
+    const validationGate = new Promise<void>((resolve) => { releaseValidation = resolve; });
+    vi.spyOn(manager as any, 'findSessionExecutionRecord').mockImplementation(async (...args: unknown[]) => {
+      const sessionId = args[0] as string;
+      if (sessionId === session.id) {
+        markValidationStarted();
+        await validationGate;
+      }
+      return originalFind(sessionId);
+    });
+
+    const followUp = manager.sendMessage(session.id, 'delayed follow-up', provider.id);
+    await validationStarted;
+    await vi.waitFor(() => expect(autoCommitSpy).toHaveBeenCalledTimes(1));
+    expect(reconcileSpy).not.toHaveBeenCalled();
+
+    releaseValidation();
+    await followUp;
+    expect(reconcileSpy).not.toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    manager.destroyAll();
+  });
+
+  it('keeps turn.failed terminal when the wrapper exits with code 0', async () => {
+    const { task, session } = await createSessionFixture();
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+
+    await manager.start(session.id);
+    pty.emitData(JSON.stringify({
+      type: 'turn.failed',
+      error: { message: 'rate limited' },
+    }) + '\n');
+
+    const payload = await completed;
+    expect(payload.status).toBe(SessionStatus.FAILED);
+    pty.emitExit(0);
+
+    await vi.waitFor(async () => {
+      expect((await prisma.session.findUnique({ where: { id: session.id } }))?.status)
+        .toBe(SessionStatus.FAILED);
+    });
+    // The session's task remains in progress; a failed turn must not trigger
+    // the success-only Task -> IN_REVIEW transition.
+    expect((await prisma.task.findUnique({ where: { id: task.id } }))?.status).not.toBe('IN_REVIEW');
+    expect(manager.hasActivePipeline(session.id)).toBe(false);
+  });
+
+  it('stops the residual PTY without regressing a logically completed session', async () => {
+    const { session } = await createSessionFixture();
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+
+    await manager.start(session.id);
+    pty.emitData(JSON.stringify({
+      type: 'item.completed',
+      item: { id: 'm1', type: 'agent_message', text: 'done before stop' },
+    }) + '\n');
+    pty.emitData(JSON.stringify({ type: 'turn.completed' }) + '\n');
+    await completed;
+
+    await manager.stop(session.id);
+
+    expect(pty.killed).toBe(true);
+    expect(manager.hasActivePipeline(session.id)).toBe(false);
+    expect((await prisma.session.findUnique({ where: { id: session.id } }))?.status)
+      .toBe(SessionStatus.COMPLETED);
   });
 
   it('marks the session FAILED when the PTY exits non-zero with only stderr noise', async () => {

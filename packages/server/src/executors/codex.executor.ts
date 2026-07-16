@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { parse as parseToml } from 'smol-toml';
 import { ExecutorConfigurationError } from './start-error.js';
 import { AgentType } from '../types/index.js';
@@ -18,7 +18,7 @@ import {
   ExecutorSpawnConfig,
   SpawnedChild,
 } from './base.executor.js';
-import { CommandBuilder, applyOverrides, CmdOverrides } from './command-builder.js';
+import { CommandBuilder, applyOverrides, CmdOverrides, type CommandParts } from './command-builder.js';
 import { extractImagePaths } from './image-utils.js';
 import {
   AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
@@ -77,7 +77,8 @@ const AGENT_TOWER_MCP_SERVER_NAMES = [
 ] as const;
 
 function getCodexConfigDir(): string {
-  return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  return process.env.CODEX_HOME
+    || path.join(process.env.HOME || process.env.USERPROFILE || os.homedir(), '.codex');
 }
 
 /**
@@ -101,6 +102,220 @@ export function getCodexDeclaredMcpServerNames(configPath?: string): Set<string>
 
 const CODEX_MCP_LIST_TIMEOUT_MS = 3000;
 
+const CODEX_MCP_CACHE_RETRY_MS = 30_000;
+
+interface CodexMcpCacheEntry {
+  names: Set<string>;
+  refreshedAt: number;
+  refreshPromise?: Promise<void>;
+}
+
+const codexMcpCache = new Map<string, CodexMcpCacheEntry>();
+
+function resolveCodexExecutableForCache(program = 'codex', env: NodeJS.ProcessEnv = process.env): string {
+  if (path.isAbsolute(program)) return path.resolve(program);
+  const pathValue = env.PATH ?? '';
+  const candidates = pathValue.split(path.delimiter).filter(Boolean);
+  const extensions = process.platform === 'win32'
+    ? (env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';')
+    : [''];
+
+  for (const dir of candidates) {
+    for (const extension of extensions) {
+      const candidate = path.join(dir, `${program}${extension}`);
+      try {
+        if (fs.statSync(candidate).isFile()) return path.resolve(candidate);
+      } catch {
+        // Continue searching. The cache must never block task startup.
+      }
+    }
+  }
+  return 'codex';
+}
+
+function getConfigFingerprint(configPath: string): string {
+  try {
+    const stats = fs.statSync(configPath);
+    return `${configPath}:${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    return `${configPath}:missing`;
+  }
+}
+
+function getCodexConfigPathForEnv(env: NodeJS.ProcessEnv, explicitConfigPath?: string): string {
+  if (explicitConfigPath) return path.resolve(explicitConfigPath);
+  const codexHome = env.CODEX_HOME
+    || path.join(env.HOME || env.USERPROFILE || os.homedir(), '.codex');
+  return path.join(codexHome, 'config.toml');
+}
+
+/**
+ * Keep an executor-provided config path only when it is genuinely explicit.
+ * Codex's default path is process-global, so it must be recomputed from the
+ * provider's effective env (CODEX_HOME/HOME) for each probe.
+ */
+function getExplicitMcpConfigPath(configPath: string | null): string | undefined {
+  if (!configPath) return undefined;
+  const processDefault = path.join(getCodexConfigDir(), 'config.toml');
+  return path.resolve(configPath) === path.resolve(processDefault) ? undefined : configPath;
+}
+
+function getCodexMcpCacheKey(
+  executable: string,
+  probeArgs: string[],
+  configOverrideArgs: string[],
+  fallbackConfigPath?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configPath = getCodexConfigPathForEnv(env, fallbackConfigPath);
+  return JSON.stringify({
+    executable,
+    path: env.PATH ?? '',
+    pathext: env.PATHEXT ?? '',
+    codexHome: env.CODEX_HOME ?? '',
+    home: env.HOME ?? '',
+    userProfile: env.USERPROFILE ?? '',
+    xdgConfigHome: env.XDG_CONFIG_HOME ?? '',
+    config: getConfigFingerprint(configPath),
+    probeArgs,
+    overrides: configOverrideArgs,
+  });
+}
+
+function getFallbackMcpServerNames(configOverrideArgs: string[], fallbackConfigPath?: string): Set<string> {
+  const names = getCodexDeclaredMcpServerNames(fallbackConfigPath);
+  // Settings injected with -c are not visible in config.toml. Preserve those
+  // names during the first non-blocking launch while the CLI probe refreshes.
+  for (let index = 0; index < configOverrideArgs.length - 1; index += 1) {
+    if (configOverrideArgs[index] !== '-c') continue;
+    const match = /^mcp_servers\.([^\.]+)\./.exec(configOverrideArgs[index + 1]);
+    if (match?.[1]) names.add(match[1]);
+  }
+  return names;
+}
+
+function refreshCodexMcpServerCache(
+  key: string,
+  executable: string,
+  env: NodeJS.ProcessEnv,
+  probeArgs: string[],
+  configOverrideArgs: string[],
+  fallbackConfigPath?: string,
+): void {
+  const existing = codexMcpCache.get(key);
+  if (existing?.refreshPromise) return;
+
+  const entry: CodexMcpCacheEntry = existing ?? {
+    names: getFallbackMcpServerNames(configOverrideArgs, fallbackConfigPath),
+    refreshedAt: 0,
+  };
+  codexMcpCache.set(key, entry);
+
+  // A real async child process is required here. Moving execFileSync into a
+  // timer still blocks the Node event loop and delays every PTY/Socket stream.
+  const refreshPromise = queryCodexMcpServerNamesAsync(executable, env, probeArgs)
+    .then((result) => {
+      if (result !== null) entry.names = result;
+      else if (entry.names.size === 0) entry.names = getFallbackMcpServerNames(configOverrideArgs, fallbackConfigPath);
+    })
+    .catch(() => {
+      // Fail open: retain the last known/fallback names.
+    })
+    .finally(() => {
+      entry.refreshedAt = Date.now();
+      if (entry.refreshPromise === refreshPromise) {
+        delete entry.refreshPromise;
+      }
+    });
+  entry.refreshPromise = refreshPromise;
+}
+
+/**
+ * Return MCP names without waiting for `codex mcp list --json`.
+ * The probe is process-level, keyed by executable/config inputs, and uses a
+ * single-flight background refresh for concurrent sessions.
+ */
+export function getCachedCodexMcpServerNames(
+  configOverrideArgs: string[] = [],
+  fallbackConfigPath?: string,
+  probeCommand?: CommandParts,
+  environment?: NodeJS.ProcessEnv,
+): Set<string> {
+  const probeArgs = probeCommand
+    ? [...probeCommand.args]
+    : [...configOverrideArgs];
+  const env = { ...(environment ?? process.env) };
+  const configPath = getCodexConfigPathForEnv(env, fallbackConfigPath);
+  const executable = resolveCodexExecutableForCache(probeCommand?.program, env);
+  const key = getCodexMcpCacheKey(executable, probeArgs, configOverrideArgs, configPath, env);
+  const existing = codexMcpCache.get(key);
+  const now = Date.now();
+  if (!existing) {
+    const entry: CodexMcpCacheEntry = {
+      names: getFallbackMcpServerNames(configOverrideArgs, configPath),
+      refreshedAt: 0,
+    };
+    codexMcpCache.set(key, entry);
+    refreshCodexMcpServerCache(key, executable, env, probeArgs, configOverrideArgs, configPath);
+    return new Set(entry.names);
+  }
+
+  if (!existing.refreshPromise && now - existing.refreshedAt >= CODEX_MCP_CACHE_RETRY_MS) {
+    refreshCodexMcpServerCache(key, executable, env, probeArgs, configOverrideArgs, configPath);
+  }
+  return new Set(existing.names);
+}
+
+/** Test-only reset hook; no production caller should need to clear this cache. */
+export function resetCodexMcpServerCache(): void {
+  codexMcpCache.clear();
+}
+
+/** Wait for current refreshes; exported only to make cache behavior deterministic in tests. */
+export async function waitForCodexMcpServerCacheRefresh(): Promise<void> {
+  const pending = [...codexMcpCache.values()]
+    .map((entry) => entry.refreshPromise)
+    .filter((promise): promise is Promise<void> => Boolean(promise));
+  await Promise.all(pending);
+}
+
+function parseCodexMcpServerNames(stdout: string): Set<string> | null {
+  try {
+    const parsed = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return null;
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object' || typeof item.name !== 'string') {
+        return null;
+      }
+    }
+    return new Set(parsed.map((server: { name: string }) => server.name));
+  } catch {
+    return null;
+  }
+}
+
+function queryCodexMcpServerNamesAsync(
+  executable: string,
+  env: NodeJS.ProcessEnv,
+  probeArgs: string[] = [],
+): Promise<Set<string> | null> {
+  const args = [...probeArgs, 'mcp', 'list', '--json'];
+  return new Promise((resolve) => {
+    execFile(executable, args, {
+      timeout: CODEX_MCP_LIST_TIMEOUT_MS,
+      encoding: 'utf-8',
+      env,
+      windowsHide: true,
+    }, (error, stdout) => {
+      if (error) {
+        resolve(null);
+        return;
+      }
+      resolve(parseCodexMcpServerNames(stdout));
+    });
+  });
+}
+
 /**
  * 通过 `codex mcp list --json` 查询 Codex 运行时实际可见的 MCP server 名称。
  * 传入 provider settings 展平后的 `-c` 参数，确保 settings 注入的 MCP 也在列表中。
@@ -114,14 +329,7 @@ export function queryCodexMcpServerNames(configOverrideArgs: string[] = []): Set
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    const parsed = JSON.parse(stdout);
-    if (!Array.isArray(parsed)) return null;
-    for (const item of parsed) {
-      if (!item || typeof item !== 'object' || typeof item.name !== 'string') {
-        return null;
-      }
-    }
-    return new Set(parsed.map((s: { name: string }) => s.name));
+    return parseCodexMcpServerNames(stdout);
   } catch {
     return null;
   }
@@ -316,9 +524,14 @@ export class CodexExecutor extends BaseExecutor {
   async spawn(config: ExecutorSpawnConfig): Promise<SpawnedChild> {
     const commandBuilder = this.buildCommandBuilder();
     const configOverrideArgs = this.buildConfigOverrides();
-    const declaredMcpServers = detectDeclaredMcpServers(
+    const probeCommand = commandBuilder.buildInitial();
+    const probeEnv = config.env.withProfile(this.cmdOverrides).getFullEnv();
+    const explicitConfigPath = getExplicitMcpConfigPath(this.getDefaultMcpConfigPath());
+    const declaredMcpServers = getCachedCodexMcpServerNames(
       configOverrideArgs,
-      this.getDefaultMcpConfigPath() ?? undefined,
+      explicitConfigPath,
+      probeCommand,
+      probeEnv,
     );
 
     commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env, declaredMcpServers));
@@ -355,9 +568,14 @@ export class CodexExecutor extends BaseExecutor {
   ): Promise<SpawnedChild> {
     const commandBuilder = this.buildCommandBuilder();
     const configOverrideArgs = this.buildConfigOverrides();
-    const declaredMcpServers = detectDeclaredMcpServers(
+    const probeCommand = commandBuilder.buildInitial();
+    const probeEnv = config.env.withProfile(this.cmdOverrides).getFullEnv();
+    const explicitConfigPath = getExplicitMcpConfigPath(this.getDefaultMcpConfigPath());
+    const declaredMcpServers = getCachedCodexMcpServerNames(
       configOverrideArgs,
-      this.getDefaultMcpConfigPath() ?? undefined,
+      explicitConfigPath,
+      probeCommand,
+      probeEnv,
     );
 
     commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env, declaredMcpServers));

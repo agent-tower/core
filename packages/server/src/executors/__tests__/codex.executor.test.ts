@@ -1,4 +1,4 @@
-import { describe, expect, it, afterAll, afterEach } from 'vitest';
+import { describe, expect, it, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -7,6 +7,9 @@ import {
   getCodexDeclaredMcpServerNames,
   queryCodexMcpServerNames,
   detectDeclaredMcpServers,
+  getCachedCodexMcpServerNames,
+  resetCodexMcpServerCache,
+  waitForCodexMcpServerCacheRefresh,
 } from '../codex.executor.js';
 import { ExecutionEnv } from '../execution-env.js';
 
@@ -14,9 +17,14 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-executor-test-'));
 afterAll(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
 const savedCodexHome = process.env.CODEX_HOME;
+const savedPath = process.env.PATH;
+beforeEach(() => {
+  resetCodexMcpServerCache();
+});
 afterEach(() => {
   if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = savedCodexHome;
+  process.env.PATH = savedPath;
 });
 
 /**
@@ -42,6 +50,125 @@ function readCapturedArgs(binDir: string): string[] {
   const argsFile = path.join(binDir, 'captured-args.json');
   return fs.readFileSync(argsFile, 'utf-8').trim().split('\n');
 }
+
+function createAsyncProbeCodex(
+  name: string,
+  stdout: string,
+  options: { exitCode?: number; delayMs?: number } = {},
+): string {
+  const binDir = path.join(tmpDir, `async-probe-${name}`);
+  fs.mkdirSync(binDir, { recursive: true });
+  const countFile = path.join(binDir, 'probe-count');
+  const delaySeconds = ((options.delayMs ?? 0) / 1000).toFixed(3);
+  const script = [
+    '#!/bin/sh',
+    `printf '1\\n' >> "${countFile}"`,
+    `sleep ${delaySeconds}`,
+    'cat <<\'FAKE_EOF\'',
+    stdout,
+    'FAKE_EOF',
+    `exit ${options.exitCode ?? 0}`,
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(binDir, 'codex'), script, { mode: 0o755 });
+  return binDir;
+}
+
+function probeCount(binDir: string): number {
+  const file = path.join(binDir, 'probe-count');
+  if (!fs.existsSync(file)) return 0;
+  return fs.readFileSync(file, 'utf-8').trim().split('\n').filter(Boolean).length;
+}
+
+describe('getCachedCodexMcpServerNames', () => {
+  it('returns fallback names immediately and probes without blocking the event loop', async () => {
+    const binDir = createAsyncProbeCodex(
+      'nonblocking',
+      JSON.stringify([{ name: 'agent-tower' }]),
+      { delayMs: 500 },
+    );
+    process.env.PATH = `${binDir}:${savedPath}`;
+    const configPath = path.join(tmpDir, 'nonblocking.toml');
+    fs.writeFileSync(configPath, '[mcp_servers.agent-tower]\ncommand = "agent-tower-mcp"\n');
+
+    const startedAt = performance.now();
+    const initial = getCachedCodexMcpServerNames([], configPath);
+    const elapsed = performance.now() - startedAt;
+
+    expect(initial).toEqual(new Set(['agent-tower']));
+    expect(elapsed).toBeLessThan(100);
+
+    await waitForCodexMcpServerCacheRefresh();
+    expect(probeCount(binDir)).toBe(1);
+    expect(getCachedCodexMcpServerNames([], configPath)).toEqual(new Set(['agent-tower']));
+  });
+
+  it('uses one in-flight probe for concurrent callers', async () => {
+    const binDir = createAsyncProbeCodex('single-flight', JSON.stringify([{ name: 'agent-tower' }]), { delayMs: 100 });
+    process.env.PATH = `${binDir}:${savedPath}`;
+    const configPath = path.join(tmpDir, 'single-flight.toml');
+
+    for (let i = 0; i < 8; i += 1) {
+      expect(getCachedCodexMcpServerNames([], configPath)).toEqual(new Set());
+    }
+    await waitForCodexMcpServerCacheRefresh();
+
+    expect(probeCount(binDir)).toBe(1);
+    expect(getCachedCodexMcpServerNames([], configPath)).toEqual(new Set(['agent-tower']));
+  });
+
+  it('isolates cache entries by config/override inputs', async () => {
+    const binDir = createAsyncProbeCodex('isolated', JSON.stringify([{ name: 'agent-tower' }]));
+    process.env.PATH = `${binDir}:${savedPath}`;
+
+    getCachedCodexMcpServerNames(['--profile', 'one'], path.join(tmpDir, 'one.toml'));
+    getCachedCodexMcpServerNames(['--profile', 'two'], path.join(tmpDir, 'two.toml'));
+    await waitForCodexMcpServerCacheRefresh();
+
+    expect(probeCount(binDir)).toBe(2);
+  });
+
+  it('fails open and refreshes after the cache TTL', async () => {
+    const binDir = createAsyncProbeCodex('failure-refresh', 'not json', { exitCode: 1 });
+    process.env.PATH = `${binDir}:${savedPath}`;
+    const configPath = path.join(tmpDir, 'failure-refresh.toml');
+    fs.writeFileSync(configPath, '[mcp_servers.agent-tower]\ncommand = "agent-tower-mcp"\n');
+
+    const now = Date.now();
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      expect(getCachedCodexMcpServerNames([], configPath)).toEqual(new Set(['agent-tower']));
+      await waitForCodexMcpServerCacheRefresh();
+      dateSpy.mockReturnValue(now + 30_001);
+      expect(getCachedCodexMcpServerNames([], configPath)).toEqual(new Set(['agent-tower']));
+      await waitForCodexMcpServerCacheRefresh();
+      expect(probeCount(binDir)).toBe(2);
+    } finally {
+      dateSpy.mockRestore();
+    }
+  });
+
+  it('uses the provider HOME/CODEX_HOME fallback on the first non-blocking lookup', async () => {
+    const binDir = createAsyncProbeCodex('custom-home', JSON.stringify([]), { delayMs: 100 });
+    const customHome = path.join(tmpDir, 'provider-codex-home');
+    const customUserHome = path.join(tmpDir, 'provider-home');
+    fs.mkdirSync(customHome, { recursive: true });
+    fs.mkdirSync(customUserHome, { recursive: true });
+    fs.writeFileSync(path.join(customHome, 'config.toml'), '[mcp_servers.agent-tower]\ncommand = "agent-tower-mcp"\n');
+
+    const environment = {
+      ...process.env,
+      PATH: `${binDir}:${savedPath}`,
+      CODEX_HOME: customHome,
+      HOME: customUserHome,
+    };
+    const initial = getCachedCodexMcpServerNames([], undefined, { program: 'codex', args: [] }, environment);
+
+    expect(initial).toEqual(new Set(['agent-tower']));
+    await waitForCodexMcpServerCacheRefresh();
+    expect(probeCount(binDir)).toBe(1);
+  });
+});
 
 // ─── getCodexDeclaredMcpServerNames (config.toml fallback) ───────
 

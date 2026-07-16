@@ -7,6 +7,8 @@ import { writeErrorLog } from '../utils/error-log.js';
 export interface OutputParser {
   processData(data: string): void;
   finish(exitCode?: number): void;
+  onTurnCompleted?(listener: () => void): () => void;
+  onTurnFailed?(listener: () => void): () => void;
 }
 
 /**
@@ -19,6 +21,11 @@ export class AgentPipeline {
   private offExit?: { dispose(): void };
   private offPatch?: () => void;
   private offSessionId?: () => void;
+  private offTurnCompleted?: () => void;
+  private offTurnFailed?: () => void;
+  private logicalCompletionEmitted = false;
+  private logicalFailureEmitted = false;
+  private storeFinished = false;
   constructor(
     private readonly sessionId: string,
     private readonly pty: IPty,
@@ -32,6 +39,18 @@ export class AgentPipeline {
     });
     this.offSessionId = this.msgStore.onSessionId((agentSessionId) => {
       this.eventBus.emit('session:sessionId', { sessionId: this.sessionId, agentSessionId });
+    });
+    this.offTurnCompleted = this.parser?.onTurnCompleted?.(() => {
+      if (this.destroyed || this.logicalCompletionEmitted || this.logicalFailureEmitted) return;
+      this.logicalCompletionEmitted = true;
+      this.markStoreFinished();
+      this.eventBus.emit('session:turn-completed', { sessionId: this.sessionId });
+    });
+    this.offTurnFailed = this.parser?.onTurnFailed?.(() => {
+      if (this.destroyed || this.logicalCompletionEmitted || this.logicalFailureEmitted) return;
+      this.logicalFailureEmitted = true;
+      this.markStoreFinished();
+      this.eventBus.emit('session:turn-failed', { sessionId: this.sessionId });
     });
 
     this.offData = this.pty.onData((data) => this.handleData(data));
@@ -78,7 +97,7 @@ export class AgentPipeline {
     // finishParser must not prevent pushFinished/session:exit below —
     // otherwise the session would stay RUNNING forever on a parser bug.
     this.finishParser(exitCode);
-    this.msgStore.pushFinished();
+    this.markStoreFinished();
     this.eventBus.emit('session:exit', { sessionId: this.sessionId, exitCode });
     // Self-cleanup: remove MsgStore listeners so stale references don't accumulate.
     // SessionManager.session:exit handler also calls destroy(), but this ensures
@@ -107,6 +126,12 @@ export class AgentPipeline {
     }
   }
 
+  private markStoreFinished(): void {
+    if (this.storeFinished) return;
+    this.storeFinished = true;
+    this.msgStore.pushFinished();
+  }
+
   get isAlive(): boolean {
     return !this.destroyed;
   }
@@ -132,6 +157,8 @@ export class AgentPipeline {
     this.finishParser();
     this.offPatch?.();
     this.offSessionId?.();
+    this.offTurnCompleted?.();
+    this.offTurnFailed?.();
     try {
       this.pty.kill();
     } catch {

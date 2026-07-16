@@ -169,3 +169,41 @@ describe('CodexParser JSON object scanning', () => {
     ])
   })
 })
+
+describe('CodexParser logical turn completion', () => {
+  it('emits successful turn.completed once, after usage/state processing', () => {
+    const store = new MsgStore()
+    const parser = new CodexParser(store)
+    const signals: string[] = []
+    parser.onTurnCompleted(() => signals.push('completed'))
+
+    feedLine(parser, {
+      type: 'item.completed',
+      item: { id: 'msg_1', type: 'agent_message', text: 'final answer' },
+    })
+    feedLine(parser, {
+      type: 'turn.completed',
+      usage: { input_tokens: 3, output_tokens: 2 },
+    })
+    feedLine(parser, { type: 'turn.completed', usage: { input_tokens: 99, output_tokens: 99 } })
+
+    expect(signals).toEqual(['completed'])
+    expect(entries(store).map((entry) => entry.entryType)).toEqual([
+      'assistant_message',
+      'token_usage_info',
+    ])
+  })
+
+  it('does not emit success after turn.failed', () => {
+    const store = new MsgStore()
+    const parser = new CodexParser(store)
+    const signals: string[] = []
+    parser.onTurnCompleted(() => signals.push('completed'))
+
+    feedLine(parser, { type: 'turn.failed', error: { message: 'provider unavailable' } })
+    feedLine(parser, { type: 'turn.completed' })
+
+    expect(signals).toEqual([])
+    expect(entries(store).some((entry) => entry.entryType === 'error_message')).toBe(true)
+  })
+})

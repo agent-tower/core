@@ -21,9 +21,11 @@ Session 结束后的 DB 状态、snapshot、auto-commit、commit message、Task 
 
 `session:patch` 只标记 snapshot dirty；运行中按低频 checkpoint 持久化，所有 session 的 snapshot DB 写入经单一串行 writer 排队，相同 snapshot 跳过。COMPLETED/FAILED/CANCELLED、pipeline 替换等边界必须 `await` 强制 flush；不能恢复为每 patch 写库或不断重置的短 debounce。
 
+Codex `exec --json` 的成功 `turn.completed` 是逻辑完成边界，不必继续等待包装进程退出。Pipeline 必须先保留 raw stdout、处理完该 frame 的最终消息/usage 并标记 MsgStore finished，再通知 SessionManager 持久化 `COMPLETED`；残留 PTY 只在后台短暂宽限后清理。`turn.failed` 同样是一次性的失败逻辑边界，必须优先于随后 0/undefined PTY exit，持久化 `FAILED` 且不得触发成功 auto-commit/Task review。逻辑完成后的 auto-commit 绑定 generation，并在 follow-up 开始前完成或放弃，不能与新轮 Git 操作重叠。`turn.failed`、用户 stop、非零提前退出仍走各自失败/取消路径，logical completion、PTY exit 与 destroy 竞争时只允许一次终态和一次 parser finish。
+
 ## AgentPipeline
 
-`OutputParser` 只有 `processData(data)` 和 `finish(exitCode?)`。Parser 构造时接收 MsgStore；Pipeline 监听 MsgStore patch/session id 后发 EventBus。
+`OutputParser` 至少实现 `processData(data)` 和 `finish(exitCode?)`；支持逻辑完成边界的 parser 可选提供一次性的 `onTurnCompleted(listener)` 或 `onTurnFailed(listener)`。`onPatch` / `onSessionId` 属于 MsgStore，不是 Parser 接口；Parser 构造时接收 MsgStore，Pipeline 监听这些 MsgStore 事件后发 EventBus。
 
 保持以下不变量：
 

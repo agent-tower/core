@@ -11,6 +11,12 @@ PTY.onExit → Parser.finish() + MsgStore.pushFinished() + EventBus('session:exi
 MsgStore.onPatch → EventBus('session:patch') → Socket.IO
 ```
 
+Codex `turn.completed` / `turn.failed` are one-shot logical terminal signals and
+must win over a later PTY exit with code 0 or no code. The failure signal must
+persist `FAILED` without success auto-commit or task review. Logical completion
+keeps the PTY cleanup asynchronous; its auto-commit is generation-bound and
+must finish or be abandoned before a follow-up starts.
+
 ## Executor
 
 **基类**：`packages/server/src/executors/base.executor.ts`
@@ -33,11 +39,12 @@ MsgStore.onPatch → EventBus('session:patch') → Socket.IO
 **Patch 工具**：`packages/server/src/output/utils/patch.ts`（RFC 6902 JSON Patch 生成）
 **范本 Parser**：`packages/server/src/output/claude-code-parser.ts`
 
-Parser 需要实现：
+`OutputParser` 必须实现：
 - `processData(data)` — 处理增量输出，生成 JSON Patch
-- `finish()` — 进程退出时调用
-- `onPatch(handler)` — Patch 回调
-- `onSessionId(handler)` — Session ID 回调
+- `finish(exitCode?)` — 进程退出或 Pipeline 销毁时调用
+
+支持逻辑完成边界的 Parser 可选实现：
+- `onTurnCompleted(handler)` / `onTurnFailed(handler)` — Codex logical terminal signals
 
 所有 Agent 输出归一化为 `NormalizedEntry`，通过 `types.ts` 中的工厂函数创建。
 
@@ -45,6 +52,7 @@ Parser 需要实现：
 
 **范本文件**：`packages/server/src/output/msg-store.ts`
 
-- `SessionMsgStoreManager.getInstance()` 单例管理
+- `onPatch(handler)` / `onSessionId(handler)` 属于 MsgStore，由 Pipeline 订阅，不是 Parser 接口
+- 使用 `output/index.ts` 导出的 `sessionMsgStoreManager` 单例；不存在公共 `SessionMsgStoreManager.getInstance()`
 - `getSnapshot()` 增量缓存机制
 - `restoreFromSnapshot()` 用于 Session 续接

@@ -87,6 +87,10 @@ export class CodexParser {
   private retryErrorIndex: number | null = null;
   /** 按 item.id upsert 的 entry（mcp_tool_call / file_change / todo_list）item.id -> entry index */
   private itemEntryMap = new Map<string, number>();
+  private turnCompleted = false;
+  private turnFailed = false;
+  private turnCompletedListeners = new Set<() => void>();
+  private turnFailedListeners = new Set<() => void>();
 
   constructor(msgStore: MsgStore) {
     this.msgStore = msgStore;
@@ -94,6 +98,18 @@ export class CodexParser {
 
   private get indexProvider() {
     return this.msgStore.entryIndex;
+  }
+
+  /** Subscribe to the successful logical-turn signal (emitted at most once). */
+  onTurnCompleted(listener: () => void): () => void {
+    this.turnCompletedListeners.add(listener);
+    return () => this.turnCompletedListeners.delete(listener);
+  }
+
+  /** Subscribe to the failed logical-turn signal (emitted at most once). */
+  onTurnFailed(listener: () => void): () => void {
+    this.turnFailedListeners.add(listener);
+    return () => this.turnFailedListeners.delete(listener);
   }
 
   /**
@@ -234,8 +250,10 @@ export class CodexParser {
         break;
 
       case 'turn.completed':
-        if (event.usage) {
-          this.handleUsage(event.usage);
+        if (!this.turnCompleted && !this.turnFailed) {
+          if (event.usage) this.handleUsage(event.usage);
+          this.turnCompleted = true;
+          for (const listener of [...this.turnCompletedListeners]) listener();
         }
         break;
 
@@ -244,7 +262,10 @@ export class CodexParser {
         break;
 
       case 'turn.failed':
+        if (this.turnCompleted || this.turnFailed) break;
+        this.turnFailed = true;
         this.handleError(event.error?.message || event.message || 'Turn failed');
+        for (const listener of [...this.turnFailedListeners]) listener();
         break;
     }
   }

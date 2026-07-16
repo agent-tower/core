@@ -4,6 +4,10 @@ type EventMap = {
   'session:stdout': { sessionId: string; data: string };
   'session:patch': { sessionId: string; patch: unknown[]; seq: number };
   'session:exit': { sessionId: string; exitCode?: number };
+  /** Codex reported a successful turn before its wrapper process exited. */
+  'session:turn-completed': { sessionId: string };
+  /** Codex reported a failed turn before its wrapper process exited. */
+  'session:turn-failed': { sessionId: string };
   'session:completed': { sessionId: string; status: string };
   'session:started': { sessionId: string };
   'session:stopped': { sessionId: string };

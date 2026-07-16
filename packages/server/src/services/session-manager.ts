@@ -92,11 +92,28 @@ export class SessionManager {
   private dirtySnapshots = new Set<string>();
   private persistedSnapshotHashes = new Map<string, string>();
   private pendingSnapshotStatus = new Map<string, SessionStatus>();
+  /** Terminal state gate: turn.completed and PTY exit may race each other. */
+  private terminalSessions = new Map<string, SessionStatus>();
+  private sessionFinalizations = new Map<string, Promise<void>>();
+  /** Logical completion reserves this gate before broadcasting so a follow-up cannot overlap auto-commit. */
+  private pendingAutoCommits = new Map<string, Promise<void>>();
+  private pendingAutoCommitResolvers = new Map<string, () => void>();
+  /**
+   * A follow-up reserves the session before any async validation. Finalizers
+   * wait on this reservation before reconciliation so a valid follow-up can
+   * invalidate the old generation without racing Task/TeamRun post-processing.
+   */
+  private followUpReservations = new Map<string, Promise<void>>();
+  private followUpReservationReleases = new Set<() => void>();
+  /** Incremented for every start/send cycle so late post-processing cannot affect a new turn. */
+  private sessionGenerations = new Map<string, number>();
+  private logicalCompletionCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // 每个 session 上次写入 TeamRun 心跳时间戳的时刻，用于节流 lastHeartbeatAt 落库。
   private heartbeatThrottle = new Map<string, number>();
   private readonly teamReconciler: TeamReconcilerService;
   private static readonly SNAPSHOT_CHECKPOINT_MS = 15_000;
   private static readonly HEARTBEAT_THROTTLE_MS = 30_000;
+  private static readonly CODEX_TURN_COMPLETION_GRACE_MS = 250;
 
   constructor(private readonly eventBus: EventBus, teamReconciler?: TeamReconcilerService) {
     this.teamReconciler = teamReconciler ?? new TeamReconcilerService({
@@ -123,7 +140,28 @@ export class SessionManager {
       this.maybeRecordTeamRunHeartbeat(sessionId, patch);
     });
 
+    this.eventBus.on('session:turn-completed', ({ sessionId }) => {
+      if (this.terminalSessions.has(sessionId)) return;
+      // The parser has already written raw stdout, the final assistant entry,
+      // usage and all other state from the turn.completed chunk at this point.
+      this.terminalSessions.set(sessionId, SessionStatus.COMPLETED);
+      this.scheduleLogicalCompletionCleanup(sessionId);
+      this.startSessionFinalization(sessionId, 0, { logicalCompletion: true });
+    });
+
+    this.eventBus.on('session:turn-failed', ({ sessionId }) => {
+      if (this.terminalSessions.has(sessionId)) return;
+      // A turn failure is terminal even when the CLI wrapper later exits 0 or
+      // without an exit code. Use a synthetic non-zero code for the shared
+      // finalization path so success-only post-processing cannot run.
+      this.terminalSessions.set(sessionId, SessionStatus.FAILED);
+      this.scheduleLogicalCompletionCleanup(sessionId);
+      this.startSessionFinalization(sessionId, 1, { logicalCompletion: true });
+    });
+
     this.eventBus.on('session:exit', ({ sessionId, exitCode }) => {
+      const terminalStatus = this.terminalSessions.get(sessionId);
+      this.clearLogicalCompletionCleanup(sessionId);
       const pipeline = this.pipelines.get(sessionId);
       if (DEBUG_SNAPSHOT) {
         console.log(`[SessionManager:snapshot] session:exit sessionId=${sessionId} exitCode=${exitCode} hasPipeline=${Boolean(pipeline)}`);
@@ -137,16 +175,12 @@ export class SessionManager {
       }
       this.cancelTokens.delete(sessionId);
       this.heartbeatThrottle.delete(sessionId);
-      this.handleSessionExit(sessionId, exitCode).catch((error) => {
-        console.error(`[SessionManager] post-exit handling failed for ${sessionId}:`, error);
-        writeErrorLog({
-          level: 'error',
-          source: 'session.postExit',
-          message: `Post-exit handling failed for session ${sessionId}`,
-          error,
-          metadata: { sessionId, exitCode },
-        });
-      });
+      if (terminalStatus) return;
+      this.terminalSessions.set(
+        sessionId,
+        typeof exitCode === 'number' && exitCode !== 0 ? SessionStatus.FAILED : SessionStatus.COMPLETED,
+      );
+      this.startSessionFinalization(sessionId, exitCode);
     });
 
     // NOTE: checkTaskAutoRevert is called directly (awaited) inside start()
@@ -194,6 +228,8 @@ export class SessionManager {
       console.log('[SessionManager] ❌ Session not found:', id);
       return null;
     }
+    await this.waitForPendingAutoCommit(id);
+    this.beginSessionExecution(id);
     this.ensureExecutionRecordIsLive(session);
     const workingDir = this.getExecutionWorkingDir(session);
 
@@ -255,6 +291,8 @@ export class SessionManager {
       console.log('[SessionManager] ❌ Session not found:', id);
       return null;
     }
+    await this.waitForPendingAutoCommit(id);
+    this.beginSessionExecution(id);
     this.ensureExecutionRecordIsLive(session);
 
     const resumeFromSession = await prisma.session.findUnique({
@@ -360,36 +398,56 @@ export class SessionManager {
       console.log('[SessionManager] Switching provider to:', providerId);
     }
 
-    const session = await this.findSessionExecutionRecord(id);
-    if (!session) {
-      console.log('[SessionManager] ❌ Session not found:', id);
-      return null;
-    }
-    this.ensureExecutionRecordIsLive(session);
+    const reservation = this.reserveFollowUp(id);
+    try {
+      // Serialize concurrent follow-ups for the same session while retaining
+      // the reservation in the map so the old finalizer cannot reconcile.
+      await reservation.previous;
 
-    // 如果传入了新的 providerId，验证并切换
-    if (providerId && providerId !== session.providerId) {
-      const newProvider = getProviderById(providerId);
-      if (!newProvider) {
-        throw new Error(`Provider not found: ${providerId}`);
+      const session = await this.findSessionExecutionRecord(id);
+      if (!session) {
+        console.log('[SessionManager] ❌ Session not found:', id);
+        return null;
       }
-      // 验证 provider 的 agentType 与 session 一致（仅支持同 agentType 内切换）
-      if (String(newProvider.agentType) !== session.agentType) {
-        throw new Error(
-          `Cannot switch provider: agentType mismatch. Session uses '${session.agentType}', but provider '${newProvider.name}' is for '${newProvider.agentType}'`
-        );
-      }
-      // 持久化切换后的 providerId
-      await prisma.session.update({
-        where: { id },
-        data: { providerId },
-      });
-      console.log(`[SessionManager] ✅ Provider switched to: ${newProvider.name} (${providerId})`);
-    }
+      this.ensureExecutionRecordIsLive(session);
 
+      // Always validate the effective provider, including when it is inherited
+      // from the session or explicitly repeats the current provider. A stale
+      // session provider must not invalidate the completed generation.
+      const effectiveProviderId = providerId ?? session.providerId;
+      if (effectiveProviderId) {
+        const effectiveProvider = getProviderById(effectiveProviderId);
+        if (!effectiveProvider) {
+          throw new Error(`Provider not found: ${effectiveProviderId}`);
+        }
+        if (String(effectiveProvider.agentType) !== session.agentType) {
+          throw new Error(
+            `Cannot switch provider: agentType mismatch. Session uses '${session.agentType}', but provider '${effectiveProvider.name}' is for '${effectiveProvider.agentType}'`
+          );
+        }
+      }
+
+      if (providerId && providerId !== session.providerId) {
+        const switchedProvider = getProviderById(providerId);
+        await prisma.session.update({
+          where: { id },
+          data: { providerId },
+        });
+        console.log(`[SessionManager] ✅ Provider switched to: ${switchedProvider?.name ?? providerId}`);
+      }
+
+      // A rejected follow-up must not cancel the completed turn's post-exit
+      // work. Advance the generation only after the session/provider checks and
+      // any provider persistence have succeeded, immediately before replacing
+      // the old execution with the new one.
+      this.invalidateSessionGeneration(id);
+      this.beginSessionExecution(id);
+
+    // Destroying the residual PTY before waiting for the completed generation's
+    // auto-commit prevents a late exit event from being mistaken for the new
+    // generation while the Git boundary is in flight.
     const existing = this.pipelines.get(id);
     if (existing) {
-      // Checkpoint snapshot before replacing PTY pipeline.
       if (DEBUG_SNAPSHOT) {
         console.log(`[SessionManager:snapshot] sendMessage checkpoint before pipeline replace sessionId=${id}`);
       }
@@ -398,6 +456,7 @@ export class SessionManager {
       this.pipelines.delete(id);
       this.cancelTokens.delete(id);
     }
+    await this.waitForPendingAutoCommit(id);
 
     const isNewStore = !sessionMsgStoreManager.has(id);
     const msgStore = sessionMsgStoreManager.getOrCreate(id);
@@ -440,11 +499,9 @@ export class SessionManager {
     // the user-message patch would never reach WebSocket subscribers.
     this.eventBus.emit('session:patch', { sessionId: id, patch: userPatch, seq: userPatchSeq });
 
-    const agentSessionId = this.resolveAgentSessionId(id, session.logSnapshot);
-    const agentType = session.agentType as AgentType;
-    // 优先使用传入的 providerId，否则使用 session 中的 providerId
-    const effectiveProviderId = providerId ?? session.providerId ?? undefined;
-    const executor = this.resolveExecutor(agentType, session.variant, effectiveProviderId);
+      const agentSessionId = this.resolveAgentSessionId(id, session.logSnapshot);
+      const agentType = session.agentType as AgentType;
+      const executor = this.resolveExecutor(agentType, session.variant, effectiveProviderId);
 
     const workingDir = this.getExecutionWorkingDir(session);
     const env = ExecutionEnv.default(workingDir);
@@ -511,13 +568,33 @@ export class SessionManager {
       }
     }
 
-    await this.activateSpawnedSession(id, agentType, workingDir, spawnResult);
-    return session;
+      await this.activateSpawnedSession(id, agentType, workingDir, spawnResult);
+      return session;
+    } finally {
+      reservation.release();
+    }
   }
 
   async stop(id: string, options: StopSessionOptions = {}) {
     const session = await prisma.session.findUnique({ where: { id } });
     if (!session) return null;
+
+    const terminalStatus = this.terminalSessions.get(id);
+    const persistedTerminal = [
+      SessionStatus.COMPLETED,
+      SessionStatus.FAILED,
+      SessionStatus.CANCELLED,
+    ].includes(session.status as SessionStatus);
+    if (terminalStatus || persistedTerminal) {
+      // A terminal transition already won the race. A late user stop may
+      // clean up the PTY, but it must not regress the persisted status.
+      this.clearLogicalCompletionCleanup(id);
+      this.destroyActivePipeline(id);
+      this.maybeClearTerminalState(id);
+      return session;
+    }
+    this.clearLogicalCompletionCleanup(id);
+    this.terminalSessions.set(id, SessionStatus.CANCELLED);
 
     const pendingSpawn = this.pendingSpawns.get(id);
     if (pendingSpawn) {
@@ -623,8 +700,9 @@ export class SessionManager {
    * Destroy all active pipelines. Called on graceful server shutdown.
    */
   destroyAll(): void {
-    if (this.pipelines.size === 0) return;
-    console.log(`[SessionManager] Destroying all ${this.pipelines.size} active pipelines`);
+    if (this.pipelines.size > 0) {
+      console.log(`[SessionManager] Destroying all ${this.pipelines.size} active pipelines`);
+    }
     for (const [sessionId, pipeline] of this.pipelines) {
       const cancel = this.cancelTokens.get(sessionId);
       if (cancel) {
@@ -634,6 +712,17 @@ export class SessionManager {
     }
     this.pipelines.clear();
     this.cancelTokens.clear();
+    for (const timer of this.logicalCompletionCleanupTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.logicalCompletionCleanupTimers.clear();
+    this.terminalSessions.clear();
+    for (const resolve of this.pendingAutoCommitResolvers.values()) resolve();
+    this.pendingAutoCommitResolvers.clear();
+    this.pendingAutoCommits.clear();
+    for (const release of [...this.followUpReservationReleases]) release();
+    this.followUpReservationReleases.clear();
+    this.followUpReservations.clear();
   }
 
   private resolveAgentSessionId(sessionId: string, logSnapshot: string | null): string | null {
@@ -904,25 +993,30 @@ export class SessionManager {
    * 保证 worktree 始终干净的兜底机制，最终会被 squash merge 合并。
    * 参考: vibe-kanban crates/local-deployment/src/container.rs:496-505
    */
-  private async autoCommitChanges(sessionId: string): Promise<void> {
+  private async autoCommitChanges(sessionId: string, generation?: number): Promise<void> {
     try {
+      if (!this.isCurrentGeneration(sessionId, generation)) return;
       const session = await prisma.session.findUnique({
         where: { id: sessionId },
         include: { workspace: true },
       });
+      if (!this.isCurrentGeneration(sessionId, generation)) return;
       if (!session?.workspace || isMainDirectoryWorkspace(session.workspace)) return;
       if (!session.workspace.worktreePath) return;
 
       const worktreePath = session.workspace.worktreePath;
 
       const status = await execGit(worktreePath, ['status', '--porcelain']);
+      if (!this.isCurrentGeneration(sessionId, generation)) return;
       if (!status.trim()) return;
 
       await execGit(worktreePath, ['add', '-A']);
+      if (!this.isCurrentGeneration(sessionId, generation)) return;
       await execGit(worktreePath, [
         'commit', '-m',
         `auto-commit: uncommitted changes from session ${sessionId.slice(0, 8)}`,
       ]);
+      if (!this.isCurrentGeneration(sessionId, generation)) return;
 
       console.log(`[SessionManager] Auto-committed changes for session ${sessionId}`);
     } catch (error) {
@@ -1259,7 +1353,12 @@ export class SessionManager {
    * 根据 session purpose 走不同的后处理路径。
    * exitCode 非 0 时标记为 FAILED。
    */
-  private async handleSessionExit(sessionId: string, exitCode?: number): Promise<void> {
+  private async handleSessionExit(
+    sessionId: string,
+    exitCode?: number,
+    options: { logicalCompletion?: boolean; generation?: number } = {},
+  ): Promise<void> {
+    const generation = options.generation ?? this.sessionGenerations.get(sessionId);
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       select: { purpose: true, context: true, conversationId: true },
@@ -1268,6 +1367,18 @@ export class SessionManager {
     // exitCode 非 0 且非 undefined 视为失败
     const isFailed = typeof exitCode === 'number' && exitCode !== 0;
     const finalStatus = isFailed ? SessionStatus.FAILED : SessionStatus.COMPLETED;
+
+    // Persist and broadcast logical completion before any auto-commit or
+    // provider cleanup work. This is the user-visible fast path; the later
+    // PTY cleanup and post-exit work remain best-effort background work.
+    if (options.logicalCompletion) {
+      await this.flushSnapshotPersist(sessionId, finalStatus);
+      if (!this.isCurrentGeneration(sessionId, generation)) {
+        this.releaseAutoCommitGate(sessionId);
+        return;
+      }
+      this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
+    }
 
     if (isFailed) {
       console.warn(`[SessionManager] Session ${sessionId} exited with code ${exitCode}, marking as FAILED`);
@@ -1280,7 +1391,10 @@ export class SessionManager {
     }
 
     if (session?.context === SessionContext.CONVERSATION || session?.conversationId) {
-      await this.flushSnapshotPersist(sessionId, finalStatus);
+      this.releaseAutoCommitGate(sessionId);
+      if (!options.logicalCompletion) {
+        await this.flushSnapshotPersist(sessionId, finalStatus);
+      }
       if (session.conversationId) {
         await prisma.conversation.update({
           where: { id: session.conversationId },
@@ -1289,10 +1403,15 @@ export class SessionManager {
           // Conversation may have been deleted while the process exited.
         });
       }
-      this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
+      if (!options.logicalCompletion) {
+        this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
+      }
     } else if (session?.purpose === SessionPurpose.COMMIT_MSG) {
       // COMMIT_MSG session: 只需持久化快照，然后提取 commit message
-      await this.flushSnapshotPersist(sessionId, finalStatus);
+      this.releaseAutoCommitGate(sessionId);
+      if (!options.logicalCompletion) {
+        await this.flushSnapshotPersist(sessionId, finalStatus);
+      }
       if (!isFailed) {
         try {
           const commitMessageService = getCommitMessageService();
@@ -1305,22 +1424,46 @@ export class SessionManager {
         }
       }
       // 通知前端 session 状态（DB 状态已更新）
-      this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
+      if (!options.logicalCompletion) {
+        this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
+      }
     } else {
       // 正常 CHAT session: autoCommit → 持久化 → 检查 Task 推进 → 触发 commit message 生成
-      if (!isFailed) {
-        await this.autoCommitChanges(sessionId);
+      if (!isFailed && this.isCurrentGeneration(sessionId, generation)) {
+        try {
+          await this.autoCommitChanges(sessionId, generation);
+        } finally {
+          // Follow-up requests wait for this boundary before advancing the
+          // generation, so no Git operation can overlap the new turn.
+          this.releaseAutoCommitGate(sessionId);
+        }
+      } else {
+        this.releaseAutoCommitGate(sessionId);
       }
-      await this.flushSnapshotPersist(sessionId, finalStatus);
+      // A follow-up may still be validating its session/provider. Keep the
+      // old generation inside this boundary until the follow-up either fails
+      // (and releases the reservation) or advances the generation and enters
+      // its new execution.
+      await this.waitForFollowUpReservation(sessionId);
+      if (!this.isCurrentGeneration(sessionId, generation)) return;
+      if (!options.logicalCompletion) {
+        await this.flushSnapshotPersist(sessionId, finalStatus);
+      }
       // 通知前端 session 状态（DB 状态已更新）
-      this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
+      if (!options.logicalCompletion) {
+        this.eventBus.emit('session:completed', { sessionId, status: finalStatus });
+      }
+
+      if (!this.isCurrentGeneration(sessionId, generation)) return;
 
       const handledByTeamRun = await this.teamReconciler.handleSessionExit(sessionId);
+      if (!this.isCurrentGeneration(sessionId, generation)) return;
 
       if (!isFailed) {
         if (!handledByTeamRun) {
           await this.checkTaskAutoAdvance(sessionId);
         }
+        if (!this.isCurrentGeneration(sessionId, generation)) return;
 
         // 每次 CHAT session 完成都触发 commit message 重新生成
         const sess = await prisma.session.findUnique({
@@ -1337,8 +1480,148 @@ export class SessionManager {
     // 此时快照已通过 flushSnapshotPersist 持久化到 DB；后续读取（/logs API、
     // sendMessage 重启、resolveAgentSessionId、commit message 提取）都有
     // logSnapshot fallback，sendMessage 会经 restoreFromSnapshot 恢复上下文。
-    sessionMsgStoreManager.delete(sessionId);
-    this.releaseSnapshotPersistenceState(sessionId);
+    if (this.isCurrentGeneration(sessionId, generation)) {
+      sessionMsgStoreManager.delete(sessionId);
+      this.releaseSnapshotPersistenceState(sessionId);
+    }
+  }
+
+  private beginSessionExecution(sessionId: string): void {
+    this.clearTerminalState(sessionId);
+    this.sessionGenerations.set(sessionId, (this.sessionGenerations.get(sessionId) ?? 0) + 1);
+  }
+
+  private invalidateSessionGeneration(sessionId: string): void {
+    this.sessionGenerations.set(sessionId, (this.sessionGenerations.get(sessionId) ?? 0) + 1);
+  }
+
+  private clearTerminalState(sessionId: string): void {
+    this.terminalSessions.delete(sessionId);
+    this.clearLogicalCompletionCleanup(sessionId);
+  }
+
+  private startSessionFinalization(
+    sessionId: string,
+    exitCode?: number,
+    options: { logicalCompletion?: boolean } = {},
+  ): void {
+    if (options.logicalCompletion) {
+      this.reserveAutoCommitGate(sessionId);
+    }
+    const source = options.logicalCompletion ? 'session.logicalCompletion' : 'session.postExit';
+    const generation = this.sessionGenerations.get(sessionId);
+    const finalization = this.handleSessionExit(sessionId, exitCode, { ...options, generation })
+      .catch((error) => {
+        this.releaseAutoCommitGate(sessionId);
+        console.error(`[SessionManager] ${source} handling failed for ${sessionId}:`, error);
+        writeErrorLog({
+          level: 'error',
+          source,
+          message: `Session finalization failed for session ${sessionId}`,
+          error,
+          metadata: { sessionId, exitCode },
+        });
+      })
+      .finally(() => {
+        if (this.sessionFinalizations.get(sessionId) === finalization) {
+          this.sessionFinalizations.delete(sessionId);
+        }
+        this.maybeClearTerminalState(sessionId);
+      });
+    this.sessionFinalizations.set(sessionId, finalization);
+  }
+
+  private maybeClearTerminalState(sessionId: string): void {
+    if (this.pipelines.has(sessionId)) return;
+    if (this.logicalCompletionCleanupTimers.has(sessionId)) return;
+    if (this.sessionFinalizations.has(sessionId)) return;
+    this.terminalSessions.delete(sessionId);
+  }
+
+  private isCurrentGeneration(sessionId: string, generation?: number): boolean {
+    return generation === undefined || this.sessionGenerations.get(sessionId) === generation;
+  }
+
+  private reserveAutoCommitGate(sessionId: string): void {
+    if (this.pendingAutoCommits.has(sessionId)) return;
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    this.pendingAutoCommits.set(sessionId, gate);
+    this.pendingAutoCommitResolvers.set(sessionId, resolveGate);
+  }
+
+  private releaseAutoCommitGate(sessionId: string): void {
+    const resolveGate = this.pendingAutoCommitResolvers.get(sessionId);
+    if (resolveGate) resolveGate();
+    this.pendingAutoCommitResolvers.delete(sessionId);
+    this.pendingAutoCommits.delete(sessionId);
+  }
+
+  private async waitForPendingAutoCommit(sessionId: string): Promise<void> {
+    await this.pendingAutoCommits.get(sessionId);
+  }
+
+  private reserveFollowUp(sessionId: string): {
+    previous: Promise<void>;
+    release: () => void;
+  } {
+    const previous = this.followUpReservations.get(sessionId) ?? Promise.resolve();
+    let resolveReservation!: () => void;
+    const reservation = new Promise<void>((resolve) => {
+      resolveReservation = resolve;
+    });
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      resolveReservation();
+      this.followUpReservationReleases.delete(release);
+      if (this.followUpReservations.get(sessionId) === reservation) {
+        this.followUpReservations.delete(sessionId);
+      }
+    };
+    this.followUpReservations.set(sessionId, reservation);
+    this.followUpReservationReleases.add(release);
+    return { previous, release };
+  }
+
+  private async waitForFollowUpReservation(sessionId: string): Promise<void> {
+    // Follow-ups can queue behind one another. Re-check after each reservation
+    // resolves so a finalizer never observes only an earlier queue item.
+    while (true) {
+      const reservation = this.followUpReservations.get(sessionId);
+      if (!reservation) return;
+      await reservation;
+      if (this.followUpReservations.get(sessionId) === reservation) return;
+    }
+  }
+
+  private destroyActivePipeline(sessionId: string): void {
+    const pipeline = this.pipelines.get(sessionId);
+    if (pipeline) {
+      pipeline.destroy();
+      this.pipelines.delete(sessionId);
+    }
+    this.cancelTokens.delete(sessionId);
+    this.heartbeatThrottle.delete(sessionId);
+  }
+
+  private clearLogicalCompletionCleanup(sessionId: string): void {
+    const timer = this.logicalCompletionCleanupTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    this.logicalCompletionCleanupTimers.delete(sessionId);
+  }
+
+  private scheduleLogicalCompletionCleanup(sessionId: string): void {
+    this.clearLogicalCompletionCleanup(sessionId);
+    const timer = setTimeout(() => {
+      this.logicalCompletionCleanupTimers.delete(sessionId);
+      this.destroyActivePipeline(sessionId);
+      this.maybeClearTerminalState(sessionId);
+    }, SessionManager.CODEX_TURN_COMPLETION_GRACE_MS);
+    this.logicalCompletionCleanupTimers.set(sessionId, timer);
   }
 
   private logSessionError(source: string, error: unknown, metadata: Record<string, unknown>): void {

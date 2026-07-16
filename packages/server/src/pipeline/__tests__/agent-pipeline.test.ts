@@ -215,4 +215,38 @@ describe('AgentPipeline end-to-end data flow', () => {
     // pipeline 已自毁，SessionManager 不得将其视为活跃
     expect(pipeline.isAlive).toBe(false)
   })
+
+  it('forwards Codex logical completion before a still-running PTY exits', () => {
+    const { pty, msgStore, eventBus, pipeline } = setup()
+    const completions: string[] = []
+    eventBus.on('session:turn-completed', ({ sessionId }) => completions.push(sessionId))
+
+    pty.emitData(codexLine(agentMessage('m1', 'done')))
+    pty.emitData(codexLine({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }))
+
+    expect(completions).toEqual(['session-1'])
+    expect(msgStore.getSnapshot().entries.map((entry) => entry.content)).toContain('done')
+    expect(msgStore.isFinished()).toBe(true)
+    expect(pipeline.isAlive).toBe(true)
+  })
+
+  it('forwards one failed-turn signal and ignores a later zero exit', () => {
+    const { pty, msgStore, eventBus, pipeline } = setup()
+    const failures: string[] = []
+    const completions: string[] = []
+    eventBus.on('session:turn-failed', ({ sessionId }) => failures.push(sessionId))
+    eventBus.on('session:turn-completed', ({ sessionId }) => completions.push(sessionId))
+
+    const failed = codexLine({ type: 'turn.failed', error: { message: 'provider unavailable' } })
+    pty.emitData(failed)
+    pty.emitData(failed)
+    pty.emitData(codexLine({ type: 'turn.completed' }))
+    pty.emitExit(0)
+
+    expect(failures).toEqual(['session-1'])
+    expect(completions).toEqual([])
+    expect(msgStore.getSnapshot().entries.map((entry) => entry.content)).toContain('provider unavailable')
+    expect(msgStore.isFinished()).toBe(true)
+    expect(pipeline.isAlive).toBe(false)
+  })
 })
