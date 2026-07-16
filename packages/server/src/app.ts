@@ -15,6 +15,8 @@ import { getEventBus, getSessionManager, getTaskCleanupService } from './core/co
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 import { accessAuthHook } from './middleware/access-auth.js';
 import { writeErrorLog } from './utils/error-log.js';
+import { initializeDatabaseRuntime } from './utils/index.js';
+import { runStartupDataMigrations } from './services/database-maintenance.service.js';
 
 let hibernationScheduler: HibernationScheduler | null = null;
 let memberHeartbeatScheduler: MemberHeartbeatScheduler | null = null;
@@ -22,6 +24,9 @@ let memberHeartbeatScheduler: MemberHeartbeatScheduler | null = null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export async function buildApp() {
+  await initializeDatabaseRuntime();
+  await runStartupDataMigrations();
+
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL || 'info',

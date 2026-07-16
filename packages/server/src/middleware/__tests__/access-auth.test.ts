@@ -66,6 +66,7 @@ describe('accessAuthHook', () => {
 
   beforeEach(async () => {
     await prisma.accessAuthSettings.deleteMany();
+    AccessAuthService.__test.resetSettingsCache();
     delete process.env.AGENT_TOWER_INTERNAL_TOKEN;
     AccessAuthService.__test.resetLoginRateLimit();
     AccessAuthService.__test.resetSessionSecretGeneration();

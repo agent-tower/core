@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
-import type { Task, TaskBody, TaskStatus } from '@agent-tower/shared'
+import type { Task, TaskBoardResponse, TaskBody, TaskStatus } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
 
@@ -18,12 +18,21 @@ type TasksListSnapshot = Array<[
   PaginatedResponse<Task> | undefined,
 ]>
 
+type TaskBoardSnapshot = Array<[
+  readonly unknown[],
+  TaskBoardResponse | undefined,
+]>
+
 // ============ 请求参数类型 ============
 
 interface ListTasksParams {
   status?: TaskStatus
   page?: number
   limit?: number
+}
+
+interface TaskBoardParams extends ListTasksParams {
+  projectId?: string
 }
 
 interface CreateTaskInput {
@@ -81,9 +90,50 @@ export function isTaskListQueryKey(queryKey: QueryKey, projectId?: string): bool
   return projectId ? queryKey[2] === projectId : true
 }
 
+export function isTaskBoardQueryKey(queryKey: QueryKey, projectId?: string): boolean {
+  if (!Array.isArray(queryKey)) return false
+  if (queryKey[0] !== 'tasks' || queryKey[1] !== 'board') return false
+  if (!projectId) return true
+  const params = queryKey[2]
+  if (!params || typeof params !== 'object') return true
+  const boardProjectId = (params as { projectId?: unknown }).projectId
+  return boardProjectId == null || boardProjectId === projectId
+}
+
+export function removeTaskFromBoardCaches(
+  queryClient: QueryClient,
+  taskId: string,
+  projectId?: string,
+): TaskBoardSnapshot {
+  const predicate = (query: { queryKey: QueryKey }) => isTaskBoardQueryKey(query.queryKey, projectId)
+  const snapshots = queryClient.getQueriesData<TaskBoardResponse>({ predicate })
+
+  queryClient.setQueriesData<TaskBoardResponse>({ predicate }, (current) => {
+    if (!current || !Array.isArray(current.data)) return current
+    const nextData = current.data.filter((task) => task.id !== taskId)
+    if (nextData.length === current.data.length) return current
+    return {
+      ...current,
+      data: nextData,
+      total: Math.max(0, current.total - (current.data.length - nextData.length)),
+    }
+  })
+
+  return snapshots
+}
+
 function restoreTaskListCaches(
   queryClient: QueryClient,
   snapshots: TasksListSnapshot,
+) {
+  for (const [queryKey, data] of snapshots) {
+    queryClient.setQueryData(queryKey, data)
+  }
+}
+
+function restoreTaskBoardCaches(
+  queryClient: QueryClient,
+  snapshots: TaskBoardSnapshot,
 ) {
   for (const [queryKey, data] of snapshots) {
     queryClient.setQueryData(queryKey, data)
@@ -110,6 +160,19 @@ export function useTasks(projectId: string, options?: ListTasksParams) {
         { params },
       ),
     enabled: !!projectId,
+  })
+}
+
+export function useTaskBoard(options?: TaskBoardParams) {
+  const params: Record<string, string> = {}
+  if (options?.projectId) params.projectId = options.projectId
+  if (options?.status != null) params.status = options.status
+  if (options?.page != null) params.page = String(options.page)
+  if (options?.limit != null) params.limit = String(options.limit)
+
+  return useQuery({
+    queryKey: queryKeys.tasks.board(options as Record<string, unknown> | undefined),
+    queryFn: () => apiClient.get<TaskBoardResponse>('/task-board', { params }),
   })
 }
 
@@ -150,6 +213,7 @@ export function useCreateTask(projectId: string) {
     mutationFn: (input: CreateTaskInput) =>
       apiClient.post<Task>(`/projects/${projectId}/tasks`, input),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.boardAll })
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.list(projectId),
       })
@@ -213,11 +277,15 @@ export function useDeleteTask() {
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all })
       const snapshots = removeTaskFromListCaches(queryClient, id)
-      return { snapshots }
+      const boardSnapshots = removeTaskFromBoardCaches(queryClient, id)
+      return { snapshots, boardSnapshots }
     },
     onError: (_error, _id, context) => {
       if (context?.snapshots) {
         restoreTaskListCaches(queryClient, context.snapshots)
+      }
+      if (context?.boardSnapshots) {
+        restoreTaskBoardCaches(queryClient, context.boardSnapshots)
       }
     },
     onSuccess: () => {

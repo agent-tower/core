@@ -126,7 +126,13 @@ function asAgentInvocations(value: unknown): AgentInvocation[] {
 
 function createGitRepoPath() {
   const repoPath = path.join(testDir, 'repos', `repo-${gitRepoSequence++}`);
-  fs.mkdirSync(path.join(repoPath, '.git'), { recursive: true });
+  fs.mkdirSync(repoPath, { recursive: true });
+  execFileSync('git', ['init', '--quiet'], { cwd: repoPath, stdio: 'ignore' });
+  execFileSync(
+    'git',
+    ['-c', 'user.name=Agent Tower Test', '-c', 'user.email=test@agent-tower.local', 'commit', '--quiet', '--allow-empty', '-m', 'initial'],
+    { cwd: repoPath, stdio: 'ignore' },
+  );
   return repoPath;
 }
 

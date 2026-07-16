@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { ProjectGitCapability } from '@agent-tower/shared';
 import { ValidationError } from '../errors.js';
 import { execGit } from '../git/git-cli.js';
+import { prisma } from '../utils/index.js';
 
 type ProjectGuardInput = {
   name: string;
@@ -42,6 +43,45 @@ export function hasGitMetadata(projectPath: string): boolean {
   return fs.existsSync(path.join(projectPath, '.git'));
 }
 
+type StoredProjectGitCapability = {
+  repoPath: string;
+  isGitRepo: boolean | null;
+  worktreeReady: boolean | null;
+  gitCapabilityReason: string | null;
+};
+
+const PROJECT_GIT_CAPABILITY_REASONS = new Set<ProjectGitCapability['reason']>([
+  'NO_GIT',
+  'NO_HEAD',
+  'READY',
+  'INVALID_REPOSITORY',
+]);
+
+export function getStoredProjectGitCapability(
+  project: StoredProjectGitCapability
+): ProjectGitCapability {
+  if (
+    project.isGitRepo !== null
+    && project.worktreeReady !== null
+    && PROJECT_GIT_CAPABILITY_REASONS.has(project.gitCapabilityReason as ProjectGitCapability['reason'])
+  ) {
+    return {
+      isGitRepo: project.isGitRepo,
+      worktreeReady: project.worktreeReady,
+      reason: project.gitCapabilityReason as ProjectGitCapability['reason'],
+    };
+  }
+
+  // Legacy rows have no persisted capability. Keep list reads cheap and let
+  // explicit refresh/operation guards perform the authoritative Git check.
+  const isGitRepo = hasGitMetadata(project.repoPath);
+  return {
+    isGitRepo,
+    worktreeReady: isGitRepo,
+    reason: isGitRepo ? 'READY' : 'NO_GIT',
+  };
+}
+
 export async function detectProjectGitCapability(projectPath: string): Promise<ProjectGitCapability> {
   if (!hasGitMetadata(projectPath)) {
     return {
@@ -76,6 +116,24 @@ export async function detectProjectGitCapability(projectPath: string): Promise<P
   }
 }
 
+export async function detectAndStoreProjectGitCapability(project: {
+  id: string;
+  repoPath: string;
+}): Promise<ProjectGitCapability & { gitCapabilityCheckedAt: Date }> {
+  const capability = await detectProjectGitCapability(project.repoPath);
+  const gitCapabilityCheckedAt = new Date();
+  await prisma.project.update({
+    where: { id: project.id },
+    data: {
+      isGitRepo: capability.isGitRepo,
+      worktreeReady: capability.worktreeReady,
+      gitCapabilityReason: capability.reason,
+      gitCapabilityCheckedAt,
+    },
+  });
+  return { ...capability, gitCapabilityCheckedAt };
+}
+
 export function ensureProjectSupportsGit(
   project: Pick<ProjectGuardInput, 'name'> & { repoPath: string },
   action: string
@@ -88,10 +146,10 @@ export function ensureProjectSupportsGit(
 }
 
 export async function ensureProjectSupportsWorktrees(
-  project: Pick<ProjectGuardInput, 'name'> & { repoPath: string },
+  project: Pick<ProjectGuardInput, 'name'> & { id: string; repoPath: string },
   action: string
 ): Promise<void> {
-  const capability = await detectProjectGitCapability(project.repoPath);
+  const capability = await detectAndStoreProjectGitCapability(project);
   if (capability.worktreeReady) return;
 
   if (!capability.isGitRepo) {

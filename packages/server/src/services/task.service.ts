@@ -1,5 +1,5 @@
 import { prisma } from '../utils/index.js';
-import { TaskStatus, SessionStatus, SessionPurpose, WorkspaceStatus } from '../types/index.js';
+import { TaskStatus, SessionStatus, SessionPurpose, WorkspaceKind, WorkspaceStatus } from '../types/index.js';
 import { getWorkspaceWorkingDir } from './workspace-kind.js';
 import {
   NotFoundError,
@@ -9,8 +9,12 @@ import {
 import type { EventBus } from '../core/event-bus.js';
 import type { SessionManager } from './session-manager.js';
 import type { TaskCleanupService, TaskCleanupSnapshot } from './task-cleanup.service.js';
-import { detectProjectGitCapability, ensureProjectIsMutable } from './project-guards.js';
+import { ensureProjectIsMutable, getStoredProjectGitCapability } from './project-guards.js';
 import { defaultTeamLockService } from './team-lock.service.js';
+import type { TaskBoardItem, TaskBoardResponse } from '@agent-tower/shared';
+import prismaPkg from '@prisma/client';
+
+const { Prisma } = prismaPkg;
 
 interface CreateTaskInput {
   title: string;
@@ -25,6 +29,7 @@ interface UpdateTaskInput {
 }
 
 interface FindTasksParams {
+  projectId?: string;
   status?: TaskStatus;
   page?: number;
   limit?: number;
@@ -61,6 +66,16 @@ const visibleSessionSummary = {
     createdAt: true,
     updatedAt: true,
   },
+};
+
+type TaskBoardWorkspaceRow = {
+  workspaceId: string;
+  taskId: string;
+  workspaceStatus: string;
+  workspaceKind: string;
+  branchName: string;
+  agentType: string | null;
+  hasActiveSession: bigint | number | boolean;
 };
 
 function compactWhitespace(value: string): string {
@@ -212,17 +227,24 @@ function withTaskPreviews<T extends { title: string; description?: string | null
   return base;
 }
 
-async function withProjectGitMetadata<T extends { project: { repoPath: string } }>(
+type ProjectWithStoredGitCapability = {
+  repoPath: string;
+  isGitRepo: boolean | null;
+  worktreeReady: boolean | null;
+  gitCapabilityReason: string | null;
+};
+
+function withProjectGitMetadata<T extends { project: ProjectWithStoredGitCapability }>(
   task: T
-): Promise<Omit<T, 'project'> & { project: T['project'] & Awaited<ReturnType<typeof detectProjectGitCapability>> }> {
-  const capability = await detectProjectGitCapability(task.project.repoPath);
+): Omit<T, 'project'> & { project: T['project'] & ReturnType<typeof getStoredProjectGitCapability> } {
+  const capability = getStoredProjectGitCapability(task.project);
   return withProjectGitCapability(task, capability);
 }
 
-function withProjectGitCapability<T extends { project: { repoPath: string } }>(
+function withProjectGitCapability<T extends { project: ProjectWithStoredGitCapability }>(
   task: T,
-  capability: Awaited<ReturnType<typeof detectProjectGitCapability>>
-): Omit<T, 'project'> & { project: T['project'] & Awaited<ReturnType<typeof detectProjectGitCapability>> } {
+  capability: ReturnType<typeof getStoredProjectGitCapability>
+): Omit<T, 'project'> & { project: T['project'] & ReturnType<typeof getStoredProjectGitCapability> } {
   return {
     ...task,
     project: {
@@ -232,8 +254,8 @@ function withProjectGitCapability<T extends { project: { repoPath: string } }>(
   };
 }
 
-async function buildProjectGitMetadata(project: { repoPath: string }) {
-  return detectProjectGitCapability(project.repoPath);
+function buildProjectGitMetadata(project: ProjectWithStoredGitCapability) {
+  return getStoredProjectGitCapability(project);
 }
 
 function buildTaskPrompt(task: { title: string; description?: string | null }): string {
@@ -250,6 +272,147 @@ export class TaskService {
     private readonly sessionManager: SessionManager,
     private readonly cleanupService: Pick<TaskCleanupService, 'trigger'> | undefined = undefined,
   ) {}
+
+  /**
+   * Compact board read model. Query count remains fixed as project/task counts grow.
+   */
+  async findBoard(params: FindTasksParams = {}): Promise<TaskBoardResponse> {
+    const page = Math.max(1, params.page || 1);
+    const limit = Math.min(1000, Math.max(1, params.limit || 1000));
+    const skip = (page - 1) * limit;
+    const where = {
+      deletedAt: null,
+      project: { archivedAt: null },
+      ...(params.projectId ? { projectId: params.projectId } : {}),
+      ...(params.status ? { status: params.status } : {}),
+    };
+
+    const [tasks, total] = await Promise.all([
+      prisma.task.findMany({
+        where,
+        select: {
+          id: true,
+          projectId: true,
+          title: true,
+          status: true,
+          position: true,
+          updatedAt: true,
+        },
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.task.count({ where }),
+    ]);
+
+    const taskIds = tasks.map((task) => task.id);
+    const workspaceRows = taskIds.length === 0
+      ? []
+      : await prisma.$queryRaw<TaskBoardWorkspaceRow[]>(Prisma.sql`
+          SELECT
+            workspace."id" AS "workspaceId",
+            workspace."taskId" AS "taskId",
+            workspace."status" AS "workspaceStatus",
+            workspace."workspaceKind" AS "workspaceKind",
+            workspace."branchName" AS "branchName",
+            latest."agentType" AS "agentType",
+            EXISTS (
+              SELECT 1
+              FROM "Session" active
+              WHERE active."workspaceId" = workspace."id"
+                AND active."purpose" = ${SessionPurpose.CHAT}
+                AND active."status" IN (${SessionStatus.PENDING}, ${SessionStatus.RUNNING})
+            ) AS "hasActiveSession"
+          FROM "Workspace" workspace
+          LEFT JOIN "Session" latest ON latest."id" = (
+            SELECT candidate."id"
+            FROM "Session" candidate
+            WHERE candidate."workspaceId" = workspace."id"
+              AND candidate."purpose" = ${SessionPurpose.CHAT}
+            ORDER BY candidate."createdAt" DESC, candidate."id" DESC
+            LIMIT 1
+          )
+          WHERE workspace."taskId" IN (
+            SELECT value FROM json_each(${JSON.stringify(taskIds)})
+          )
+          ORDER BY workspace."createdAt" ASC, workspace."id" ASC
+        `);
+
+    const workspaces = workspaceRows.map((row) => ({
+      id: row.workspaceId,
+      taskId: row.taskId,
+      status: row.workspaceStatus,
+      workspaceKind: row.workspaceKind,
+      branchName: row.branchName,
+      agentType: row.agentType,
+      hasActiveSession: Boolean(row.hasActiveSession),
+    }));
+
+    const workspacesByTaskId = new Map<string, typeof workspaces>();
+    for (const workspace of workspaces) {
+      const group = workspacesByTaskId.get(workspace.taskId) ?? [];
+      group.push(workspace);
+      workspacesByTaskId.set(workspace.taskId, group);
+    }
+
+    const preferredWorkspaceByTaskId = new Map<string, (typeof workspaces)[number]>();
+    for (const task of tasks) {
+      const candidates = workspacesByTaskId.get(task.id) ?? [];
+      const preferred = candidates.find((workspace) => workspace.status === WorkspaceStatus.ACTIVE)
+        ?? candidates[0];
+      if (preferred) {
+        preferredWorkspaceByTaskId.set(task.id, preferred);
+      }
+    }
+
+    const statusOrder: Record<string, number> = {
+      [TaskStatus.IN_PROGRESS]: 0,
+      [TaskStatus.IN_REVIEW]: 1,
+      [TaskStatus.TODO]: 2,
+      [TaskStatus.DONE]: 3,
+      [TaskStatus.CANCELLED]: 4,
+    };
+    tasks.sort((a, b) => {
+      const statusDelta = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99);
+      if (statusDelta !== 0) return statusDelta;
+      return a.position - b.position;
+    });
+
+    const data: TaskBoardItem[] = tasks.map((task) => {
+      const titlePreview = buildTextPreview(task.title, TASK_TITLE_MAX_LENGTH);
+      const preferredWorkspace = preferredWorkspaceByTaskId.get(task.id);
+      const hasRunningSession = (workspacesByTaskId.get(task.id) ?? [])
+        .some((workspace) => workspace.hasActiveSession);
+
+      return {
+        id: task.id,
+        projectId: task.projectId,
+        title: titlePreview,
+        status: task.status as TaskStatus,
+        ...(preferredWorkspace ? {
+          preferredWorkspace: {
+            ...(preferredWorkspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY
+              ? { workspaceKind: WorkspaceKind.MAIN_DIRECTORY }
+              : {}),
+            branchName: preferredWorkspace.branchName,
+          },
+        } : {}),
+        ...(preferredWorkspace?.agentType ? {
+          latestAgentType: preferredWorkspace.agentType as import('@agent-tower/shared').AgentType,
+        } : {}),
+        ...(hasRunningSession ? { hasRunningSession: true as const } : {}),
+        updatedAt: task.updatedAt.getTime(),
+      };
+    });
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
 
   /**
    * 获取项目的任务列表（支持按状态过滤和分页）
@@ -311,7 +474,7 @@ export class TaskService {
       return (a.position ?? 0) - (b.position ?? 0);
     });
 
-    const projectGitCapability = await detectProjectGitCapability(project.repoPath);
+    const projectGitCapability = getStoredProjectGitCapability(project);
 
     return {
       data: data.map((task) => (
@@ -348,7 +511,7 @@ export class TaskService {
       throw new NotFoundError('Task', id);
     }
 
-    return withTaskPreviews(await withProjectGitMetadata(task), { omitDescription: true });
+    return withTaskPreviews(withProjectGitMetadata(task), { omitDescription: true });
   }
 
   async findBodyById(id: string) {
@@ -429,7 +592,7 @@ export class TaskService {
       ...created,
       project: {
         ...project,
-        ...await buildProjectGitMetadata(project),
+        ...buildProjectGitMetadata(project),
       },
     };
   }
@@ -457,7 +620,7 @@ export class TaskService {
       ...updated,
       project: {
         ...task.project,
-        ...await buildProjectGitMetadata(task.project),
+        ...buildProjectGitMetadata(task.project),
       },
     };
   }
@@ -510,7 +673,7 @@ export class TaskService {
       ...updated,
       project: {
         ...task.project,
-        ...await buildProjectGitMetadata(task.project),
+        ...buildProjectGitMetadata(task.project),
       },
     };
   }
@@ -552,7 +715,7 @@ export class TaskService {
       ...updated,
       project: {
         ...task.project,
-        ...await buildProjectGitMetadata(task.project),
+        ...buildProjectGitMetadata(task.project),
       },
     };
   }
@@ -808,7 +971,7 @@ export class TaskService {
       ...updated,
       project: {
         ...task.project,
-        ...await buildProjectGitMetadata(task.project),
+        ...buildProjectGitMetadata(task.project),
       },
     };
   }

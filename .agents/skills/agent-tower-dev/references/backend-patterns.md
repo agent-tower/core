@@ -27,6 +27,12 @@
 - Task 删除包含软删除和 `TaskCleanupJob` 文件系统清理，不能只依赖 cascade。
 - 对外 DTO 经 mapper 转换，不直接扩散 Prisma row。
 
+SQLite 在 `buildApp()` 注册路由前统一启用 WAL/busy timeout，并执行带版本号的幂等启动数据迁移。发布 CLI 使用 `prisma db push`，所以需要修改历史数据的 schema 变更不能只写 Prisma migration SQL；还要加入 `database-maintenance.service.ts` 的 runtime migration，并在同一事务末尾推进 `AppSettings.dataMigrationVersion`。
+
+Task 看板热路径使用 `GET /api/task-board` 的紧凑 DTO，固定批量查询 task、首选 workspace 和 latest session；完整 description、workspace/session 历史按详情接口读取。不要在列表 mapper 中加载完整关系、正文或按 project/task 循环查询。
+
+Project 的 Git capability 是持久化读模型。Project/Task/board 列表只读保存值，不运行 `git rev-parse`；创建、恢复、显式 refresh，以及 Worktree/TeamRun 这类危险操作前才实时探测并回写。旧库 null capability 可以做廉价 `.git` fallback，但不能在列表请求启动 Git 子进程。
+
 Schema 变化后更新 Prisma client，并为可发布数据变化提供 migration；`db:push` 只用于无需保留历史的开发库。
 
 ## EventBus 与 Socket.IO

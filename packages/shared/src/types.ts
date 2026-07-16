@@ -293,6 +293,8 @@ export interface Project {
   worktreeReady?: boolean
   /** Git/worktree 能力检测原因。 */
   reason?: ProjectGitCapabilityReason
+  /** Last time Git capability was verified with the Git CLI. */
+  gitCapabilityCheckedAt?: string | null
   /** 主分支名称，默认 "main" */
   mainBranch: string
   /** 逗号分隔的 glob/路径列表，worktree 创建后自动复制 */
@@ -357,6 +359,33 @@ export interface TaskBody {
   bodySource: TaskBodySource
   prompt: string
   isTruncated: boolean
+}
+
+/** Workspace fields required by the task board list. */
+export interface TaskBoardWorkspaceSummary {
+  /** Omitted for the default WORKTREE kind. */
+  workspaceKind?: WorkspaceKind
+  branchName: string
+}
+
+/** Compact task read model used by the board list hot path. */
+export interface TaskBoardItem {
+  id: string
+  projectId: string
+  title: string
+  status: TaskStatus
+  preferredWorkspace?: TaskBoardWorkspaceSummary
+  latestAgentType?: AgentType
+  hasRunningSession?: true
+  updatedAt: number
+}
+
+export interface TaskBoardResponse {
+  data: TaskBoardItem[]
+  total: number
+  page: number
+  limit: number
+  totalPages: number
 }
 
 /** 工作空间 */

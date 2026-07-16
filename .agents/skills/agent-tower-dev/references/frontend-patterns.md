@@ -6,7 +6,9 @@
 
 大多数 key 位于 `hooks/query-keys.ts`，TeamRun key 当前与 `use-team-run.ts` 共置。Mutation 根据领域选择失效、乐观更新与失败回滚；跨实体动作要覆盖 task、workspace、TeamRun 等全部受影响 key。
 
-列表使用 preview/truncated DTO。Task 正文通过 `useTaskBody` 按需读取，RoomMessage 列表与全文详情分离。
+列表使用 preview/truncated DTO。Task 看板统一由 `useTaskBoard` 请求 `/api/task-board`；All Projects 也只发一个 board 请求，不按 project 创建 `useQueries` fan-out。Task 正文通过 `useTaskBody` 按需读取，RoomMessage 列表与全文详情分离。
+
+Task mutation 和 `task:*`/TeamRun 实时事件必须同时维护或失效 task board cache 与旧 task list cache；board item 通过 `projectId` 关联 projects cache 获取项目元数据，不把完整 Project 复制进每个 task DTO。
 
 ## 实时同步
 

@@ -198,6 +198,61 @@ describe('SessionManager session status vs real process state', () => {
     });
   });
 
+  it('coalesces burst patches into a low-frequency checkpoint and still force-flushes the final snapshot', async () => {
+    const { session } = await createSessionFixture();
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    await manager.start(session.id);
+
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    pty.emitData(JSON.stringify({ type: 'thread.started', thread_id: 'thread-checkpoint' }) + '\n');
+    pty.emitData(JSON.stringify({
+      type: 'item.completed',
+      item: { id: 'm1', type: 'agent_message', text: 'checkpoint one' },
+    }) + '\n');
+    pty.emitData(JSON.stringify({
+      type: 'item.completed',
+      item: { id: 'm2', type: 'agent_message', text: 'checkpoint two' },
+    }) + '\n');
+
+    const checkpointTimers = setTimeoutSpy.mock.calls.filter(([, delay]) => delay === 15_000);
+    expect(checkpointTimers).toHaveLength(1);
+    expect((await prisma.session.findUnique({ where: { id: session.id } }))?.logSnapshot).toBeNull();
+
+    const flushSnapshot = (
+      manager as unknown as { flushSnapshotPersist(sessionId: string): Promise<void> }
+    ).flushSnapshotPersist.bind(manager);
+    await flushSnapshot(session.id);
+    setTimeoutSpy.mockRestore();
+
+    const checkpointed = await prisma.session.findUnique({ where: { id: session.id } });
+    const checkpointedSnapshot = JSON.parse(checkpointed?.logSnapshot ?? '{}');
+    expect(checkpointedSnapshot.entries.map((entry: { content: string }) => entry.content)).toEqual(
+      expect.arrayContaining(['checkpoint one', 'checkpoint two']),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await flushSnapshot(session.id);
+    const unchanged = await prisma.session.findUnique({ where: { id: session.id } });
+    expect(unchanged?.updatedAt.getTime()).toBe(checkpointed?.updatedAt.getTime());
+
+    pty.emitData(JSON.stringify({
+      type: 'item.completed',
+      item: { id: 'm3', type: 'agent_message', text: 'final only' },
+    }) + '\n');
+    pty.emitExit(0);
+    await completed;
+
+    const persisted = await prisma.session.findUnique({ where: { id: session.id } });
+    expect(persisted?.status).toBe(SessionStatus.COMPLETED);
+    const finalSnapshot = JSON.parse(persisted?.logSnapshot ?? '{}');
+    expect(finalSnapshot.entries.map((entry: { content: string }) => entry.content)).toContain('final only');
+  });
+
   it('marks the session FAILED when the PTY exits non-zero with only stderr noise', async () => {
     const { session } = await createSessionFixture();
     const pty = new ControlledPty();

@@ -6,6 +6,7 @@
  */
 import type {
   Task as SharedTask,
+  TaskBoardItem,
   Project as SharedProject,
   Workspace as SharedWorkspace,
 } from '@agent-tower/shared'
@@ -183,6 +184,33 @@ export function adaptTaskForList(task: SharedTask): UITask {
   }
 }
 
+export function adaptTaskBoardItemForList(
+  task: TaskBoardItem,
+  project?: SharedProject,
+): UITask {
+  const branch = task.preferredWorkspace
+    ? task.preferredWorkspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY
+      ? 'Project directory'
+      : task.preferredWorkspace.branchName
+    : '—'
+
+  return {
+    id: task.id,
+    projectId: task.projectId,
+    title: task.title,
+    status: mapTaskStatusToUI(task.status),
+    agent: task.latestAgentType ? formatAgentType(task.latestAgentType) : '—',
+    branch,
+    description: '',
+    updatedAt: new Date(task.updatedAt).toISOString(),
+    isGitRepo: project?.isGitRepo,
+    worktreeReady: project?.worktreeReady,
+    reason: project?.reason,
+    projectArchivedAt: project?.archivedAt ?? null,
+    projectRepoDeletedAt: project?.repoDeletedAt ?? null,
+  }
+}
+
 /**
  * 将后端 Task + Project 转为详情组件所需的 UITaskDetailData
  *
@@ -209,6 +237,34 @@ export function adaptTaskForDetail(
     branch,
     mainBranch: activeWorkspace?.baseBranch ?? project.mainBranch ?? 'main',
     description: task.description ?? '',
+    isGitRepo: project.isGitRepo,
+    worktreeReady: project.worktreeReady,
+    reason: project.reason,
+    projectArchivedAt: project.archivedAt ?? null,
+    projectRepoDeletedAt: project.repoDeletedAt ?? null,
+  }
+}
+
+export function adaptTaskBoardItemForDetail(
+  task: TaskBoardItem,
+  project: SharedProject,
+): UITaskDetailData {
+  const branch = task.preferredWorkspace
+    ? task.preferredWorkspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY
+      ? 'Project directory'
+      : task.preferredWorkspace.branchName
+    : '—'
+
+  return {
+    id: task.id,
+    projectId: project.id,
+    projectName: project.name,
+    projectColor: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],
+    title: task.title,
+    status: mapTaskStatusToUI(task.status),
+    branch,
+    mainBranch: project.mainBranch ?? 'main',
+    description: '',
     isGitRepo: project.isGitRepo,
     worktreeReady: project.worktreeReady,
     reason: project.reason,

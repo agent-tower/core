@@ -15,6 +15,10 @@ model Project {
   description   String?
   repoPath      String
   repoRemoteUrl String?
+  isGitRepo     Boolean?
+  worktreeReady Boolean?
+  gitCapabilityReason String?
+  gitCapabilityCheckedAt DateTime?
   mainBranch    String    @default("main")
   copyFiles     String? // 逗号分隔的 glob/路径列表，worktree 创建后自动复制
   setupScript   String? // 多行命令文本，worktree 创建后自动执行
@@ -49,6 +53,8 @@ model Task {
   @@index([projectId])
   @@index([status])
   @@index([deletedAt])
+  @@index([projectId, deletedAt, status, position])
+  @@index([deletedAt, updatedAt])
 }
 
 // 后台任务删除资源清理
@@ -364,6 +370,7 @@ model Session {
 
   @@index([workspaceId])
   @@index([context])
+  @@index([workspaceId, purpose, createdAt])
 }
 
 // 执行进程
@@ -408,6 +415,7 @@ model AppSettings {
   locale                  String?
   commitMessageProviderId String?
   commitMessagePrompt     String?
+  dataMigrationVersion    Int     @default(0)
 }
 
 // 访问密码配置 (单例，只有一行)

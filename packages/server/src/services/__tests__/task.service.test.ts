@@ -39,6 +39,7 @@ const serverRoot = path.resolve(__dirname, '../../..');
 const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let TaskService: typeof import('../task.service.js').TaskService;
+let ProjectService: typeof import('../project.service.js').ProjectService;
 let TaskCleanupService: typeof import('../task-cleanup.service.js').TaskCleanupService;
 let WorkspaceService: typeof import('../workspace.service.js').WorkspaceService;
 let SessionManagerClass: typeof import('../session-manager.js').SessionManager;
@@ -58,12 +59,14 @@ describe('TaskService', () => {
     );
 
     const serviceModule = await import('../task.service.js');
+    const projectServiceModule = await import('../project.service.js');
     const cleanupModule = await import('../task-cleanup.service.js');
     const workspaceModule = await import('../workspace.service.js');
     const sessionManagerModule = await import('../session-manager.js');
     const eventBusModule = await import('../../core/event-bus.js');
     const utilsModule = await import('../../utils/index.js');
     TaskService = serviceModule.TaskService;
+    ProjectService = projectServiceModule.ProjectService;
     TaskCleanupService = cleanupModule.TaskCleanupService;
     WorkspaceService = workspaceModule.WorkspaceService;
     SessionManagerClass = sessionManagerModule.SessionManager;
@@ -260,13 +263,17 @@ describe('TaskService', () => {
     expect(list.data[0]?.project?.isGitRepo).toBe(false);
   });
 
-  it('refreshes project Git capability in task lists after manual Git initialization', async () => {
+  it('uses persisted project Git capability in task lists', async () => {
     const service = new TaskService(new EventBus(), {} as SessionManager);
     const projectPath = fs.mkdtempSync(path.join(testDir, 'manual-git-task-project-'));
     const project = await prisma.project.create({
       data: {
         name: 'Manual git task project',
         repoPath: projectPath,
+        isGitRepo: false,
+        worktreeReady: false,
+        gitCapabilityReason: 'NO_GIT',
+        gitCapabilityCheckedAt: new Date(),
       },
     });
     await prisma.task.create({
@@ -290,8 +297,16 @@ describe('TaskService', () => {
     execFileSync('git', ['add', 'README.md'], { cwd: projectPath, stdio: 'pipe' });
     execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: projectPath, stdio: 'pipe' });
 
-    const after = await service.findByProjectId(project.id);
-    expect(after.data[0]?.project).toMatchObject({
+    const stale = await service.findByProjectId(project.id);
+    expect(stale.data[0]?.project).toMatchObject({
+      isGitRepo: false,
+      worktreeReady: false,
+      reason: 'NO_GIT',
+    });
+
+    await new ProjectService().refreshGitCapability(project.id);
+    const refreshed = await service.findByProjectId(project.id);
+    expect(refreshed.data[0]?.project).toMatchObject({
       isGitRepo: true,
       worktreeReady: true,
       reason: 'READY',

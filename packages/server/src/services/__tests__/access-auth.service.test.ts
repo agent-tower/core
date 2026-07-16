@@ -128,6 +128,7 @@ describe('AccessAuthService', () => {
 
   beforeEach(async () => {
     await prisma.accessAuthSettings.deleteMany();
+    AccessAuthService.__test.resetSettingsCache();
     AccessAuthService.__test.resetLoginRateLimit();
     AccessAuthService.__test.resetSessionSecretGeneration();
   });
@@ -155,6 +156,10 @@ describe('AccessAuthService', () => {
     })));
 
     await expect(prisma.accessAuthSettings.count()).resolves.toBe(1);
+    expect(AccessAuthService.__test.getSettingsDatabaseLoadCount()).toBe(1);
+
+    await AccessAuthService.getPublicStatus(null);
+    expect(AccessAuthService.__test.getSettingsDatabaseLoadCount()).toBe(1);
   });
 
   it('enables, logs in, and invalidates old sessions after password change', async () => {

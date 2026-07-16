@@ -88,11 +88,14 @@ export class SessionManager {
   private cancelTokens = new Map<string, CancellationToken>();
   private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private snapshotFlushChains = new Map<string, Promise<void>>();
+  private snapshotWriterChain: Promise<void> = Promise.resolve();
+  private dirtySnapshots = new Set<string>();
+  private persistedSnapshotHashes = new Map<string, string>();
   private pendingSnapshotStatus = new Map<string, SessionStatus>();
   // 每个 session 上次写入 TeamRun 心跳时间戳的时刻，用于节流 lastHeartbeatAt 落库。
   private heartbeatThrottle = new Map<string, number>();
   private readonly teamReconciler: TeamReconcilerService;
-  private static readonly SNAPSHOT_DEBOUNCE_MS = 1200;
+  private static readonly SNAPSHOT_CHECKPOINT_MS = 15_000;
   private static readonly HEARTBEAT_THROTTLE_MS = 30_000;
 
   constructor(private readonly eventBus: EventBus, teamReconciler?: TeamReconcilerService) {
@@ -104,7 +107,8 @@ export class SessionManager {
       scheduleReminders: false,
     });
 
-    // Debounced snapshot persistence: keep DB up-to-date without per-patch writes.
+    // Patches only mark the snapshot dirty. A low-frequency checkpoint keeps the
+    // hot stream away from SQLite while terminal paths still force a final flush.
     this.eventBus.on('session:patch', ({ sessionId, patch }) => {
       if (DEBUG_SNAPSHOT) {
         const ops = (patch as Array<{ op?: string; path?: string }>).slice(0, 3)
@@ -569,6 +573,7 @@ export class SessionManager {
     // onExit 被 destroyed 标志短路），handleSessionExit 不会执行，
     // 因此在这里释放 MsgStore。快照已在上方持久化（CANCELLED）。
     sessionMsgStoreManager.delete(id);
+    this.releaseSnapshotPersistenceState(id);
     return session;
   }
 
@@ -929,31 +934,35 @@ export class SessionManager {
     }
   }
 
-  private async persistCompletedSnapshot(sessionId: string): Promise<void> {
-    await this.flushSnapshotPersist(sessionId, SessionStatus.COMPLETED);
-  }
-
   private scheduleSnapshotPersist(sessionId: string, status?: SessionStatus): void {
+    this.dirtySnapshots.add(sessionId);
     if (status) {
       this.pendingSnapshotStatus.set(sessionId, status);
     }
-    const timer = this.snapshotFlushTimers.get(sessionId);
-    if (timer) {
-      clearTimeout(timer);
+    if (this.snapshotFlushTimers.has(sessionId)) {
+      return;
     }
+
     const nextTimer = setTimeout(() => {
       this.snapshotFlushTimers.delete(sessionId);
       if (DEBUG_SNAPSHOT) {
-        console.log(`[SessionManager:snapshot] debounce fire sessionId=${sessionId}`);
+        console.log(`[SessionManager:snapshot] checkpoint fire sessionId=${sessionId}`);
       }
       this.flushSnapshotPersist(sessionId).catch((error) => {
-        console.error(`[SessionManager] Debounced snapshot persist failed for ${sessionId}:`, error);
+        console.error(`[SessionManager] Snapshot checkpoint failed for ${sessionId}:`, error);
+        if ((error as { code?: string } | null)?.code === 'P2025') {
+          this.releaseSnapshotPersistenceState(sessionId);
+          return;
+        }
+        if (sessionMsgStoreManager.has(sessionId)) {
+          this.scheduleSnapshotPersist(sessionId);
+        }
       });
-    }, SessionManager.SNAPSHOT_DEBOUNCE_MS);
+    }, SessionManager.SNAPSHOT_CHECKPOINT_MS);
     this.snapshotFlushTimers.set(sessionId, nextTimer);
     if (DEBUG_SNAPSHOT) {
       console.log(
-        `[SessionManager:snapshot] debounce scheduled sessionId=${sessionId} ms=${SessionManager.SNAPSHOT_DEBOUNCE_MS} status=${status ?? 'none'}`
+        `[SessionManager:snapshot] checkpoint scheduled sessionId=${sessionId} ms=${SessionManager.SNAPSHOT_CHECKPOINT_MS} status=${status ?? 'none'}`
       );
     }
   }
@@ -973,74 +982,7 @@ export class SessionManager {
       .catch(() => {
         // Keep the chain alive even if previous flush failed.
       })
-      .then(async () => {
-        const pendingStatus = this.pendingSnapshotStatus.get(sessionId);
-        this.pendingSnapshotStatus.delete(sessionId);
-        if (DEBUG_SNAPSHOT) {
-          console.log(
-            `[SessionManager:snapshot] flush start sessionId=${sessionId} pendingStatus=${pendingStatus ?? 'none'}`
-          );
-        }
-
-        const msgStore = sessionMsgStoreManager.get(sessionId);
-        if (!msgStore) {
-          if (DEBUG_SNAPSHOT) {
-            console.log(`[SessionManager:snapshot] flush no-msgStore sessionId=${sessionId}`);
-          }
-          if (pendingStatus) {
-            await prisma.session.update({
-              where: { id: sessionId },
-              data: { status: pendingStatus },
-            });
-            if (DEBUG_SNAPSHOT) {
-              console.log(
-                `[SessionManager:snapshot] flush status-only persisted sessionId=${sessionId} status=${pendingStatus}`
-              );
-            }
-          }
-          return;
-        }
-
-        const snapshot = msgStore.getSnapshot();
-        const tokenUsage = this.extractTokenUsageFromSnapshot(snapshot);
-        if (DEBUG_SNAPSHOT) {
-          const msgCount = msgStore.getMessages().length;
-          const nextIndex = msgStore.entryIndex.current();
-          console.log(
-            `[SessionManager:snapshot] flush snapshot sessionId=${sessionId} entries=${snapshot.entries.length} msgCount=${msgCount} nextIndex=${nextIndex} tokenUsage=${tokenUsage ? 'yes' : 'no'}`
-          );
-        }
-
-        if (pendingStatus) {
-          await prisma.session.update({
-            where: { id: sessionId },
-            data: {
-              status: pendingStatus,
-              logSnapshot: JSON.stringify(snapshot),
-              ...(tokenUsage ? { tokenUsage: JSON.stringify(tokenUsage) } : {}),
-            },
-          });
-          if (DEBUG_SNAPSHOT) {
-            console.log(
-              `[SessionManager:snapshot] flush persisted sessionId=${sessionId} status=${pendingStatus} entries=${snapshot.entries.length}`
-            );
-          }
-          return;
-        }
-
-        await prisma.session.update({
-          where: { id: sessionId },
-          data: {
-            logSnapshot: JSON.stringify(snapshot),
-            ...(tokenUsage ? { tokenUsage: JSON.stringify(tokenUsage) } : {}),
-          },
-        });
-        if (DEBUG_SNAPSHOT) {
-          console.log(
-            `[SessionManager:snapshot] flush persisted sessionId=${sessionId} status=unchanged entries=${snapshot.entries.length}`
-          );
-        }
-      });
+      .then(() => this.enqueueSnapshotWrite(() => this.persistSnapshot(sessionId)));
 
     this.snapshotFlushChains.set(sessionId, current);
     try {
@@ -1050,6 +992,101 @@ export class SessionManager {
         this.snapshotFlushChains.delete(sessionId);
       }
     }
+  }
+
+  private async enqueueSnapshotWrite(write: () => Promise<void>): Promise<void> {
+    const queued = this.snapshotWriterChain
+      .catch(() => {
+        // Keep the global writer alive after an isolated persistence failure.
+      })
+      .then(write);
+    this.snapshotWriterChain = queued;
+
+    try {
+      await queued;
+    } finally {
+      if (this.snapshotWriterChain === queued) {
+        this.snapshotWriterChain = Promise.resolve();
+      }
+    }
+  }
+
+  private async persistSnapshot(sessionId: string): Promise<void> {
+    const pendingStatus = this.pendingSnapshotStatus.get(sessionId);
+    const wasDirty = this.dirtySnapshots.delete(sessionId);
+    this.pendingSnapshotStatus.delete(sessionId);
+
+    if (!pendingStatus && !wasDirty) {
+      return;
+    }
+
+    try {
+      if (DEBUG_SNAPSHOT) {
+        console.log(
+          `[SessionManager:snapshot] flush start sessionId=${sessionId} pendingStatus=${pendingStatus ?? 'none'} dirty=${wasDirty}`
+        );
+      }
+
+      const msgStore = sessionMsgStoreManager.get(sessionId);
+      if (!msgStore) {
+        if (pendingStatus) {
+          await prisma.session.update({
+            where: { id: sessionId },
+            data: { status: pendingStatus },
+          });
+        }
+        return;
+      }
+
+      const snapshot = msgStore.getSnapshot();
+      const serializedSnapshot = JSON.stringify(snapshot);
+      const snapshotHash = createHash('sha256').update(serializedSnapshot).digest('hex');
+      const snapshotChanged = this.persistedSnapshotHashes.get(sessionId) !== snapshotHash;
+      const tokenUsage = snapshotChanged ? this.extractTokenUsageFromSnapshot(snapshot) : null;
+
+      if (!snapshotChanged && !pendingStatus) {
+        return;
+      }
+
+      await prisma.session.update({
+        where: { id: sessionId },
+        data: {
+          ...(pendingStatus ? { status: pendingStatus } : {}),
+          ...(snapshotChanged ? {
+            logSnapshot: serializedSnapshot,
+            ...(tokenUsage ? { tokenUsage: JSON.stringify(tokenUsage) } : {}),
+          } : {}),
+        },
+      });
+
+      if (snapshotChanged) {
+        this.persistedSnapshotHashes.set(sessionId, snapshotHash);
+      }
+      if (DEBUG_SNAPSHOT) {
+        console.log(
+          `[SessionManager:snapshot] flush persisted sessionId=${sessionId} status=${pendingStatus ?? 'unchanged'} entries=${snapshot.entries.length} changed=${snapshotChanged}`
+        );
+      }
+    } catch (error) {
+      if (wasDirty) {
+        this.dirtySnapshots.add(sessionId);
+      }
+      if (pendingStatus && !this.pendingSnapshotStatus.has(sessionId)) {
+        this.pendingSnapshotStatus.set(sessionId, pendingStatus);
+      }
+      throw error;
+    }
+  }
+
+  private releaseSnapshotPersistenceState(sessionId: string): void {
+    const timer = this.snapshotFlushTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.snapshotFlushTimers.delete(sessionId);
+    }
+    this.dirtySnapshots.delete(sessionId);
+    this.pendingSnapshotStatus.delete(sessionId);
+    this.persistedSnapshotHashes.delete(sessionId);
   }
 
   private extractTokenUsageFromSnapshot(snapshot: NormalizedConversation): { totalTokens: number; modelContextWindow?: number } | null {
@@ -1301,6 +1338,7 @@ export class SessionManager {
     // sendMessage 重启、resolveAgentSessionId、commit message 提取）都有
     // logSnapshot fallback，sendMessage 会经 restoreFromSnapshot 恢复上下文。
     sessionMsgStoreManager.delete(sessionId);
+    this.releaseSnapshotPersistenceState(sessionId);
   }
 
   private logSessionError(source: string, error: unknown, metadata: Record<string, unknown>): void {

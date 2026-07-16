@@ -51,6 +51,14 @@ vi.mock('./services/tunnel.service.js', () => ({
   },
 }))
 
+vi.mock('./utils/index.js', () => ({
+  initializeDatabaseRuntime: vi.fn(async () => {}),
+}))
+
+vi.mock('./services/database-maintenance.service.js', () => ({
+  runStartupDataMigrations: vi.fn(async () => {}),
+}))
+
 import { buildApp } from './app.js'
 
 const originalWebDir = process.env.AGENT_TOWER_WEB_DIR

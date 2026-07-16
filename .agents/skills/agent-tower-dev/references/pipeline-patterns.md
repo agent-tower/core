@@ -19,6 +19,8 @@ spawn 与 Pipeline attach 之间存在竞态。保留 `collectEarlyPtyEvents()` 
 
 Session 结束后的 DB 状态、snapshot、auto-commit、commit message、Task review 和 TeamRun reconciliation 由 SessionManager/Team services 负责。修改结束路径时覆盖正常完成、非零退出、stop、启动失败、并发删除和 server shutdown。
 
+`session:patch` 只标记 snapshot dirty；运行中按低频 checkpoint 持久化，所有 session 的 snapshot DB 写入经单一串行 writer 排队，相同 snapshot 跳过。COMPLETED/FAILED/CANCELLED、pipeline 替换等边界必须 `await` 强制 flush；不能恢复为每 patch 写库或不断重置的短 debounce。
+
 ## AgentPipeline
 
 `OutputParser` 只有 `processData(data)` 和 `finish(exitCode?)`。Parser 构造时接收 MsgStore；Pipeline 监听 MsgStore patch/session id 后发 EventBus。

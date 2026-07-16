@@ -53,6 +53,7 @@ export function useTeamRunRealtimeSync() {
 
       if (payload.projectId && (hasScope(payload, 'task') || hasScope(payload, 'team-run'))) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.list(payload.projectId) })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.boardAll })
       }
 
       if (hasScope(payload, 'workspaces')) {

@@ -184,6 +184,7 @@ describe('previewRoutes access auth integration', () => {
     await prisma.task.deleteMany();
     await prisma.project.deleteMany();
     await prisma.accessAuthSettings.deleteMany();
+    AccessAuthService.__test.resetSettingsCache();
     delete process.env[INTERNAL_API_TOKEN_ENV];
     AccessAuthService.__test.resetLoginRateLimit();
   });

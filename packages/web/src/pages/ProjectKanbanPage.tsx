@@ -1,14 +1,14 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { useQueries, useQueryClient } from '@tanstack/react-query'
-import { WorkspaceKind, type Task } from '@agent-tower/shared'
+import { useQueryClient } from '@tanstack/react-query'
+import { WorkspaceKind, type Task, type TaskBoardItem } from '@agent-tower/shared'
 import { TaskList } from '@/components/task'
 import { TaskDetail } from '@/components/task/TaskDetail'
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 import { toast } from 'sonner'
-import { adaptProject, adaptTaskForDetail, adaptTaskForList, mapTaskStatusToUI, mapUIStatusToTask } from '@/components/task/adapters'
+import { adaptProject, adaptTaskBoardItemForDetail, adaptTaskBoardItemForList, mapTaskStatusToUI, mapUIStatusToTask } from '@/components/task/adapters'
 import { useProjects } from '@/hooks/use-projects'
-import { useTasks, useDeleteTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
+import { useTaskBoard, useDeleteTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
 import { useStartSession } from '@/hooks/use-sessions'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
@@ -24,7 +24,6 @@ import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
 import { CreateProjectModal } from '@/components/project/CreateProjectModal'
 import { BrandLogo, BrandLogoTitle } from '@/components/BrandLogo'
 import { CreateTaskInput } from '@/components/task/CreateTaskInput'
-import { getWorkspaceBranchLabel } from '@/components/workspace/team-workspace-view'
 import { cn } from '@/lib/utils'
 import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 
@@ -147,35 +146,34 @@ const MIN_SIDEBAR_WIDTH = 260
 const MAX_SIDEBAR_WIDTH = 600
 const DEFAULT_SIDEBAR_WIDTH = 400
 const PROJECT_LIST_LIMIT = 100
-const TASK_LIST_LIMIT = 1000
+const TASK_BOARD_LIMIT = 1000
 
-/** 分页响应类型 */
-interface PaginatedResponse<T> {
-  data: T[]
-  total: number
-  page: number
-  limit: number
-}
+function taskToBoardItem(task: Task): TaskBoardItem {
+  const preferredWorkspace = task.workspaces?.find(workspace => workspace.status === 'ACTIVE')
+    ?? task.workspaces?.[0]
+  const latestSession = preferredWorkspace?.sessions?.at(-1)
 
-function upsertTaskIntoPage(page: PaginatedResponse<Task> | undefined, task: Task): PaginatedResponse<Task> | undefined {
-  if (!page) return page
-  const existingIndex = page.data.findIndex(item => item.id === task.id)
-  if (existingIndex >= 0) {
-    return {
-      ...page,
-      data: page.data.map(item => item.id === task.id ? { ...item, ...task } : item),
-    }
-  }
   return {
-    ...page,
-    data: [task, ...page.data],
-    total: page.total + 1,
+    id: task.id,
+    projectId: task.projectId,
+    title: task.titlePreview ?? task.title,
+    status: task.status,
+    ...(preferredWorkspace ? {
+      preferredWorkspace: {
+        ...(preferredWorkspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY
+          ? { workspaceKind: WorkspaceKind.MAIN_DIRECTORY }
+          : {}),
+        branchName: preferredWorkspace.branchName,
+      },
+    } : {}),
+    ...(latestSession ? {
+      latestAgentType: latestSession.agentType,
+    } : {}),
+    ...(task.workspaces?.some(workspace =>
+      workspace.sessions?.some(session => session.status === 'RUNNING' || session.status === 'PENDING'),
+    ) ? { hasRunningSession: true as const } : {}),
+    updatedAt: task.updatedAt ? new Date(task.updatedAt).getTime() : Date.now(),
   }
-}
-
-function attachTaskProjectMetadata(task: Task, projects: Task['project'][]): Task {
-  const project = projects.find(item => item?.id === task.projectId)
-  return project ? { ...task, project } : task
 }
 
 export function ProjectKanbanPage() {
@@ -207,43 +205,13 @@ export function ProjectKanbanPage() {
     ? filterProjectId
     : null
 
-  // 当选中了某个项目时，直接用 useTasks 获取该项目的任务
-  const { data: filteredTasksData, isLoading: isFilteredTasksLoading } = useTasks(
-    effectiveFilterProjectId ?? '',
-    { limit: TASK_LIST_LIMIT },
-  )
-
-  // 当未选中项目时（All Projects），为每个项目获取任务
-  const allProjectTaskQueries = useQueries({
-    queries: effectiveFilterProjectId
-      ? [] // 已选中项目时不需要这些查询
-      : projects.map(p => ({
-          queryKey: queryKeys.tasks.list(p.id, { limit: TASK_LIST_LIMIT }),
-          queryFn: () =>
-            apiClient.get<PaginatedResponse<Task>>(
-              `/projects/${p.id}/tasks`,
-              { params: { limit: String(TASK_LIST_LIMIT) } },
-            ),
-        })),
+  const { data: taskBoardData, isLoading: isTaskBoardLoading } = useTaskBoard({
+    ...(effectiveFilterProjectId ? { projectId: effectiveFilterProjectId } : {}),
+    limit: TASK_BOARD_LIMIT,
   })
-
-  const isAllTasksLoading = !effectiveFilterProjectId && allProjectTaskQueries.some(q => q.isLoading)
-
-  // 合并任务数据（同时保留原始 Task 用于 session 匹配）
-  const fetchedTasks = useMemo<Task[]>(() => {
-    if (effectiveFilterProjectId) {
-      return filteredTasksData?.data ?? []
-    }
-    const allTasks: Task[] = []
-    for (const q of allProjectTaskQueries) {
-      if (q.data?.data) {
-        allTasks.push(...q.data.data)
-      }
-    }
-    return allTasks
-  }, [effectiveFilterProjectId, filteredTasksData, allProjectTaskQueries])
-  const [optimisticCreatedTasks, setOptimisticCreatedTasks] = useState<Task[]>([])
-  const rawTasks = useMemo<Task[]>(() => {
+  const fetchedTasks = useMemo(() => taskBoardData?.data ?? [], [taskBoardData?.data])
+  const [optimisticCreatedTasks, setOptimisticCreatedTasks] = useState<TaskBoardItem[]>([])
+  const rawTasks = useMemo<TaskBoardItem[]>(() => {
     if (optimisticCreatedTasks.length === 0) return fetchedTasks
 
     const fetchedIds = new Set(fetchedTasks.map(task => task.id))
@@ -278,7 +246,7 @@ export function ProjectKanbanPage() {
     // 计算每个 project 的最新任务时间
     const projectLastTaskTime = new Map<string, number>()
     for (const task of rawTasks) {
-      const taskTime = task.createdAt ? new Date(task.createdAt).getTime() : 0
+      const taskTime = task.updatedAt
       const currentMax = projectLastTaskTime.get(task.projectId) ?? 0
       if (taskTime > currentMax) {
         projectLastTaskTime.set(task.projectId, taskTime)
@@ -322,10 +290,15 @@ export function ProjectKanbanPage() {
     })
   }, [providersData])
 
-  const uiTasks = useMemo(() => rawTasks.map(adaptTaskForList), [rawTasks])
+  const uiTasks = useMemo(() => rawTasks.map(task => (
+    adaptTaskBoardItemForList(task, projects.find(project => project.id === task.projectId))
+  )), [projects, rawTasks])
 
   // 根据 agent-store 中正在运行的 session 计算活跃任务 ID 集合
-  const activeTaskIds = useMemo(() => new Set<string>(), [])
+  const activeTaskIds = useMemo(
+    () => new Set(rawTasks.filter(task => task.hasRunningSession).map(task => task.id)),
+    [rawTasks],
+  )
 
   // === 选中的任务详情 ===
   const taskDetailData = useMemo<UITaskDetailData | null>(() => {
@@ -335,9 +308,11 @@ export function ProjectKanbanPage() {
 
     const project = projects.find(p => p.id === task.projectId)
     if (!project) {
-      const branch = getWorkspaceBranchLabel(
-        task.workspaces?.find(w => w.status === 'ACTIVE') ?? task.workspaces?.[0],
-      )
+      const branch = task.preferredWorkspace
+        ? task.preferredWorkspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY
+          ? 'Project directory'
+          : task.preferredWorkspace.branchName
+        : '—'
 
       return {
         id: task.id,
@@ -348,7 +323,7 @@ export function ProjectKanbanPage() {
         status: mapTaskStatusToUI(task.status),
         branch,
         mainBranch: 'main',
-        description: task.description ?? '',
+        description: '',
         isGitRepo: false,
         worktreeReady: false,
         reason: 'NO_GIT',
@@ -357,7 +332,7 @@ export function ProjectKanbanPage() {
       }
     }
 
-    return adaptTaskForDetail(task, project)
+    return adaptTaskBoardItemForDetail(task, project)
   }, [effectiveSelectedTaskId, rawTasks, projects])
 
   // === Mutations ===
@@ -367,16 +342,13 @@ export function ProjectKanbanPage() {
   const startSession = useStartSession()
 
   const revealCreatedTask = useCallback((task: Task) => {
+    const boardItem = taskToBoardItem(task)
     setOptimisticCreatedTasks(current => {
       if (current.some(item => item.id === task.id)) {
-        return current.map(item => item.id === task.id ? { ...item, ...task } : item)
+        return current.map(item => item.id === task.id ? boardItem : item)
       }
-      return [task, ...current]
+      return [boardItem, ...current]
     })
-    queryClient.setQueryData<PaginatedResponse<Task>>(
-      queryKeys.tasks.list(task.projectId, { limit: TASK_LIST_LIMIT }),
-      current => upsertTaskIntoPage(current, task),
-    )
     queryClient.setQueryData(queryKeys.tasks.detail(task.id), task)
     setPendingCreatedTaskId(task.id)
     setSelectedTaskId(task.id)
@@ -549,7 +521,7 @@ export function ProjectKanbanPage() {
         title,
         description: fullDescription || undefined,
       })
-      createdTask = attachTaskProjectMetadata(created, activeProjects)
+      createdTask = created
 
       localStorage.setItem('lastSelectedProjectId', projectId)
       if (mode === 'SOLO' && providerId) {
@@ -602,7 +574,7 @@ export function ProjectKanbanPage() {
   }, [activeProjects, createTaskTeamRun, startTaskInBackground, deleteTask, queryClient, t, effectiveFilterProjectId, revealCreatedTask])
 
 
-  const isLoading = isProjectsLoading || isFilteredTasksLoading || isAllTasksLoading
+  const isLoading = isProjectsLoading || isTaskBoardLoading
 
   const createTaskProjectOptions = useMemo(() =>
     activeProjects.map(p => ({

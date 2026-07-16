@@ -51,6 +51,9 @@ const loginAttempts = new Map<string, LoginAttemptState>();
 let nowMs = () => Date.now();
 let sessionSecretGeneration = 0;
 let onBeforeValidateSessionTokenWithGeneration: (() => void) | null = null;
+let settingsCache: AccessAuthSettingsRecord | null = null;
+let settingsLoadPromise: Promise<AccessAuthSettingsRecord> | null = null;
+let settingsDatabaseLoadCount = 0;
 
 export class AccessAuthError extends ServiceError {
   constructor(message: string, code: string, statusCode = 400) {
@@ -177,20 +180,41 @@ async function verifyPassword(password: string, passwordHash: string | null): Pr
 }
 
 async function ensureSettings(): Promise<AccessAuthSettingsRecord> {
-  const existing = await prisma.accessAuthSettings.findUnique({
-    where: { id: SETTINGS_ID },
-  });
-  if (existing) return existing;
+  if (settingsCache) {
+    return settingsCache;
+  }
+  if (settingsLoadPromise) {
+    return settingsLoadPromise;
+  }
 
-  return prisma.accessAuthSettings.upsert({
-    where: { id: SETTINGS_ID },
-    create: {
-      id: SETTINGS_ID,
-      enabled: false,
-      sessionSecret: newSecret(),
-    },
-    update: {},
-  });
+  const loadPromise = (async () => {
+    settingsDatabaseLoadCount += 1;
+    const existing = await prisma.accessAuthSettings.findUnique({
+      where: { id: SETTINGS_ID },
+    });
+    if (existing) return existing;
+
+    return prisma.accessAuthSettings.upsert({
+      where: { id: SETTINGS_ID },
+      create: {
+        id: SETTINGS_ID,
+        enabled: false,
+        sessionSecret: newSecret(),
+      },
+      update: {},
+    });
+  })();
+  settingsLoadPromise = loadPromise;
+
+  try {
+    const settings = await loadPromise;
+    settingsCache = settings;
+    return settings;
+  } finally {
+    if (settingsLoadPromise === loadPromise) {
+      settingsLoadPromise = null;
+    }
+  }
 }
 
 function notifySessionSecretRotated(): void {
@@ -395,6 +419,7 @@ export const AccessAuthService = {
           sessionSecret: newSecret(),
         },
       });
+      settingsCache = settings;
       notifySessionSecretRotated();
       return {
         settings: toSafeSettings(settings),
@@ -418,6 +443,7 @@ export const AccessAuthService = {
           sessionSecret: newSecret(),
         },
       });
+      settingsCache = settings;
       notifySessionSecretRotated();
 
       return {
@@ -435,7 +461,7 @@ export const AccessAuthService = {
   },
 
   async disableForRecovery(): Promise<void> {
-    await prisma.accessAuthSettings.upsert({
+    settingsCache = await prisma.accessAuthSettings.upsert({
       where: { id: SETTINGS_ID },
       create: {
         id: SETTINGS_ID,
@@ -477,6 +503,14 @@ export const AccessAuthService = {
     },
     setLoginRateLimitClock(clock: () => number) {
       nowMs = clock;
+    },
+    resetSettingsCache() {
+      settingsCache = null;
+      settingsLoadPromise = null;
+      settingsDatabaseLoadCount = 0;
+    },
+    getSettingsDatabaseLoadCount() {
+      return settingsDatabaseLoadCount;
     },
   },
 };

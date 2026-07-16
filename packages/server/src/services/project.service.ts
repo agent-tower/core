@@ -5,7 +5,13 @@ import type { ProjectGitCapability } from '@agent-tower/shared';
 import { prisma } from '../utils/index.js';
 import { NotFoundError, ValidationError } from '../errors.js';
 import { execGit } from '../git/git-cli.js';
-import { detectProjectGitCapability, ensureProjectIsMutable, hasGitMetadata } from './project-guards.js';
+import {
+  detectAndStoreProjectGitCapability,
+  detectProjectGitCapability,
+  ensureProjectIsMutable,
+  getStoredProjectGitCapability,
+  hasGitMetadata,
+} from './project-guards.js';
 import {
   TaskStatus,
   SessionStatus,
@@ -260,7 +266,7 @@ export class ProjectService {
     ]);
 
     return {
-      data: await Promise.all(data.map((project) => this.withGitMetadata(project))),
+      data: data.map((project) => this.withGitMetadata(project)),
       total,
       page,
       limit,
@@ -307,7 +313,7 @@ export class ProjectService {
       }
     }
 
-    return { ...await this.withGitMetadata(project), taskStats };
+    return { ...this.withGitMetadata(project), taskStats };
   }
 
   /**
@@ -333,6 +339,8 @@ export class ProjectService {
     );
 
     try {
+      const capability = await detectProjectGitCapability(resolvedPath);
+      const gitCapabilityCheckedAt = new Date();
       const created = await prisma.project.create({
         data: {
           name: input.name,
@@ -343,6 +351,10 @@ export class ProjectService {
           copyFiles: input.copyFiles,
           setupScript: input.setupScript,
           quickCommands: input.quickCommands,
+          isGitRepo: capability.isGitRepo,
+          worktreeReady: capability.worktreeReady,
+          gitCapabilityReason: capability.reason,
+          gitCapabilityCheckedAt,
         },
       });
       return this.withGitMetadata(created);
@@ -389,7 +401,7 @@ export class ProjectService {
     if (!project) {
       throw new NotFoundError('Project', id);
     }
-    return detectProjectGitCapability(project.repoPath);
+    return detectAndStoreProjectGitCapability(project);
   }
 
   /**
@@ -467,13 +479,14 @@ export class ProjectService {
       }
     }
 
-    return prisma.project.update({
+    const archived = await prisma.project.update({
       where: { id },
       data: {
         archivedAt: new Date(),
         repoDeletedAt: input.deleteRepo ? new Date() : null,
       },
     });
+    return this.withGitMetadata(archived);
   }
 
   async restore(id: string, input: RestoreProjectInput = {}): Promise<RestoreProjectResult<any>> {
@@ -514,9 +527,16 @@ export class ProjectService {
         repoDeletedAt: null,
       },
     });
+    const capability = await detectAndStoreProjectGitCapability(restored);
 
     return {
-      project: await this.withGitMetadata(restored),
+      project: this.withGitMetadata({
+        ...restored,
+        isGitRepo: capability.isGitRepo,
+        worktreeReady: capability.worktreeReady,
+        gitCapabilityReason: capability.reason,
+        gitCapabilityCheckedAt: capability.gitCapabilityCheckedAt,
+      }),
       warnings,
     };
   }
@@ -529,12 +549,18 @@ export class ProjectService {
     return true;
   }
 
-  private async withGitMetadata<T extends { repoPath: string }>(
+  private withGitMetadata<T extends {
+    repoPath: string;
+    isGitRepo: boolean | null;
+    worktreeReady: boolean | null;
+    gitCapabilityReason: string | null;
+  }>(
     project: T
-  ): Promise<T & ProjectGitCapability> {
-    const capability = await detectProjectGitCapability(project.repoPath);
+  ): Omit<T, 'gitCapabilityReason'> & ProjectGitCapability {
+    const capability = getStoredProjectGitCapability(project);
+    const { gitCapabilityReason: _gitCapabilityReason, ...rest } = project;
     return {
-      ...project,
+      ...rest,
       ...capability,
     };
   }

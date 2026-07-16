@@ -6,6 +6,13 @@ import { DEFAULT_COMMIT_MESSAGE_PROMPT } from '../services/commit-message.servic
 
 const localeSchema = z.enum(['zh-CN', 'en']);
 
+const publicSettingsSelect = {
+  id: true,
+  locale: true,
+  commitMessageProviderId: true,
+  commitMessagePrompt: true,
+};
+
 const updateAppSettingsSchema = z.object({
   locale: localeSchema.optional(),
   commitMessageProviderId: z.string().nullable().optional(),
@@ -25,6 +32,7 @@ export async function appSettingsRoutes(app: FastifyInstance) {
   app.get('/app-settings', async () => {
     const settings = await prisma.appSettings.findUnique({
       where: { id: 'singleton' },
+      select: publicSettingsSelect,
     });
 
     if (settings) {
@@ -55,6 +63,7 @@ export async function appSettingsRoutes(app: FastifyInstance) {
         ...updateData,
       },
       update: updateData,
+      select: publicSettingsSelect,
     });
 
     return settings as AppSettings;

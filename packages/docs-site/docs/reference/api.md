@@ -35,6 +35,7 @@ description: 当前代码库中公开的主要 REST 端点。
 
 | Method | Path | 说明 |
 | --- | --- | --- |
+| `GET` | `/api/task-board` | 获取跨项目紧凑任务看板；支持 `projectId`、`status`、`page`、`limit` |
 | `GET` | `/api/projects/:projectId/tasks` | 获取项目任务列表 |
 | `POST` | `/api/projects/:projectId/tasks` | 创建任务 |
 | `GET` | `/api/projects/:projectId/tasks/stats` | 获取任务统计 |
@@ -45,6 +46,8 @@ description: 当前代码库中公开的主要 REST 端点。
 | `PATCH` | `/api/tasks/:id/position` | 更新任务位置 |
 | `POST` | `/api/tasks/:id/retry` | 重试任务 |
 | `DELETE` | `/api/tasks/:id` | 删除任务 |
+
+`/api/task-board` 只返回看板渲染需要的 task、首选 workspace、最新 agent 类型和运行标志，不包含任务正文、完整 workspace 或 session 历史。需要正文时使用 `/api/tasks/:id/body`，需要执行详情时再读取对应 workspace/session 接口。
 
 ## Workspaces
 

@@ -111,6 +111,13 @@ describe('ProjectService', () => {
 
     execFileSync('git', ['init'], { cwd: projectPath, stdio: 'pipe' });
 
+    const staleList = await service.findAll();
+    expect(staleList.data.find((item) => item.id === project.id)).toMatchObject({
+      isGitRepo: false,
+      worktreeReady: false,
+      reason: 'NO_GIT',
+    });
+
     await expect(service.refreshGitCapability(project.id)).resolves.toMatchObject({
       isGitRepo: true,
       worktreeReady: false,
@@ -124,6 +131,13 @@ describe('ProjectService', () => {
     execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: projectPath, stdio: 'pipe' });
 
     await expect(service.refreshGitCapability(project.id)).resolves.toMatchObject({
+      isGitRepo: true,
+      worktreeReady: true,
+      reason: 'READY',
+    });
+
+    const refreshedList = await service.findAll();
+    expect(refreshedList.data.find((item) => item.id === project.id)).toMatchObject({
       isGitRepo: true,
       worktreeReady: true,
       reason: 'READY',

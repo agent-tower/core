@@ -46,6 +46,8 @@ describe('task routes', () => {
 
   beforeEach(async () => {
     await prisma.taskCleanupJob.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.workspace.deleteMany();
     await prisma.task.deleteMany();
     await prisma.project.deleteMany();
   });
@@ -117,6 +119,134 @@ describe('task routes', () => {
       expect(response.json()).toMatchObject({
         total: 1,
         data: [expect.objectContaining({ title: 'Visible task' })],
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns one compact board response across active projects', async () => {
+    const firstProject = await prisma.project.create({
+      data: { name: 'Board project one', repoPath: testDir },
+    });
+    const secondProject = await prisma.project.create({
+      data: { name: 'Board project two', repoPath: testDir },
+    });
+    const archivedProject = await prisma.project.create({
+      data: { name: 'Archived board project', repoPath: testDir, archivedAt: new Date() },
+    });
+    const visibleTask = await prisma.task.create({
+      data: {
+        title: `Board task ${'x'.repeat(300)}`,
+        description: `Full body ${'y'.repeat(1000)}`,
+        projectId: firstProject.id,
+      },
+    });
+    await prisma.task.create({ data: { title: 'Second project task', projectId: secondProject.id } });
+    await prisma.task.create({ data: { title: 'Archived task', projectId: archivedProject.id } });
+    await prisma.task.create({
+      data: { title: 'Deleted task', projectId: firstProject.id, deletedAt: new Date() },
+    });
+    const inactiveWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: visibleTask.id,
+        branchName: 'old-branch',
+        worktreePath: path.join(testDir, 'old-workspace'),
+        workingDir: path.join(testDir, 'old-workspace'),
+        status: 'MERGED',
+      },
+    });
+    const activeWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: visibleTask.id,
+        branchName: 'active-branch',
+        baseBranch: 'main',
+        worktreePath: path.join(testDir, 'active-workspace'),
+        workingDir: path.join(testDir, 'active-workspace'),
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.session.create({
+      data: {
+        workspaceId: inactiveWorkspace.id,
+        agentType: 'CODEX',
+        prompt: 'inactive',
+        status: 'RUNNING',
+      },
+    });
+    await prisma.session.create({
+      data: {
+        workspaceId: activeWorkspace.id,
+        agentType: 'CLAUDE_CODE',
+        prompt: 'older',
+        status: 'COMPLETED',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      },
+    });
+    await prisma.session.create({
+      data: {
+        workspaceId: activeWorkspace.id,
+        agentType: 'CODEX',
+        prompt: 'latest',
+        status: 'RUNNING',
+        createdAt: new Date('2026-01-02T00:00:00.000Z'),
+      },
+    });
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/api/task-board' });
+
+      expect(response.statusCode).toBe(200);
+      const json = response.json();
+      expect(json.total).toBe(2);
+      const item = json.data.find((candidate: { id: string }) => candidate.id === visibleTask.id);
+      expect(item).toMatchObject({
+        id: visibleTask.id,
+        projectId: firstProject.id,
+        preferredWorkspace: {
+          branchName: 'active-branch',
+        },
+        latestAgentType: 'CODEX',
+        hasRunningSession: true,
+      });
+      expect(item.title.length).toBeLessThanOrEqual(200);
+      expect(typeof item.updatedAt).toBe('number');
+      expect(item.titlePreview).toBeUndefined();
+      expect(item.latestSession).toBeUndefined();
+      expect(item.preferredWorkspace.id).toBeUndefined();
+      expect(item.preferredWorkspace.status).toBeUndefined();
+      expect(item.description).toBeUndefined();
+      expect(item.project).toBeUndefined();
+      expect(item.workspaces).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('filters the compact board by project', async () => {
+    const firstProject = await prisma.project.create({
+      data: { name: 'Filtered board project one', repoPath: testDir },
+    });
+    const secondProject = await prisma.project.create({
+      data: { name: 'Filtered board project two', repoPath: testDir },
+    });
+    const expectedTask = await prisma.task.create({
+      data: { title: 'Expected board task', projectId: firstProject.id },
+    });
+    await prisma.task.create({ data: { title: 'Other board task', projectId: secondProject.id } });
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/task-board?projectId=${firstProject.id}`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        total: 1,
+        data: [expect.objectContaining({ id: expectedTask.id, projectId: firstProject.id })],
       });
     } finally {
       await app.close();

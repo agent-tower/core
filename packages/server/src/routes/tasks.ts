@@ -36,6 +36,12 @@ const taskListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(1000).default(200),
 });
 
+const taskBoardQuerySchema = taskListQuerySchema.extend({
+  projectId: z.string().uuid().optional(),
+}).extend({
+  limit: z.coerce.number().int().min(1).max(1000).default(1000),
+});
+
 /**
  * 统一错误处理：将 ServiceError / ZodError 转为结构化响应
  */
@@ -61,6 +67,15 @@ function handleError(error: unknown, reply: any) {
 
 export async function taskRoutes(app: FastifyInstance) {
   const taskService = new TaskService(getEventBus(), getSessionManager(), getTaskCleanupService());
+
+  app.get('/task-board', async (request, reply) => {
+    try {
+      const query = taskBoardQuerySchema.parse(request.query);
+      return await taskService.findBoard(query);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
 
   // 获取项目的任务列表（支持分页和状态过滤）
   app.get<{ Params: { projectId: string } }>(

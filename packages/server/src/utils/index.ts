@@ -7,6 +7,30 @@ const execFileAsync = promisify(execFile);
 
 export const prisma = new PrismaClient();
 
+export const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+
+let databaseRuntimeInitialization: Promise<void> | null = null;
+
+/**
+ * Configure SQLite before HTTP traffic starts. WAL is persisted in the database file;
+ * busy_timeout protects the active Prisma connection from failing immediately on a writer lock.
+ */
+export function initializeDatabaseRuntime(): Promise<void> {
+  if (databaseRuntimeInitialization) {
+    return databaseRuntimeInitialization;
+  }
+
+  databaseRuntimeInitialization = (async () => {
+    await prisma.$queryRawUnsafe(`PRAGMA journal_mode = WAL`);
+    await prisma.$queryRawUnsafe(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+  })().catch((error) => {
+    databaseRuntimeInitialization = null;
+    throw error;
+  });
+
+  return databaseRuntimeInitialization;
+}
+
 export async function execAsync(
   command: string,
   options?: ExecOptions
