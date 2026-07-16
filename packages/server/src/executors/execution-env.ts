@@ -6,6 +6,10 @@
 import type { ChildProcess } from 'child_process';
 import * as path from 'node:path';
 import type { CmdOverrides } from './command-builder.js';
+import {
+  withUnixUserPathFallbacks,
+  withWindowsUserPathFallbacks,
+} from '../utils/process-launch.js';
 
 export const AGENT_SUBPROCESS_BLOCKED_ENV_KEYS = [
   'DATABASE_URL',
@@ -163,9 +167,13 @@ export class ExecutionEnv {
     const providerVars = this.toObject();
     const hasProviderAnthropicVars = Object.keys(providerVars).some(k => k.startsWith('ANTHROPIC_'));
 
-    const env = {
-      ...process.env as Record<string, string>,
-    };
+    const parentEnv = { ...process.env } as Record<string, string>;
+    const env = { ...parentEnv };
+    if (process.platform === 'win32') {
+      Object.assign(env, withWindowsUserPathFallbacks(parentEnv));
+    } else if (process.platform === 'darwin' || process.platform === 'linux') {
+      Object.assign(env, withUnixUserPathFallbacks(parentEnv, process.platform));
+    }
 
     // 如果 provider 设置了任何 ANTHROPIC_* 变量，先清除 process.env 中所有 ANTHROPIC_* 残留
     // 再用 provider 的值覆盖，确保不会混用不同 provider 的认证信息

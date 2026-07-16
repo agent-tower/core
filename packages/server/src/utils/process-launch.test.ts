@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -8,6 +8,7 @@ import {
   buildPtyWrapperEnv,
   buildPtyCommand,
   buildPtyCommandWithStdin,
+  buildUnixPathWithUserBinFallbacks,
   buildWindowsPathWithUserBinFallbacks,
   getDefaultTerminalShell,
   getNodeRuntimeCommand,
@@ -322,6 +323,30 @@ describe('process-launch', () => {
       'C:\\Users\\alice\\AppData\\Local\\Programs\\Cursor\\bin',
       'C:\\Users\\alice\\AppData\\Local\\cursor-agent',
     ])
+  })
+
+  it('should append macOS user CLI directories and discovered nvm bins', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'agent-tower-unix-path-'))
+    const nvmBin = path.join(home, '.nvm', 'versions', 'node', 'v22.12.0', 'bin')
+    mkdirSync(nvmBin, { recursive: true })
+
+    try {
+      const nextPath = buildUnixPathWithUserBinFallbacks({
+        PATH: '/usr/bin',
+        HOME: home,
+      }, 'darwin')
+
+      expect(nextPath?.split(':')).toEqual(expect.arrayContaining([
+        '/usr/bin',
+        path.join(home, '.local', 'bin'),
+        path.join(home, '.npm-global', 'bin'),
+        path.join(home, 'Library', 'pnpm'),
+        nvmBin,
+        '/opt/homebrew/bin',
+      ]))
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it('should resolve terminal shells per platform', () => {

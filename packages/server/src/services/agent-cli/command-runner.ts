@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import {
   buildWindowsCmdShimCommandLine,
   normalizeCommandLookupOutput,
+  withUnixUserPathFallbacks,
   withWindowsUserPathFallbacks,
 } from '../../utils/process-launch.js';
 import type { AgentCliCommandSpec, AgentCliPlatform } from '@agent-tower/shared';
@@ -108,10 +109,16 @@ export async function runAgentCliCommand(
   } = {}
 ): Promise<AgentCliExecFileResult> {
   const execFileImpl = options.execFileImpl ?? defaultExecFile;
-  const platform = options.platform;
+  const platform = options.platform ?? (
+    process.platform === 'darwin' || process.platform === 'linux' || process.platform === 'win32'
+      ? process.platform
+      : null
+  );
   let env = options.env ?? buildCleanAgentCliEnv(undefined, platform);
   if (platform === 'win32') {
     env = withWindowsUserPathFallbacks(env);
+  } else if (platform === 'darwin' || platform === 'linux') {
+    env = withUnixUserPathFallbacks(env, platform);
   }
 
   let command = spec.command;

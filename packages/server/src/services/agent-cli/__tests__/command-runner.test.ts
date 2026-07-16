@@ -92,4 +92,31 @@ describe('runAgentCliCommand', () => {
       expect.objectContaining({ shell: false, windowsHide: true })
     );
   });
+
+  it('adds macOS user CLI directories when launched without a shell PATH', async () => {
+    const execFileImpl = vi.fn<AgentCliExecFile>(async (_command, _args, options) => {
+      expect(options.env.PATH).toContain('/Users/alice/.local/bin');
+      expect(options.env.PATH).toContain('/Users/alice/.npm-global/bin');
+      expect(options.env.PATH).toContain('/opt/homebrew/bin');
+      return { stdout: 'codex 1.2.3', stderr: '' };
+    });
+
+    await runAgentCliCommand(
+      { command: 'codex', args: ['--version'], timeoutMs: 5000 },
+      {
+        platform: 'darwin',
+        env: {
+          PATH: '/usr/bin:/bin',
+          HOME: '/Users/alice',
+        },
+        execFileImpl,
+      }
+    );
+
+    expect(execFileImpl).toHaveBeenCalledWith(
+      'codex',
+      ['--version'],
+      expect.objectContaining({ shell: false, windowsHide: true })
+    );
+  });
 });

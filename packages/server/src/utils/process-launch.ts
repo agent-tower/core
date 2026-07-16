@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -313,6 +314,89 @@ export function withWindowsUserPathFallbacks(env: NodeJS.ProcessEnv = process.en
   if (nextPath) {
     next.PATH = nextPath;
     next.Path = nextPath;
+  }
+  return next;
+}
+
+function getUnixPathValue(env: NodeJS.ProcessEnv): string | undefined {
+  return env.PATH ?? env.Path ?? env.path;
+}
+
+function getUnixHomeDirectory(env: NodeJS.ProcessEnv): string | undefined {
+  return env.HOME || env.USERPROFILE || os.homedir();
+}
+
+function appendNodeManagerPathFallbacks(paths: string[], home: string): void {
+  // npm-installed CLIs under nvm/fnm are commonly invisible to GUI-launched
+  // macOS applications because those managers are initialized by shell startup
+  // files rather than the login environment inherited by Electron.
+  const versionRoots = [
+    { root: path.join(home, '.nvm', 'versions', 'node'), suffix: ['bin'] },
+    { root: path.join(home, '.fnm', 'node-versions'), suffix: ['installation', 'bin'] },
+    { root: path.join(home, '.local', 'share', 'fnm', 'node-versions'), suffix: ['installation', 'bin'] },
+  ];
+
+  for (const { root, suffix } of versionRoots) {
+    let entries: string[];
+    try {
+      entries = readdirSync(root).sort().reverse();
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      appendPath(paths, path.join(root, entry, ...suffix));
+    }
+  }
+}
+
+export function buildUnixPathWithUserBinFallbacks(
+  env: NodeJS.ProcessEnv,
+  platform: 'darwin' | 'linux' = process.platform === 'darwin' ? 'darwin' : 'linux',
+): string | undefined {
+  const paths = (getUnixPathValue(env) ?? '')
+    .split(':')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const home = getUnixHomeDirectory(env);
+
+  if (home) {
+    appendPath(paths, path.join(home, '.local', 'bin'));
+    appendPath(paths, path.join(home, '.volta', 'bin'));
+    appendPath(paths, path.join(home, '.bun', 'bin'));
+    appendPath(paths, path.join(home, '.cargo', 'bin'));
+    appendPath(paths, path.join(home, '.asdf', 'shims'));
+    appendPath(paths, path.join(home, '.npm-global', 'bin'));
+    appendPath(paths, path.join(home, '.npm-packages', 'bin'));
+    appendPath(paths, path.join(home, 'bin'));
+    if (platform === 'darwin') {
+      appendPath(paths, path.join(home, 'Library', 'pnpm'));
+    } else {
+      appendPath(paths, path.join(home, '.local', 'share', 'pnpm'));
+    }
+    appendNodeManagerPathFallbacks(paths, home);
+  }
+
+  if (platform === 'darwin') {
+    appendPath(paths, '/opt/homebrew/bin');
+    appendPath(paths, '/opt/homebrew/sbin');
+    appendPath(paths, '/usr/local/bin');
+    appendPath(paths, '/usr/local/sbin');
+  } else {
+    appendPath(paths, '/usr/local/bin');
+  }
+
+  return paths.length > 0 ? paths.join(':') : undefined;
+}
+
+export function withUnixUserPathFallbacks(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: 'darwin' | 'linux' = process.platform === 'darwin' ? 'darwin' : 'linux',
+): NodeJS.ProcessEnv {
+  const next = { ...env };
+  const nextPath = buildUnixPathWithUserBinFallbacks(env, platform);
+  if (nextPath) {
+    next.PATH = nextPath;
   }
   return next;
 }

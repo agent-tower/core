@@ -1,7 +1,11 @@
 import pkg from '@prisma/client';
 import { execFile, type ExecOptions } from 'child_process';
 import { promisify } from 'util';
-import { normalizeCommandLookupOutput, withWindowsUserPathFallbacks } from './process-launch.js';
+import {
+  normalizeCommandLookupOutput,
+  withUnixUserPathFallbacks,
+  withWindowsUserPathFallbacks,
+} from './process-launch.js';
 const { PrismaClient } = pkg;
 const execFileAsync = promisify(execFile);
 
@@ -56,12 +60,15 @@ export async function which(
   try {
     const platform = options.platform ?? process.platform;
     const lookupCommand = platform === 'win32' ? 'where' : 'which';
+    const env = options.env ?? process.env;
     const { stdout } = await execFileAsync(lookupCommand, [command], {
       encoding: 'utf-8',
       windowsHide: true,
       env: platform === 'win32'
-        ? withWindowsUserPathFallbacks(options.env ?? process.env)
-        : options.env ?? process.env,
+        ? withWindowsUserPathFallbacks(env)
+        : platform === 'darwin' || platform === 'linux'
+          ? withUnixUserPathFallbacks(env, platform)
+          : env,
     });
     return normalizeCommandLookupOutput(String(stdout ?? ''), platform);
   } catch {

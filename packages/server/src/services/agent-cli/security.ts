@@ -1,5 +1,8 @@
 import type { AgentCliInstallLogEntry } from '@agent-tower/shared';
-import { buildWindowsPathWithUserBinFallbacks } from '../../utils/process-launch.js';
+import {
+  buildUnixPathWithUserBinFallbacks,
+  buildWindowsPathWithUserBinFallbacks,
+} from '../../utils/process-launch.js';
 
 export const SENSITIVE_ENV_KEY_PATTERN = /(?:^|_)(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH)(?:_|$)/i;
 
@@ -67,6 +70,11 @@ export function buildCleanAgentCliEnv(
     if (nextPath) {
       cleaned.PATH = nextPath;
       cleaned.Path = nextPath;
+    }
+  } else if (platform === 'darwin' || platform === 'linux') {
+    const nextPath = buildUnixPathWithUserBinFallbacks(env, platform);
+    if (nextPath) {
+      cleaned.PATH = nextPath;
     }
   }
 
