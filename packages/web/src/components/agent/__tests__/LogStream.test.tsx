@@ -24,7 +24,10 @@ vi.mock('@streamdown/mermaid', () => ({
 }))
 
 vi.mock('@/lib/i18n', () => ({
-  useI18n: () => ({ t: (source: string) => source }),
+  useI18n: () => ({
+    t: (source: string, values?: Record<string, unknown>) => Object.entries(values ?? {})
+      .reduce((result, [key, value]) => result.replaceAll(`{${key}}`, String(value)), source),
+  }),
 }))
 
 function successTool(id: string, content: string): LogEntry {
@@ -96,6 +99,10 @@ function assistantEntry(id: string, content: string): LogEntry {
   }
 }
 
+function withTimestamp<T extends LogEntry>(entry: T, timestamp: number): T {
+  return { ...entry, timestamp }
+}
+
 async function flushEffects() {
   await act(async () => {
     await Promise.resolve()
@@ -139,6 +146,7 @@ describe('LogStream tool grouping', () => {
   afterEach(() => {
     act(() => root.unmount())
     container.remove()
+    vi.useRealTimers()
   })
 
   it('keeps successful tools grouped when their business text contains confirmation keywords', async () => {
@@ -304,5 +312,140 @@ describe('LogStream tool grouping', () => {
         panZoom: true,
       },
     })
+  })
+
+  it('collapses completed processing details while keeping the final response visible', async () => {
+    const onUserToggleDetails = vi.fn()
+    const logs = [
+      withTimestamp(userEntry('user-1', 'Implement this feature'), 1_000),
+      withTimestamp(infoEntry('thinking-1', 'Planning the implementation'), 2_000),
+      withTimestamp(successTool('tool-1', 'MCP tool call: agent-tower/list_room_messages'), 8_000),
+      withTimestamp(assistantEntry('assistant-1', 'Intermediate progress'), 10_000),
+      withTimestamp(assistantEntry('assistant-2', 'Final answer'), 12_000),
+    ]
+
+    await act(async () => {
+      root.render(
+        <LogStream
+          logs={logs}
+          isOutputActive={false}
+          lastExitAt={14_000}
+          onUserToggleDetails={onUserToggleDetails}
+        />,
+      )
+    })
+
+    expect(container.textContent).toContain('Final answer')
+    expect(container.textContent).toContain('Implement this feature')
+
+    const processedButton = Array.from(container.querySelectorAll('button')).find((button) => (
+      button.textContent?.includes('已处理 13s')
+    ))
+    const processedContent = container.querySelector('[data-processed-content]')
+    expect(processedButton).toBeDefined()
+    expect(processedButton?.className).toContain('text-sm')
+    expect(processedButton?.getAttribute('aria-expanded')).toBe('false')
+    expect(processedContent?.getAttribute('aria-hidden')).toBe('true')
+    expect(processedContent?.className).toContain('grid-rows-[0fr]')
+    expect(processedContent?.textContent).toContain('Intermediate progress')
+    expect(processedContent?.textContent).toContain('Planning the implementation')
+
+    await act(async () => {
+      processedButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onUserToggleDetails).toHaveBeenCalledTimes(1)
+    expect(processedButton?.getAttribute('aria-expanded')).toBe('true')
+    expect(processedContent?.getAttribute('aria-hidden')).toBe('false')
+    expect(processedContent?.className).toContain('grid-rows-[1fr]')
+  })
+
+  it('keeps the active turn expanded and collapses only earlier turns', async () => {
+    const logs = [
+      withTimestamp(userEntry('user-1', 'First request'), 1_000),
+      withTimestamp(infoEntry('thinking-1', 'First internal details'), 2_000),
+      withTimestamp(assistantEntry('assistant-1', 'First answer'), 5_000),
+      withTimestamp(userEntry('user-2', 'Follow-up request'), 6_000),
+      withTimestamp(infoEntry('thinking-2', 'Current internal details'), 7_000),
+      withTimestamp(assistantEntry('assistant-2', 'Current answer'), 8_000),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} isOutputActive />)
+    })
+
+    expect(container.querySelectorAll('button[aria-expanded="false"]')).toHaveLength(1)
+    expect(container.textContent).toContain('First answer')
+    expect(container.textContent).toContain('Current internal details')
+    const processedContent = container.querySelector('[data-processed-content]')
+    expect(processedContent?.getAttribute('aria-hidden')).toBe('true')
+    expect(processedContent?.textContent).toContain('First internal details')
+  })
+
+  it('auto-collapses the current turn when output changes from active to complete', async () => {
+    const logs = [
+      withTimestamp(userEntry('user-1', 'Request'), 1_000),
+      withTimestamp(infoEntry('thinking-1', 'Details'), 2_000),
+      withTimestamp(assistantEntry('assistant-1', 'Answer'), 3_000),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} isOutputActive />)
+    })
+    expect(container.textContent).toContain('Details')
+    expect(container.querySelector('button[aria-expanded]')).toBeNull()
+    expect(container.querySelector('[role="status"]')?.className).toContain('text-sm')
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} isOutputActive={false} lastExitAt={4_000} />)
+    })
+
+    expect(container.textContent).toContain('Answer')
+    expect(container.querySelector('button[aria-expanded="false"]')).not.toBeNull()
+    const processedContent = container.querySelector('[data-processed-content]')
+    expect(processedContent?.getAttribute('aria-hidden')).toBe('true')
+    expect(processedContent?.textContent).toContain('Details')
+  })
+
+  it('keeps a terminal error visible when there is no final assistant response', async () => {
+    const logs = [
+      withTimestamp(userEntry('user-1', 'Request'), 1_000),
+      withTimestamp(infoEntry('info-1', 'Internal details'), 2_000),
+      withTimestamp(errorEntry('error-1', 'Agent failed'), 3_000),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} isOutputActive={false} lastExitAt={4_000} />)
+    })
+
+    expect(container.textContent).toContain('Agent failed')
+    expect(container.querySelector('button[aria-expanded="false"]')).not.toBeNull()
+    const processedContent = container.querySelector('[data-processed-content]')
+    expect(processedContent?.getAttribute('aria-hidden')).toBe('true')
+    expect(processedContent?.textContent).toContain('Internal details')
+  })
+
+  it('shows a non-collapsible processing timer while the agent is running', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(11_000))
+    const logs = [
+      withTimestamp(userEntry('user-1', 'Request'), 1_000),
+      withTimestamp(infoEntry('info-1', 'Working'), 2_000),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} isOutputActive />)
+    })
+
+    const status = container.querySelector('[role="status"]')
+    expect(status?.textContent).toContain('已处理 10s')
+    expect(status?.className).toContain('text-sm')
+    expect(container.querySelector('button[aria-expanded]')).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000)
+    })
+
+    expect(status?.textContent).toContain('已处理 12s')
   })
 })

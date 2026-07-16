@@ -88,6 +88,31 @@ describe('useNormalizedLogs reconnect recovery', () => {
     vi.restoreAllMocks()
   })
 
+  it('tracks output activity across exit and a later follow-up patch', async () => {
+    const initial: NormalizedConversation = { entries: [message('one', 'before')], seq: 1 }
+    apiGet.mockResolvedValueOnce(initial)
+
+    await act(async () => { root.render(<Harness />) })
+    await act(async () => { await latest.attach() })
+    expect(latest.isOutputActive).toBe(true)
+
+    await act(async () => {
+      socket.dispatch('session:exit', { sessionId: 'session-1', exitCode: 0 })
+    })
+    expect(latest.isOutputActive).toBe(false)
+    expect(latest.lastExitAt).toEqual(expect.any(Number))
+
+    await act(async () => {
+      socket.dispatch('session:patch', {
+        sessionId: 'session-1',
+        seq: 2,
+        patch: [{ op: 'add', path: '/entries/1', value: message('two', 'follow-up') }],
+      })
+    })
+    expect(latest.isOutputActive).toBe(true)
+    expect(latest.lastExitAt).toBeNull()
+  })
+
   it('fetches an authoritative snapshot after reconnect and restores missed entries', async () => {
     const initial: NormalizedConversation = { entries: [message('one', 'before')], seq: 1 }
     const recovered: NormalizedConversation = {

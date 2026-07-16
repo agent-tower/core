@@ -94,6 +94,8 @@ interface UseNormalizedLogsReturn {
   isConnected: boolean
   isAttached: boolean
   isLoadingSnapshot: boolean
+  isOutputActive: boolean
+  lastExitAt: number | null
   logs: LogEntry[]
   entries: NormalizedEntry[]
   agentSessionId: string | null
@@ -118,6 +120,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false)
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const [isOutputActive, setIsOutputActive] = useState(() => !isTerminalStatus(sessionStatus))
+  const [lastExitAt, setLastExitAt] = useState<number | null>(null)
 
   // Read conversation from Zustand store (replaces useState)
   const conversation = useSessionLogStore(
@@ -142,6 +146,14 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   // Keep latest sessionStatus accessible in effect closures
   const sessionStatusRef = useRef(sessionStatus)
   sessionStatusRef.current = sessionStatus
+
+  useEffect(() => {
+    if (isTerminalStatus(sessionStatus)) {
+      setIsOutputActive(false)
+    } else if (sessionStatus === SessionStatus.RUNNING || sessionStatus === SessionStatus.PENDING) {
+      setIsOutputActive(true)
+    }
+  }, [sessionId, sessionStatus])
 
   // Socket event listeners & cleanup
   useEffect(() => {
@@ -181,6 +193,9 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     let patchCount = 0
     const handlePatch = (payload: SessionPatchPayload) => {
       if (payload.sessionId !== sessionId) return
+
+      setIsOutputActive(true)
+      setLastExitAt(null)
 
       patchCount++
       if (DEBUG_LOGS) {
@@ -229,6 +244,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       isActive = false
       setIsAttached(false)
       setIsLoading(false)
+      setIsOutputActive(false)
+      setLastExitAt(Date.now())
       callbacksRef.current.onExit?.(payload.exitCode)
     }
 
@@ -265,6 +282,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       pendingPatches[sessionId] = []
       setAgentSessionId(null)
       setIsLoading(false)
+      setLastExitAt(null)
       setIsAttached(false)
 
       if (!isActive) {
@@ -538,6 +556,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     useSessionLogStore.getState().removeSession(sessionId)
     setAgentSessionId(null)
     setIsLoading(false)
+    setIsOutputActive(false)
+    setLastExitAt(null)
     setIsAttached(false)
     snapshotLoadedRef.current = false
     pendingPatchesRef.current[sessionId] = []
@@ -555,6 +575,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     isConnected,
     isAttached,
     isLoadingSnapshot,
+    isOutputActive,
+    lastExitAt,
     logs,
     entries: conversation.entries,
     agentSessionId,

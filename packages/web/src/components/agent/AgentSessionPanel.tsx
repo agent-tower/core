@@ -67,7 +67,7 @@ export function AgentSessionPanel({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputContainerRef = useRef<HTMLDivElement>(null)
   const sendingRef = useRef(false)
-  const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
     initial: 'instant',
     resize: 'smooth',
   })
@@ -75,6 +75,8 @@ export function AgentSessionPanel({
   const {
     isConnected,
     isLoadingSnapshot,
+    isOutputActive,
+    lastExitAt,
     logs,
     entries,
     attach,
@@ -236,7 +238,12 @@ export function AgentSessionPanel({
                 {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
               </div>
             ) : (
-              <LogStream logs={logs} />
+              <LogStream
+                logs={logs}
+                isOutputActive={isOutputActive}
+                lastExitAt={lastExitAt}
+                onUserToggleDetails={stopScroll}
+              />
             )}
           </div>
         </div>

@@ -172,7 +172,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
     resize: 'smooth',
     initial: 'instant',
   })
@@ -458,7 +458,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
 
   // ============ Log Stream ============
 
-  const { isConnected, isLoadingSnapshot, logs, entries, attach } = useNormalizedLogs({
+  const { isConnected, isLoadingSnapshot, isOutputActive, lastExitAt, logs, entries, attach } = useNormalizedLogs({
     sessionId: logSessionId,
     sessionStatus: displayedSession?.status,
     onExit: useCallback(() => {
@@ -799,7 +799,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
                       ) : (
-                        <LogStream logs={logs} />
+                        <LogStream
+                          logs={logs}
+                          isOutputActive={isOutputActive}
+                          lastExitAt={lastExitAt}
+                          onUserToggleDetails={stopScroll}
+                        />
                       )}
                     </div>
                   </div>
@@ -875,7 +880,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                   {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded.'}
                 </div>
               ) : (
-                <LogStream logs={logs} />
+                <LogStream
+                  logs={logs}
+                  isOutputActive={isOutputActive}
+                  lastExitAt={lastExitAt}
+                  onUserToggleDetails={stopScroll}
+                />
               )
             ) : (
               /* No session — show start agent CTA */

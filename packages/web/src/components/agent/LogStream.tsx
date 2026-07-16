@@ -9,6 +9,12 @@ import 'streamdown/styles.css'
 
 interface LogStreamProps {
   logs: LogEntry[]
+  /** Whether the latest agent turn is still producing output. Omit to keep legacy rendering. */
+  isOutputActive?: boolean
+  /** Precise end time for the latest turn observed in this client. */
+  lastExitAt?: number | null
+  /** Stops automatic bottom-following before the user expands historical output. */
+  onUserToggleDetails?: () => void
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
   /** 外部滚动容器 ref，用于滚动到底部（可选，仅 legacy 用法需要） */
@@ -24,6 +30,12 @@ export interface LogStreamHandle {
 type RenderItem =
   | { kind: 'single'; log: LogEntry; key: string }
   | { kind: 'execution-group'; logs: LogEntry[]; key: string }
+
+interface ConversationTurn {
+  key: string
+  user?: LogEntry
+  agentLogs: LogEntry[]
+}
 
 function getToolStatus(log: LogEntry): ToolStatus | undefined {
   if (log.tool?.status) return log.tool.status
@@ -109,6 +121,73 @@ function groupExecutionDetails(logs: LogEntry[]): RenderItem[] {
   }
 
   return items
+}
+
+function splitConversationTurns(logs: LogEntry[]): ConversationTurn[] {
+  const turns: ConversationTurn[] = []
+  let user: LogEntry | undefined
+  let agentLogs: LogEntry[] = []
+
+  const pushTurn = () => {
+    if (!user && agentLogs.length === 0) return
+    turns.push({
+      key: user ? `turn-${user.id}` : `turn-${agentLogs[0]?.id ?? turns.length}`,
+      user,
+      agentLogs,
+    })
+  }
+
+  for (const log of logs) {
+    if (log.type === LogType.User) {
+      pushTurn()
+      user = log
+      agentLogs = []
+    } else {
+      agentLogs.push(log)
+    }
+  }
+  pushTurn()
+
+  return turns
+}
+
+function findFinalResponseIndex(logs: LogEntry[]): number {
+  let fallbackErrorIndex = -1
+
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const log = logs[index]
+    if (!log.content.trim()) continue
+    if (log.type === LogType.Assistant) return index
+    if (fallbackErrorIndex === -1 && log.type === LogType.Error) {
+      fallbackErrorIndex = index
+    }
+  }
+
+  return fallbackErrorIndex
+}
+
+function formatDuration(startedAt?: number, endedAt?: number | null): string | null {
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) return null
+  const durationMs = Math.max(0, (endedAt as number) - (startedAt as number))
+  const totalSeconds = durationMs === 0 ? 0 : Math.max(1, Math.round(durationMs / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+
+  if (hours > 0) return `${hours}h${minutes > 0 ? ` ${minutes}m` : ''}`
+  if (minutes > 0) return `${minutes}m${seconds > 0 ? ` ${seconds}s` : ''}`
+  return `${seconds}s`
+}
+
+function getTurnDuration(turn: ConversationTurn, completedAt?: number | null): string | null {
+  const startedAt = turn.user?.timestamp
+    ?? turn.agentLogs.find((log) => Number.isFinite(log.timestamp))?.timestamp
+  const latestLogAt = turn.agentLogs.reduce<number | undefined>((latest, log) => {
+    if (!Number.isFinite(log.timestamp)) return latest
+    return latest === undefined ? log.timestamp : Math.max(latest, log.timestamp as number)
+  }, undefined)
+
+  return formatDuration(startedAt, completedAt ?? latestLogAt)
 }
 
 // ============ Components ============
@@ -390,6 +469,84 @@ const ErrorMessage = memo(({ content }: { content: string }) => (
 ))
 ErrorMessage.displayName = 'ErrorMessage'
 
+const ProcessedGroup = memo(({
+  logs,
+  duration,
+  collapsible,
+  onBeforeToggle,
+  workingDir,
+  onOpenWorkspaceFile,
+}: {
+  logs: LogEntry[]
+  duration: string | null
+  collapsible: boolean
+  onBeforeToggle?: () => void
+  workingDir?: string
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+}) => {
+  const { t } = useI18n()
+  const [isOpen, setIsOpen] = useState(false)
+  const label = duration
+    ? t('已处理 {duration}', { duration })
+    : t('已处理')
+  const summaryContent = (
+    <>
+      <span>{label}</span>
+      {collapsible && (
+        <span
+          className="flex size-4 shrink-0 items-center justify-center transition-transform duration-200 motion-reduce:transition-none"
+          style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+        >
+          <ChevronRight size={14} strokeWidth={2} />
+        </span>
+      )}
+    </>
+  )
+
+  return (
+    <div className="mb-3 mt-1">
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={isOpen}
+          onClick={() => {
+            onBeforeToggle?.()
+            setIsOpen((open) => !open)
+          }}
+          className="group flex w-full items-center gap-1.5 border-b border-neutral-100 py-2 text-left text-sm leading-6 text-neutral-500 transition-colors hover:text-neutral-700"
+        >
+          {summaryContent}
+        </button>
+      ) : (
+        <div
+          role="status"
+          className="flex w-full items-center gap-1.5 border-b border-neutral-100 py-2 text-sm leading-6 text-neutral-500"
+        >
+          {summaryContent}
+        </div>
+      )}
+
+      {collapsible && (
+        <div
+          data-processed-content
+          aria-hidden={!isOpen}
+          inert={!isOpen}
+          className={`grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${
+            isOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="pb-1 pt-2">
+              {renderLogItems(logs, workingDir, onOpenWorkspaceFile)}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+})
+ProcessedGroup.displayName = 'ProcessedGroup'
+
 // ============ RenderItem renderer ============
 
 function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void): React.ReactNode {
@@ -442,11 +599,85 @@ function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, on
   }
 }
 
+function renderLogItems(logs: LogEntry[], workingDir?: string, onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void): React.ReactNode {
+  return groupExecutionDetails(logs).map((item) => {
+    const node = renderItem(item, false, workingDir, onOpenWorkspaceFile)
+    return node ? <div key={item.key}>{node}</div> : null
+  })
+}
+
+function renderConversationTurn(
+  turn: ConversationTurn,
+  isCompleted: boolean,
+  completedAt: number | null | undefined,
+  onUserToggleDetails?: () => void,
+  workingDir?: string,
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void,
+): React.ReactNode {
+  const userNode = turn.user
+    ? renderLogItems([turn.user], workingDir, onOpenWorkspaceFile)
+    : null
+
+  if (!isCompleted) {
+    return (
+      <>
+        {userNode}
+        <ProcessedGroup
+          logs={[]}
+          duration={getTurnDuration(turn, completedAt)}
+          collapsible={false}
+        />
+        {renderLogItems(turn.agentLogs, workingDir, onOpenWorkspaceFile)}
+      </>
+    )
+  }
+
+  if (turn.agentLogs.length === 0) return userNode
+
+  const finalResponseIndex = findFinalResponseIndex(turn.agentLogs)
+  const processedLogs = finalResponseIndex >= 0
+    ? turn.agentLogs.slice(0, finalResponseIndex)
+    : turn.agentLogs
+  const finalLogs = finalResponseIndex >= 0
+    ? turn.agentLogs.slice(finalResponseIndex)
+    : []
+  const hasProcessedContent = processedLogs.some((log) => !shouldSkipProjectedLog(log))
+
+  return (
+    <>
+      {userNode}
+      <ProcessedGroup
+        logs={processedLogs}
+        duration={getTurnDuration(turn, completedAt)}
+        collapsible={hasProcessedContent}
+        onBeforeToggle={onUserToggleDetails}
+        workingDir={workingDir}
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
+      />
+      {renderLogItems(finalLogs, workingDir, onOpenWorkspaceFile)}
+    </>
+  )
+}
+
 // ============ Main Component ============
 
 export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
-  function LogStream({ logs, scrollElementRef, workingDir, onOpenWorkspaceFile }, ref) {
-    const items = useMemo(() => groupExecutionDetails(logs), [logs])
+  function LogStream({ logs, isOutputActive, lastExitAt, onUserToggleDetails, scrollElementRef, workingDir, onOpenWorkspaceFile }, ref) {
+    const turns = useMemo(() => (
+      isOutputActive === undefined ? null : splitConversationTurns(logs)
+    ), [isOutputActive, logs])
+    const [liveNow, setLiveNow] = useState(() => Date.now())
+
+    useEffect(() => {
+      if (!isOutputActive) return
+      const updateNow = () => setLiveNow(Date.now())
+      const initialTimer = window.setTimeout(updateNow, 0)
+      const interval = window.setInterval(updateNow, 1000)
+      return () => {
+        window.clearTimeout(initialTimer)
+        window.clearInterval(interval)
+      }
+    }, [isOutputActive])
 
     // 暴露 scrollToBottom 给父组件（仅在传入 scrollElementRef 时有效）
     useImperativeHandle(ref, () => ({
@@ -461,10 +692,22 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
 
     return (
       <div className="w-full mx-auto pb-4 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-        {items.map((item) => {
-          const node = renderItem(item, false, workingDir, onOpenWorkspaceFile)
-          return node ? <div key={item.key}>{node}</div> : null
-        })}
+        {turns
+          ? turns.map((turn, index) => (
+              <div key={turn.key}>
+                {renderConversationTurn(
+                  turn,
+                  index < turns.length - 1 || !isOutputActive,
+                  index === turns.length - 1
+                    ? (isOutputActive ? liveNow : lastExitAt)
+                    : undefined,
+                  onUserToggleDetails,
+                  workingDir,
+                  onOpenWorkspaceFile,
+                )}
+              </div>
+            ))
+          : renderLogItems(logs, workingDir, onOpenWorkspaceFile)}
       </div>
     )
   },

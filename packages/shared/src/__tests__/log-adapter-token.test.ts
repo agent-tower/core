@@ -33,6 +33,7 @@ describe('Feature: token-usage-display, Property 4: LogAdapter Token 转换正�
           const logEntry = normalizedEntryToLogEntry(entry)
 
           expect(logEntry).not.toBeNull()
+          expect(logEntry!.timestamp).toBe(entry.timestamp)
           expect(logEntry!.tokenUsage).toBeDefined()
           expect(logEntry!.tokenUsage!.totalTokens).toBe(totalTokens)
           expect(logEntry!.tokenUsage!.modelContextWindow).toBe(modelContextWindow)

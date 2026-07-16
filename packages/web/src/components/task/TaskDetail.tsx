@@ -270,7 +270,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
     resize: 'smooth',
     initial: 'instant',
   })
@@ -667,6 +667,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const {
     isConnected,
     isLoadingSnapshot,
+    isOutputActive,
+    lastExitAt,
     logs,
     entries,
     attach,
@@ -1114,7 +1116,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
                       ) : (
-                        <LogStream logs={logs} workingDir={workingDir} onOpenWorkspaceFile={handleOpenWorkspaceFile} />
+                        <LogStream
+                          logs={logs}
+                          isOutputActive={isOutputActive}
+                          lastExitAt={lastExitAt}
+                          onUserToggleDetails={stopScroll}
+                          workingDir={workingDir}
+                          onOpenWorkspaceFile={handleOpenWorkspaceFile}
+                        />
                       )}
                     </div>
                   </div>
@@ -1229,7 +1238,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                   </div>
                 ) : (
-                  <LogStream logs={logs} workingDir={workingDir} onOpenWorkspaceFile={handleOpenWorkspaceFile} />
+                  <LogStream
+                    logs={logs}
+                    isOutputActive={isOutputActive}
+                    lastExitAt={lastExitAt}
+                    onUserToggleDetails={stopScroll}
+                    workingDir={workingDir}
+                    onOpenWorkspaceFile={handleOpenWorkspaceFile}
+                  />
                 )
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 text-center">

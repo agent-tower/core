@@ -17,6 +17,7 @@ export enum LogType {
 
 export interface LogEntry {
   id: string
+  timestamp?: number
   type: LogType
   content: string
   title?: string
@@ -144,6 +145,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
     case 'user_feedback':
       return {
         id: entry.id,
+        timestamp: entry.timestamp,
         type: LogType.User,
         content: entry.content,
       }
@@ -151,6 +153,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
     case 'assistant_message':
       return {
         id: entry.id,
+        timestamp: entry.timestamp,
         type: LogType.Assistant,
         content: entry.content,
       }
@@ -158,6 +161,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
     case 'next_action':
       return {
         id: entry.id,
+        timestamp: entry.timestamp,
         type: LogType.Action,
         content: entry.content,
       }
@@ -165,6 +169,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
     case 'thinking':
       return {
         id: entry.id,
+        timestamp: entry.timestamp,
         type: LogType.Info,
         title: 'Thinking',
         content: entry.content,
@@ -173,6 +178,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
     case 'tool_use':
       return {
         id: entry.id,
+        timestamp: entry.timestamp,
         type: LogType.Tool,
         title: getToolTitle(entry),
         content: entry.content,
@@ -188,6 +194,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
     case 'error_message':
       return {
         id: entry.id,
+        timestamp: entry.timestamp,
         type: LogType.Error,
         content: entry.content,
       }
@@ -195,6 +202,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
     case 'system_message':
       return {
         id: entry.id,
+        timestamp: entry.timestamp,
         type: LogType.Info,
         content: entry.content,
       }
@@ -203,6 +211,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
       // loading 状态可以用 Cursor 表示
       return {
         id: entry.id,
+        timestamp: entry.timestamp,
         type: LogType.Cursor,
         content: '',
       }
@@ -213,6 +222,7 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
         const { totalTokens = 0, modelContextWindow } = entry.metadata.tokenUsage
         return {
           id: entry.id,
+          timestamp: entry.timestamp,
           type: LogType.Info,
           content: entry.content,
           tokenUsage: {
@@ -243,6 +253,7 @@ export function normalizedEntriesToLogEntries(entries: NormalizedEntry[]): LogEn
 export function createCursorEntry(): LogEntry {
   return {
     id: `cursor-${Date.now()}`,
+    timestamp: Date.now(),
     type: LogType.Cursor,
     content: '',
   }

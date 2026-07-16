@@ -64,6 +64,8 @@ export function AgentDemoPage() {
   const {
     isConnected,
     isAttached,
+    isOutputActive,
+    lastExitAt,
     logs,
     entries,
     agentSessionId,
@@ -380,7 +382,13 @@ export function AgentDemoPage() {
             {logs.length === 0 ? (
               <div className="text-neutral-400 text-center py-8">{t('等待 Agent 响应...')}</div>
             ) : (
-              <LogStream ref={logStreamRef} logs={logs} scrollElementRef={scrollContainerRef} />
+              <LogStream
+                ref={logStreamRef}
+                logs={logs}
+                isOutputActive={isOutputActive}
+                lastExitAt={lastExitAt}
+                scrollElementRef={scrollContainerRef}
+              />
             )}
           </div>
         )}
