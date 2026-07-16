@@ -165,19 +165,19 @@
 }
 
 @layer components {
-  .team-room-message-markdown [role="button"]:has(> [role="presentation"] [data-streamdown="mermaid"]),
-  .team-room-message-markdown [role="button"]:has(> [role="presentation"] [data-streamdown="mermaid"]) > [role="presentation"],
-  .team-room-message-markdown [role="button"] > [role="presentation"] [data-streamdown="mermaid"],
-  .team-room-message-markdown [role="button"] > [role="presentation"] [data-streamdown="mermaid"] > div,
-  .team-room-message-markdown [role="button"] > [role="presentation"] [data-streamdown="mermaid"] [role="application"],
-  .team-room-message-markdown [role="button"] > [role="presentation"] [data-streamdown="mermaid"] [aria-label="Mermaid chart"] {
+  :is(.team-room-message-markdown, .session-log-message-markdown) [role="button"]:has(> [role="presentation"] [data-streamdown="mermaid"]),
+  :is(.team-room-message-markdown, .session-log-message-markdown) [role="button"]:has(> [role="presentation"] [data-streamdown="mermaid"]) > [role="presentation"],
+  :is(.team-room-message-markdown, .session-log-message-markdown) [role="button"] > [role="presentation"] [data-streamdown="mermaid"],
+  :is(.team-room-message-markdown, .session-log-message-markdown) [role="button"] > [role="presentation"] [data-streamdown="mermaid"] > div,
+  :is(.team-room-message-markdown, .session-log-message-markdown) [role="button"] > [role="presentation"] [data-streamdown="mermaid"] [role="application"],
+  :is(.team-room-message-markdown, .session-log-message-markdown) [role="button"] > [role="presentation"] [data-streamdown="mermaid"] [aria-label="Mermaid chart"] {
     width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
   }
 
-  .team-room-message-markdown [role="button"] > [role="presentation"] [data-streamdown="mermaid"] [aria-label="Mermaid chart"] svg {
+  :is(.team-room-message-markdown, .session-log-message-markdown) [role="button"] > [role="presentation"] [data-streamdown="mermaid"] [aria-label="Mermaid chart"] svg {
     display: block;
     width: 100% !important;
     height: 100% !important;

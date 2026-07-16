@@ -314,6 +314,7 @@ describe('LogStream tool grouping', () => {
 
     const assistantCall = await findMermaidStreamdownCall(content)
     expect(assistantCall?.plugins).toEqual({ mermaid: mermaidPlugin })
+    expect(assistantCall?.className).toContain('session-log-message-markdown')
     expect(assistantCall?.controls).toMatchObject({
       mermaid: {
         download: true,

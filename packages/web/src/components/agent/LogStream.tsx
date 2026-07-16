@@ -4,6 +4,7 @@ import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { Tooltip } from '@/components/ui/tooltip'
 import { useI18n } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 import { createMessageStreamdownComponents, streamdownMermaidControls } from '@/lib/streamdown-components'
 import { useStreamdownMermaidPlugins } from '@/lib/streamdown-mermaid'
 import 'streamdown/styles.css'
@@ -218,7 +219,7 @@ const MarkdownMessage = memo(({
 
   return (
     <Streamdown
-      className={className}
+      className={cn('session-log-message-markdown', className)}
       components={components}
       plugins={mermaidPlugins}
       controls={mermaidPlugins ? streamdownMermaidControls : undefined}
