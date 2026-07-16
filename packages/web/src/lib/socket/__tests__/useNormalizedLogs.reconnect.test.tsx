@@ -51,6 +51,10 @@ function message(id: string, content: string) {
   return { id, entryType: 'assistant_message' as const, content, timestamp: Date.now() }
 }
 
+function userMessage(id: string, content: string, timestamp = Date.now()) {
+  return { id, entryType: 'user_message' as const, content, timestamp }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => {
@@ -64,8 +68,21 @@ describe('useNormalizedLogs reconnect recovery', () => {
   let container: HTMLDivElement
   let latest: ReturnType<typeof useNormalizedLogs>
 
-  function Harness() {
-    const result = useNormalizedLogs({ sessionId: 'session-1', sessionStatus: 'RUNNING' })
+  function Harness({
+    sessionStatus = 'RUNNING',
+    sessionStartedAt,
+    sessionEndedAt,
+  }: {
+    sessionStatus?: string
+    sessionStartedAt?: string | number | null
+    sessionEndedAt?: string | number | null
+  }) {
+    const result = useNormalizedLogs({
+      sessionId: 'session-1',
+      sessionStatus,
+      sessionStartedAt,
+      sessionEndedAt,
+    })
     useEffect(() => {
       latest = result
     }, [result])
@@ -143,6 +160,97 @@ describe('useNormalizedLogs reconnect recovery', () => {
       'missed while offline',
     ])
     expect(latest.isAttached).toBe(true)
+  })
+
+  it('tracks the current processing cycle and latest live agent output', async () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-07-16T12:00:00Z').getTime()
+    vi.setSystemTime(now)
+    const userTimestamp = now - 10_000
+    const outputTimestamp = now - 5_000
+    apiGet.mockResolvedValue({
+      entries: [
+        userMessage('user-one', 'question', userTimestamp),
+        { ...message('assistant-one', 'initial output'), timestamp: outputTimestamp },
+      ],
+      seq: 2,
+    } satisfies NormalizedConversation)
+
+    await act(async () => { root.render(<Harness />) })
+    await act(async () => { await latest.attach() })
+
+    expect(latest.logs.at(-1)?.cursorActivity).toEqual({
+      processingStartedAt: userTimestamp,
+      lastOutputAt: outputTimestamp,
+    })
+
+    await act(async () => {
+      socket.dispatch('session:patch', {
+        sessionId: 'session-1',
+        seq: 3,
+        patch: [{ op: 'replace', path: '/entries/1/content', value: 'streamed output' }],
+      })
+    })
+    expect(latest.logs.at(-1)?.cursorActivity?.lastOutputAt).toBe(now)
+
+    const nextUserTimestamp = now + 1_000
+    await act(async () => {
+      socket.dispatch('session:patch', {
+        sessionId: 'session-1',
+        seq: 4,
+        patch: [{
+          op: 'add',
+          path: '/entries/2',
+          value: userMessage('user-two', 'follow-up', nextUserTimestamp),
+        }],
+      })
+    })
+    expect(latest.logs.at(-1)?.cursorActivity).toEqual({
+      processingStartedAt: nextUserTimestamp,
+      lastOutputAt: undefined,
+    })
+  })
+
+  it('uses the persisted session start when the initial user entry is missing after refresh', async () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-07-16T12:00:00Z').getTime()
+    vi.setSystemTime(now)
+    const sessionStartedAt = now - 27_000
+    const sessionStartedAtIso = new Date(sessionStartedAt).toISOString()
+    const firstOutputAt = now - 11_000
+    apiGet.mockResolvedValue({
+      entries: [{ ...message('assistant-one', 'first output'), timestamp: firstOutputAt }],
+      seq: 1,
+    } satisfies NormalizedConversation)
+
+    await act(async () => { root.render(<Harness sessionStartedAt={sessionStartedAtIso} />) })
+    await act(async () => { await latest.attach() })
+
+    expect(latest.logs.at(-1)?.cursorActivity?.processingStartedAt).toBe(sessionStartedAt)
+  })
+
+  it('restores the persisted exit time for a completed text-only response', async () => {
+    const startedAt = new Date('2026-07-16T12:00:00Z').getTime()
+    const firstOutputAt = startedAt + 4_000
+    const endedAt = startedAt + 27_000
+    apiGet.mockResolvedValue({
+      entries: [{ ...message('assistant-one', 'text-only response'), timestamp: firstOutputAt }],
+      seq: 1,
+    } satisfies NormalizedConversation)
+
+    await act(async () => {
+      root.render(
+        <Harness
+          sessionStatus="COMPLETED"
+          sessionStartedAt={new Date(startedAt).toISOString()}
+          sessionEndedAt={new Date(endedAt).toISOString()}
+        />,
+      )
+    })
+    await act(async () => { await latest.attach() })
+
+    expect(latest.isOutputActive).toBe(false)
+    expect(latest.lastExitAt).toBe(endedAt)
   })
 
   it('discards an in-flight snapshot from an older connection epoch', async () => {

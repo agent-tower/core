@@ -82,9 +82,64 @@ function shouldShowOutputCursor(status?: SessionStatus | string): boolean {
   return !isTerminalStatus(status)
 }
 
+function isUserEntry(entry: NormalizedEntry): boolean {
+  return entry.entryType === 'user_message' || entry.entryType === 'user_feedback'
+}
+
+function isAgentOutputEntry(entry: NormalizedEntry): boolean {
+  return !isUserEntry(entry)
+    && entry.entryType !== 'loading'
+    && entry.entryType !== 'token_usage_info'
+    && entry.content.trim() !== ''
+}
+
+function getPersistedCursorActivity(
+  entries: NormalizedEntry[],
+  sessionStartedAt?: number,
+): LogEntry['cursorActivity'] {
+  let processingStartedAt = sessionStartedAt
+  let lastOutputAt: number | undefined
+  let fallbackStartedAt: number | undefined
+
+  for (const entry of entries) {
+    fallbackStartedAt ??= entry.timestamp
+    if (isUserEntry(entry)) {
+      processingStartedAt = entry.timestamp
+      lastOutputAt = undefined
+    } else if (isAgentOutputEntry(entry)) {
+      processingStartedAt ??= entry.timestamp
+      lastOutputAt = entry.timestamp
+    }
+  }
+
+  return {
+    processingStartedAt: processingStartedAt ?? fallbackStartedAt,
+    lastOutputAt,
+  }
+}
+
+function parseTimestamp(value?: string | number | null): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  const timestamp = Date.parse(value)
+  return Number.isNaN(timestamp) ? undefined : timestamp
+}
+
+function patchTouchesAgentOutput(patch: Operation[], entries: NormalizedEntry[]): boolean {
+  return patch.some((operation) => {
+    if (operation.op === 'remove') return false
+    const match = operation.path.match(/^\/entries\/(\d+)(?:\/|$)/)
+    if (!match) return false
+    const entry = entries[Number(match[1])]
+    return entry ? isAgentOutputEntry(entry) : false
+  })
+}
+
 interface UseNormalizedLogsOptions {
   sessionId: string
   sessionStatus?: SessionStatus | string
+  sessionStartedAt?: string | number | null
+  sessionEndedAt?: string | number | null
   onAgentSessionId?: (agentSessionId: string) => void
   onExit?: (exitCode: number) => void
   onError?: (message: string) => void
@@ -113,7 +168,17 @@ interface UseNormalizedLogsReturn {
  * namespace (no room filtering), so the hook filters by sessionId.
  */
 export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormalizedLogsReturn {
-  const { sessionId, sessionStatus, onAgentSessionId, onExit, onError } = options
+  const {
+    sessionId,
+    sessionStatus,
+    sessionStartedAt: sessionStartedAtInput,
+    sessionEndedAt: sessionEndedAtInput,
+    onAgentSessionId,
+    onExit,
+    onError,
+  } = options
+  const sessionStartedAt = parseTimestamp(sessionStartedAtInput)
+  const sessionEndedAt = parseTimestamp(sessionEndedAtInput)
 
   const [isConnected, setIsConnected] = useState(() => socketManager.isConnected())
   const [isAttached, setIsAttached] = useState(false)
@@ -121,7 +186,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isOutputActive, setIsOutputActive] = useState(() => !isTerminalStatus(sessionStatus))
-  const [lastExitAt, setLastExitAt] = useState<number | null>(null)
+  const [lastExitAt, setLastExitAt] = useState<number | null>(() => sessionEndedAt ?? null)
 
   // Read conversation from Zustand store (replaces useState)
   const conversation = useSessionLogStore(
@@ -137,6 +202,17 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   const snapshotRequestsRef = useRef<Map<string, SnapshotRequest>>(new Map())
   const snapshotRetryTimersRef = useRef<Map<string, number>>(new Map())
   const connectionEpochRef = useRef(0)
+  const sessionStartedAtRef = useRef(sessionStartedAt)
+  sessionStartedAtRef.current = sessionStartedAt
+  const liveOutputActivityRef = useRef<{
+    sessionId: string
+    processingStartedAt?: number
+    lastOutputAt?: number
+  }>({ sessionId })
+
+  if (liveOutputActivityRef.current.sessionId !== sessionId) {
+    liveOutputActivityRef.current = { sessionId }
+  }
   const currentSessionIdRef = useRef(sessionId)
   currentSessionIdRef.current = sessionId
 
@@ -150,10 +226,14 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   useEffect(() => {
     if (isTerminalStatus(sessionStatus)) {
       setIsOutputActive(false)
+      setLastExitAt(sessionEndedAt ?? null)
     } else if (sessionStatus === SessionStatus.RUNNING || sessionStatus === SessionStatus.PENDING) {
       setIsOutputActive(true)
+      setLastExitAt(null)
+    } else {
+      setLastExitAt(null)
     }
-  }, [sessionId, sessionStatus])
+  }, [sessionId, sessionStatus, sessionEndedAt])
 
   // Socket event listeners & cleanup
   useEffect(() => {
@@ -226,6 +306,17 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
         pendingPatches[sessionId] = []
         void loadSnapshotRef.current?.()
         return
+      }
+      const latestEntries = store.getConversation(sessionId)?.entries ?? []
+      const persistedActivity = getPersistedCursorActivity(latestEntries, sessionStartedAtRef.current)
+      if (liveOutputActivityRef.current.processingStartedAt !== persistedActivity?.processingStartedAt) {
+        liveOutputActivityRef.current = {
+          sessionId,
+          processingStartedAt: persistedActivity?.processingStartedAt,
+        }
+      }
+      if (patchTouchesAgentOutput(payload.patch as Operation[], latestEntries)) {
+        liveOutputActivityRef.current.lastOutputAt = Date.now()
       }
       setIsLoading(true)
     }
@@ -424,6 +515,17 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
             isTruncated: false,
           }
 
+          const persistedActivity = getPersistedCursorActivity(state.entries, sessionStartedAtRef.current)
+          liveOutputActivityRef.current = {
+            sessionId: requestSessionId,
+            processingStartedAt: persistedActivity?.processingStartedAt,
+            lastOutputAt: buffered.some((payload) => (
+              patchTouchesAgentOutput(payload.patch as Operation[], state.entries)
+            ))
+              ? Date.now()
+              : undefined,
+          }
+
           const latestCached = store.getConversation(requestSessionId)
           if (
             buffered.length > 0 ||
@@ -566,10 +668,21 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   const logs = useMemo(() => {
     const result = normalizedEntriesToLogEntries(conversation.entries)
     if (isLoading && isAttached) {
-      result.push(createCursorEntry())
+      const persistedActivity = getPersistedCursorActivity(conversation.entries, sessionStartedAt)
+      const liveActivity = liveOutputActivityRef.current
+      const isCurrentProcessingCycle = liveActivity.sessionId === sessionId
+        && liveActivity.processingStartedAt === persistedActivity?.processingStartedAt
+      const lastOutputAt = isCurrentProcessingCycle && liveActivity.lastOutputAt
+        ? Math.max(liveActivity.lastOutputAt, persistedActivity?.lastOutputAt ?? 0)
+        : persistedActivity?.lastOutputAt
+
+      result.push(createCursorEntry({
+        processingStartedAt: persistedActivity?.processingStartedAt,
+        lastOutputAt,
+      }))
     }
     return result
-  }, [conversation.entries, isLoading, isAttached])
+  }, [conversation.entries, isLoading, isAttached, sessionId, sessionStartedAt])
 
   return {
     isConnected,

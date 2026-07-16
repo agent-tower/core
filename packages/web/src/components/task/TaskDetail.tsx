@@ -675,6 +675,12 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   } = useNormalizedLogs({
     sessionId: logSessionId,
     sessionStatus: displayedSession?.status,
+    sessionStartedAt: displayedSession?.startedAt
+      ?? (displayedSession as (Session & { createdAt?: string }) | null)?.createdAt,
+    sessionEndedAt: displayedSession?.endedAt
+      ?? (!isSessionActive
+        ? (displayedSession as (Session & { updatedAt?: string }) | null)?.updatedAt
+        : null),
     onExit: useCallback(() => {
       // Agent PTY 退出后，刷新 workspaces query 让 isSessionActive 更新（停止按钮变回发送按钮）
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })

@@ -2,6 +2,7 @@ import { useState, useMemo, useImperativeHandle, forwardRef, memo, useRef, useEf
 import { type LogEntry, LogType, type ToolStatus } from '@agent-tower/shared/log-adapter'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
+import { Tooltip } from '@/components/ui/tooltip'
 import { useI18n } from '@/lib/i18n'
 import { createMessageStreamdownComponents, streamdownMermaidControls } from '@/lib/streamdown-components'
 import { useStreamdownMermaidPlugins } from '@/lib/streamdown-mermaid'
@@ -180,7 +181,13 @@ function formatDuration(startedAt?: number, endedAt?: number | null): string | n
 }
 
 function getTurnDuration(turn: ConversationTurn, completedAt?: number | null): string | null {
+  const persistedProcessingStartedAt = turn.agentLogs.reduce<number | undefined>((latest, log) => (
+    Number.isFinite(log.cursorActivity?.processingStartedAt)
+      ? log.cursorActivity?.processingStartedAt
+      : latest
+  ), undefined)
   const startedAt = turn.user?.timestamp
+    ?? persistedProcessingStartedAt
     ?? turn.agentLogs.find((log) => Number.isFinite(log.timestamp))?.timestamp
   const latestLogAt = turn.agentLogs.reduce<number | undefined>((latest, log) => {
     if (!Number.isFinite(log.timestamp)) return latest
@@ -547,6 +554,74 @@ const ProcessedGroup = memo(({
 })
 ProcessedGroup.displayName = 'ProcessedGroup'
 
+type Translate = (source: string, values?: Record<string, string | number | boolean | null | undefined>) => string
+
+function formatActivityDuration(durationMs: number, t: Translate): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000))
+  if (totalSeconds < 60) return t('{count} 秒', { count: totalSeconds })
+
+  const totalMinutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (totalMinutes < 60) return t('{minutes} 分 {seconds} 秒', { minutes: totalMinutes, seconds })
+
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return t('{hours} 小时 {minutes} 分', { hours, minutes })
+}
+
+const ThinkingIndicator = memo(({ activity }: { activity?: LogEntry['cursorActivity'] }) => {
+  const { t } = useI18n()
+  const mountedAtRef = useRef(Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  const processingStartedAt = activity?.processingStartedAt ?? mountedAtRef.current
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const processingDuration = formatActivityDuration(now - processingStartedAt, t)
+  const lastOutputDuration = activity?.lastOutputAt == null
+    ? null
+    : formatActivityDuration(now - activity.lastOutputAt, t)
+  const label = t('正在思考')
+
+  return (
+    <Tooltip
+      align="start"
+      content={(
+        <div className="flex min-w-max flex-col gap-0.5">
+          <span>{t('已处理 {duration}', { duration: processingDuration })}</span>
+          <span className="text-neutral-300">
+            {lastOutputDuration
+              ? t('最后一次输出于 {duration}前', { duration: lastOutputDuration })
+              : t('等待首次输出')}
+          </span>
+        </div>
+      )}
+    >
+      <span
+        tabIndex={0}
+        aria-label={label}
+        className="inline-flex cursor-help select-none py-1 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <span className="agent-thinking-shimmer" aria-hidden="true">
+          {Array.from(label).map((character, index) => (
+            <span
+              key={`${character}-${index}`}
+              className="agent-thinking-char"
+              style={{ animationDelay: `${index * 45}ms` }}
+            >
+              {character}
+            </span>
+          ))}
+        </span>
+      </span>
+    </Tooltip>
+  )
+})
+ThinkingIndicator.displayName = 'ThinkingIndicator'
+
 // ============ RenderItem renderer ============
 
 function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void): React.ReactNode {
@@ -590,9 +665,7 @@ function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, on
       return <ErrorMessage content={log.content} />
 
     case LogType.Cursor:
-      return (
-        <div className="h-4 w-1.5 bg-neutral-400 animate-pulse rounded-sm mt-1 inline-block align-middle" />
-      )
+      return <ThinkingIndicator activity={log.cursorActivity} />
 
     default:
       return null

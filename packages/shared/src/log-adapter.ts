@@ -33,6 +33,10 @@ export interface LogEntry {
     totalTokens: number
     modelContextWindow?: number
   }
+  cursorActivity?: {
+    processingStartedAt?: number
+    lastOutputAt?: number
+  }
 }
 
 // ============ 标准化类型 (来自 server/output/types.ts) ============
@@ -214,6 +218,9 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
         timestamp: entry.timestamp,
         type: LogType.Cursor,
         content: '',
+        cursorActivity: {
+          processingStartedAt: entry.timestamp,
+        },
       }
 
     case 'token_usage_info':
@@ -250,11 +257,12 @@ export function normalizedEntriesToLogEntries(entries: NormalizedEntry[]): LogEn
 /**
  * 创建一个 loading cursor entry
  */
-export function createCursorEntry(): LogEntry {
+export function createCursorEntry(cursorActivity?: LogEntry['cursorActivity']): LogEntry {
   return {
     id: `cursor-${Date.now()}`,
-    timestamp: Date.now(),
+    timestamp: cursorActivity?.processingStartedAt ?? Date.now(),
     type: LogType.Cursor,
     content: '',
+    cursorActivity,
   }
 }

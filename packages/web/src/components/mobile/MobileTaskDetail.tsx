@@ -461,6 +461,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const { isConnected, isLoadingSnapshot, isOutputActive, lastExitAt, logs, entries, attach } = useNormalizedLogs({
     sessionId: logSessionId,
     sessionStatus: displayedSession?.status,
+    sessionStartedAt: displayedSession?.startedAt
+      ?? (displayedSession as (Session & { createdAt?: string }) | null)?.createdAt,
+    sessionEndedAt: displayedSession?.endedAt
+      ?? (!isSessionActive
+        ? (displayedSession as (Session & { updatedAt?: string }) | null)?.updatedAt
+        : null),
     onExit: useCallback(() => {
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }, [queryClient]),

@@ -32,6 +32,7 @@ export function AgentDemoPage() {
   const [selectedVariant, setSelectedVariant] = useState<string>('DEFAULT')
   const [prompt, setPrompt] = useState('')
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionStartedAt, setSessionStartedAt] = useState<number | null>(null)
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('idle')
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
   const [input, setInput] = useState('')
@@ -73,6 +74,7 @@ export function AgentDemoPage() {
     clearLogs,
   } = useNormalizedLogs({
     sessionId: sessionId || '',
+    sessionStartedAt,
     onExit: handleExit,
     onError: handleError,
   })
@@ -141,6 +143,7 @@ export function AgentDemoPage() {
         console.log(`[AgentDemoPage:handleStart] t=${Date.now()} apiTime=${Date.now() - startTime}ms sessionId=${res.sessionId}`);
       }
       setSessionId(res.sessionId)
+      setSessionStartedAt(startTime)
       setSessionStatus('running')
     } catch (error) {
       console.error('Start failed:', error)
@@ -177,6 +180,7 @@ export function AgentDemoPage() {
   // 重新开始
   const handleReset = () => {
     setSessionId(null)
+    setSessionStartedAt(null)
     setSessionStatus('idle')
     setPrompt('')
     setInput('')

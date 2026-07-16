@@ -103,6 +103,16 @@ function withTimestamp<T extends LogEntry>(entry: T, timestamp: number): T {
   return { ...entry, timestamp }
 }
 
+function cursorEntry(processingStartedAt: number, lastOutputAt?: number): LogEntry {
+  return {
+    id: 'cursor',
+    timestamp: Date.now(),
+    type: LogType.Cursor,
+    content: '',
+    cursorActivity: { processingStartedAt, lastOutputAt },
+  }
+}
+
 async function flushEffects() {
   await act(async () => {
     await Promise.resolve()
@@ -147,6 +157,29 @@ describe('LogStream tool grouping', () => {
     act(() => root.unmount())
     container.remove()
     vi.useRealTimers()
+  })
+
+  it('renders thinking activity and timing details instead of a blinking cursor', async () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-07-16T12:00:00Z').getTime()
+    vi.setSystemTime(now)
+
+    await act(async () => {
+      root.render(<LogStream logs={[cursorEntry(now - 65_000, now - 5_000)]} />)
+    })
+
+    const indicator = container.querySelector('.agent-thinking-shimmer')
+    expect(indicator?.textContent).toBe('正在思考')
+    const characters = Array.from(container.querySelectorAll<HTMLElement>('.agent-thinking-char'))
+    expect(characters).toHaveLength(4)
+    expect(characters.map((character) => character.style.animationDelay)).toEqual([
+      '0ms',
+      '45ms',
+      '90ms',
+      '135ms',
+    ])
+    expect(container.textContent).toContain('已处理 1 分 5 秒')
+    expect(container.textContent).toContain('最后一次输出于 5 秒前')
   })
 
   it('keeps successful tools grouped when their business text contains confirmation keywords', async () => {
@@ -447,5 +480,30 @@ describe('LogStream tool grouping', () => {
     })
 
     expect(status?.textContent).toContain('已处理 12s')
+  })
+
+  it('keeps the persisted processing start when the virtual cursor is recreated', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(11_000))
+
+    await act(async () => {
+      root.render(<LogStream logs={[cursorEntry(1_000, 8_000)]} isOutputActive />)
+    })
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('已处理 10s')
+  })
+
+  it('uses the persisted exit time for a completed text-only turn', async () => {
+    const logs = [
+      withTimestamp(userEntry('user-1', 'Question'), 1_000),
+      withTimestamp(assistantEntry('assistant-1', 'Text-only answer'), 4_000),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} isOutputActive={false} lastExitAt={28_000} />)
+    })
+
+    expect(container.textContent).toContain('已处理 27s')
+    expect(container.textContent).toContain('Text-only answer')
   })
 })

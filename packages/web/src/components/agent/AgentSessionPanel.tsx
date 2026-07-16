@@ -24,6 +24,8 @@ export interface AgentSessionSendInput {
 interface AgentSessionPanelProps {
   sessionId: string
   sessionStatus?: SessionStatus | string
+  sessionStartedAt?: string | number | null
+  sessionEndedAt?: string | number | null
   agentType: string
   providerId?: string | null
   providers: ProviderWithAvailability[]
@@ -45,6 +47,8 @@ function isActiveStatus(status?: SessionStatus | string): boolean {
 export function AgentSessionPanel({
   sessionId,
   sessionStatus,
+  sessionStartedAt,
+  sessionEndedAt,
   agentType,
   providerId,
   providers,
@@ -83,6 +87,8 @@ export function AgentSessionPanel({
   } = useNormalizedLogs({
     sessionId,
     sessionStatus,
+    sessionStartedAt,
+    sessionEndedAt,
     onExit,
   })
 

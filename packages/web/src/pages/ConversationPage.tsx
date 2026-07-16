@@ -751,6 +751,10 @@ export function ConversationPage() {
             <AgentSessionPanel
               sessionId={activeConversation.sessionId}
               sessionStatus={activeConversation.status}
+              sessionStartedAt={activeConversation.createdAt}
+              sessionEndedAt={isRunning(activeConversation.status)
+                ? null
+                : activeConversation.lastActiveAt ?? activeConversation.updatedAt}
               agentType={activeConversation.agentType}
               providerId={selectedProviderId || activeConversation.providerId}
               providers={providersData}

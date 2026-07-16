@@ -210,6 +210,31 @@
     animation: active-work-dot-3 1.8s steps(1, end) infinite;
   }
 
+  .agent-thinking-shimmer {
+    color: var(--muted-foreground);
+    white-space: pre;
+  }
+
+  .agent-thinking-char {
+    display: inline-block;
+    opacity: 0.48;
+    animation: agent-thinking-opacity-sweep 4.2s linear infinite;
+  }
+
+  @keyframes agent-thinking-opacity-sweep {
+    0%,
+    72% {
+      opacity: 0.48;
+    }
+    78% {
+      opacity: 0.14;
+    }
+    84%,
+    100% {
+      opacity: 0.48;
+    }
+  }
+
   @keyframes active-work-dot-2 {
     0% {
       opacity: 0;
@@ -232,6 +257,11 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .agent-thinking-char {
+      opacity: 0.48;
+      animation: none;
+    }
+
     .active-work-dots__second,
     .active-work-dots__third {
       animation: none;
