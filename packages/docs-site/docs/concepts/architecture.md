@@ -140,4 +140,8 @@ TeamRun 支持 `AUTO` 和 `CONFIRM` 两种模式。成员通过 Team Room 公开
 
 ## 预览代理
 
-Workspace 可以配置一个本机 loopback 预览目标，例如 `127.0.0.1:5173`。后端通过 `/view/:workspaceId` 做同源反向代理，并对 HTML/CSS/JS 中的常见绝对路径做重写。预览目标只允许 `localhost`、`127.0.0.1` 或 `::1`，避免把 Agent Tower 变成任意外部代理。
+Workspace 可以配置一个本机 loopback 预览目标，例如 `127.0.0.1:5173`。后端为活跃 workspace 创建独立的根路径预览网关。本机和局域网客户端连接 Agent Tower 主机上的网关端口；远程客户端按需获得一条指向该网关的独立 Cloudflare Quick Tunnel。
+
+每个预览地址直接占用 URL 根目录，因此 `/login`、`/assets`、SPA History、HTTP、WebSocket 和流式响应无需挂载到 `/view/...` 子路径，也不再依赖通用 HTML/CSS/JS 路径重写。代理只处理 frame 限制、同目标绝对 redirect、Cookie domain/base path 和一个用于工具栏同步及心跳的小型 bridge。外层 Agent Tower 的 access/tunnel Cookie 不会转发给目标服务；目标自己的登录 Cookie 会按 workspace 隔离，远程跨站 iframe 使用浏览器分区 Cookie。
+
+预览入口由已登录的 Agent Tower 会话签发短期 bootstrap token，再换取网关自己的 HttpOnly Cookie。客户端在 Preview 打开期间续租；最后一个会话关闭或失联后，网关和独立 Quick Tunnel 在 10 分钟空闲期结束时回收。预览目标仍只允许 `localhost`、`127.0.0.1` 或 `::1`，避免把 Agent Tower 变成任意外部代理。兼容 `/view/:workspaceId` 路径暂时保留给旧客户端。

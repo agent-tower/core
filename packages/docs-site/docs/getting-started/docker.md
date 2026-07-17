@@ -19,6 +19,8 @@ docker compose up -d --build
 http://localhost:12580
 ```
 
+Docker 默认通过按需 Cloudflare Quick Tunnel 打开 workspace Preview，因为动态预览网关端口位于容器内部。使用 Preview 时需要容器能够访问 Cloudflare；不使用 Preview 时不会创建额外隧道。
+
 停止服务：
 
 ```bash

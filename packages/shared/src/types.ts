@@ -419,6 +419,30 @@ export interface Workspace {
   updatedAt?: string
 }
 
+export type PreviewSessionMode = 'local' | 'remote'
+
+export interface PreviewStatus {
+  configured: boolean
+  ready: boolean
+  target: string | null
+  /** Legacy same-origin URL retained for old clients during the gateway migration. */
+  viewUrl: string | null
+  error: string | null
+}
+
+export interface PreviewSession {
+  id: string
+  target: string
+  mode: PreviewSessionMode
+  viewUrl: string
+  expiresAt: string
+}
+
+export interface OpenPreviewSessionInput {
+  mode: PreviewSessionMode
+  localHostname: string
+}
+
 /** 工作区审查/测试记录 */
 export interface WorkspaceVerdict {
   id: string

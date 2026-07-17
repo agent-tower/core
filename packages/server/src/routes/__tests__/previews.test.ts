@@ -3,9 +3,11 @@ import type { NormalizedPreviewTarget } from '../../services/preview.service.js'
 import {
   PREVIEW_SANDBOX_CSP,
   previewCorsHeaders,
+  proxyRequestHeaders,
   proxyResponseHeaders,
   rewriteLocationHeader,
   rewritePreviewBody,
+  rewriteSetCookieHeader,
 } from '../previews.js';
 import { buildPreviewPathPrefix, parsePreviewPath } from '../../utils/preview-path.js';
 
@@ -102,6 +104,24 @@ describe('rewritePreviewBody', () => {
     expect(rewritePreviewBody(html, workspaceId, 'text/html')).toContain(`${prefix}/styles/app.css`);
     expect(rewritePreviewBody(css, workspaceId, 'text/css')).toContain(`url("${prefix}/images/bg.png")`);
   });
+
+  it('injects the runtime bridge before target scripts for dynamic browser APIs', () => {
+    const target: NormalizedPreviewTarget = {
+      target: 'http://127.0.0.1:5173/app',
+      origin: 'http://127.0.0.1:5173',
+      basePath: '/app',
+    };
+    const html = '<html><head><script id="target-script">history.pushState({}, "", "/settings")</script></head></html>';
+
+    const rewritten = rewritePreviewBody(html, workspaceId, 'text/html', null, target);
+
+    expect(rewritten).toContain('data-agent-tower-preview-bridge');
+    expect(rewritten).toContain('History.prototype.pushState');
+    expect(rewritten).toContain('window.fetch =');
+    expect(rewritten).toContain('window.WebSocket = PreviewWebSocket');
+    expect(rewritten.indexOf('data-agent-tower-preview-bridge'))
+      .toBeLessThan(rewritten.indexOf('id="target-script"'));
+  });
 });
 
 describe('rewriteLocationHeader', () => {
@@ -179,7 +199,7 @@ describe('proxyResponseHeaders', () => {
     basePath: '',
   };
 
-  it('adds a sandbox CSP without allow-same-origin to isolate preview pages from the main API', () => {
+  it('adds a trusted sandbox CSP with same-origin browser storage enabled', () => {
     const headers = proxyResponseHeaders({
       'content-type': 'text/html',
       'content-security-policy': "default-src 'self'",
@@ -187,8 +207,8 @@ describe('proxyResponseHeaders', () => {
 
     expect(headers['content-security-policy']).toBe(PREVIEW_SANDBOX_CSP);
     expect(String(headers['content-security-policy'])).toContain('sandbox');
-    expect(String(headers['content-security-policy'])).not.toContain('allow-same-origin');
-    expect(headers['referrer-policy']).toBe('no-referrer');
+    expect(String(headers['content-security-policy'])).toContain('allow-same-origin');
+    expect(headers['referrer-policy']).toBeUndefined();
   });
 
   it('does not forward preview target CORS policy and allows sandboxed preview resources to load', () => {
@@ -214,6 +234,32 @@ describe('proxyResponseHeaders', () => {
     expect(headers['access-control-allow-methods']).toContain('OPTIONS');
     expect(String(headers['access-control-allow-headers'])).toContain('Content-Type');
     expect(headers.vary).toContain('Access-Control-Request-Headers');
+  });
+});
+
+describe('trusted preview request headers', () => {
+  it('maps browser origin and referer to the local target without forwarding Agent Tower cookies', () => {
+    const targetUrl = new URL('http://127.0.0.1:5173');
+    const headers = proxyRequestHeaders({
+      host: 'tower.example.com',
+      origin: 'https://tower.example.com',
+      referer: 'https://tower.example.com/view/workspace-1/settings',
+      cookie: 'agent-tower-access=secret; __Host-agent-tower-tunnel=tunnel; preview-session=abc',
+    }, targetUrl, '/app/settings?tab=team');
+
+    expect(headers.host).toBe('127.0.0.1:5173');
+    expect(headers.origin).toBe('http://127.0.0.1:5173');
+    expect(headers.referer).toBe('http://127.0.0.1:5173/app/settings?tab=team');
+    expect(headers.cookie).toBe('preview-session=abc');
+    expect(headers['x-forwarded-host']).toBe('127.0.0.1:5173');
+    expect(headers['x-forwarded-proto']).toBe('http');
+  });
+
+  it('scopes target cookies to the workspace preview path and removes the target domain', () => {
+    expect(rewriteSetCookieHeader(
+      'preview-session=abc; Domain=127.0.0.1; Path=/; HttpOnly; SameSite=Lax',
+      'workspace-1',
+    )).toBe('preview-session=abc; Path=/view/workspace-1/; HttpOnly; SameSite=Lax');
   });
 });
 

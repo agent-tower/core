@@ -44,6 +44,7 @@ ENV NODE_ENV=production \
   AGENT_TOWER_DATA_DIR=/data \
   AGENT_TOWER_HOST=0.0.0.0 \
   AGENT_TOWER_PORT=12580 \
+  AGENT_TOWER_PREVIEW_FORCE_TUNNEL=true \
   HOME=/home/node \
   SHELL=/bin/bash \
   NPM_CONFIG_AUDIT=false \

@@ -30,10 +30,88 @@ let AccessAuthService: typeof import('../../services/access-auth.service.js').Ac
 
 async function createPreviewFixtureApp() {
   const upgradeUrls: string[] = [];
+  let targetOrigin = '';
   const targetServer = http.createServer((request, response) => {
+    if (request.url === '/' && request.method === 'GET') {
+      response.setHeader('content-type', 'text/html; charset=utf-8');
+      response.setHeader('content-security-policy', "default-src 'self'");
+      response.setHeader('x-frame-options', 'DENY');
+      response.end('<html><head></head><body><a href="/login">Login</a><script src="/assets/app.js"></script></body></html>');
+      return;
+    }
+
+    if (request.url === '/assets/app.js' && request.method === 'GET') {
+      response.setHeader('content-type', 'application/javascript');
+      response.end('window.previewAssetLoaded = true;');
+      return;
+    }
+
+    if (request.url === '/login-redirect' && request.method === 'GET') {
+      response.statusCode = 302;
+      response.setHeader('location', '/login');
+      response.end();
+      return;
+    }
+
+    if (request.url === '/absolute-login-redirect' && request.method === 'GET') {
+      response.statusCode = 302;
+      response.setHeader('location', `${targetOrigin}/login`);
+      response.end();
+      return;
+    }
+
+    if (request.url === '/login' && request.method === 'GET') {
+      response.setHeader('content-type', 'text/html; charset=utf-8');
+      response.end('<html><head></head><body>Local login page</body></html>');
+      return;
+    }
+
     if (request.url === '/api/echo' && request.method === 'GET') {
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ method: 'GET', ok: true }));
+      return;
+    }
+
+    if (request.url === '/request-headers' && request.method === 'GET') {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({
+        cookie: request.headers.cookie ?? null,
+        origin: request.headers.origin ?? null,
+        referer: request.headers.referer ?? null,
+        cfRay: request.headers['cf-ray'] ?? null,
+        cfConnectingIp: request.headers['cf-connecting-ip'] ?? null,
+        forwarded: request.headers.forwarded ?? null,
+        xForwardedFor: request.headers['x-forwarded-for'] ?? null,
+        xForwardedHost: request.headers['x-forwarded-host'] ?? null,
+        xForwardedProto: request.headers['x-forwarded-proto'] ?? null,
+        xRealIp: request.headers['x-real-ip'] ?? null,
+      }));
+      return;
+    }
+
+    if (request.url === '/set-cookie' && request.method === 'GET') {
+      response.setHeader('set-cookie', 'preview-session=abc; Domain=127.0.0.1; Path=/; HttpOnly; SameSite=Lax');
+      response.end('ok');
+      return;
+    }
+
+    if (request.url === '/auth/login' && request.method === 'POST') {
+      response.setHeader(
+        'set-cookie',
+        'agent-tower-access=target-session; Path=/; HttpOnly; SameSite=Lax',
+      );
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (request.url === '/auth/status' && request.method === 'GET') {
+      const cookie = request.headers.cookie ?? '';
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({
+        authenticated: cookie.split(';').some((part) => part.trim() === 'agent-tower-access=target-session'),
+        cookie,
+      }));
       return;
     }
 
@@ -66,6 +144,7 @@ async function createPreviewFixtureApp() {
     targetServer.close();
     throw new Error('Failed to start preview fixture server');
   }
+  targetOrigin = `http://127.0.0.1:${address.port}`;
 
   const app = Fastify();
   await app.register(fastifyCookie);
@@ -82,7 +161,7 @@ async function createPreviewFixtureApp() {
   return {
     app,
     appUrl: `http://127.0.0.1:${appAddress.port}`,
-    targetUrl: `http://127.0.0.1:${address.port}`,
+    targetUrl: targetOrigin,
     upgradeUrls,
     async close() {
       await app.close();
@@ -198,32 +277,47 @@ describe('previewRoutes access auth integration', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('requires browser auth for legacy preview paths and allows tokenized preview API proxy requests', async () => {
+  it('uses the browser session for stable trusted preview URLs', async () => {
     await AccessAuthService.updateSettings({ enabled: true, newPassword: 'secret-pass' });
+    const login = await AccessAuthService.login('secret-pass');
+    const cookie = `${AccessAuthService.cookieName}=${encodeURIComponent(login.sessionToken ?? '')}`;
     const fixture = await createPreviewFixtureApp();
 
     try {
       await createWorkspace('workspace-1', fixture.targetUrl);
-      const token = await AccessAuthService.createPreviewAccessToken('workspace-1');
 
-      const legacyResponse = await fixture.app.inject({
+      const unauthorizedResponse = await fixture.app.inject({
         method: 'GET',
         url: '/view/workspace-1/api/echo',
       });
-      expect(legacyResponse.statusCode).toBe(401);
+      expect(unauthorizedResponse.statusCode).toBe(401);
+
+      const statusResponse = await fixture.app.inject({
+        method: 'GET',
+        url: '/api/previews/workspace-1/status',
+        headers: { cookie },
+      });
+      expect(statusResponse.statusCode).toBe(200);
+      expect(statusResponse.json()).toMatchObject({
+        ready: true,
+        viewUrl: '/view/workspace-1/',
+      });
 
       const getResponse = await fixture.app.inject({
         method: 'GET',
-        url: `/view/workspace-1/__agent_tower_preview/${token}/api/echo`,
+        url: '/view/workspace-1/api/echo',
+        headers: { cookie },
       });
       expect(getResponse.statusCode).toBe(200);
       expect(getResponse.json()).toEqual({ method: 'GET', ok: true });
 
       const postResponse = await fixture.app.inject({
         method: 'POST',
-        url: `/view/workspace-1/__agent_tower_preview/${token}/api/echo`,
+        url: '/view/workspace-1/api/echo',
         headers: {
-          origin: 'null',
+          host: 'tower.local',
+          origin: 'http://tower.local',
+          cookie,
           'content-type': 'application/json',
           'x-custom-header': 'preview',
         },
@@ -238,10 +332,213 @@ describe('previewRoutes access auth integration', () => {
       expect(postResponse.headers['access-control-allow-origin']).toBe('*');
       expect(postResponse.headers['access-control-allow-credentials']).toBeUndefined();
 
+      const headersResponse = await fixture.app.inject({
+        method: 'GET',
+        url: '/view/workspace-1/request-headers',
+        headers: {
+          host: 'tower.local',
+          origin: 'http://tower.local',
+          referer: 'http://tower.local/view/workspace-1/dashboard',
+          cookie: `${cookie}; preview-session=abc`,
+        },
+      });
+      expect(headersResponse.json()).toEqual({
+        cookie: 'preview-session=abc',
+        origin: fixture.targetUrl,
+        referer: `${fixture.targetUrl}/request-headers`,
+        cfRay: null,
+        cfConnectingIp: null,
+        forwarded: null,
+        xForwardedFor: null,
+        xForwardedHost: new URL(fixture.targetUrl).host,
+        xForwardedProto: 'http',
+        xRealIp: null,
+      });
+
       await expect(requestWebSocketUpgrade(
-        `${fixture.appUrl}/view/workspace-1/__agent_tower_preview/${token}/ws`,
+        `${fixture.appUrl}/view/workspace-1/ws`,
+        { cookie },
       )).resolves.toMatchObject({ statusCode: 101 });
       expect(fixture.upgradeUrls).toContain('/ws');
+
+      const cookieResponse = await fixture.app.inject({
+        method: 'GET',
+        url: '/view/workspace-1/set-cookie',
+        headers: { cookie },
+      });
+      expect(String(cookieResponse.headers['set-cookie']))
+        .toContain('preview-session=abc; Path=/view/workspace-1/');
+      expect(String(cookieResponse.headers['set-cookie'])).not.toContain('Domain=');
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('opens an independent preview origin where root redirects and assets work without path rewriting', async () => {
+    await AccessAuthService.updateSettings({ enabled: true, newPassword: 'secret-pass' });
+    const login = await AccessAuthService.login('secret-pass');
+    const accessCookie = `${AccessAuthService.cookieName}=${encodeURIComponent(login.sessionToken ?? '')}`;
+    const fixture = await createPreviewFixtureApp();
+
+    try {
+      await createWorkspace('workspace-gateway', fixture.targetUrl);
+
+      const sessionResponse = await fixture.app.inject({
+        method: 'POST',
+        url: '/api/previews/workspace-gateway/sessions',
+        headers: { cookie: accessCookie },
+        payload: { mode: 'local', localHostname: '127.0.0.1' },
+      });
+      expect(sessionResponse.statusCode).toBe(200);
+      const session = sessionResponse.json() as {
+        id: string;
+        mode: string;
+        target: string;
+        viewUrl: string;
+      };
+      expect(session.mode).toBe('local');
+      expect(session.target).toBe(fixture.targetUrl);
+
+      const initialUrl = new URL(session.viewUrl);
+      const bootstrapResponse = await fetch(initialUrl, { redirect: 'manual' });
+      expect(bootstrapResponse.status).toBe(302);
+      expect(bootstrapResponse.headers.get('location')).toBe('/');
+      const gatewayCookie = bootstrapResponse.headers.get('set-cookie')?.split(';')[0];
+      expect(gatewayCookie).toContain('agent-tower-preview-');
+
+      const previewOrigin = initialUrl.origin;
+      const repeatedBootstrapResponse = await fetch(initialUrl, {
+        headers: { cookie: gatewayCookie ?? '' },
+        redirect: 'manual',
+      });
+      expect(repeatedBootstrapResponse.status).toBe(302);
+      expect(repeatedBootstrapResponse.headers.get('location')).toBe('/');
+
+      const htmlResponse = await fetch(`${previewOrigin}/`, {
+        headers: { cookie: gatewayCookie ?? '' },
+      });
+      const html = await htmlResponse.text();
+      expect(htmlResponse.status).toBe(200);
+      expect(htmlResponse.headers.get('content-security-policy')).toBeNull();
+      expect(htmlResponse.headers.get('x-frame-options')).toBeNull();
+      expect(html).toContain('data-agent-tower-preview-bridge');
+      expect(html).toContain('src="/assets/app.js"');
+      expect(html).not.toContain('/view/workspace-gateway');
+
+      const assetResponse = await fetch(`${previewOrigin}/assets/app.js`, {
+        headers: { cookie: gatewayCookie ?? '' },
+      });
+      expect(await assetResponse.text()).toContain('previewAssetLoaded');
+
+      const cookieResponse = await fetch(`${previewOrigin}/set-cookie`, {
+        headers: { cookie: gatewayCookie ?? '' },
+      });
+      const targetCookie = cookieResponse.headers.get('set-cookie');
+      expect(targetCookie).toContain('preview-session=abc; Path=/');
+      expect(targetCookie).not.toContain('Domain=');
+
+      const authLoginResponse = await fetch(`${previewOrigin}/auth/login`, {
+        method: 'POST',
+        headers: {
+          cookie: gatewayCookie ?? '',
+          origin: previewOrigin,
+        },
+      });
+      expect(authLoginResponse.status).toBe(200);
+      const scopedAccessCookie = authLoginResponse.headers.get('set-cookie')?.split(';')[0];
+      expect(scopedAccessCookie).toContain('agent-tower-preview-');
+      expect(scopedAccessCookie).toContain('-target-');
+      expect(scopedAccessCookie).not.toMatch(/^agent-tower-access=/);
+
+      const authStatusResponse = await fetch(`${previewOrigin}/auth/status`, {
+        headers: {
+          cookie: [
+            gatewayCookie,
+            'agent-tower-access=outer-session',
+            scopedAccessCookie,
+          ].filter(Boolean).join('; '),
+        },
+      });
+      expect(await authStatusResponse.json()).toEqual({
+        authenticated: true,
+        cookie: 'agent-tower-access=target-session',
+      });
+
+      const remoteHeadersResponse = await fetch(`${previewOrigin}/request-headers`, {
+        headers: {
+          cookie: gatewayCookie ?? '',
+          origin: 'https://preview.remote.example',
+          referer: 'https://preview.remote.example/settings',
+          'cf-ray': 'preview-tunnel-ray',
+          'cf-connecting-ip': '203.0.113.10',
+          forwarded: 'for=203.0.113.10;proto=https',
+          'x-forwarded-for': '203.0.113.10',
+          'x-forwarded-proto': 'https',
+          'x-real-ip': '203.0.113.10',
+        },
+      });
+      expect(await remoteHeadersResponse.json()).toMatchObject({
+        origin: fixture.targetUrl,
+        cfRay: null,
+        cfConnectingIp: null,
+        forwarded: null,
+        xForwardedFor: null,
+        xForwardedHost: new URL(previewOrigin).host,
+        xForwardedProto: 'https',
+        xRealIp: null,
+      });
+
+      const remoteCookieResponse = await fetch(`${previewOrigin}/set-cookie`, {
+        headers: {
+          cookie: gatewayCookie ?? '',
+          'cf-ray': 'preview-tunnel-ray',
+          'x-forwarded-proto': 'https',
+        },
+      });
+      const remoteTargetCookie = remoteCookieResponse.headers.get('set-cookie');
+      expect(remoteTargetCookie).toContain('Secure');
+      expect(remoteTargetCookie).toContain('SameSite=None');
+      expect(remoteTargetCookie).toContain('Partitioned');
+      expect(remoteTargetCookie).not.toContain('SameSite=Lax');
+
+      const redirectResponse = await fetch(`${previewOrigin}/login-redirect`, {
+        headers: { cookie: gatewayCookie ?? '' },
+        redirect: 'manual',
+      });
+      expect(redirectResponse.status).toBe(302);
+      expect(redirectResponse.headers.get('location')).toBe('/login');
+
+      const absoluteRedirectResponse = await fetch(`${previewOrigin}/absolute-login-redirect`, {
+        headers: { cookie: gatewayCookie ?? '' },
+        redirect: 'manual',
+      });
+      expect(absoluteRedirectResponse.headers.get('location')).toBe(`${previewOrigin}/login`);
+
+      const loginResponse = await fetch(`${previewOrigin}/login`, {
+        headers: { cookie: gatewayCookie ?? '' },
+      });
+      expect(await loginResponse.text()).toContain('Local login page');
+
+      await expect(requestWebSocketUpgrade(
+        `${previewOrigin}/ws`,
+        { cookie: gatewayCookie ?? '' },
+      )).resolves.toMatchObject({ statusCode: 101 });
+      expect(fixture.upgradeUrls).toContain('/ws');
+
+      const heartbeatResponse = await fixture.app.inject({
+        method: 'POST',
+        url: `/api/previews/workspace-gateway/sessions/${session.id}/heartbeat`,
+        headers: { cookie: accessCookie },
+      });
+      expect(heartbeatResponse.statusCode).toBe(200);
+      expect(new URL(heartbeatResponse.json().viewUrl).origin).toBe(previewOrigin);
+
+      const releaseResponse = await fixture.app.inject({
+        method: 'DELETE',
+        url: `/api/previews/workspace-gateway/sessions/${session.id}`,
+        headers: { cookie: accessCookie },
+      });
+      expect(releaseResponse.statusCode).toBe(204);
     } finally {
       await fixture.close();
     }

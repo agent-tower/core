@@ -12,6 +12,7 @@ description: 当前代码中实际使用的环境变量。
 | `AGENT_TOWER_DATABASE_URL` | Prisma 数据库地址 |
 | `AGENT_TOWER_DATA_DIR` | 数据目录 |
 | `AGENT_TOWER_HOST` | CLI 服务监听 host，默认 `0.0.0.0`；启动日志会展示 localhost 访问地址 |
+| `AGENT_TOWER_PREVIEW_FORCE_TUNNEL` | 设为 `true` 时，Preview 即使从 HTTP 页面打开也使用独立 Quick Tunnel；Docker 默认启用，因为容器的动态 gateway 端口未直接暴露 |
 | `AGENT_TOWER_PORT` | CLI 或 MCP 使用的端口 |
 | `AGENT_TOWER_URL` | MCP 和子进程连接后端时使用的基础地址 |
 | `AGENT_TOWER_INTERNAL_TOKEN` | Agent Tower 内部 MCP/API 调用凭证，由服务端启动器注入；不要手写固定值或提交到仓库 |

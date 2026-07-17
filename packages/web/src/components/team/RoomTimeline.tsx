@@ -50,6 +50,7 @@ import { ActiveWorkList } from './ActiveWorkList'
 import {
   createMessageStreamdownComponents,
   streamdownMermaidControls,
+  type OpenPreviewUrlHandler,
 } from '@/lib/streamdown-components'
 import { useStreamdownMermaidPlugins } from '@/lib/streamdown-mermaid'
 import 'streamdown/styles.css'
@@ -67,6 +68,7 @@ interface RoomTimelineProps {
   centered?: boolean
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: (url: string, workspaceId?: string) => void
 }
 
 const API_BASE_URL = getApiBaseUrl()
@@ -225,16 +227,18 @@ function RoomMessageMarkdown({
   isUser,
   workingDir,
   onOpenWorkspaceFile,
+  onOpenPreviewUrl,
 }: {
   content: string
   isUser?: boolean
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: OpenPreviewUrlHandler
 }) {
   const mermaidPlugins = useStreamdownMermaidPlugins(content)
   const components = useMemo(
-    () => createMessageStreamdownComponents({ workingDir, onOpenWorkspaceFile }),
-    [onOpenWorkspaceFile, workingDir],
+    () => createMessageStreamdownComponents({ workingDir, onOpenWorkspaceFile, onOpenPreviewUrl }),
+    [onOpenPreviewUrl, onOpenWorkspaceFile, workingDir],
   )
 
   return (
@@ -352,6 +356,7 @@ function RoomMessageBody({
   onOpenImage,
   workingDir,
   onOpenWorkspaceFile,
+  onOpenPreviewUrl,
 }: {
   message: RoomMessage
   content: string
@@ -361,6 +366,7 @@ function RoomMessageBody({
   onOpenImage: (attachments: Attachment[], index: number) => void
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: OpenPreviewUrlHandler
 }) {
   const ids = useMemo(() => Array.from(new Set(attachmentIds ?? [])), [attachmentIds])
   const { data: attachments = [], isLoading } = useAttachmentMetadata(ids)
@@ -379,6 +385,7 @@ function RoomMessageBody({
           tone={tone}
           workingDir={workingDir}
           onOpenWorkspaceFile={onOpenWorkspaceFile}
+          onOpenPreviewUrl={onOpenPreviewUrl}
         />
       )}
       <MessageAttachments
@@ -497,6 +504,7 @@ function CollapsibleRoomMessageContent({
   tone = isUser ? 'user' : 'agent',
   workingDir,
   onOpenWorkspaceFile,
+  onOpenPreviewUrl,
 }: {
   message: RoomMessage
   content: string
@@ -505,6 +513,7 @@ function CollapsibleRoomMessageContent({
   tone?: RoomMessageTone
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: OpenPreviewUrlHandler
 }) {
   const { t } = useI18n()
   const contentId = useId()
@@ -589,7 +598,7 @@ function CollapsibleRoomMessageContent({
         )}
         style={isCollapsed ? { maxHeight: ROOM_MESSAGE_COLLAPSED_MAX_HEIGHT } : undefined}
       >
-        <RoomMessageMarkdown content={renderContent} isUser={isUser} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
+        <RoomMessageMarkdown content={renderContent} isUser={isUser} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
         {isCollapsed && (
           <div
             className={cn(
@@ -741,6 +750,8 @@ function RoomChatMessage({
   onOpenImage,
   workingDir,
   onOpenWorkspaceFile,
+  onOpenPreviewUrl,
+  previewWorkspaceId,
 }: {
   message: RoomMessage
   senderName: string
@@ -751,6 +762,8 @@ function RoomChatMessage({
   onOpenImage: (attachments: Attachment[], index: number) => void
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: (url: string, workspaceId?: string) => void
+  previewWorkspaceId?: string
 }) {
   const { t } = useI18n()
   const isUser = message.senderType === 'user'
@@ -759,6 +772,9 @@ function RoomChatMessage({
   const mentions = message.mentions ?? []
   const workRequestCount = message.workRequestIds?.length ?? 0
   const isPrivate = message.visibility === 'PRIVATE'
+  const handleOpenPreviewUrl = useCallback((url: string) => {
+    onOpenPreviewUrl?.(url, previewWorkspaceId)
+  }, [onOpenPreviewUrl, previewWorkspaceId])
   const recipientLabels = isPrivate ? getPrivateRecipientLabels(message, memberById) : []
   const headerAddon = (
     <>
@@ -812,6 +828,7 @@ function RoomChatMessage({
         onOpenImage={onOpenImage}
         workingDir={workingDir}
         onOpenWorkspaceFile={onOpenWorkspaceFile}
+        onOpenPreviewUrl={onOpenPreviewUrl ? handleOpenPreviewUrl : undefined}
       />
     </RoomMessageRow>
   )
@@ -896,6 +913,7 @@ export function RoomTimeline({
   centered,
   workingDir,
   onOpenWorkspaceFile,
+  onOpenPreviewUrl,
 }: RoomTimelineProps) {
   const { t } = useI18n()
   const approveWorkRequest = useApproveWorkRequest(teamRun.id)
@@ -1251,6 +1269,9 @@ export function RoomTimeline({
                 const senderProvider = senderMember?.providerId
                   ? providerById.get(senderMember.providerId) ?? null
                   : null
+                const senderWorkspaceId = message.senderInvocationId
+                  ? invocationById.get(message.senderInvocationId)?.workspaceId ?? undefined
+                  : undefined
 
                 return (
                   <RoomChatMessage
@@ -1264,6 +1285,8 @@ export function RoomTimeline({
                     onOpenImage={(images, index) => setLightboxState({ images, index })}
                     workingDir={workingDir}
                     onOpenWorkspaceFile={onOpenWorkspaceFile}
+                    onOpenPreviewUrl={onOpenPreviewUrl}
+                    previewWorkspaceId={senderWorkspaceId}
                   />
                 )
               })

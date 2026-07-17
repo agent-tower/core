@@ -382,4 +382,77 @@ describe('RoomTimeline optimistic sending', () => {
     expect(container.textContent).toContain('Initial task summary');
     expect(container.textContent).not.toContain('Expand full message');
   });
+
+  it('opens loopback links in the workspace that produced the room message', async () => {
+    const onOpenPreviewUrl = vi.fn();
+    const message = {
+      ...createRoomMessage('[Open preview](http://127.0.0.1:4173/dashboard)'),
+      senderType: 'agent',
+      senderId: 'member-1',
+      senderInvocationId: 'invocation-1',
+    } as RoomMessage;
+    const sourcedTeamRun = {
+      ...teamRun,
+      members: [{
+        id: 'member-1',
+        teamRunId: teamRun.id,
+        name: 'Builder',
+        aliases: [],
+        providerId: 'provider-1',
+        rolePrompt: '',
+        capabilities: {
+          readRoom: true,
+          postRoomMessage: true,
+          mentionMembers: true,
+          stopMemberWork: false,
+          markReadyForReview: true,
+          readFiles: true,
+          writeFiles: true,
+          runCommands: true,
+          readDiff: true,
+          mergeWorkspace: false,
+        },
+        workspacePolicy: 'dedicated',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
+        queueManagementPolicy: 'own_only',
+        membershipStatus: 'ACTIVE',
+        status: 'IDLE',
+      }],
+      invocations: [{
+        id: 'invocation-1',
+        teamRunId: teamRun.id,
+        workRequestId: 'request-1',
+        memberId: 'member-1',
+        workspaceId: 'workspace-member-1',
+        status: 'COMPLETED',
+        roomReplyReminderCount: 0,
+      }],
+    } as TeamRun;
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <RoomTimeline
+            teamRun={sourcedTeamRun}
+            messages={[message]}
+            onSendMessage={vi.fn()}
+            onOpenPreviewUrl={onOpenPreviewUrl}
+          />
+        </I18nProvider>,
+      );
+    });
+    await flush();
+
+    const anchor = container.querySelector('a[href="http://127.0.0.1:4173/dashboard"]');
+    expect(anchor).not.toBeNull();
+    await act(async () => {
+      anchor?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+
+    expect(onOpenPreviewUrl).toHaveBeenCalledWith(
+      'http://127.0.0.1:4173/dashboard',
+      'workspace-member-1',
+    );
+  });
 });

@@ -29,6 +29,8 @@ App 只建立一个 `socketManager` 连接。全局 task、TeamRun、workspace G
 - 使用后端返回的 `workingDir`/`workspaceKind`；`MAIN_DIRECTORY` 或非 Git 项目隐藏不成立的 Git 操作。
 - TeamRun 可能有 main/shared 与多个 dedicated member workspace，不假设 task 只有一个 workspace。
 - RoomTimeline 使用结构化 mention、participant 和 stable id；不从显示文本解析权限或派活关系。
-- Preview iframe 使用 `lib/preview-url.ts` 生成同源 `/view/:workspaceId` URL，不直接暴露 loopback target。
+- Preview 状态与运行会话分离：`usePreviewStatus` 读取 target readiness，`usePreviewSession` 在面板挂载时申请独立 gateway URL、每 30 秒续租并在卸载时释放。本地 HTTP 页面连接 Agent Tower 主机上的 gateway 端口；HTTPS/tunnel 页面使用后端创建的独立 Quick Tunnel，不能回退为客户端自己的 loopback。
+- Preview iframe 与 gateway 跨 origin，工具栏通过注入的受控 `postMessage` bridge 同步位置和执行前进/后退/刷新；页面功能不能依赖 bridge。地址栏显示真实 target URL；同 endpoint 导航只更换 gateway path，切换端口或协议时持久化新 target 并等待新 session。新窗口必须使用带最新 bootstrap token 的 session URL。
+- Session Log 与 RoomTimeline 中的 loopback 链接是 workspace Preview 导航命令，不是客户端直接打开的普通外链。桌面展开对应 workspace 的 Preview，移动端切到 Workspace/Preview；RoomMessage 优先使用 `senderInvocationId -> invocation.workspaceId`，缺失来源时才回退当前 workspace。普通外部链接保持原行为。
 
 测试重点覆盖 cache rollback/upsert、Socket listener cleanup/reconnect、mention/visibility 和 workspace 模式分支。用户可见交互再验证桌面与移动 viewport。

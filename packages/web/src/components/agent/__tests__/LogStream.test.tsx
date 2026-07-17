@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { createRoot, type Root } from 'react-dom/client'
-import { act } from 'react'
+import { act, type ComponentType, type ReactNode, type SyntheticEvent } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
 import { LogStream } from '../LogStream'
@@ -506,5 +506,55 @@ describe('LogStream tool grouping', () => {
 
     expect(container.textContent).toContain('已处理 27s')
     expect(container.textContent).toContain('Text-only answer')
+  })
+
+  it('routes loopback links from session messages to Preview', async () => {
+    const onOpenPreviewUrl = vi.fn()
+    const content = '[Open app](http://localhost:4173/dashboard?from=agent#ready)'
+
+    await act(async () => {
+      root.render(
+        <LogStream
+          logs={[assistantEntry('assistant-preview', content)]}
+          onOpenPreviewUrl={onOpenPreviewUrl}
+        />,
+      )
+    })
+
+    const call = findLastStreamdownCall(content)
+    const Link = (call?.components as {
+      a?: ComponentType<{
+        href?: string
+        children?: ReactNode
+        onClick?: (event: SyntheticEvent) => void
+      }>
+    } | undefined)?.a
+    expect(Link).toBeDefined()
+    if (!Link) throw new Error('markdown link component not found')
+
+    await act(async () => {
+      root.render(<Link href="http://localhost:4173/dashboard?from=agent#ready">Open app</Link>)
+    })
+    const anchor = container.querySelector('a')
+    expect(anchor).not.toBeNull()
+
+    await act(async () => {
+      anchor?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+
+    expect(onOpenPreviewUrl).toHaveBeenCalledWith('http://localhost:4173/dashboard?from=agent#ready')
+
+    onOpenPreviewUrl.mockClear()
+    await act(async () => {
+      root.render(
+        <Link href="https://example.com/docs" onClick={(event: SyntheticEvent) => event.preventDefault()}>
+          Documentation
+        </Link>,
+      )
+    })
+    await act(async () => {
+      container.querySelector('a')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+    expect(onOpenPreviewUrl).not.toHaveBeenCalled()
   })
 })

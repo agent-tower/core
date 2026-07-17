@@ -5,7 +5,11 @@ import { Streamdown } from 'streamdown'
 import { Tooltip } from '@/components/ui/tooltip'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
-import { createMessageStreamdownComponents, streamdownMermaidControls } from '@/lib/streamdown-components'
+import {
+  createMessageStreamdownComponents,
+  streamdownMermaidControls,
+  type OpenPreviewUrlHandler,
+} from '@/lib/streamdown-components'
 import { useStreamdownMermaidPlugins } from '@/lib/streamdown-mermaid'
 import 'streamdown/styles.css'
 
@@ -19,6 +23,7 @@ interface LogStreamProps {
   onUserToggleDetails?: () => void
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: OpenPreviewUrlHandler
   /** 外部滚动容器 ref，用于滚动到底部（可选，仅 legacy 用法需要） */
   scrollElementRef?: React.RefObject<HTMLDivElement | null>
 }
@@ -205,16 +210,18 @@ const MarkdownMessage = memo(({
   className,
   workingDir,
   onOpenWorkspaceFile,
+  onOpenPreviewUrl,
 }: {
   content: string
   className?: string
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: OpenPreviewUrlHandler
 }) => {
   const mermaidPlugins = useStreamdownMermaidPlugins(content)
   const components = useMemo(
-    () => createMessageStreamdownComponents({ workingDir, onOpenWorkspaceFile }),
-    [onOpenWorkspaceFile, workingDir],
+    () => createMessageStreamdownComponents({ workingDir, onOpenWorkspaceFile, onOpenPreviewUrl }),
+    [onOpenPreviewUrl, onOpenWorkspaceFile, workingDir],
   )
 
   return (
@@ -231,12 +238,12 @@ const MarkdownMessage = memo(({
 MarkdownMessage.displayName = 'MarkdownMessage'
 
 // 1. User Message — 右对齐聊天气泡
-const UserMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void }) => (
+const UserMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler }) => (
   <div className={compact ? 'flex justify-end mb-4 mt-2' : 'flex justify-end mb-8 mt-4'}>
     <div className={`relative bg-neutral-200 text-neutral-900 rounded-2xl rounded-tr-sm max-w-[85%] min-w-0 leading-relaxed ${
       compact ? 'px-3.5 py-2.5 text-[13px]' : 'px-5 py-3.5 text-sm'
     }`}>
-      <MarkdownMessage content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
+      <MarkdownMessage content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
     </div>
   </div>
 ))
@@ -457,9 +464,9 @@ const AgentText = memo(({ content, compact }: { content: string; compact?: boole
 AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
-const AssistantMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void }) => (
+const AssistantMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler }) => (
   <div className={`text-neutral-900 min-w-0 ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
-    <MarkdownMessage className="space-y-2" content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
+    <MarkdownMessage className="space-y-2" content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
   </div>
 ))
 AssistantMessage.displayName = 'AssistantMessage'
@@ -484,6 +491,7 @@ const ProcessedGroup = memo(({
   onBeforeToggle,
   workingDir,
   onOpenWorkspaceFile,
+  onOpenPreviewUrl,
 }: {
   logs: LogEntry[]
   duration: string | null
@@ -491,6 +499,7 @@ const ProcessedGroup = memo(({
   onBeforeToggle?: () => void
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: OpenPreviewUrlHandler
 }) => {
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
@@ -545,7 +554,7 @@ const ProcessedGroup = memo(({
         >
           <div className="min-h-0 overflow-hidden">
             <div className="pb-1 pt-2">
-              {renderLogItems(logs, workingDir, onOpenWorkspaceFile)}
+              {renderLogItems(logs, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl)}
             </div>
           </div>
         </div>
@@ -625,7 +634,13 @@ ThinkingIndicator.displayName = 'ThinkingIndicator'
 
 // ============ RenderItem renderer ============
 
-function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void): React.ReactNode {
+function renderItem(
+  item: RenderItem,
+  compact?: boolean,
+  workingDir?: string,
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void,
+  onOpenPreviewUrl?: OpenPreviewUrlHandler,
+): React.ReactNode {
   if (item.kind === 'execution-group') {
     return <ExecutionDetailsGroup logs={item.logs} />
   }
@@ -646,7 +661,7 @@ function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, on
 
   switch (log.type) {
     case LogType.User:
-      return <UserMessage content={log.content} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
+      return <UserMessage content={log.content} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
 
     case LogType.Tool:
       return <ToolBlock type={log.type} title={log.title || 'Tool'} content={log.content} />
@@ -655,7 +670,7 @@ function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, on
       return <ToolBlock type={log.type} title="Action" content={log.content} />
 
     case LogType.Assistant:
-      return <AssistantMessage content={log.content} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} />
+      return <AssistantMessage content={log.content} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
 
     case LogType.Info:
             // 跳过 token_usage_info 条目的文本渲染（已由 TokenUsageIndicator 聚合展示）
@@ -673,9 +688,14 @@ function renderItem(item: RenderItem, compact?: boolean, workingDir?: string, on
   }
 }
 
-function renderLogItems(logs: LogEntry[], workingDir?: string, onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void): React.ReactNode {
+function renderLogItems(
+  logs: LogEntry[],
+  workingDir?: string,
+  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void,
+  onOpenPreviewUrl?: OpenPreviewUrlHandler,
+): React.ReactNode {
   return groupExecutionDetails(logs).map((item) => {
-    const node = renderItem(item, false, workingDir, onOpenWorkspaceFile)
+    const node = renderItem(item, false, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl)
     return node ? <div key={item.key}>{node}</div> : null
   })
 }
@@ -687,9 +707,10 @@ function renderConversationTurn(
   onUserToggleDetails?: () => void,
   workingDir?: string,
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void,
+  onOpenPreviewUrl?: OpenPreviewUrlHandler,
 ): React.ReactNode {
   const userNode = turn.user
-    ? renderLogItems([turn.user], workingDir, onOpenWorkspaceFile)
+    ? renderLogItems([turn.user], workingDir, onOpenWorkspaceFile, onOpenPreviewUrl)
     : null
 
   if (!isCompleted) {
@@ -701,7 +722,7 @@ function renderConversationTurn(
           duration={getTurnDuration(turn, completedAt)}
           collapsible={false}
         />
-        {renderLogItems(turn.agentLogs, workingDir, onOpenWorkspaceFile)}
+        {renderLogItems(turn.agentLogs, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl)}
       </>
     )
   }
@@ -727,8 +748,9 @@ function renderConversationTurn(
         onBeforeToggle={onUserToggleDetails}
         workingDir={workingDir}
         onOpenWorkspaceFile={onOpenWorkspaceFile}
+        onOpenPreviewUrl={onOpenPreviewUrl}
       />
-      {renderLogItems(finalLogs, workingDir, onOpenWorkspaceFile)}
+      {renderLogItems(finalLogs, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl)}
     </>
   )
 }
@@ -736,7 +758,7 @@ function renderConversationTurn(
 // ============ Main Component ============
 
 export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
-  function LogStream({ logs, isOutputActive, lastExitAt, onUserToggleDetails, scrollElementRef, workingDir, onOpenWorkspaceFile }, ref) {
+  function LogStream({ logs, isOutputActive, lastExitAt, onUserToggleDetails, scrollElementRef, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl }, ref) {
     const turns = useMemo(() => (
       isOutputActive === undefined ? null : splitConversationTurns(logs)
     ), [isOutputActive, logs])
@@ -778,10 +800,11 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
                   onUserToggleDetails,
                   workingDir,
                   onOpenWorkspaceFile,
+                  onOpenPreviewUrl,
                 )}
               </div>
             ))
-          : renderLogItems(logs, workingDir, onOpenWorkspaceFile)}
+          : renderLogItems(logs, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl)}
       </div>
     )
   },

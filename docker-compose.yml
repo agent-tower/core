@@ -22,6 +22,7 @@ services:
       AGENT_TOWER_DATA_DIR: /data
       AGENT_TOWER_HOST: 0.0.0.0
       AGENT_TOWER_PORT: "12580"
+      AGENT_TOWER_PREVIEW_FORCE_TUNNEL: "true"
       # Pass provider API keys through your shell or a local .env file when needed.
       # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       # ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}

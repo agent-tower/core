@@ -8,7 +8,7 @@ import { TerminalTabs } from "./TerminalTabs"
 import { EditorView, type EditorViewHandle } from "./EditorView"
 import { ReviewView } from "./ReviewView"
 import { HistoryView } from "./HistoryView"
-import { PreviewPanel } from "./PreviewPanel"
+import { PreviewPanel, type PreviewOpenRequest } from "./PreviewPanel"
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { buildWorkspaceViews } from "./team-workspace-view"
 import { useProject } from "@/hooks/use-projects"
@@ -21,7 +21,10 @@ type WorkspaceTabWithTeam = WorkspaceTab | "team-status"
 export interface WorkspacePanelHandle {
   setTab: (tab: WorkspaceTab) => void
   openFile: (path: string, line?: number, column?: number) => void
+  openPreview: (url: string, workspaceId?: string) => void
 }
+
+export type WorkspacePreviewRequest = PreviewOpenRequest
 
 export interface WorkspacePanelProps {
   /** 自定义类名 */
@@ -60,6 +63,8 @@ export interface WorkspacePanelProps {
   minContentWidth?: number
   /** Imperative ref to switch tabs from parent */
   tabRef?: React.RefObject<WorkspacePanelHandle | null>
+  previewRequest?: WorkspacePreviewRequest
+  onPreviewRequestHandled?: (requestId: number) => void
 }
 
 // ============================================================
@@ -157,6 +162,8 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     onExpandedChange,
     minContentWidth = 520,
     tabRef,
+    previewRequest,
+    onPreviewRequestHandled,
   }) {
     const { t } = useI18n()
     const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
@@ -184,8 +191,16 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
         ? [{ key: "team-status" as const, label: "Team Status", icon: <Users size={14} /> }, ...availableTabs]
         : availableTabs
     }, [gitAvailable, hideChanges, readOnly, teamRun])
-    const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(gitAvailable ? (hideChanges ? "history" : "review") : "editor")
+    const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(() => (
+      previewRequest
+        ? 'preview'
+        : gitAvailable
+          ? (hideChanges ? "history" : "review")
+          : "editor"
+    ))
     const editorRef = useRef<EditorViewHandle | null>(null)
+    const previewRequestIdRef = useRef(0)
+    const [imperativePreviewRequest, setImperativePreviewRequest] = useState<PreviewOpenRequest | undefined>()
 
     const selectTab = useCallback((tab: WorkspaceTabWithTeam) => {
       setActiveTab(tab)
@@ -200,7 +215,26 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
         selectTab('editor')
         requestAnimationFrame(() => editorRef.current?.openFile(path, line, column))
       },
+      openPreview: (url: string, requestWorkspaceId?: string) => {
+        previewRequestIdRef.current += 1
+        setImperativePreviewRequest({
+          id: previewRequestIdRef.current,
+          url,
+          workspaceId: requestWorkspaceId,
+        })
+        selectTab('preview')
+      },
     }), [selectTab])
+
+    const activePreviewRequest = previewRequest ?? imperativePreviewRequest
+    const scopedPreviewRequest = activePreviewRequest?.workspaceId
+      && activePreviewRequest.workspaceId !== workspaceId
+      ? undefined
+      : activePreviewRequest
+    const handlePreviewRequestHandled = useCallback((requestId: number) => {
+      setImperativePreviewRequest((current) => current?.id === requestId ? undefined : current)
+      onPreviewRequestHandled?.(requestId)
+    }, [onPreviewRequestHandled])
 
     // Fetch project to get quickCommands
     const { data: project } = useProject(projectId ?? '')
@@ -299,7 +333,12 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
           })}
 
           {activeTab === "preview" && (
-            <PreviewPanel workspaceId={workspaceId} readOnly={readOnly} />
+            <PreviewPanel
+              workspaceId={workspaceId}
+              readOnly={readOnly}
+              navigationRequest={scopedPreviewRequest}
+              onNavigationRequestHandled={handlePreviewRequestHandled}
+            />
           )}
 
           {activeTab === "review" && (

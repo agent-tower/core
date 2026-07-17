@@ -10,7 +10,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
-import { WorkspacePanel } from '@/components/workspace/WorkspacePanel'
+import { WorkspacePanel, type WorkspacePreviewRequest } from '@/components/workspace/WorkspacePanel'
 import { MobileChangesView } from './MobileChangesView'
 import { MobileHistoryView } from './MobileHistoryView'
 import { useTaskTeamRun, useRoomMessages, usePostRoomMessage } from '@/hooks/use-team-run'
@@ -168,6 +168,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const [focusedInvocationSessionId, setFocusedInvocationSessionId] = useState<string | null>(null)
   const [explicitWorkspaceId, setExplicitWorkspaceId] = useState<string | undefined>(undefined)
+  const previewRequestCounterRef = useRef(0)
+  const [previewRequest, setPreviewRequest] = useState<WorkspacePreviewRequest | undefined>()
   const inputContainerRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -215,6 +217,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   useEffect(() => {
     setExplicitWorkspaceId(undefined)
     setFocusedInvocationSessionId(null)
+    setPreviewRequest(undefined)
   }, [task.id])
 
   useEffect(() => {
@@ -407,6 +410,30 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
     return teamRun.members.find((member) => member.id === focusedInvocation.memberId) ?? null
   }, [focusedInvocation?.memberId, teamRun?.members])
   const displayedSession = focusedInvocationSessionId ? focusedSession : activeSession ?? null
+  const displayedSessionWorkspaceId = useMemo(() => {
+    if (displayedSession?.workspaceId) return displayedSession.workspaceId
+    if (!displayedSession || !workspaces) return undefined
+    return workspaces.find((workspace) =>
+      workspace.sessions?.some((session) => session.id === displayedSession.id)
+    )?.id
+  }, [displayedSession, workspaces])
+  const handleOpenPreviewUrl = useCallback((url: string, sourceWorkspaceId?: string) => {
+    const availableSourceWorkspaceId = sourceWorkspaceId
+      && workspaces?.some((workspace) => workspace.id === sourceWorkspaceId)
+      ? sourceWorkspaceId
+      : undefined
+    const targetWorkspaceId = availableSourceWorkspaceId
+      ?? displayedSessionWorkspaceId
+      ?? resolvedWorkspaceId
+      ?? undefined
+    if (targetWorkspaceId) setExplicitWorkspaceId(targetWorkspaceId)
+    previewRequestCounterRef.current += 1
+    setPreviewRequest({ id: previewRequestCounterRef.current, url, workspaceId: targetWorkspaceId })
+    setActiveTab('workspace')
+  }, [displayedSessionWorkspaceId, resolvedWorkspaceId, workspaces])
+  const handleOpenDisplayedSessionPreviewUrl = useCallback((url: string) => {
+    handleOpenPreviewUrl(url, displayedSessionWorkspaceId)
+  }, [displayedSessionWorkspaceId, handleOpenPreviewUrl])
   const isSessionActive = displayedSession?.status === SessionStatus.RUNNING || displayedSession?.status === SessionStatus.PENDING
   const isReadOnlySession = useMemo(() => {
     if (!activeSession || !workspaces) return false
@@ -810,6 +837,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                           isOutputActive={isOutputActive}
                           lastExitAt={lastExitAt}
                           onUserToggleDetails={stopScroll}
+                          onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
                         />
                       )}
                     </div>
@@ -843,6 +871,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                 changeSummaryBar={workspaceChangeSummaryBar}
                 compactComposer
                 workingDir={workingDir}
+                onOpenPreviewUrl={handleOpenPreviewUrl}
               />
             )}
           </main>
@@ -891,6 +920,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                   isOutputActive={isOutputActive}
                   lastExitAt={lastExitAt}
                   onUserToggleDetails={stopScroll}
+                  onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
                 />
               )
             ) : (
@@ -1127,6 +1157,10 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
             gitAvailable={taskSupportsGit}
             readOnly={isProjectReadOnly}
             repoDeleted={isProjectRepoDeleted}
+            previewRequest={previewRequest}
+            onPreviewRequestHandled={(requestId) => {
+              setPreviewRequest((current) => current?.id === requestId ? undefined : current)
+            }}
           />
         </div>
       )}

@@ -1,4 +1,5 @@
 import net from 'node:net';
+import type { PreviewStatus } from '@agent-tower/shared';
 import { prisma } from '../utils/index.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 
@@ -10,14 +11,6 @@ export interface NormalizedPreviewTarget {
   target: string;
   origin: string;
   basePath: string;
-}
-
-export interface PreviewStatus {
-  configured: boolean;
-  ready: boolean;
-  target: string | null;
-  viewUrl: string | null;
-  error: string | null;
 }
 
 function stripTrailingSlash(value: string): string {

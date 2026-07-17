@@ -414,6 +414,28 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   }, [focusedInvocation?.memberId, teamRun?.members])
 
   const displayedSession = focusedInvocationSessionId ? focusedSession : activeSession ?? null
+  const displayedSessionWorkspaceId = useMemo(() => {
+    if (displayedSession?.workspaceId) return displayedSession.workspaceId
+    if (!displayedSession || !workspaces) return undefined
+    return workspaces.find((workspace) =>
+      workspace.sessions?.some((session) => session.id === displayedSession.id)
+    )?.id
+  }, [displayedSession, workspaces])
+  const handleOpenPreviewUrl = useCallback((url: string, sourceWorkspaceId?: string) => {
+    const availableSourceWorkspaceId = sourceWorkspaceId
+      && workspaces?.some((workspace) => workspace.id === sourceWorkspaceId)
+      ? sourceWorkspaceId
+      : undefined
+    const targetWorkspaceId = availableSourceWorkspaceId
+      ?? displayedSessionWorkspaceId
+      ?? resolvedWorkspaceId
+      ?? undefined
+    if (targetWorkspaceId) setExplicitWorkspaceId(targetWorkspaceId)
+    workspacePanelTabRef.current?.openPreview(url, targetWorkspaceId)
+  }, [displayedSessionWorkspaceId, resolvedWorkspaceId, workspaces])
+  const handleOpenDisplayedSessionPreviewUrl = useCallback((url: string) => {
+    handleOpenPreviewUrl(url, displayedSessionWorkspaceId)
+  }, [displayedSessionWorkspaceId, handleOpenPreviewUrl])
   const isSessionActive = displayedSession?.status === SessionStatus.RUNNING || displayedSession?.status === SessionStatus.PENDING
   const isProjectReadOnly = Boolean(task?.projectArchivedAt)
   const isProjectRepoDeleted = Boolean(task?.projectRepoDeletedAt)
@@ -1129,6 +1151,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                           onUserToggleDetails={stopScroll}
                           workingDir={workingDir}
                           onOpenWorkspaceFile={handleOpenWorkspaceFile}
+                          onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
                         />
                       )}
                     </div>
@@ -1165,6 +1188,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 centered
                 workingDir={workingDir}
                 onOpenWorkspaceFile={handleOpenWorkspaceFile}
+                onOpenPreviewUrl={handleOpenPreviewUrl}
               />
             )
           ) : (
@@ -1251,6 +1275,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     onUserToggleDetails={stopScroll}
                     workingDir={workingDir}
                     onOpenWorkspaceFile={handleOpenWorkspaceFile}
+                    onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
                   />
                 )
               ) : (

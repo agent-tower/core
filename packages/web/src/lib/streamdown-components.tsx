@@ -2,10 +2,14 @@ import type { AnchorHTMLAttributes, ImgHTMLAttributes, LiHTMLAttributes, MouseEv
 import type { Components, ExtraProps, StreamdownProps } from 'streamdown'
 import { cn } from '@/lib/utils'
 import { localImageUrl, resolveMessageResource, workspaceImageUrl } from '@/lib/message-resource'
+import { isLoopbackPreviewUrl } from '@/lib/preview-navigation'
+
+export type OpenPreviewUrlHandler = (url: string) => void
 
 interface MessageComponentOptions {
   workingDir?: string
   onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
+  onOpenPreviewUrl?: OpenPreviewUrlHandler
 }
 
 const BaseMarkdownImage = ({
@@ -36,15 +40,26 @@ const MarkdownLink = ({
   className,
   ...props
 }: AnchorHTMLAttributes<HTMLAnchorElement> & ExtraProps & MessageComponentOptions) => {
-  const { workingDir, onOpenWorkspaceFile } = props
+  const { workingDir, onOpenWorkspaceFile, onOpenPreviewUrl } = props
   const resource = resolveMessageResource(href, workingDir)
   const linkProps = { ...props } as AnchorHTMLAttributes<HTMLAnchorElement> & MessageComponentOptions
   delete linkProps.workingDir
   delete linkProps.onOpenWorkspaceFile
+  delete linkProps.onOpenPreviewUrl
   const linkClassName = cn(
     'text-blue-600 underline decoration-blue-300 underline-offset-2 transition-colors hover:text-blue-700 hover:decoration-blue-500',
     className,
   )
+
+  if (onOpenPreviewUrl && isLoopbackPreviewUrl(href)) {
+    const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+      onClick?.(event)
+      if (event.defaultPrevented) return
+      event.preventDefault()
+      onOpenPreviewUrl(href)
+    }
+    return <a href={href} onClick={handleClick} className={linkClassName} {...linkProps}>{children}</a>
+  }
 
   if (resource.type === 'workspace-file' && onOpenWorkspaceFile) {
     const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -84,6 +99,7 @@ export const streamdownComponents: Components = {
 export function createMessageStreamdownComponents({
   workingDir,
   onOpenWorkspaceFile,
+  onOpenPreviewUrl,
 }: MessageComponentOptions): Components {
   return {
     ...streamdownComponents,
@@ -92,6 +108,7 @@ export function createMessageStreamdownComponents({
         {...props}
         workingDir={workingDir}
         onOpenWorkspaceFile={onOpenWorkspaceFile}
+        onOpenPreviewUrl={onOpenPreviewUrl}
       />
     ),
     img: (props) => {
