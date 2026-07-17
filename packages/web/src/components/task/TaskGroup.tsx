@@ -38,8 +38,6 @@ interface TaskGroupProps {
   selectedTaskId: string | null
   onSelectTask: (id: string) => void
   projects: UIProject[]
-  /** 当前有 Agent 正在运行的任务 ID 集合 */
-  activeTaskIds?: Set<string>
   /** 是否有拖拽正在进行 */
   isDragging?: boolean
   /** 拖拽来源状态 */
@@ -56,7 +54,6 @@ function DraggableTaskCard({
   task,
   status,
   isSelected,
-  isAgentActive,
   project,
   onSelectTask,
   onTaskStatusChange,
@@ -66,7 +63,6 @@ function DraggableTaskCard({
   task: UITask
   status: UITaskStatus
   isSelected: boolean
-  isAgentActive: boolean
   project: UIProject | undefined
   onSelectTask: (id: string) => void
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
@@ -180,12 +176,6 @@ function DraggableTaskCard({
             {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
           </span>
         )}
-        {isAgentActive && (
-          <span className="relative inline-flex h-2 w-2 shrink-0 align-middle">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success/70" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-success" />
-          </span>
-        )}
         {task.updatedAt && (
           <span
             className="shrink-0 text-[11px] text-muted-foreground/50 tabular-nums"
@@ -264,7 +254,6 @@ export const TaskGroup = memo(function TaskGroup({
   selectedTaskId,
   onSelectTask,
   projects,
-  activeTaskIds,
   isDragging: isGlobalDragging,
   dragFromStatus,
   onTaskStatusChange,
@@ -341,7 +330,6 @@ export const TaskGroup = memo(function TaskGroup({
           ) : (
             tasks.map(task => {
               const isSelected = selectedTaskId === task.id
-              const isAgentActive = activeTaskIds?.has(task.id) ?? false
               const project = task.projectId ? projects.find(p => p.id === task.projectId) : undefined
               return (
                 <DraggableTaskCard
@@ -349,7 +337,6 @@ export const TaskGroup = memo(function TaskGroup({
                   task={task}
                   status={status}
                   isSelected={isSelected}
-                  isAgentActive={isAgentActive}
                   project={project}
                   onSelectTask={onSelectTask}
                   onTaskStatusChange={task.projectArchivedAt ? undefined : onTaskStatusChange}

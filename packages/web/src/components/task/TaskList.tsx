@@ -28,8 +28,6 @@ interface TaskListProps {
   onCreateProject?: () => void
   /** 右侧当前正在展示创建任务面板（用于点亮入口的选中态） */
   isCreateActive?: boolean
-  /** 当前有 Agent 正在运行的任务 ID 集合 */
-  activeTaskIds?: Set<string>
   /** 拖拽变更任务状态回调 */
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   /** 删除任务回调 */
@@ -76,7 +74,6 @@ export function TaskList({
   onCreateTask,
   onCreateProject,
   isCreateActive,
-  activeTaskIds,
   onTaskStatusChange,
   onDeleteTask,
 }: TaskListProps) {
@@ -344,7 +341,6 @@ export function TaskList({
               selectedTaskId={selectedTaskId}
               onSelectTask={onSelectTask}
               projects={projects}
-              activeTaskIds={activeTaskIds}
               isDragging={activeDragTask !== null}
               dragFromStatus={activeDragFromStatus}
               onTaskStatusChange={onTaskStatusChange}

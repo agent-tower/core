@@ -294,12 +294,6 @@ export function ProjectKanbanPage() {
     adaptTaskBoardItemForList(task, projects.find(project => project.id === task.projectId))
   )), [projects, rawTasks])
 
-  // 根据 agent-store 中正在运行的 session 计算活跃任务 ID 集合
-  const activeTaskIds = useMemo(
-    () => new Set(rawTasks.filter(task => task.hasRunningSession).map(task => task.id)),
-    [rawTasks],
-  )
-
   // === 选中的任务详情 ===
   const taskDetailData = useMemo<UITaskDetailData | null>(() => {
     if (!effectiveSelectedTaskId) return null
@@ -736,7 +730,6 @@ export function ProjectKanbanPage() {
               width="100%"
               onCreateTask={handleMobileCreateTask}
               onCreateProject={handleCreateProject}
-              activeTaskIds={activeTaskIds}
               onTaskStatusChange={handleTaskStatusChange}
             />
           )}
@@ -815,7 +808,6 @@ export function ProjectKanbanPage() {
             onCreateTask={handleCreateTask}
             onCreateProject={handleCreateProject}
             isCreateActive={!effectiveSelectedTaskId}
-            activeTaskIds={activeTaskIds}
             onTaskStatusChange={handleTaskStatusChange}
             onDeleteTask={handleDeleteTask}
           />
