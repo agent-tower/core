@@ -194,6 +194,29 @@ describe('Agent CLI preview lifecycle and task manager', () => {
     );
   });
 
+  it('provides the Windows platform marker required by official PowerShell installers', () => {
+    const preview = makeStoredPreview({
+      platform: 'win32',
+      interpreter: {
+        command: 'powershell.exe',
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File'],
+      },
+    });
+    const process = new FakeProcess();
+    const runner = vi.fn(() => process);
+    const manager = new AgentCliInstallTaskManager(runner, undefined, vi.fn(async () => {}));
+
+    manager.createTask(preview);
+
+    expect(runner).toHaveBeenCalledWith(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', preview.tempFilePath],
+      expect.objectContaining({
+        env: expect.objectContaining({ OS: 'Windows_NT' }),
+      }),
+    );
+  });
+
   it('moves to verifying after installer exits 0 and succeeds only after verify passes', async () => {
     const preview = makeStoredPreview();
     const process = new FakeProcess();

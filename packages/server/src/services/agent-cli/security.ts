@@ -66,6 +66,8 @@ export function buildCleanAgentCliEnv(
   }
 
   if (platform === 'win32') {
+    // Official PowerShell installers use this standard Windows marker for platform detection.
+    cleaned.OS = 'Windows_NT';
     const nextPath = buildWindowsPathWithUserBinFallbacks(env);
     if (nextPath) {
       cleaned.PATH = nextPath;
