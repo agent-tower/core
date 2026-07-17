@@ -318,6 +318,7 @@ describe('process-launch', () => {
       'C:\\Windows\\System32',
       'C:\\Users\\alice\\AppData\\Roaming\\npm',
       'C:\\Users\\alice\\.local\\bin',
+      'C:\\Users\\alice\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin',
       'C:\\Users\\alice\\AppData\\Local\\Programs\\codex\\bin',
       'C:\\Users\\alice\\AppData\\Local\\Programs\\Claude\\bin',
       'C:\\Users\\alice\\AppData\\Local\\Programs\\Cursor\\bin',

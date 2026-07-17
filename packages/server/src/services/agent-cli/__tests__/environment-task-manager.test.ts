@@ -61,6 +61,7 @@ describe('Agent CLI preview lifecycle and task manager', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -195,6 +196,7 @@ describe('Agent CLI preview lifecycle and task manager', () => {
   });
 
   it('provides the Windows platform marker required by official PowerShell installers', () => {
+    vi.stubEnv('LOCALAPPDATA', 'C:\\Users\\alice\\AppData\\Local');
     const preview = makeStoredPreview({
       platform: 'win32',
       interpreter: {
@@ -212,7 +214,10 @@ describe('Agent CLI preview lifecycle and task manager', () => {
       'powershell.exe',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', preview.tempFilePath],
       expect.objectContaining({
-        env: expect.objectContaining({ OS: 'Windows_NT' }),
+        env: expect.objectContaining({
+          OS: 'Windows_NT',
+          PATH: expect.stringContaining('C:\\Users\\alice\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin'),
+        }),
       }),
     );
   });

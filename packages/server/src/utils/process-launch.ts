@@ -299,6 +299,7 @@ export function buildWindowsPathWithUserBinFallbacks(env: NodeJS.ProcessEnv): st
   const appData = env.APPDATA;
 
   appendPath(paths, userProfile ? `${userProfile}\\.local\\bin` : undefined);
+  appendPath(paths, localAppData ? `${localAppData}\\Programs\\OpenAI\\Codex\\bin` : undefined);
   appendPath(paths, localAppData ? `${localAppData}\\Programs\\codex\\bin` : undefined);
   appendPath(paths, localAppData ? `${localAppData}\\Programs\\Claude\\bin` : undefined);
   appendPath(paths, localAppData ? `${localAppData}\\Programs\\Cursor\\bin` : undefined);

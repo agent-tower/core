@@ -56,6 +56,39 @@ describe('runAgentCliCommand', () => {
     )).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('finds Codex in the official Windows installer directory without restarting', async () => {
+    const codexBin = 'C:\\Users\\alice\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin';
+    const execFileImpl = vi.fn<AgentCliExecFile>(async (command, _args, options) => {
+      if (command === 'where') {
+        expect(options.env.PATH?.split(';')).toContain(codexBin);
+        return {
+          stdout: `${codexBin}\\codex.exe\r\n`,
+          stderr: '',
+        };
+      }
+      return { stdout: 'codex-cli 0.144.5', stderr: '' };
+    });
+
+    await runAgentCliCommand(
+      { command: 'codex', args: ['--version'], timeoutMs: 5000 },
+      {
+        platform: 'win32',
+        env: {
+          PATH: 'C:\\Windows\\System32',
+          COMSPEC: 'C:\\Windows\\System32\\cmd.exe',
+          LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local',
+        },
+        execFileImpl,
+      }
+    );
+
+    expect(execFileImpl).toHaveBeenLastCalledWith(
+      `${codexBin}\\codex.exe`,
+      ['--version'],
+      expect.objectContaining({ shell: false, windowsHide: true })
+    );
+  });
+
   it('adds the Cursor official install directory to Windows lookup PATH for verify', async () => {
     const execFileImpl = vi.fn<AgentCliExecFile>(async (command, _args, options) => {
       if (command === 'where') {
