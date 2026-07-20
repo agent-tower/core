@@ -586,11 +586,18 @@ export class SessionManager {
       SessionStatus.CANCELLED,
     ].includes(session.status as SessionStatus);
     if (terminalStatus || persistedTerminal) {
+      const pendingFinalization = this.sessionFinalizations.get(id);
       // A terminal transition already won the race. A late user stop may
-      // clean up the PTY, but it must not regress the persisted status.
+      // clean up the PTY, but it must not regress the persisted status. The
+      // backing TeamRun invocation may still be waiting for a room reply, so
+      // it must still pass through the cancellation reconciler.
       this.clearLogicalCompletionCleanup(id);
       this.destroyActivePipeline(id);
       this.maybeClearTerminalState(id);
+      await pendingFinalization;
+      if (!options.skipTeamRunReconcile && !this.isConversationSession(session)) {
+        await this.teamReconciler.handleSessionStopped(id);
+      }
       return session;
     }
     this.clearLogicalCompletionCleanup(id);

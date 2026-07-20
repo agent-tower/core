@@ -128,15 +128,22 @@ export class TeamReconcilerService {
       return false;
     }
 
-    await prisma.agentInvocation.update({
-      where: { id: invocation.id },
+    const cancelled = await prisma.agentInvocation.updateMany({
+      where: {
+        id: invocation.id,
+        status: { in: ACTIVE_INVOCATION_STATUSES },
+      },
       data: {
         status: 'CANCELLED',
         nextRoomReplyReminderAt: null,
       },
     });
-    await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
     this.clearReminderTimer(invocation.id);
+    if (cancelled.count !== 1) {
+      return true;
+    }
+
+    await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
     if (isTaskDeleted(invocation.teamRun.task)) {
       await this.syncTerminalWorkRequest(invocation.id);
       const scheduler = await this.getScheduler();
