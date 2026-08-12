@@ -60,6 +60,7 @@ import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
 import { useSkillMentionMenu } from './useSkillMentionMenu'
+import { EditableTaskTitle } from './EditableTaskTitle'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { useI18n } from '@/lib/i18n'
@@ -1022,7 +1023,11 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
             <span className="text-muted-foreground/40 text-xs">/</span>
             <span className="text-xs text-muted-foreground/70 font-mono truncate">{task.branch}</span>
           </div>
-          <h2 className="text-lg font-semibold text-foreground break-words line-clamp-2">{task.title}</h2>
+          <EditableTaskTitle
+            taskId={task.id}
+            title={task.title}
+            readOnly={isProjectReadOnly}
+          />
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0">

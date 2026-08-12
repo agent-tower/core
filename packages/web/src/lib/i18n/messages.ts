@@ -847,6 +847,9 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '已配置': 'Configured',
     '环境变量:': 'Environment Variables:',
     '编辑': 'Edit',
+    '编辑标题': 'Edit title',
+    '输入任务标题': 'Enter task title',
+    '字符': 'characters',
     '删除自定义覆盖并恢复默认': 'Delete custom override and restore default',
     '恢复默认 Provider': 'Restore Default Provider',
     '确定删除 "{name}" 的自定义覆盖，并恢复系统默认配置？':

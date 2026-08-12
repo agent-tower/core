@@ -29,6 +29,7 @@ import { getSessionTokenUsage, SessionReadonlyMeta } from '@/components/task/Ses
 import { ProviderSelector } from '@/components/task/ProviderSelector'
 import { SlashCommandPopover } from '@/components/task/SlashCommandPopover'
 import { DeleteTaskConfirmDialog } from '@/components/task/DeleteTaskConfirmDialog'
+import { EditableTaskTitle } from '@/components/task/EditableTaskTitle'
 import { WorkspaceSwitcher } from '@/components/workspace/WorkspaceSwitcher'
 import {
   canRunWorkspaceGitOperations,
@@ -736,7 +737,13 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
             <ArrowLeft size={18} />
           </button>
           <div className="flex-1 min-w-0">
-            <h1 className="text-[13px] font-bold text-neutral-900 truncate leading-tight">{task.title}</h1>
+            <EditableTaskTitle
+              taskId={task.id}
+              title={task.title}
+              readOnly={isProjectReadOnly}
+              titleClassName="text-[13px] font-bold text-neutral-900 truncate leading-tight"
+              compact
+            />
             <div className="flex min-w-0 items-center gap-1 text-[11px] text-neutral-500 leading-tight">
               <span className={`truncate font-medium ${task.projectColor}`}>{task.projectName}</span>
               {task.projectArchivedAt && (
