@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -15,6 +15,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const publishDir = path.join(repoRoot, 'packages/server/publish');
 const publishPackagePath = path.join(publishDir, 'package.json');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const piPackageName = '@earendil-works/pi-coding-agent';
 
 if (!existsSync(publishPackagePath)) {
   throw new Error('Publish package not found. Run pnpm build:publish first.');
@@ -54,6 +55,7 @@ try {
     { encoding: 'utf8' },
   ).trim();
   const installedRoot = path.join(globalRoot, 'agent-tower');
+  const installedPackage = JSON.parse(readFileSync(path.join(installedRoot, 'package.json'), 'utf8'));
   const clientPackagePath = path.join(installedRoot, 'node_modules/@prisma/client/package.json');
   const generatedClientDir = path.join(installedRoot, 'node_modules/.prisma/client');
   const generatedClientPath = path.join(generatedClientDir, 'index.js');
@@ -82,7 +84,54 @@ try {
     throw new Error('Prisma generate did not install a query engine.');
   }
 
-  console.log(`[publish-smoke] status=passed prisma=${clientPackage.version} engines=${engineFiles.join(',')}`);
+  const expectedPiVersion = installedPackage.dependencies?.[piPackageName];
+  if (!expectedPiVersion) {
+    throw new Error(`Installed Agent Tower package does not declare ${piPackageName}.`);
+  }
+  const piRoot = path.join(installedRoot, 'node_modules', piPackageName);
+  for (const requiredPath of [
+    'dist/cli.js',
+    'node_modules/undici/package.json',
+    'node_modules/@earendil-works/pi-agent-core/package.json',
+  ]) {
+    if (!existsSync(path.join(piRoot, requiredPath))) {
+      throw new Error(`Installed Pi runtime is incomplete: missing ${requiredPath}`);
+    }
+  }
+  const piExecutable = path.join(
+    installedRoot,
+    'node_modules/.bin',
+    process.platform === 'win32' ? 'pi.cmd' : 'pi',
+  );
+  if (!existsSync(piExecutable)) {
+    throw new Error('Installed Agent Tower package does not expose the bundled Pi executable.');
+  }
+  const piVersionCheck = spawnSync(piExecutable, ['--version'], {
+    cwd: installedRoot,
+    encoding: 'utf8',
+    env: process.env,
+    shell: process.platform === 'win32',
+    timeout: 30_000,
+  });
+  if (piVersionCheck.status !== 0) {
+    throw new Error([
+      'Bundled Pi executable failed.',
+      piVersionCheck.error?.message,
+      piVersionCheck.stdout?.trim(),
+      piVersionCheck.stderr?.trim(),
+    ].filter(Boolean).join('\n'));
+  }
+  const actualPiVersion = piVersionCheck.stdout.trim();
+  if (actualPiVersion !== expectedPiVersion) {
+    throw new Error(`Unexpected Pi version: expected=${expectedPiVersion}, actual=${actualPiVersion}`);
+  }
+
+  console.log([
+    '[publish-smoke] status=passed',
+    `prisma=${clientPackage.version}`,
+    `pi=${actualPiVersion}`,
+    `engines=${engineFiles.join(',')}`,
+  ].join(' '));
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });
 }

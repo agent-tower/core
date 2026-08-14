@@ -1,5 +1,5 @@
 {
-  "name": "agent-tower",
+  "name": "@agent-tower/agent-tower",
   "version": "0.1.0",
   "private": true,
   "description": "AI Agent 任务管理面板",
@@ -34,5 +34,11 @@
   "engines": {
     "node": ">=22.19.0",
     "pnpm": "11.18.0"
-  }
+  },
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "keywords": [],
+  "author": ""
 }

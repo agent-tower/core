@@ -5,10 +5,11 @@
  *
  * 用法: node scripts/build-publish.mjs
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import {
-  cpSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, chmodSync, realpathSync,
+  chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,6 +19,8 @@ const serverDir = resolve(root, 'packages/server');
 const sharedDir = resolve(root, 'packages/shared');
 const webDir = resolve(root, 'packages/web');
 const publishDir = resolve(serverDir, 'publish');
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const piPackageName = '@earendil-works/pi-coding-agent';
 
 // ── Clean ────────────────────────────────────────────────────────
 console.log('Cleaning previous build...');
@@ -175,6 +178,62 @@ delete nodePtyPkg.scripts.postinstall;
 writeFileSync(nodePtyPkgPath, JSON.stringify(nodePtyPkg, null, 2) + '\n');
 console.log(`Bundled @shitiandmw/node-pty@${nodePtyVersion} with prebuilds`);
 
+// 9. Materialize Pi with npm's nested install strategy before bundling it.
+// Copying the pnpm package alone would leave symlinks into the workspace virtual
+// store, while relying on npm to reconstruct Pi's shrinkwrap has produced
+// incomplete global installs. This tree is self-contained and portable.
+const piVersion = serverPkg.dependencies[piPackageName];
+if (!piVersion || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(piVersion)) {
+  throw new Error(`Expected an exact ${piPackageName} version, received ${String(piVersion)}`);
+}
+const piStageRoot = mkdtempSync(resolve(tmpdir(), 'agent-tower-pi-runtime-'));
+try {
+  writeFileSync(resolve(piStageRoot, 'package.json'), JSON.stringify({
+    name: 'agent-tower-pi-runtime-stage',
+    private: true,
+  }, null, 2) + '\n');
+  console.log(`Staging complete runtime tree for ${piPackageName}@${piVersion}...`);
+  execFileSync(
+    npmCommand,
+    [
+      'install',
+      `${piPackageName}@${piVersion}`,
+      '--install-strategy=nested',
+      '--omit=optional',
+      '--ignore-scripts',
+      '--package-lock=false',
+      '--no-audit',
+      '--no-fund',
+    ],
+    { cwd: piStageRoot, stdio: 'inherit' },
+  );
+
+  const piSrc = resolve(piStageRoot, 'node_modules', piPackageName);
+  const piDest = resolve(publishDir, 'node_modules', piPackageName);
+  mkdirSync(dirname(piDest), { recursive: true });
+  cpSync(piSrc, piDest, { recursive: true, dereference: true });
+  // npm pack excludes generated dependency bin links and recreates them when
+  // installing. Remove them now because npm stages them as absolute temp links.
+  rmSync(resolve(piDest, 'node_modules/.bin'), { recursive: true, force: true });
+
+  const piPackage = JSON.parse(readFileSync(resolve(piDest, 'package.json'), 'utf-8'));
+  if (piPackage.version !== piVersion) {
+    throw new Error(`Staged Pi version mismatch: expected=${piVersion}, actual=${piPackage.version}`);
+  }
+  for (const requiredPath of [
+    'dist/cli.js',
+    'node_modules/undici/package.json',
+    'node_modules/@earendil-works/pi-agent-core/package.json',
+  ]) {
+    if (!existsSync(resolve(piDest, requiredPath))) {
+      throw new Error(`Incomplete bundled Pi runtime: missing ${requiredPath}`);
+    }
+  }
+  console.log(`Bundled ${piPackageName}@${piVersion} with its complete runtime dependency tree`);
+} finally {
+  rmSync(piStageRoot, { recursive: true, force: true });
+}
+
 const publishPkg = {
   name: 'agent-tower',
   version: serverPkg.version,
@@ -199,6 +258,7 @@ const publishPkg = {
     'prisma/',
     'scripts/',
     'node_modules/@agent-tower/',
+    'node_modules/@earendil-works/pi-coding-agent/',
     'node_modules/@prisma/',
     'node_modules/@shitiandmw/',
     'node_modules/cloudflared/',
@@ -210,7 +270,13 @@ const publishPkg = {
   optionalDependencies: {
     fsevents: '~2.3.3',
   },
-  bundledDependencies: ['@agent-tower/shared', '@prisma/client', '@shitiandmw/node-pty', 'cloudflared'],
+  bundledDependencies: [
+    '@agent-tower/shared',
+    '@earendil-works/pi-coding-agent',
+    '@prisma/client',
+    '@shitiandmw/node-pty',
+    'cloudflared',
+  ],
   engines: {
     node: '>=22.19.0',
   },
@@ -218,7 +284,7 @@ const publishPkg = {
 
 writeFileSync(resolve(publishDir, 'package.json'), JSON.stringify(publishPkg, null, 2) + '\n');
 
-// 9. 复制 README.md
+// 10. 复制 README.md
 cpSync(resolve(root, 'README.md'), resolve(publishDir, 'README.md'));
 
 // 7. 在 cli.ts 中设置 AGENT_TOWER_WEB_DIR 指向 dist/web

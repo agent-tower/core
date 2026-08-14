@@ -2,7 +2,7 @@
 
 ## npm CLI 发布
 
-`scripts/build-publish.mjs` 组装全局 CLI 发布包。保持 Prisma 安装只有一个 client 生成者：发布包 bundled `@prisma/client` 时删除其 `generate`、`postinstall` 和可选 `prisma` peer，由根包 postinstall 使用精确同版本的普通 `prisma` dependency 生成目标平台 client；不要同时启用两处 generate。发布前运行 `pnpm build:publish` 和 `pnpm publish:smoke`，从最终 tarball 验证隔离全局安装、client 语法、模块加载和 query engine。
+`scripts/build-publish.mjs` 组装全局 CLI 发布包。保持 Prisma 安装只有一个 client 生成者：发布包 bundled `@prisma/client` 时删除其 `generate`、`postinstall` 和可选 `prisma` peer，由根包 postinstall 使用精确同版本的普通 `prisma` dependency 生成目标平台 client；不要同时启用两处 generate。Pi Runtime 必须先用隔离 npm nested install 物化完整 dependency tree，再作为 bundled dependency 打包；不能直接复制 pnpm symlink，也不能依赖最终全局安装重新解析 Pi 的 shrinkwrap。发布前运行 `pnpm build:publish` 和 `pnpm publish:smoke`，从最终 tarball 验证隔离全局安装、client 语法、模块加载、query engine，并实际执行 bundled `pi --version`。
 
 ## Electron
 
@@ -16,7 +16,7 @@
 - startup failure、early exit 和正常退出都有清理；日志使用 `log-redaction.ts`。
 - 路径、process kill 和 executable 选择兼容 Windows/macOS/Linux。
 
-runtime 内容变化时检查 `prepare-runtime.mjs`、`extraResources` 和平台打包 target，并运行对应 desktop build/smoke/acceptance。
+runtime 内容变化时检查 `prepare-runtime.mjs`、`extraResources` 和平台打包 target，并运行对应 desktop build/smoke/acceptance；Pi Runtime 检查必须实际执行 bundled `pi --version`，只 import 包不足以证明可执行依赖完整。
 
 ## Docusaurus
 
