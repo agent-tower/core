@@ -125,7 +125,7 @@ pnpm --filter @agent-tower/server dev
 | `send_workspace_service_input` | 向运行中的服务 PTY 写入输入 |
 | `control_workspace_service` | 使用 `stop` 或 `restart` 控制已有服务 |
 
-后台服务由 workspace 持有，不属于启动它的 Agent session，因此 session 完成、停止或页面断开不会结束服务。普通构建、测试和一次性命令仍使用 Agent 终端；不要用 `nohup`、`disown` 或 shell 后台任务代替这些工具。
+后台服务由 workspace 持有，不属于启动它的 Agent session，因此 session 完成、停止或页面断开不会结束服务。已经完全停止且不再期望运行的服务定义不会出现在列表中，也不占用每个 workspace 最多 20 个服务的配额；同名同配置启动时仍可复用保存的定义。普通构建、测试和一次性命令仍使用 Agent 终端；不要用 `nohup`、`disown` 或 shell 后台任务代替这些工具。
 
 后台服务工具要求 Agent Tower 签发的 workspace session credential。Solo session 绑定当前 workspace；TeamRun session 还绑定 invocation，并在每次请求重验成员的 `runCommands` capability。同一个 DriverSession 在自然完成后的 follow-up 中继续使用有效 credential；显式停止 Session、启动失败或关闭 DriverSession 后 credential 立即失效。缺少 credential 的 Agent 请求和与 credential 冲突的自报 identity 都会被拒绝。
 

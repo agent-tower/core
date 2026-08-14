@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { Prisma } from '@prisma/client';
 import type {
   StartWorkspaceBackgroundServiceInput,
   TeamMemberCapabilities,
@@ -34,6 +35,13 @@ const ACTIVE_RUNTIME_STATES: WorkspaceBackgroundServiceRuntimeState[] = [
   'RUNNING',
   'STOPPING',
 ];
+const COUNTED_SERVICE_WHERE = {
+  OR: [
+    { desiredState: { not: 'STOPPED' } },
+    { runtimeState: { not: 'STOPPED' } },
+    { runtimeInstanceId: { not: null } },
+  ],
+} satisfies Prisma.WorkspaceBackgroundServiceWhereInput;
 
 interface WorkspaceBackgroundServiceRecord {
   id: string;
@@ -102,6 +110,14 @@ function specsMatch(
     && args !== null
     && args.length === input.args.length
     && args.every((arg, index) => arg === input.args[index]);
+}
+
+function isFullyStopped(
+  record: Pick<WorkspaceBackgroundServiceRecord, 'desiredState' | 'runtimeState' | 'runtimeInstanceId'>,
+): boolean {
+  return record.desiredState === 'STOPPED'
+    && record.runtimeState === 'STOPPED'
+    && record.runtimeInstanceId === null;
 }
 
 function parseCapabilities(value: string): Partial<TeamMemberCapabilities> {
@@ -207,7 +223,7 @@ export class WorkspaceBackgroundService {
   async list(workspaceId: string): Promise<WorkspaceBackgroundServiceDto[]> {
     await this.requireWorkspace(workspaceId, false);
     const records = await prisma.workspaceBackgroundService.findMany({
-      where: { workspaceId },
+      where: { workspaceId, ...COUNTED_SERVICE_WHERE },
       orderBy: { createdAt: 'asc' },
     });
     return records.map((record) => toDto(record));
@@ -244,15 +260,10 @@ export class WorkspaceBackgroundService {
         if (record && this.processManager.has(record.id)) {
           throw new ServiceError('Workspace service is busy', 'SERVICE_BUSY', 409);
         }
+        if (!record || isFullyStopped(record)) {
+          await this.requireAvailableServiceSlot(workspaceId);
+        }
         if (!record) {
-          const count = await prisma.workspaceBackgroundService.count({ where: { workspaceId } });
-          if (count >= MAX_SERVICES_PER_WORKSPACE) {
-            throw new ServiceError(
-              `Workspace service limit reached (${MAX_SERVICES_PER_WORKSPACE})`,
-              'WORKSPACE_SERVICE_LIMIT_REACHED',
-              429,
-            );
-          }
           record = await prisma.workspaceBackgroundService.create({
             data: {
               workspaceId,
@@ -285,6 +296,7 @@ export class WorkspaceBackgroundService {
         const workspace = await this.requireWorkspace(workspaceId, true);
         let record = await this.requireRecord(workspaceId, name);
         record = await this.stopRecord(record, false);
+        await this.requireAvailableServiceSlot(workspaceId);
         const args = parseArgs(record.argsJson);
         if (!args) {
           throw new ServiceError('Stored service arguments are invalid', 'SERVICE_SPEC_CONFLICT', 409);
@@ -645,6 +657,19 @@ export class WorkspaceBackgroundService {
       throw new ServiceError('Workspace service not found', 'WORKSPACE_SERVICE_NOT_FOUND', 404);
     }
     return record;
+  }
+
+  private async requireAvailableServiceSlot(workspaceId: string): Promise<void> {
+    const count = await prisma.workspaceBackgroundService.count({
+      where: { workspaceId, ...COUNTED_SERVICE_WHERE },
+    });
+    if (count >= MAX_SERVICES_PER_WORKSPACE) {
+      throw new ServiceError(
+        `Workspace service limit reached (${MAX_SERVICES_PER_WORKSPACE})`,
+        'WORKSPACE_SERVICE_LIMIT_REACHED',
+        429,
+      );
+    }
   }
 
   private async withLock<T>(key: string, operation: () => Promise<T>): Promise<T> {

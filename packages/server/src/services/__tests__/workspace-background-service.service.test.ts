@@ -145,6 +145,7 @@ describe('WorkspaceBackgroundService', () => {
       runtimeState: 'STOPPED',
     });
     await expect(service.stop(workspace.id, 'web')).resolves.toMatchObject({ runtimeState: 'STOPPED' });
+    await expect(service.list(workspace.id)).resolves.toEqual([]);
     await expect(service.restart(workspace.id, 'web')).resolves.toMatchObject({
       desiredState: 'RUNNING',
       runtimeState: 'RUNNING',
@@ -171,6 +172,32 @@ describe('WorkspaceBackgroundService', () => {
     expect(manager.startCalls).toHaveBeenCalledTimes(1);
     await expect(service.sendInput(workspace.id, 'web', 'x'))
       .rejects.toMatchObject({ code: 'SERVICE_NOT_RUNNING' });
+  });
+
+  it('hides fully stopped services and excludes them from the workspace limit', async () => {
+    const manager = new FakeProcessManager();
+    const service = new WorkspaceBackgroundService(manager as any);
+    const { workspace } = await createWorkspace('service-limit');
+
+    for (let index = 0; index < 20; index++) {
+      await service.start(workspace.id, `service-${index}`, { command: 'node' });
+    }
+    await expect(service.start(workspace.id, 'overflow', { command: 'node' }))
+      .rejects.toMatchObject({ code: 'WORKSPACE_SERVICE_LIMIT_REACHED' });
+
+    await service.stop(workspace.id, 'service-0');
+    const afterStop = await service.list(workspace.id);
+    expect(afterStop).toHaveLength(19);
+    expect(afterStop.some((record) => record.name === 'service-0')).toBe(false);
+
+    await expect(service.start(workspace.id, 'replacement', { command: 'node' }))
+      .resolves.toMatchObject({ runtimeState: 'RUNNING' });
+    await expect(service.list(workspace.id)).resolves.toHaveLength(20);
+    await expect(prisma.workspaceBackgroundService.count({ where: { workspaceId: workspace.id } }))
+      .resolves.toBe(21);
+
+    await expect(service.start(workspace.id, 'service-0', { command: 'node' }))
+      .rejects.toMatchObject({ code: 'WORKSPACE_SERVICE_LIMIT_REACHED' });
   });
 
   it('compensates a spawned process when persisting RUNNING fails', async () => {
@@ -405,9 +432,7 @@ describe('WorkspaceBackgroundService', () => {
     await service.stopAllForWorkspace(workspace.id);
     await service.reconcile();
 
-    await expect(service.list(workspace.id)).resolves.toEqual([
-      expect.objectContaining({ desiredState: 'STOPPED', runtimeState: 'STOPPED' }),
-    ]);
+    await expect(service.list(workspace.id)).resolves.toEqual([]);
     expect(manager.startCalls).toHaveBeenCalledTimes(1);
   });
 

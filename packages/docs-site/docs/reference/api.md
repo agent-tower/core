@@ -74,7 +74,7 @@ Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspac
 
 ### Workspace 后台服务
 
-这些接口管理由 workspace 持有的长期进程。服务不会因启动它的 Agent session 完成、停止或 Socket 断开而退出；workspace 休眠、归档或删除时会停止。日志是有界内存 buffer，应用重启后不保留。
+这些接口管理由 workspace 持有的长期进程。服务不会因启动它的 Agent session 完成、停止或 Socket 断开而退出；workspace 休眠、归档或删除时会停止。日志是有界内存 buffer，应用重启后不保留。`desiredState` 与 `runtimeState` 都是 `STOPPED` 且没有 runtime identity 的定义不会出现在列表中，也不计入每个 workspace 最多 20 个服务的配额；同名同配置启动时仍可复用该定义。
 
 | Method | Path | 说明 |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspac
 | `403` | `TEAM_RUN_MEMBER_CAPABILITY_REQUIRED` | TeamRun 成员没有 `runCommands` |
 | `404` | `WORKSPACE_NOT_FOUND` / `WORKSPACE_SERVICE_NOT_FOUND` | workspace 或服务不存在 |
 | `409` | `WORKSPACE_NOT_ACTIVE` / `SERVICE_SPEC_CONFLICT` / `SERVICE_BUSY` / `SERVICE_NOT_RUNNING` | workspace 或服务状态不允许操作 |
-| `429` | `WORKSPACE_SERVICE_LIMIT_REACHED` | workspace 已达到服务数量上限 |
+| `429` | `WORKSPACE_SERVICE_LIMIT_REACHED` | workspace 已达到 20 个未完全停止服务的数量上限 |
 | `500` | `SERVICE_START_FAILED` / `SERVICE_START_CLEANUP_FAILED` / `SERVICE_STOP_TIMEOUT` | 启动、失败补偿或进程树清理失败 |
 
 ## Sessions
