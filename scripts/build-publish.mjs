@@ -264,7 +264,7 @@ const publishPkg = {
     'node_modules/cloudflared/',
   ],
   scripts: {
-    postinstall: 'prisma generate --schema prisma/schema.prisma && node scripts/postinstall.js',
+    postinstall: 'node scripts/postinstall.js',
   },
   dependencies: deps,
   optionalDependencies: {

@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -24,9 +25,15 @@ if (!existsSync(publishPackagePath)) {
 const tempRoot = mkdtempSync(path.join(tmpdir(), 'agent-tower-publish-smoke-'));
 const packDir = path.join(tempRoot, 'pack');
 const installPrefix = path.join(tempRoot, 'prefix');
+const consumerDir = path.join(tempRoot, 'consumer-project');
 
 try {
   mkdirSync(packDir, { recursive: true });
+  mkdirSync(consumerDir, { recursive: true });
+  writeFileSync(path.join(consumerDir, 'package.json'), JSON.stringify({
+    name: 'agent-tower-publish-smoke-consumer',
+    private: true,
+  }, null, 2) + '\n');
   const tarballName = execFileSync(
     npmCommand,
     ['pack', '--silent', '--pack-destination', packDir],
@@ -46,7 +53,15 @@ try {
       '--no-audit',
       '--no-fund',
     ],
-    { cwd: repoRoot, stdio: 'inherit' },
+    {
+      cwd: consumerDir,
+      env: {
+        ...process.env,
+        INIT_CWD: consumerDir,
+        PWD: consumerDir,
+      },
+      stdio: 'inherit',
+    },
   );
 
   const globalRoot = execFileSync(
@@ -59,8 +74,12 @@ try {
   const clientPackagePath = path.join(installedRoot, 'node_modules/@prisma/client/package.json');
   const generatedClientDir = path.join(installedRoot, 'node_modules/.prisma/client');
   const generatedClientPath = path.join(generatedClientDir, 'index.js');
+  const leakedGeneratedClientDir = path.join(consumerDir, 'node_modules/.prisma/client');
   const clientPackage = JSON.parse(readFileSync(clientPackagePath, 'utf8'));
 
+  if (existsSync(leakedGeneratedClientDir)) {
+    throw new Error(`Prisma Client leaked into the installer's working directory: ${leakedGeneratedClientDir}`);
+  }
   if (clientPackage.scripts?.generate || clientPackage.scripts?.postinstall) {
     throw new Error('Bundled @prisma/client still contains an install-time generator.');
   }
@@ -74,7 +93,7 @@ try {
   execFileSync(
     process.execPath,
     ['--input-type=module', '-e', importAppPrismaScript],
-    { cwd: repoRoot, stdio: 'inherit' },
+    { cwd: consumerDir, stdio: 'inherit' },
   );
 
   const engineFiles = readdirSync(generatedClientDir).filter(name => (

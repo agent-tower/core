@@ -1,17 +1,38 @@
 /**
- * postinstall 脚本 - 修复 node-pty spawn-helper 权限问题
- *
- * Agent Tower 使用 fork 后的 `@shitiandmw/node-pty`，其中 darwin fd 泄漏已在上游源码层修复。
- * 这里仅保留一个安装期兜底：确保 `spawn-helper` 二进制文件具有可执行权限。
+ * postinstall 脚本 - 生成 Prisma Client 并修复 node-pty spawn-helper 权限。
  */
 
+import { execFileSync } from 'node:child_process';
 import { readdirSync, chmodSync, statSync, existsSync } from 'fs';
+import { createRequire } from 'node:module';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { patchClaudeAgentAcp } from './patch-claude-agent-acp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const packageRoot = join(__dirname, '..');
 const NODE_PTY_PATH_RE = /(^|[\\/])(?:@shitiandmw[\\/])?node-pty(?:[\\/]|$)/;
+
+function generatePrismaClient() {
+  const packageRequire = createRequire(join(packageRoot, 'package.json'));
+  const prismaCliPath = packageRequire.resolve('prisma/build/index.js');
+  const schemaPath = join(packageRoot, 'prisma', 'schema.prisma');
+
+  console.log(`[postinstall] 在包目录中生成 Prisma Client: ${packageRoot}`);
+  execFileSync(
+    process.execPath,
+    [prismaCliPath, 'generate', '--schema', schemaPath],
+    {
+      cwd: packageRoot,
+      env: {
+        ...process.env,
+        INIT_CWD: packageRoot,
+        PWD: packageRoot,
+      },
+      stdio: 'inherit',
+    },
+  );
+}
 
 /**
  * 向上查找 monorepo 根目录（包含 pnpm-workspace.yaml 或根 node_modules）
@@ -60,7 +81,6 @@ function findFiles(dir, pattern, results = [], depth = 0, maxDepth = 10) {
 
 function collectSearchDirs() {
   // 1. 优先查找包自身的 node_modules（npm 全局安装场景）
-  const packageRoot = join(__dirname, '..');
   const localNodeModules = join(packageRoot, 'node_modules');
 
   // 2. 尝试查找 monorepo 根目录（pnpm monorepo 场景）
@@ -120,6 +140,7 @@ function fixSpawnHelperPermissions() {
     console.log('[postinstall] 所有 spawn-helper 权限正常，无需修复');
   }
 }
+generatePrismaClient();
 fixSpawnHelperPermissions();
 const claudePatch = await patchClaudeAgentAcp();
 if (claudePatch.changed) {
