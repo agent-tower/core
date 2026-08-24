@@ -64,13 +64,18 @@
 ## agent-browser 使用要求
 
 - 执行真实浏览器验证时，默认优先使用 `agent-browser`，以真实页面、真实交互和可观察状态作为主要验证依据。
+- 首次执行前运行 `agent-browser --version`，当前标准版本为 `0.34.0`；版本低于该值、命令协议不匹配或升级后出现 daemon version mismatch 时，先运行 `agent-browser doctor --offline --quick`，无法恢复则向技术团队负责人报告环境阻塞。需要完整命令说明时使用与 CLI 同版本的 `agent-browser skills get core --full`，不要凭记忆猜测参数。
 - 适用于用户路径验证、页面交互、表单提交、导航跳转、加载/空/错误状态、弹窗、滚动、键盘输入、中文输入法等需要观察真实浏览器行为的场景。
-- 每个测试任务使用明确的 `agent-browser` session；同一用户路径中的导航、登录态、输入和后续断言应保持 session 连续，避免混用旧 session、跨任务复用上下文或污染其他测试数据。
+- 每个测试任务从第一条浏览器命令开始就使用唯一、明确的 `agent-browser --session <sessionName>`；同一用户路径中的导航、登录态、输入和后续断言应保持 session 连续，避免使用默认共享 session、混用旧 session、跨任务复用上下文或污染其他测试数据。任务结束后只关闭本任务 session，禁止使用 `close --all` 影响其他成员。
+- 连接共享 Chrome（`--cdp` 或 `--auto-connect`）时，从首次连接起增加 `--pin-tab`，使 session 严格绑定自己的 tab；遇到 `tab_gone` 时重新创建或显式选择 tab，不得静默接管其他 tab。
+- 页面较大且已知目标区域时，优先使用 `snapshot -i -c -s "<selector>"` 限定快照范围；页面导航、提交或显著重渲染后重新 snapshot，不复用失效 ref。
+- 已经确定选择器和预期结果的连续步骤优先使用 `batch --bail`，并在批次中包含断言；需要根据中间页面状态继续决策时仍按 snapshot、act、verify 循环逐步执行，不为减少命令数跳过观察。
+- 截图使用明确的测试产物路径；命令完成后验证文件存在且非空，再把它作为通过证据。不得仅凭命令退出码断言截图成功。
 - 使用 `agent-browser` 打开 URL 前，必须先确认目标服务由本轮指定工作目录或当前 worktree 启动；如果端口、进程 cwd、启动日志或项目检测信号无法证明归属，先停止并向技术团队负责人说明。
 - 未经明确授权，不测试 production、staging、共享数据环境、其他成员 dev server、旧端口服务或任何无法确认归属的地址。
 - 可以使用替代方式的情况包括：用户或技术团队负责人明确指定其他工具、`agent-browser` 当前不可用、目标能力由项目已有 E2E 框架更可靠覆盖，或本轮验证对象不涉及浏览器交互。
 - 使用替代方式时，仍应尽量保留真实用户路径证据，例如自动化 E2E 输出、截图、日志、接口状态或持久化数据检查。
-- result 中必须记录实际验证 URL、服务归属依据和 `agent-browser` session 名称；如果无法确认归属或没有使用 `agent-browser`，必须说明原因、替代验证方式、结论依据和剩余风险，避免只写“已验证”。
+- result 中必须记录实际验证 URL、服务归属依据、`agent-browser` 版本、session 名称和证据路径；如果无法确认归属或没有使用 `agent-browser`，必须说明原因、替代验证方式、结论依据和剩余风险，避免只写“已验证”。
 </agent_browser_usage>
 
 <file_modification_rules>
