@@ -18,8 +18,10 @@ import { fileURLToPath } from 'node:url';
 import { getBundledPrismaCommand } from './utils/process-launch.js';
 import { resolveDataDir } from './utils/data-dir.js';
 import { preparePrismaCliEnv } from './utils/prisma-cli-env.js';
-import { installProcessErrorLogging, writeErrorLog } from './utils/error-log.js';
+import { installProcessErrorLogging, registerProcessShutdownHandler, writeErrorLog } from './utils/error-log.js';
 import { getOrCreateInternalApiToken, INTERNAL_API_TOKEN_ENV } from './utils/internal-api-token.js';
+import { createServerEntryShutdownCoordinator } from './runtime/server-entry-shutdown.js';
+import type { ReferencedShutdownCoordinator } from './runtime/shutdown-coordinator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +29,7 @@ const DEFAULT_PORT = 12580;
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_WEB_DIR = 'web';
 let currentDataDir: string | undefined;
+let shutdownCoordinator: ReferencedShutdownCoordinator | undefined;
 
 function parseArgs(): { port: number; host: string; dataDir: string; webDir: string; disableAccessPassword: boolean } {
   const args = process.argv.slice(2);
@@ -164,7 +167,7 @@ function ensureDatabase(dataDir: string, dbPath: string, schemaPath: string) {
     if (stdout) {
       console.error(stdout);
     }
-    process.exit(1);
+    throw err;
   }
 }
 
@@ -202,25 +205,37 @@ async function main() {
   }
   const app = await buildApp();
 
-  let shuttingDown = false;
-  const shutdown = async (signal: string) => {
-    if (shuttingDown) {
-      console.log('\nForce exit.');
-      process.exit(1);
-    }
-    shuttingDown = true;
+  const shutdown = createServerEntryShutdownCoordinator({
+    closeApp: () => app.close(),
+    destroyRuntime: async () => {
+      // This owns the process lifetime independently of Fastify's hook state;
+      // repeated attempts retry runtime owners without replaying Fastify hooks.
+      const { getSessionManager } = await import('./core/container.js');
+      await getSessionManager().destroyAll();
+    },
+    onAppCloseError: (error) => {
+      console.warn('Fastify close reported an error after runtime cleanup; continuing shutdown', error);
+    },
+  },
+    (error, attempt) => {
+      console.error(`Shutdown cleanup pending (attempt ${attempt}); retrying`, error);
+    },
+  );
+  shutdownCoordinator = shutdown;
+  registerProcessShutdownHandler(() => shutdown.request());
+
+  const requestShutdown = (signal: string) => {
     console.log(`\n${signal} received, shutting down...`);
-    try {
-      await app.close();
+    // Concurrent signals share the same referenced promise. No signal is an
+    // implicit force-exit path while a process owner remains unresolved.
+    void shutdown.request().then(() => {
+      console.log('Server closed');
       process.exit(0);
-    } catch (err) {
-      console.error('Shutdown error:', err);
-      process.exit(1);
-    }
+    });
   };
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => requestShutdown('SIGTERM'));
+  process.on('SIGINT', () => requestShutdown('SIGINT'));
 
   await app.listen({ port, host });
 
@@ -245,5 +260,14 @@ main().catch((err) => {
     message: 'Fatal server startup error',
     error: err,
   }, { dataDir: currentDataDir });
-  process.exit(1);
+  const shutdown = shutdownCoordinator;
+  if (shutdown) {
+    void shutdown.request().then(() => {
+      process.exitCode = 1;
+    });
+  } else {
+    // No runtime owner exists before app construction; setting the exit code
+    // lets Node drain ordinary handles without bypassing the coordinator.
+    process.exitCode = 1;
+  }
 });

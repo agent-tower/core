@@ -281,6 +281,7 @@ describe('TeamRun queued work recovery integration', () => {
     expect(lockService.listLocks()).toEqual([]);
 
     const reconciler = {
+      reconcilePendingRuntimeCleanup: vi.fn(async () => 0),
       reconcileOrphanInvocations: vi.fn(async () => undefined),
       reconcileIncompleteTerminalInvocations: vi.fn(async () => undefined),
       reconcileStalledInvocations: vi.fn(async () => undefined),

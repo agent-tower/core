@@ -33,7 +33,14 @@ export interface RuntimeProcessStartedEvent {
   type: 'started';
   towerSessionId: string;
   runtimeInstanceId: string;
+  launchClaimNumber: number;
   pid: number;
+  /** Unix process-group id or the platform's equivalent tree root identity. */
+  processGroupId: string;
+  /** Per-launch birth/ownership marker used to reject PID reuse. */
+  birthMarker: string;
+  /** Per-launch token inherited by owned descendants and persisted for recovery. */
+  ownershipToken: string;
 }
 
 export interface RuntimeProcessExitedEvent {
@@ -42,13 +49,28 @@ export interface RuntimeProcessExitedEvent {
   runtimeInstanceId: string;
   exitCode: number | null;
   signal?: NodeJS.Signals | null;
+  launchClaimNumber?: number;
 }
 
-export type RuntimeProcessEvent = RuntimeProcessStartedEvent | RuntimeProcessExitedEvent;
+export interface RuntimeProcessTreeCleanupCompletedEvent {
+  type: 'tree_cleanup_completed';
+  towerSessionId: string;
+  runtimeInstanceId: string;
+  launchClaimNumber?: number;
+}
+
+export type RuntimeProcessEvent =
+  | RuntimeProcessStartedEvent
+  | RuntimeProcessExitedEvent
+  | RuntimeProcessTreeCleanupCompletedEvent;
 
 export interface RuntimeDriverEventSink {
   stream(event: RuntimeStreamEvent): void;
-  process(event: Omit<RuntimeProcessStartedEvent, 'towerSessionId'> | Omit<RuntimeProcessExitedEvent, 'towerSessionId'>): Promise<void>;
+  process(event:
+    | Omit<RuntimeProcessStartedEvent, 'towerSessionId'>
+    | Omit<RuntimeProcessExitedEvent, 'towerSessionId'>
+    | Omit<RuntimeProcessTreeCleanupCompletedEvent, 'towerSessionId'>
+  ): Promise<void>;
 }
 
 export interface RuntimeOpenInput {
@@ -60,6 +82,7 @@ export interface RuntimeOpenInput {
   workingDir: string;
   env: ExecutionEnv;
   externalSessionId?: string | null;
+  launchClaimNumber?: number;
 }
 
 /** `load` restores this transcript; `resume` only continues the agent's native context. */
@@ -73,6 +96,7 @@ export interface RuntimeRunTurnInput {
   resumeMode?: RuntimeResumeMode;
   /** Local entry that must remain after any history imported by session/load. */
   historyBoundaryEntryId?: string;
+  launchClaimNumber?: number;
 }
 
 export interface RuntimeTurnOutcome {
@@ -108,7 +132,23 @@ export interface RuntimeCoordinatorHost {
   onTurnEvent(event: RuntimeTurnEventEnvelope): void;
   onRuntimeState(state: RuntimeStateDto): void;
   onProcessEvent(event: RuntimeProcessEvent): Promise<void>;
+  onDriverSessionDisposeStarted?(
+    towerSessionId: string,
+    runtimeInstanceId: string,
+    launchClaimNumber?: number,
+  ): void | Promise<void>;
   onDriverSessionDisposed?(towerSessionId: string): void;
+  onDriverSessionDisposedInstance?(
+    towerSessionId: string,
+    runtimeInstanceId: string,
+    launchClaimNumber?: number,
+  ): void | Promise<void>;
+  onDriverSessionDisposeFailed?(
+    towerSessionId: string,
+    runtimeInstanceId: string,
+    error: unknown,
+    launchClaimNumber?: number,
+  ): void | Promise<void>;
 }
 
 export interface StartRuntimeTurnInput extends RuntimeOpenInput {

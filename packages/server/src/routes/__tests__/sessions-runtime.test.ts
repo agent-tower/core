@@ -1,15 +1,18 @@
 import Fastify from 'fastify';
 import { AgentType, RuntimeType } from '@agent-tower/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ValidationError } from '../../errors.js';
+import { ServiceError, ValidationError } from '../../errors.js';
+import { INTERNAL_API_INVOCATION_ID_HEADER } from '../../utils/internal-api-token.js';
 
-const { findWorkspace, findSession, createSession, getRuntimeState, resolveRuntimePermission, getProviderById } = vi.hoisted(() => ({
+const { findWorkspace, findSession, createSession, getRuntimeState, resolveRuntimePermission, getProviderById, stopSession, sendMessage } = vi.hoisted(() => ({
   findWorkspace: vi.fn(),
   findSession: vi.fn(),
   createSession: vi.fn(),
   getRuntimeState: vi.fn(),
   resolveRuntimePermission: vi.fn(),
   getProviderById: vi.fn(),
+  stopSession: vi.fn(),
+  sendMessage: vi.fn(),
 }));
 
 vi.mock('../../core/container.js', () => ({
@@ -17,6 +20,7 @@ vi.mock('../../core/container.js', () => ({
     create: createSession,
     getRuntimeState,
     resolveRuntimePermission,
+    sendMessage,
   }),
 }));
 
@@ -28,11 +32,21 @@ vi.mock('../../utils/index.js', () => ({
 }));
 
 vi.mock('../../executors/index.js', () => ({ getProviderById }));
+vi.mock('../../services/team-scheduler.service.js', () => ({
+  TeamSchedulerService: class {
+    stopSession = stopSession;
+  },
+}));
 
 import { sessionRoutes } from '../sessions.js';
 
-async function buildTestApp() {
+async function buildTestApp(options: { internalAuth?: boolean } = {}) {
   const app = Fastify();
+  if (options.internalAuth) {
+    app.addHook('onRequest', async (request) => {
+      request.agentTowerAuthKind = 'internal';
+    });
+  }
   await app.register(sessionRoutes, { prefix: '/api' });
   return app;
 }
@@ -45,6 +59,8 @@ describe('session runtime routes', () => {
     getRuntimeState.mockReset();
     resolveRuntimePermission.mockReset();
     getProviderById.mockReset();
+    stopSession.mockReset();
+    sendMessage.mockReset();
   });
 
   it('maps an unsupported Agent runtime combination to a validation response', async () => {
@@ -122,6 +138,75 @@ describe('session runtime routes', () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: 'Permission request is no longer active' });
+    await app.close();
+  });
+
+  it('routes direct session stop through the TeamRun scheduler admission boundary', async () => {
+    const app = await buildTestApp();
+    stopSession.mockResolvedValue({ id: 'session-1' });
+
+    const response = await app.inject({ method: 'POST', url: '/api/sessions/session-1/stop' });
+
+    expect(response.statusCode).toBe(200);
+    expect(stopSession).toHaveBeenCalledWith('session-1');
+    await app.close();
+  });
+
+  it('maps a rejected TeamRun direct follow-up without turning it into a 500', async () => {
+    const app = await buildTestApp();
+    findSession.mockResolvedValue({
+      id: 'session-1',
+      workspace: {
+        task: {
+          deletedAt: null,
+          project: { name: 'Project', archivedAt: null, repoDeletedAt: null },
+        },
+      },
+      conversation: null,
+    });
+    sendMessage.mockRejectedValue(new ServiceError(
+      'TeamRun follow-up requires the current invocation identity',
+      'SESSION_NOT_ADMITTED',
+      409,
+    ));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/session-1/message',
+      payload: { message: 'late follow-up' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: 'TeamRun follow-up requires the current invocation identity',
+      code: 'SESSION_NOT_ADMITTED',
+    });
+    await app.close();
+  });
+
+  it('passes a trusted internal invocation identity to direct follow-up admission', async () => {
+    const app = await buildTestApp({ internalAuth: true });
+    findSession.mockResolvedValue({
+      id: 'session-1',
+      workspace: {
+        task: {
+          deletedAt: null,
+          project: { name: 'Project', archivedAt: null, repoDeletedAt: null },
+        },
+      },
+      conversation: null,
+    });
+    sendMessage.mockResolvedValue({ id: 'session-1' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/session-1/message',
+      headers: { [INTERNAL_API_INVOCATION_ID_HEADER]: 'invocation-1' },
+      payload: { message: 'continue' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(sendMessage).toHaveBeenCalledWith('session-1', 'continue', undefined, 'invocation-1');
     await app.close();
   });
 });

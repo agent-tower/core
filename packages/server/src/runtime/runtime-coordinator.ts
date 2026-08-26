@@ -18,6 +18,7 @@ import type {
   StartRuntimeTurnInput,
 } from './contracts.js';
 import { AgentRuntimeError, toRuntimeError } from './errors.js';
+import { acpLaunchCleanupRegistry } from './acp/launch-cleanup-registry.js';
 
 interface ActiveTurn {
   id: string;
@@ -35,13 +36,18 @@ interface ManagedRuntimeSession {
   activeTurn?: ActiveTurn;
   pendingPermissions: Map<string, RuntimePermissionRequest>;
   lastActivityAt: string;
+  /** Process ownership claim for this runtime instance generation. ACP
+   * follow-up turns reuse the same instance and therefore retain its claim. */
+  launchClaimNumber?: number;
   error?: ReturnType<typeof toRuntimeError>;
 }
 
 export class RuntimeCoordinator {
   private readonly sessions = new Map<string, ManagedRuntimeSession>();
   private readonly opening = new Map<string, Promise<ManagedRuntimeSession>>();
+  private readonly disposing = new Map<string, Promise<void>>();
   private destroying = false;
+  private destroyPromise?: Promise<void>;
 
   constructor(
     private readonly registry: RuntimeRegistry,
@@ -53,6 +59,9 @@ export class RuntimeCoordinator {
       throw new AgentRuntimeError('runtime_disposed', 'open', 'Runtime coordinator is shutting down', true);
     }
     const session = await this.getOrOpen(input);
+    if (this.disposing.has(input.towerSessionId) || session.turnState === 'DISPOSED') {
+      throw new AgentRuntimeError('runtime_disposed', 'open', 'Runtime session is awaiting cleanup', true);
+    }
     if (session.activeTurn) {
       throw new AgentRuntimeError(
         'turn_already_running',
@@ -69,6 +78,9 @@ export class RuntimeCoordinator {
       resolveCompletion = resolve;
       rejectCompletion = reject;
     });
+    // Driver startup can synchronously replay an early exit before startTurn
+    // returns the handle to SessionManager.
+    void completion.catch(() => undefined);
     const active: ActiveTurn = {
       id: turnId,
       sequence: 0,
@@ -83,6 +95,7 @@ export class RuntimeCoordinator {
     this.touch(input.towerSessionId, session);
 
     const sink = this.createSink(input.towerSessionId, session, active);
+    const runtimeInstanceBeforeTurn = session.driverSession.runtimeInstanceId;
     try {
       const driverTurn = await session.driverSession.runTurn({
         turnId,
@@ -91,7 +104,14 @@ export class RuntimeCoordinator {
         resumeExternalSessionId: input.resumeExternalSessionId,
         resumeMode: input.resumeMode,
         historyBoundaryEntryId: input.historyBoundaryEntryId,
+        launchClaimNumber: input.launchClaimNumber,
       }, sink);
+      if (
+        session.driverSession.runtimeInstanceId !== runtimeInstanceBeforeTurn
+        && input.launchClaimNumber != null
+      ) {
+        session.launchClaimNumber = input.launchClaimNumber;
+      }
       void driverTurn.completion.then(
         (outcome) => {
           if (!this.isCurrentTurn(session, active)) {
@@ -113,6 +133,12 @@ export class RuntimeCoordinator {
         },
       );
     } catch (error) {
+      if (
+        session.driverSession.runtimeInstanceId !== runtimeInstanceBeforeTurn
+        && input.launchClaimNumber != null
+      ) {
+        session.launchClaimNumber = input.launchClaimNumber;
+      }
       if (this.isCurrentTurn(session, active)) {
         session.activeTurn = undefined;
         session.turnState = 'IDLE';
@@ -214,6 +240,14 @@ export class RuntimeCoordinator {
     return this.sessions.get(towerSessionId)?.activeTurn !== undefined;
   }
 
+  getRuntimeInstanceId(towerSessionId: string): string | undefined {
+    return this.sessions.get(towerSessionId)?.driverSession.runtimeInstanceId;
+  }
+
+  hasRuntimeInstance(towerSessionId: string, runtimeInstanceId: string): boolean {
+    return this.sessions.get(towerSessionId)?.driverSession.runtimeInstanceId === runtimeInstanceId;
+  }
+
   isAwaitingPermission(towerSessionId: string): boolean {
     return this.sessions.get(towerSessionId)?.turnState === 'AWAITING_PERMISSION';
   }
@@ -226,32 +260,101 @@ export class RuntimeCoordinator {
     this.sessions.get(towerSessionId)?.driverSession.resize?.(cols, rows);
   }
 
-  async disposeSession(towerSessionId: string): Promise<void> {
-    const pendingOpen = this.opening.get(towerSessionId);
-    if (pendingOpen) await pendingOpen.catch(() => undefined);
-    const session = this.sessions.get(towerSessionId);
-    if (!session) return;
-    this.sessions.delete(towerSessionId);
-    this.invalidatePermissions(towerSessionId, session);
-    session.activeTurn = undefined;
-    session.turnState = 'DISPOSED';
-    this.host.onRuntimeState(this.toState(towerSessionId, session));
-    this.host.onDriverSessionDisposed?.(towerSessionId);
-    await session.driverSession.close();
+  async disposeSession(towerSessionId: string, expectedRuntimeInstanceId?: string): Promise<void> {
+    const existing = this.disposing.get(towerSessionId);
+    if (existing) return existing;
+
+    const dispose = (async () => {
+      const pendingOpen = this.opening.get(towerSessionId);
+      if (pendingOpen) await pendingOpen.catch(() => undefined);
+      const session = this.sessions.get(towerSessionId);
+      if (!session) return;
+      if (expectedRuntimeInstanceId && session.driverSession.runtimeInstanceId !== expectedRuntimeInstanceId) {
+        return;
+      }
+
+      this.invalidatePermissions(towerSessionId, session);
+      session.activeTurn = undefined;
+      session.turnState = 'DISPOSED';
+      this.host.onRuntimeState(this.toState(towerSessionId, session));
+      const runtimeInstanceId = session.driverSession.runtimeInstanceId;
+      try {
+        await this.host.onDriverSessionDisposeStarted?.(
+          towerSessionId,
+          runtimeInstanceId,
+          session.launchClaimNumber,
+        );
+        await session.driverSession.close();
+        this.sessions.delete(towerSessionId);
+        this.host.onDriverSessionDisposed?.(towerSessionId);
+        await this.host.onDriverSessionDisposedInstance?.(
+          towerSessionId,
+          runtimeInstanceId,
+          session.launchClaimNumber,
+        );
+      } catch (error) {
+        // Keep the disposed session available for a later cleanup retry.
+        await this.host.onDriverSessionDisposeFailed?.(
+          towerSessionId,
+          runtimeInstanceId,
+          error,
+          session.launchClaimNumber,
+        );
+        throw error;
+      }
+    })();
+    this.disposing.set(towerSessionId, dispose);
+    try {
+      await dispose;
+    } finally {
+      if (this.disposing.get(towerSessionId) === dispose) {
+        this.disposing.delete(towerSessionId);
+      }
+    }
   }
 
   async destroyAll(): Promise<void> {
-    if (this.destroying) return;
+    if (this.destroyPromise) return this.destroyPromise;
     this.destroying = true;
+    const destroy = this.destroyAllOnce();
+    this.destroyPromise = destroy;
+    try {
+      await destroy;
+    } finally {
+      if (this.destroyPromise === destroy) this.destroyPromise = undefined;
+    }
+  }
+
+  private async destroyAllOnce(): Promise<void> {
     const ids = new Set([...this.sessions.keys(), ...this.opening.keys()]);
-    await Promise.allSettled([...ids].map((id) => this.disposeSession(id)));
-    this.sessions.clear();
+    const disposals = await Promise.allSettled([...ids].map((id) => this.disposeSession(id)));
+    // disposeSession removes confirmed owners. Failed owners stay attached so
+    // a later destroy attempt can retry without reopening the runtime.
     this.opening.clear();
+    this.disposing.clear();
+    // Auxiliary launch cleanup is independent from individual DriverSession
+    // objects. A failed drain preserves callbacks and retry timers; shutdown
+    // then prevents a normal successful close until all owners are confirmed.
+    await acpLaunchCleanupRegistry.drain();
+    const unresolved = acpLaunchCleanupRegistry.shutdown();
+    const failedDisposals = disposals.filter((result) => result.status === 'rejected');
+    if (failedDisposals.length > 0 || unresolved.length > 0) {
+      throw new AgentRuntimeError(
+        'runtime_cleanup_pending',
+        'close',
+        `Runtime shutdown has ${failedDisposals.length} failed session disposal(s) and ${unresolved.length} unresolved ACP launch cleanup owner(s)`,
+        true,
+        failedDisposals[0]?.status === 'rejected' ? { cause: failedDisposals[0].reason } : undefined,
+      );
+    }
   }
 
   private async getOrOpen(input: StartRuntimeTurnInput): Promise<ManagedRuntimeSession> {
     const current = this.sessions.get(input.towerSessionId);
     if (current) {
+      if (current.turnState === 'DISPOSED') {
+        throw new AgentRuntimeError('runtime_disposed', 'open', 'Runtime session is awaiting cleanup', true);
+      }
       if (current.runtimeType !== input.runtimeType) {
         throw new AgentRuntimeError('runtime_type_mismatch', 'open', 'A session cannot switch runtime type', false);
       }
@@ -283,6 +386,7 @@ export class RuntimeCoordinator {
       workingDir: input.workingDir,
       env: input.env,
       externalSessionId: input.externalSessionId,
+      launchClaimNumber: input.launchClaimNumber,
     }, openingSink);
     const session: ManagedRuntimeSession = {
       runtimeType: input.runtimeType,
@@ -290,6 +394,7 @@ export class RuntimeCoordinator {
       turnState: 'IDLE',
       pendingPermissions: new Map(),
       lastActivityAt: new Date().toISOString(),
+      launchClaimNumber: input.launchClaimNumber,
     };
     this.sessions.set(input.towerSessionId, session);
     this.host.onRuntimeState(this.toState(input.towerSessionId, session));

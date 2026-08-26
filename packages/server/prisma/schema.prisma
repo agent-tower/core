@@ -257,6 +257,7 @@ model AgentInvocation {
   nextRoomReplyReminderAt DateTime?
   lastHeartbeatAt         DateTime? // 最近一次真实进展（session:patch / room message）时间，心跳 watchdog 比对用
   firstNudgeAt            DateTime? // 首次心跳唤醒时间，作为绝对兜底起点（收到 room message 或终态时清空）
+  dispatchRevokedAt       DateTime? // stop admission gate；一旦设置，该 invocation 不得再派生 WorkRequest
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
 
@@ -391,6 +392,13 @@ model Session {
   providerId     String?
   prompt         String
   status         String             @default("PENDING")
+  runtimeLaunchState String          @default("NOT_STARTED")
+  runtimeLaunchClaimCount Int        @default(0)
+  runtimeLaunchResolvedCount Int     @default(0)
+  runtimeLaunchProcessCount Int      @default(0)
+  runtimeLaunchDiagnostic String?
+  runtimeLaunchDiagnosticCount Int   @default(0)
+  runtimeLaunchNextDiagnosticAt DateTime?
   purpose        String             @default("CHAT") // CHAT: 正常会话, COMMIT_MSG: 生成提交消息
   logSnapshot    String? // 序列化的 NormalizedConversation JSON，session 结束时持久化
   tokenUsage     String? // JSON: { totalTokens, modelContextWindow? }
@@ -425,15 +433,28 @@ model AgentArtifact {
 
 // 执行进程
 model ExecutionProcess {
-  id        String   @id @default(uuid())
-  sessionId String
-  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  pid       Int?
-  exitCode  Int?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              String   @id @default(uuid())
+  sessionId       String
+  session         Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  launchClaimNumber Int?
+  runtimeInstanceId String?
+  processGroupId  String?
+  birthMarker     String?
+  ownershipToken  String?
+  cleanupState    String   @default("PENDING")
+  cleanupError    String?
+  cleanupAttemptCount Int  @default(0)
+  nextCleanupRetryAt DateTime?
+  pid             Int?
+  exitCode        Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@index([sessionId])
+  @@unique([sessionId, launchClaimNumber])
+  @@index([runtimeInstanceId])
+  @@index([cleanupState])
+  @@index([cleanupState, nextCleanupRetryAt])
 }
 
 // 执行日志

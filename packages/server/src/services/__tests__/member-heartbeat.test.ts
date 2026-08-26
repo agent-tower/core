@@ -211,7 +211,12 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
 
     await service.reconcileStalledInvocations();
 
-    expect(messenger.sendMessage).toHaveBeenCalledWith(invocation.sessionId, TEAM_HEARTBEAT_NUDGE);
+    expect(messenger.sendMessage).toHaveBeenCalledWith(
+      invocation.sessionId,
+      TEAM_HEARTBEAT_NUDGE,
+      undefined,
+      invocation.id,
+    );
     const reloaded = await prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } });
     expect(reloaded.roomReplyReminderCount).toBe(1);
     expect(reloaded.firstNudgeAt?.toISOString()).toBe(NOW.toISOString());
@@ -375,7 +380,7 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
 
     await service.reconcileStalledInvocations();
 
-    expect(messenger.stop).toHaveBeenCalledWith(invocation.sessionId);
+    expect(messenger.stop).toHaveBeenCalledWith(invocation.sessionId, { skipTeamRunReconcile: true });
     expect(messenger.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -395,7 +400,7 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
 
     await service.reconcileStalledInvocations();
 
-    expect(messenger.stop).toHaveBeenCalledWith(invocation.sessionId);
+    expect(messenger.stop).toHaveBeenCalledWith(invocation.sessionId, { skipTeamRunReconcile: true });
   });
 
   it('fails an orphan RUNNING invocation with no live pipeline and starts queued work', async () => {
@@ -419,7 +424,7 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
     expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
   });
 
-  it('retries a real orphan candidate on the next heartbeat tick after a transient item failure', async () => {
+  it('lets the same tick stalled recovery claim an orphan after a transient orphan probe failure', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { teamRun, workspace, member } = await createFixture();
     const invocation = await createRunningInvocation({
@@ -445,16 +450,11 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
 
     await heartbeatInternals.tick();
     await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
-      status: 'RUNNING',
-    });
-
-    await heartbeatInternals.tick();
-    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'FAILED',
     });
     expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
     expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
-    expect(queuePump.reconcileQueuedWork).toHaveBeenCalledTimes(2);
+    expect(queuePump.reconcileQueuedWork).toHaveBeenCalledTimes(1);
   });
 
   it('repairs a runtime half-completed terminal transition after the orphan scan idempotently', async () => {
@@ -545,13 +545,13 @@ describe('TeamReconcilerService heartbeat watchdog', () => {
       status: 'STARTED',
     });
     expect(lockService.listLocks()).toEqual([]);
-    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(3);
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(1);
     expect(scheduler.startNextSessions).toHaveBeenCalledTimes(1);
 
     await heartbeatInternals.tick();
     expect(orphanSpy).toHaveBeenCalledTimes(1);
     expect(terminalRecoverySpy).toHaveBeenCalledTimes(4);
-    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(3);
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(1);
     expect(scheduler.startNextSessions).toHaveBeenCalledTimes(1);
     await expect(prisma.agentInvocation.count({ where: { workRequestId: queuedWorkRequest.id } })).resolves.toBe(1);
   });

@@ -39,6 +39,13 @@ describe('runStartupDataMigrations', () => {
   });
 
   beforeEach(async () => {
+    await prisma.executionProcess.deleteMany();
+    await prisma.agentInvocation.deleteMany();
+    await prisma.workRequest.deleteMany();
+    await prisma.teamMember.deleteMany();
+    await prisma.teamRun.deleteMany();
+    await prisma.session.deleteMany();
+    await prisma.workspace.deleteMany();
     await prisma.task.deleteMany();
     await prisma.project.deleteMany();
     await prisma.appSettings.deleteMany();
@@ -84,6 +91,99 @@ describe('runStartupDataMigrations', () => {
     );
 
     await expect(prisma.task.count({ where: { title: { contains: historicalTitle } } })).resolves.toBe(0);
+    await expect(prisma.appSettings.findUnique({ where: { id: 'singleton' } })).resolves.toMatchObject({
+      dataMigrationVersion: currentVersion,
+    });
+  });
+
+  it('backfills runtime launch evidence conservatively and idempotently after db push', async () => {
+    const project = await prisma.project.create({
+      data: { name: 'Runtime migration project', repoPath: testDir },
+    });
+    const task = await prisma.task.create({
+      data: { projectId: project.id, title: 'Runtime migration task' },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'runtime-migration',
+        worktreePath: testDir,
+        status: 'ACTIVE',
+      },
+    });
+    const [neverStarted, unknownStarted, processRecorded] = await Promise.all([
+      prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: 'CODEX',
+          prompt: 'never started',
+          status: 'PENDING',
+        },
+      }),
+      prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: 'CODEX',
+          prompt: 'unknown started runtime',
+          status: 'RUNNING',
+        },
+      }),
+      prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: 'CODEX',
+          prompt: 'persisted process evidence',
+          status: 'COMPLETED',
+        },
+      }),
+    ]);
+    const legacyProcess = await prisma.executionProcess.create({
+      data: {
+        sessionId: processRecorded.id,
+        runtimeInstanceId: null,
+        pid: 9501,
+        processGroupId: null,
+        birthMarker: null,
+        ownershipToken: null,
+        cleanupState: 'ACTIVE',
+      },
+    });
+    await prisma.appSettings.create({
+      data: { id: 'singleton', dataMigrationVersion: 1 },
+    });
+
+    await runStartupDataMigrations();
+    await runStartupDataMigrations();
+
+    await expect(prisma.session.findUnique({ where: { id: neverStarted.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'NOT_STARTED',
+      runtimeLaunchClaimCount: 0,
+      runtimeLaunchResolvedCount: 0,
+      runtimeLaunchProcessCount: 0,
+    });
+    await expect(prisma.session.findUnique({ where: { id: unknownStarted.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'QUARANTINED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 0,
+      runtimeLaunchProcessCount: 0,
+      runtimeLaunchDiagnostic: 'Legacy session crossed logical start without durable process evidence',
+      runtimeLaunchDiagnosticCount: 1,
+      runtimeLaunchNextDiagnosticAt: expect.any(Date),
+    });
+    await expect(prisma.session.findUnique({ where: { id: processRecorded.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'PROCESS_RECORDED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 1,
+      runtimeLaunchProcessCount: 1,
+    });
+    await expect(prisma.executionProcess.findUnique({ where: { id: legacyProcess.id } })).resolves.toMatchObject({
+      launchClaimNumber: null,
+      runtimeInstanceId: null,
+      cleanupState: 'QUARANTINED',
+      cleanupError: expect.stringContaining('identity is incomplete'),
+      cleanupAttemptCount: 1,
+      nextCleanupRetryAt: expect.any(Date),
+    });
     await expect(prisma.appSettings.findUnique({ where: { id: 'singleton' } })).resolves.toMatchObject({
       dataMigrationVersion: currentVersion,
     });

@@ -27,7 +27,7 @@
 - Task 删除包含软删除和 `TaskCleanupJob` 文件系统清理，不能只依赖 cascade。
 - 对外 DTO 经 mapper 转换，不直接扩散 Prisma row。
 
-SQLite 在 `buildApp()` 注册路由前统一启用 WAL/busy timeout，并执行带版本号的幂等启动数据迁移。发布 CLI 使用 `prisma db push`，所以需要修改历史数据的 schema 变更不能只写 Prisma migration SQL；还要加入 `database-maintenance.service.ts` 的 runtime migration，并在同一事务末尾推进 `AppSettings.dataMigrationVersion`。
+SQLite 在 `buildApp()` 注册路由前统一启用 WAL/busy timeout，并执行带版本号的幂等启动数据迁移。发布 CLI 使用 `prisma db push`，所以需要修改历史数据的 schema 变更不能只写 Prisma migration SQL；还要加入 `database-maintenance.service.ts` 的 runtime migration，并在同一事务末尾推进 `AppSettings.dataMigrationVersion`。涉及进程 ownership/launch evidence 的旧数据回填必须保守：未知活跃状态不能因缺少关联 row 被标成安全完成。
 
 Task 看板热路径使用 `GET /api/task-board` 的紧凑 DTO，固定批量查询 task、首选 workspace 和 latest session；完整 description、workspace/session 历史按详情接口读取。不要在列表 mapper 中加载完整关系、正文或按 project/task 循环查询。
 

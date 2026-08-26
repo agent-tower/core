@@ -30,6 +30,14 @@ const FIELD_BOUNDARY_PATTERN = /(^|[\s,])([A-Za-z][A-Za-z0-9_-]*)(\s*[:=]\s*)(?=
 
 let processHandlersInstalled = false;
 const loggedUnhandledRejections = new WeakSet<object>();
+let processShutdownHandler: ((error: unknown) => Promise<void>) | undefined;
+
+/** Register the application-level shutdown owner used by fatal process hooks. */
+export function registerProcessShutdownHandler(
+  handler: ((error: unknown) => Promise<void>) | undefined,
+): void {
+  processShutdownHandler = handler;
+}
 
 export function getLogsDir(dataDir = resolveDataDir()): string {
   return path.join(dataDir, 'logs');
@@ -64,6 +72,29 @@ export function installProcessErrorLogging(dataDir?: string): void {
     }, { dataDir });
   });
 
+  process.on('uncaughtException', (error) => {
+    if (loggedUnhandledRejections.has(error)) return;
+    writeErrorLog({
+      level: 'error',
+      source: 'process.uncaughtException',
+      message: error instanceof Error ? error.message : String(error),
+      error,
+    }, { dataDir });
+    loggedUnhandledRejections.add(error);
+    process.exitCode = 1;
+    const shutdown = processShutdownHandler;
+    if (shutdown) {
+      void shutdown(error).catch((shutdownError) => {
+        writeErrorLog({
+          level: 'error',
+          source: 'process.shutdown',
+          message: 'Fatal process cleanup remains pending',
+          error: shutdownError,
+        }, { dataDir });
+      });
+    }
+  });
+
   process.on('unhandledRejection', (reason) => {
     const error = reason instanceof Error ? reason : new Error(`Unhandled rejection: ${String(reason)}`);
     writeErrorLog({
@@ -73,9 +104,18 @@ export function installProcessErrorLogging(dataDir?: string): void {
       error,
     }, { dataDir });
     loggedUnhandledRejections.add(error);
-    setImmediate(() => {
-      throw error;
-    });
+    process.exitCode = 1;
+    const shutdown = processShutdownHandler;
+    if (shutdown) {
+      void shutdown(error).catch((shutdownError) => {
+        writeErrorLog({
+          level: 'error',
+          source: 'process.shutdown',
+          message: 'Unhandled rejection cleanup remains pending',
+          error: shutdownError,
+        }, { dataDir });
+      });
+    }
   });
 }
 

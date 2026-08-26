@@ -6,3 +6,4 @@ export * from './errors.js';
 export * from './runtime-coordinator.js';
 export * from './runtime-registry.js';
 export * from './runtime-state-view.js';
+export * from './shutdown-coordinator.js';

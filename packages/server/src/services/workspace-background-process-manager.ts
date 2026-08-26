@@ -13,7 +13,6 @@ import { which } from '../utils/index.js';
 import { writeErrorLog } from '../utils/error-log.js';
 import {
   createUnixProcessIdentityAdapter,
-  PTY_WRAPPER_IDENTITY_SEED_ENV,
   type UnixProcessGroupIdentity,
   type UnixProcessIdentity,
   type UnixProcessIdentityAdapter,
@@ -119,10 +118,11 @@ export class WorkspaceBackgroundProcessManager {
       cols: 120,
       rows: 30,
       cwd: spec.cwd,
-      env: buildPtyWrapperEnv({
-        ...cleanEnv,
-        [PTY_WRAPPER_IDENTITY_SEED_ENV]: ownershipToken,
-      } as Record<string, string>),
+      env: buildPtyWrapperEnv(
+        cleanEnv as Record<string, string>,
+        process.env,
+        ownershipToken,
+      ),
     });
 
     let resolveExit!: (exitCode: number) => void;

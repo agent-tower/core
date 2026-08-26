@@ -12,6 +12,7 @@ import type {
 } from '../contracts.js';
 import { RuntimeCoordinator } from '../runtime-coordinator.js';
 import { StaticRuntimeRegistry } from '../runtime-registry.js';
+import { acpLaunchCleanupRegistry } from '../acp/launch-cleanup-registry.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -69,6 +70,7 @@ function setup() {
     env: ExecutionEnv.default(process.cwd()),
     msgStore: new MsgStore(),
     prompt: 'hello',
+    launchClaimNumber: undefined as number | undefined,
   };
   return { coordinator, input, session, turns, sinks, events, states, onDriverSessionDisposed };
 }
@@ -208,5 +210,114 @@ describe('RuntimeCoordinator', () => {
     expect(session.close).toHaveBeenCalledTimes(1);
     expect(onDriverSessionDisposed).toHaveBeenCalledWith(input.towerSessionId);
     expect(coordinator.getState(input.towerSessionId).turnState).toBe('IDLE');
+  });
+
+  it('keeps a failed disposal retryable instead of reopening over an owned runtime', async () => {
+    const { coordinator, input, session } = setup();
+    await coordinator.startTurn(input);
+    vi.mocked(session.close)
+      .mockRejectedValueOnce(new Error('tree still alive'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(coordinator.disposeSession(input.towerSessionId)).rejects.toThrow('tree still alive');
+    expect(coordinator.getState(input.towerSessionId).turnState).toBe('DISPOSED');
+    await expect(coordinator.disposeSession(input.towerSessionId)).resolves.toBeUndefined();
+    expect(session.close).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects failed disposal and allows a later destroy attempt to finish cleanup', async () => {
+    const { coordinator, input, session } = setup();
+    await coordinator.startTurn(input);
+    vi.mocked(session.close)
+      .mockRejectedValueOnce(new Error('shutdown tree still alive'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(coordinator.destroyAll()).rejects.toMatchObject({ code: 'runtime_cleanup_pending' });
+    expect(coordinator.getState(input.towerSessionId).turnState).toBe('DISPOSED');
+    await expect(coordinator.destroyAll()).resolves.toBeUndefined();
+    expect(session.close).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps unresolved launch cleanup observable and retryable across repeated destroy calls', async () => {
+    const { coordinator, input } = setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let failCleanup = true;
+    const ownerId = acpLaunchCleanupRegistry.register(async () => {
+      if (failCleanup) throw new Error('owned tree still alive');
+    }, 'post-spawn-without-process-row');
+
+    try {
+      await expect(coordinator.destroyAll()).rejects.toMatchObject({
+        code: 'runtime_cleanup_pending',
+        message: expect.stringContaining('1 unresolved ACP launch cleanup owner'),
+      });
+      expect(acpLaunchCleanupRegistry.getState(ownerId)).toMatchObject({
+        status: 'FAILED',
+        attemptCount: 1,
+        lastError: 'owned tree still alive',
+        nextRetryAt: expect.any(Number),
+      });
+      await expect(coordinator.startTurn(input)).rejects.toMatchObject({ code: 'runtime_disposed' });
+
+      await expect(coordinator.destroyAll()).rejects.toMatchObject({ code: 'runtime_cleanup_pending' });
+      expect(acpLaunchCleanupRegistry.getState(ownerId)).toMatchObject({
+        status: 'FAILED',
+        attemptCount: 2,
+      });
+
+      failCleanup = false;
+      await expect(coordinator.destroyAll()).resolves.toBeUndefined();
+      expect(acpLaunchCleanupRegistry.getState(ownerId)).toBeUndefined();
+      await expect(coordinator.destroyAll()).resolves.toBeUndefined();
+    } finally {
+      failCleanup = false;
+      await acpLaunchCleanupRegistry.drain();
+      acpLaunchCleanupRegistry.shutdown();
+      warn.mockRestore();
+    }
+  });
+
+  it('persists the cleanup admission boundary before closing the driver session', async () => {
+    const { coordinator, input, session } = setup();
+    await coordinator.startTurn(input);
+    const callOrder: string[] = [];
+    const host = (coordinator as unknown as { host: RuntimeCoordinatorHost }).host;
+    host.onDriverSessionDisposeStarted = vi.fn(async () => {
+      callOrder.push('pending');
+    });
+    vi.mocked(session.close).mockImplementation(async () => {
+      callOrder.push('close');
+    });
+
+    await coordinator.disposeSession(input.towerSessionId);
+
+    expect(callOrder).toEqual(['pending', 'close']);
+  });
+
+  it('passes the process launch claim to disposal ownership callbacks', async () => {
+    const { coordinator, input, session } = setup();
+    const onDisposeStarted = vi.fn(async () => undefined);
+    const host = (coordinator as unknown as { host: RuntimeCoordinatorHost }).host;
+    host.onDriverSessionDisposeStarted = onDisposeStarted;
+    input.launchClaimNumber = 7;
+
+    await coordinator.startTurn(input);
+    await coordinator.disposeSession(input.towerSessionId);
+
+    expect(onDisposeStarted).toHaveBeenCalledWith(input.towerSessionId, session.runtimeInstanceId, 7);
+  });
+
+  it('rejects a new turn once disposal has claimed the Tower session', async () => {
+    const { coordinator, input, session } = setup();
+    await coordinator.startTurn(input);
+    const close = deferred<void>();
+    vi.mocked(session.close).mockReturnValueOnce(close.promise);
+
+    const disposal = coordinator.disposeSession(input.towerSessionId);
+    await expect(coordinator.startTurn(input)).rejects.toMatchObject({ code: 'runtime_disposed' });
+
+    close.resolve();
+    await disposal;
+    expect(session.runTurn).toHaveBeenCalledTimes(1);
   });
 });

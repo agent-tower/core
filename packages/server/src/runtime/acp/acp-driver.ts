@@ -7,6 +7,7 @@ import {
   type RuntimePermissionOption,
 } from '@agent-tower/shared';
 import { getProviderById, getProviderRuntimeType } from '../../executors/providers.js';
+import { markPreChildProcessFailure } from '../../executors/start-error.js';
 import { MsgStore, setSessionId, type JsonPatch } from '../../output/index.js';
 import { buildMcpConfigResponse } from '../../services/mcp-config.service.js';
 import type {
@@ -19,6 +20,7 @@ import type {
 } from '../contracts.js';
 import { AgentRuntimeError } from '../errors.js';
 import { AcpProcessManager } from './process-manager.js';
+import { acpLaunchCleanupRegistry } from './launch-cleanup-registry.js';
 import { getAcpAgentDefinition } from './agents/registry.js';
 import type { AcpAgentDefinition, AcpAgentProfile } from './agents/types.js';
 import { reconcileAcpHistoryEntries } from './history-reconciler.js';
@@ -52,9 +54,9 @@ class AcpDriverSession implements DriverSession {
   private sessionReady = false;
   private sessionBootstrapUpdates?: SessionNotification[];
   private closed = false;
-  private launchCleanup?: () => Promise<void>;
-  private cleanupPromise?: Promise<void>;
+  private launchCleanupOwnerId?: string;
   private transportResetPromise?: Promise<void>;
+  private closePromise?: Promise<void>;
   private negotiatedCapabilities: RuntimeCapabilities = {
     loadSession: false,
     terminalInput: false,
@@ -77,31 +79,37 @@ class AcpDriverSession implements DriverSession {
   static async open(input: RuntimeOpenInput, sink: RuntimeDriverEventSink): Promise<AcpDriverSession> {
     const provider = input.providerId ? getProviderById(input.providerId) : null;
     if (input.providerId && !provider) {
-      throw new AgentRuntimeError(
+      throw markPreChildProcessFailure(new AgentRuntimeError(
         'provider_config_invalid',
         'provider_config',
         `Provider '${input.providerId}' was not found`,
         false,
-      );
+      ));
     }
     if (provider && provider.agentType !== input.agentType) {
-      throw new AgentRuntimeError(
+      throw markPreChildProcessFailure(new AgentRuntimeError(
         'provider_config_invalid',
         'provider_config',
         `Provider '${provider.name}' does not belong to agent '${input.agentType}'`,
         false,
-      );
+      ));
     }
     if (provider && getProviderRuntimeType(provider) !== RuntimeType.ACP) {
-      throw new AgentRuntimeError(
+      throw markPreChildProcessFailure(new AgentRuntimeError(
         'provider_config_invalid',
         'provider_config',
         `Provider '${provider.name}' is configured for the '${getProviderRuntimeType(provider)}' runtime`,
         false,
-      );
+      ));
     }
-    const definition = getAcpAgentDefinition(input.agentType);
-    const profile = definition.projectProvider(provider, input.env.getFullEnv());
+    let definition: AcpAgentDefinition;
+    let profile: AcpAgentProfile;
+    try {
+      definition = getAcpAgentDefinition(input.agentType);
+      profile = definition.projectProvider(provider, input.env.getFullEnv());
+    } catch (error) {
+      throw markPreChildProcessFailure(error);
+    }
     const session = new AcpDriverSession(input, definition, profile);
     await session.connect(sink);
     return session;
@@ -123,7 +131,7 @@ class AcpDriverSession implements DriverSession {
     if (this.closed) {
       throw new AgentRuntimeError('connection_closed', 'prompt', 'ACP connection is closed', true);
     }
-    if (!this.connection) await this.connect(sink);
+    if (!this.connection) await this.connect(sink, turn.launchClaimNumber ?? 1);
     if (this.currentTurnId) {
       throw new AgentRuntimeError('turn_already_running', 'prompt', 'ACP turn is already running', false);
     }
@@ -199,23 +207,46 @@ class AcpDriverSession implements DriverSession {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
     this.invalidatePermissions(this.currentSink);
-    await this.resetTransport();
+    const close = this.resetTransport().catch((error) => {
+      if (this.closePromise === close) this.closePromise = undefined;
+      throw error;
+    });
+    this.closePromise = close;
+    try {
+      await close;
+    } finally {
+      // A launch-helper cleanup failure must not leave a permanently resolved
+      // close promise: a later lifecycle boundary can retry the helper.
+      if (this.closePromise === close && this.launchCleanupOwnerId) {
+        this.closePromise = undefined;
+      }
+    }
   }
 
   private projector?: AcpProjector;
 
-  private async connect(sink: RuntimeDriverEventSink): Promise<void> {
+  private async connect(
+    sink: RuntimeDriverEventSink,
+    launchClaimNumber = this.input.launchClaimNumber ?? 1,
+  ): Promise<void> {
     if (this.transportResetPromise) await this.transportResetPromise;
     if (this.closed) {
       throw new AgentRuntimeError('connection_closed', 'initialize', 'ACP connection is closed', true);
     }
     if (this.connection) return;
-    this.cleanupPromise = undefined;
-    const launch = await this.definition.resolveLaunch(this.input, this.providerProfile);
-    this.launchCleanup = launch.cleanup;
+    if (this.processManager) await this.resetTransport();
+    let launch: Awaited<ReturnType<AcpAgentDefinition['resolveLaunch']>>;
+    try {
+      launch = await this.definition.resolveLaunch(this.input, this.providerProfile);
+    } catch (error) {
+      throw markPreChildProcessFailure(error);
+    }
+    this.launchCleanupOwnerId = launch.cleanup
+      ? acpLaunchCleanupRegistry.register(launch.cleanup, `${this.input.agentType}:${this.input.towerSessionId}`)
+      : undefined;
     const runtimeInstanceId = randomUUID();
     this.currentRuntimeInstanceId = runtimeInstanceId;
     const manager = new AcpProcessManager({
@@ -229,26 +260,42 @@ class AcpDriverSession implements DriverSession {
     this.processManager = manager;
     try {
       const streams = await manager.start();
-      await sink.process({ type: 'started', runtimeInstanceId, pid: streams.pid });
+      await sink.process({
+        type: 'started',
+        runtimeInstanceId,
+        launchClaimNumber,
+        pid: streams.pid,
+        processGroupId: streams.processGroupId,
+        birthMarker: streams.birthMarker,
+        ownershipToken: streams.ownershipToken,
+      });
       manager.onExit((exit) => {
-        void sink.process({
-          type: 'exited',
-          runtimeInstanceId,
-          exitCode: exit.exitCode,
-          signal: exit.signal,
-        });
-        if (!this.closed && this.processManager === manager) {
-          const connection = this.connection;
-          connection?.close(
-            new AgentRuntimeError(
-              'process_exit',
-              'runtime',
-              exit.stderrExcerpt || `ACP adapter exited with code ${exit.exitCode ?? 'unknown'}`,
-              true,
-            ),
-          );
-          void this.resetTransport(connection).catch(() => undefined);
-        }
+        void (async () => {
+          await sink.process({
+            type: 'exited',
+            runtimeInstanceId,
+            exitCode: exit.exitCode,
+            signal: exit.signal,
+            launchClaimNumber,
+          }).catch(() => undefined);
+          if (!this.closed && this.processManager === manager) {
+            const connection = this.connection;
+            connection?.close(
+              new AgentRuntimeError(
+                'process_exit',
+                'runtime',
+                exit.stderrExcerpt || `ACP adapter exited with code ${exit.exitCode ?? 'unknown'}`,
+                true,
+              ),
+            );
+            await this.resetTransport(connection);
+            await sink.process({
+              type: 'tree_cleanup_completed',
+              runtimeInstanceId,
+              launchClaimNumber,
+            });
+          }
+        })().catch(() => undefined);
       });
       const app = acp.client({ name: 'agent-tower' })
         .onNotification(acp.methods.client.session.update, async ({ params }) => {
@@ -323,11 +370,22 @@ class AcpDriverSession implements DriverSession {
     connection?.close();
 
     const reset = (async () => {
+      let stopError: unknown;
       try {
         await manager?.stop();
-      } finally {
-        await this.cleanupLaunch();
+      } catch (error) {
+        // Keep a failed manager attached so close/connect can retry its owned
+        // process-tree cleanup instead of treating a root exit as confirmed.
+        if (manager && !this.processManager) this.processManager = manager;
+        stopError = error;
       }
+
+      // Owned-tree confirmation is the safety-critical result used by
+      // admission/recovery. Auxiliary launch cleanup is independent and can
+      // be retried without converting a confirmed tree into a failed runtime.
+      await this.cleanupLaunchWithRetry();
+      if (!stopError && this.processManager === manager) this.processManager = undefined;
+      if (stopError) throw stopError;
     })();
     this.transportResetPromise = reset;
     try {
@@ -337,13 +395,23 @@ class AcpDriverSession implements DriverSession {
     }
   }
 
-  private cleanupLaunch(): Promise<void> {
-    if (!this.cleanupPromise) {
-      const cleanup = this.launchCleanup;
-      this.launchCleanup = undefined;
-      this.cleanupPromise = cleanup ? cleanup() : Promise.resolve();
+  private async cleanupLaunch(): Promise<void> {
+    const ownerId = this.launchCleanupOwnerId;
+    if (!ownerId) return;
+    await acpLaunchCleanupRegistry.runWithImmediateRetries(ownerId);
+    // Successful owners are removed from the registry. Keep failed owner IDs
+    // attached so a later close/reset can retry the same callback.
+    if (!acpLaunchCleanupRegistry.getState(ownerId)) {
+      this.launchCleanupOwnerId = undefined;
     }
-    return this.cleanupPromise;
+  }
+
+  private async cleanupLaunchWithRetry(): Promise<void> {
+    try {
+      await this.cleanupLaunch();
+    } catch (error) {
+      console.warn('[AcpRuntimeDriver] Auxiliary launch cleanup scheduled for retry', error);
+    }
   }
 
   private async ensureAgentSession(turn: RuntimeRunTurnInput, sink: RuntimeDriverEventSink): Promise<void> {

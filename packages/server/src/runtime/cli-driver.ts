@@ -6,9 +6,13 @@ import {
   getExecutorByProvider,
   ExecutorConfigurationError,
   ExecutorNotFoundError,
+  isPreChildProcessFailure,
+  markPreChildProcessFailure,
   normalizeExecutorStartError,
+  getSpawnCleanupOwner,
   type BaseExecutor,
   type CancellationToken,
+  type SpawnCleanupOwner,
   type SpawnedChild,
 } from '../executors/index.js';
 import { AgentPipeline } from '../pipeline/agent-pipeline.js';
@@ -26,8 +30,7 @@ import { AgentRuntimeError } from './errors.js';
 import { createCliParser } from './cli-parser.js';
 
 const LOGICAL_COMPLETION_GRACE_MS = 250;
-const PROCESS_EXIT_LISTENER_TIMEOUT_MS = 5_000;
-
+type BufferedProcessEvent = Parameters<RuntimeDriverEventSink['process']>[0];
 interface ActiveCliTurn {
   turnId: string;
   runtimeInstanceId: string;
@@ -37,10 +40,24 @@ interface ActiveCliTurn {
   resolve: (outcome: RuntimeTurnOutcome) => void;
   reject: (error: unknown) => void;
   settled: boolean;
+  /** Root wrapper exit was observed, even if complete tree cleanup is unverified. */
+  processExitObserved: boolean;
   processExited: boolean;
+  treeCleanupConfirmed: boolean;
+  processExitCompletion: Promise<void>;
+  resolveProcessExit: () => void;
+  requestProcessStop?: () => void;
   cleanupTimer?: ReturnType<typeof setTimeout>;
-  processExitTimer?: ReturnType<typeof setTimeout>;
   offRawExit?: { dispose(): void };
+  spawnCleanupOwner?: SpawnCleanupOwner;
+  verifyTreeCleanup?: () => boolean;
+  disposeTreeCleanupChannel?: () => void;
+  /** Process events wait behind the durable started barrier for this generation. */
+  processEvents: BufferedProcessEvent[];
+  processEventsReleased: boolean;
+  processEventFlush?: Promise<void>;
+  processEventSink?: RuntimeDriverEventSink;
+  launchClaimNumber?: number;
   cleanups: Array<() => void>;
 }
 
@@ -60,9 +77,12 @@ class CliDriverSession implements DriverSession {
     permissions: false,
   };
   private active?: ActiveCliTurn;
+  private readonly pendingCleanup = new Set<ActiveCliTurn>();
   private currentRuntimeInstanceId = randomUUID();
   private currentExternalSessionId?: string;
-  private closed = false;
+  /** Admission closes immediately, while cleanup remains open until the real tree exits. */
+  private admissionClosed = false;
+  private closePromise?: Promise<void>;
 
   constructor(private readonly input: RuntimeOpenInput) {
     this.currentExternalSessionId = input.externalSessionId ?? undefined;
@@ -77,15 +97,38 @@ class CliDriverSession implements DriverSession {
   }
 
   async runTurn(input: RuntimeRunTurnInput, sink: RuntimeDriverEventSink): Promise<DriverTurn> {
-    if (this.closed) {
+    if (this.admissionClosed) {
       throw new AgentRuntimeError('runtime_disposed', 'prompt', 'CLI runtime session is closed', true);
     }
-    if (this.active && !this.active.settled) {
-      throw new AgentRuntimeError('turn_already_running', 'prompt', 'CLI turn is already running', false);
+    if (this.active) {
+      if (this.active.processExitObserved && !this.active.treeCleanupConfirmed) {
+        throw new AgentRuntimeError(
+          'process_exit_pending',
+          'prompt',
+          'Previous CLI process tree exited without confirmed cleanup channel completion',
+          true,
+        );
+      }
+      if (!this.active.processExited && !this.active.settled) {
+        throw new AgentRuntimeError(
+          'process_exit_pending',
+          'prompt',
+          'Previous CLI process tree has not confirmed exit',
+          true,
+        );
+      }
+      if (!this.active.settled) {
+        throw new AgentRuntimeError('turn_already_running', 'prompt', 'CLI turn is already running', false);
+      }
     }
     this.cleanupActive();
 
-    const executor = this.resolveExecutor();
+    let executor: BaseExecutor;
+    try {
+      executor = this.resolveExecutor();
+    } catch (error) {
+      throw markPreChildProcessFailure(error);
+    }
     const spawnConfig = {
       workingDir: this.input.workingDir,
       prompt: input.prompt,
@@ -97,32 +140,63 @@ class CliDriverSession implements DriverSession {
       if (resumeId && executor.spawnFollowUp) {
         try {
           spawnResult = await executor.spawnFollowUp(spawnConfig, resumeId);
-        } catch {
+        } catch (error) {
+          if (!isPreChildProcessFailure(error)) throw error;
           spawnResult = await executor.spawn(spawnConfig);
         }
       } else {
         spawnResult = await executor.spawn(spawnConfig);
       }
     } catch (error) {
+      const owner = getSpawnCleanupOwner(error);
+      if (owner) {
+        const pending = createActiveTurn(input.turnId, randomUUID(), input.launchClaimNumber);
+        pending.spawnCleanupOwner = owner;
+        pending.requestProcessStop = owner.requestStop;
+        owner.processExit.then(() => {
+          pending.processExited = true;
+          pending.resolveProcessExit();
+          owner.dispose();
+          owner.disposeTreeCleanupChannel?.();
+        }).catch(() => undefined);
+        void pending.completion.catch(() => undefined);
+        this.active = pending;
+        this.settleFailure(pending, error);
+      }
       throw normalizeExecutorStartError(error);
     }
 
     this.currentRuntimeInstanceId = randomUUID();
-    const active = createActiveTurn(input.turnId, this.currentRuntimeInstanceId);
+    const active = createActiveTurn(input.turnId, this.currentRuntimeInstanceId, input.launchClaimNumber);
+    // Early-exit replay can reject before RuntimeCoordinator receives the
+    // DriverTurn and attaches its terminal handlers.
+    void active.completion.catch(() => undefined);
     this.active = active;
 
     try {
+      // Install the raw exit handoff and reusable stop owner before the first
+      // durable started event. A persistence failure must still be closable.
+      this.attachSpawnedTurn(active, spawnResult, input.msgStore, sink);
       await sink.process({
         type: 'started',
         runtimeInstanceId: active.runtimeInstanceId,
+        launchClaimNumber: input.launchClaimNumber ?? 1,
         pid: spawnResult.pid,
+        processGroupId: spawnResult.processGroupId,
+        birthMarker: spawnResult.birthMarker,
+        ownershipToken: spawnResult.ownershipToken,
       });
-      this.attachSpawnedTurn(active, spawnResult, input.msgStore, sink);
+      active.processEventsReleased = true;
+      await this.flushProcessEvents(active, sink);
     } catch (error) {
+      // Preserve early exit evidence even when the started row is rejected.
+      // A later recovery/start retry can replay these events; the owner stays
+      // attached until the wrapper confirms the complete tree exit.
+      active.processEventsReleased = true;
+      await this.flushProcessEvents(active, sink);
       void active.completion.catch(() => undefined);
       try {
-        spawnResult.cancel?.cancel();
-        spawnResult.pty.kill();
+        active.requestProcessStop?.();
       } catch {
         // The host error remains authoritative.
       }
@@ -153,21 +227,81 @@ class CliDriverSession implements DriverSession {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    const active = this.active;
-    if (!active) return;
-    active.cancel?.cancel();
-    active.pipeline?.destroy();
-    this.settleFailure(
-      active,
-      new AgentRuntimeError('runtime_disposed', 'close', 'CLI runtime session was closed', true),
-    );
-    await Promise.race([
-      active.completion.catch(() => undefined),
-      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-    ]);
-    this.cleanupActive();
+    this.admissionClosed = true;
+    if (this.closePromise) return this.closePromise;
+
+    const closeAttempt = this.closeActive();
+    this.closePromise = closeAttempt;
+    try {
+      await closeAttempt;
+    } finally {
+      // A timeout is a cleanup failure, not confirmation. Keep admission closed
+      // but allow a later recovery/shutdown attempt to retry the same owner.
+      if (this.closePromise === closeAttempt) this.closePromise = undefined;
+    }
+  }
+
+  private async closeActive(): Promise<void> {
+    const targets = [
+      ...(this.active ? [this.active] : []),
+      ...this.pendingCleanup,
+    ];
+    if (targets.length === 0) return;
+    const closeError = new AgentRuntimeError('runtime_disposed', 'close', 'CLI runtime session was closed', true);
+    for (const active of targets) {
+      active.requestProcessStop?.();
+      this.settleFailure(active, closeError);
+      await Promise.race([
+        active.completion.catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+      ]);
+      await this.waitForProcessExit(active);
+      if (active.processEventFlush) await active.processEventFlush;
+      if (active.processEvents.length > 0 && active.processEventSink) {
+        await this.flushProcessEvents(active, active.processEventSink);
+      }
+      this.cleanupTurnResources(active);
+      if (active.processEvents.length > 0) {
+        this.pendingCleanup.add(active);
+        throw new AgentRuntimeError(
+          'runtime_cleanup_pending',
+          'close',
+          'CLI process events were not durably acknowledged after tree exit',
+          true,
+        );
+      }
+      this.pendingCleanup.delete(active);
+      if (this.active === active) this.active = undefined;
+    }
+  }
+
+  private async waitForProcessExit(active: ActiveCliTurn): Promise<void> {
+    if (active.processExitObserved && !active.treeCleanupConfirmed) {
+      throw new AgentRuntimeError(
+        'runtime_cleanup_pending',
+        'close',
+        'CLI wrapper exited without parent-owned tree cleanup completion',
+        true,
+      );
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        active.processExitCompletion,
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(() => reject(
+            new AgentRuntimeError(
+              'process_exit_timeout',
+              'close',
+              'CLI process tree did not confirm termination before the shutdown deadline',
+              true,
+            ),
+          ), 2_000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private attachSpawnedTurn(
@@ -176,6 +310,9 @@ class CliDriverSession implements DriverSession {
     msgStore: RuntimeRunTurnInput['msgStore'],
     sink: RuntimeDriverEventSink,
   ): void {
+    active.processEventSink = sink;
+    active.verifyTreeCleanup = spawnResult.verifyTreeCleanup;
+    active.disposeTreeCleanupChannel = spawnResult.disposeTreeCleanupChannel;
     const bus = new EventBus();
     const onStdout = ({ data }: { sessionId: string; data: string }) => sink.stream({ type: 'stdout', data });
     const onPatch = ({ patch, seq }: { sessionId: string; patch: unknown[]; seq: number }) => {
@@ -227,17 +364,56 @@ class CliDriverSession implements DriverSession {
     const reportProcessExit = (exitCode: number, signal?: NodeJS.Signals | null) => {
       if (processExitReported) return;
       processExitReported = true;
-      active.processExited = true;
-      void sink.process({
-        type: 'exited',
-        runtimeInstanceId: active.runtimeInstanceId,
-        exitCode,
-        signal,
-      }).finally(() => this.cleanupRawExitTracking(active));
+      active.processExitObserved = true;
+      try {
+        active.treeCleanupConfirmed = spawnResult.verifyTreeCleanup?.() ?? true;
+      } catch {
+        active.treeCleanupConfirmed = false;
+      }
+      if (active.treeCleanupConfirmed) {
+        active.processExited = true;
+        active.resolveProcessExit();
+        this.pendingCleanup.delete(active);
+      } else {
+        // A root exit without matched evidence is an unresolved generation;
+        // keep it reachable and block admission/shutdown until recovered.
+        this.pendingCleanup.add(active);
+      }
+      active.processEvents.push(
+        {
+          type: 'exited',
+          runtimeInstanceId: active.runtimeInstanceId,
+          exitCode,
+          signal,
+          launchClaimNumber: active.launchClaimNumber,
+        },
+      );
+      if (active.treeCleanupConfirmed) {
+        active.processEvents.push({
+          type: 'tree_cleanup_completed',
+          runtimeInstanceId: active.runtimeInstanceId,
+          launchClaimNumber: active.launchClaimNumber,
+        });
+      }
+      if (active.processEventsReleased) {
+        void this.flushProcessEvents(active, sink);
+      }
     };
     active.offRawExit = spawnResult.pty.onExit(({ exitCode, signal }) => {
       reportProcessExit(exitCode, signal as NodeJS.Signals | null | undefined);
     });
+    active.requestProcessStop = () => {
+      active.cancel?.cancel();
+      active.pipeline?.destroy();
+      try {
+        // Pipeline.destroy() owns the normal stop path. Repeating this call on
+        // recovery is deliberate: it re-issues the controlled PTY cleanup
+        // without ever signaling an unknown PID/PGID.
+        spawnResult.pty.kill();
+      } catch {
+        // The process-exit promise remains authoritative.
+      }
+    };
 
     const earlyEvents = spawnResult.takeEarlyEvents?.() ?? [];
     const earlyExit = earlyEvents.find((event) => event.type === 'exit');
@@ -255,6 +431,35 @@ class CliDriverSession implements DriverSession {
     active.pipeline = pipeline;
     active.cancel = spawnResult.cancel;
     if (!pipeline.isAlive) this.cleanupTurnResources(active);
+  }
+
+  private async flushProcessEvents(
+    active: ActiveCliTurn,
+    sink: RuntimeDriverEventSink,
+  ): Promise<void> {
+    if (!active.processEventsReleased || active.processEvents.length === 0) return;
+    if (active.processEventFlush) return active.processEventFlush;
+    const flush = (async () => {
+      while (active.processEvents.length > 0) {
+        const event = active.processEvents[0]!;
+        try {
+          await sink.process(event);
+        } catch {
+          // Keep the event and owner reachable. A rejected started/cleanup
+          // write is evidence of unresolved launch state, never permission to
+          // discard the generation or declare cleanup safe.
+          return;
+        }
+        active.processEvents.shift();
+      }
+      if (active.processExited) this.cleanupRawExitTracking(active);
+    })();
+    active.processEventFlush = flush;
+    try {
+      await flush;
+    } finally {
+      if (active.processEventFlush === flush) active.processEventFlush = undefined;
+    }
   }
 
   private resolveExecutor(): BaseExecutor {
@@ -289,7 +494,11 @@ class CliDriverSession implements DriverSession {
     if (active.cleanupTimer) return;
     active.cleanupTimer = setTimeout(() => {
       active.cleanupTimer = undefined;
-      active.pipeline?.destroy();
+      // Logical completion is a terminal turn for one-shot CLI commands, but
+      // the child may keep its stdin/app-server open after emitting
+      // turn.completed. Use the executor's full stop owner so cancellation,
+      // wrapper signaling, and descendant cleanup all run through one path.
+      active.requestProcessStop?.();
       this.cleanupTurnResources(active);
     }, LOGICAL_COMPLETION_GRACE_MS);
     active.cleanupTimer.unref?.();
@@ -303,25 +512,20 @@ class CliDriverSession implements DriverSession {
     active.cancel = undefined;
     if (active.processExited) {
       this.cleanupRawExitTracking(active);
-    } else {
-      this.scheduleRawExitCleanup(active);
     }
   }
 
-  private scheduleRawExitCleanup(active: ActiveCliTurn): void {
-    if (!active.offRawExit || active.processExitTimer) return;
-    active.processExitTimer = setTimeout(() => {
-      active.processExitTimer = undefined;
-      this.cleanupRawExitTracking(active);
-    }, PROCESS_EXIT_LISTENER_TIMEOUT_MS);
-    active.processExitTimer.unref?.();
-  }
-
   private cleanupRawExitTracking(active: ActiveCliTurn): void {
-    if (active.processExitTimer) clearTimeout(active.processExitTimer);
-    active.processExitTimer = undefined;
+    if (!active.treeCleanupConfirmed || active.processEvents.length > 0 || active.processEventFlush) return;
     active.offRawExit?.dispose();
     active.offRawExit = undefined;
+    active.spawnCleanupOwner?.dispose();
+    active.spawnCleanupOwner = undefined;
+    active.disposeTreeCleanupChannel?.();
+    active.disposeTreeCleanupChannel = undefined;
+    active.verifyTreeCleanup = undefined;
+    active.processEventSink = undefined;
+    this.pendingCleanup.delete(active);
   }
 
   private cleanupActive(): void {
@@ -329,25 +533,39 @@ class CliDriverSession implements DriverSession {
     if (!active) return;
     active.pipeline?.destroy();
     this.cleanupTurnResources(active);
-    this.active = undefined;
+    if (active.processExited || active.settled) {
+      if (!active.processExited) this.pendingCleanup.add(active);
+      this.active = undefined;
+    }
   }
 }
 
-function createActiveTurn(turnId: string, runtimeInstanceId: string): ActiveCliTurn {
+function createActiveTurn(turnId: string, runtimeInstanceId: string, launchClaimNumber?: number): ActiveCliTurn {
   let resolve!: (outcome: RuntimeTurnOutcome) => void;
   let reject!: (error: unknown) => void;
   const completion = new Promise<RuntimeTurnOutcome>((res, rej) => {
     resolve = res;
     reject = rej;
   });
+  let resolveProcessExit!: () => void;
+  const processExitCompletion = new Promise<void>((resolveExit) => {
+    resolveProcessExit = resolveExit;
+  });
   return {
     turnId,
     runtimeInstanceId,
+    launchClaimNumber,
     completion,
     resolve,
     reject,
     settled: false,
+    processExitObserved: false,
     processExited: false,
+    treeCleanupConfirmed: false,
+    processExitCompletion,
+    resolveProcessExit,
     cleanups: [],
+    processEvents: [],
+    processEventsReleased: false,
   };
 }

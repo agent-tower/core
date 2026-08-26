@@ -15,8 +15,10 @@ export async function createManagedDirectory(
   let cleaned = false;
   const cleanup = async () => {
     if (cleaned) return;
-    cleaned = true;
     await rm(directory, { recursive: true, force: true });
+    // Mark only after rm succeeds so a transient filesystem failure can be
+    // retried by the next cleanup attempt.
+    cleaned = true;
   };
 
   try {

@@ -1,4 +1,5 @@
 import type {
+  AgentInvocation,
   AgentInvocationStatus,
   TeamRunInvalidationReason,
   TeamRunInvalidationScope,
@@ -10,6 +11,11 @@ import { TaskStatus } from '../types/index.js';
 import { prisma } from '../utils/index.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { isTaskDeleted } from './deleted-task-guard.js';
+import { acquireTeamMemberAdmission } from './team-member-admission-barrier.js';
+import {
+  evaluateSessionRuntimeCleanup,
+  reportDueRuntimeCleanupQuarantines,
+} from './session-runtime-cleanup-gate.js';
 
 // 统一补催/唤醒退避：指数增长（×2）封顶 5min，共 10 档（约 42min 触达上限）。
 const DEFAULT_REMINDER_DELAYS_MS = [
@@ -29,6 +35,11 @@ const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
 ];
 const OPEN_WORK_REQUEST_STATUSES = ['QUEUED', 'PENDING_APPROVAL'];
 const TEAM_QUIESCENT_REVIEW_REASON: TeamRunReviewReason = 'TEAM_QUIESCENT';
+
+type StalledReconcileAction =
+  | { kind: 'none' }
+  | { kind: 'nudge'; sessionId: string; invocationId: string }
+  | { kind: 'terminal'; teamRunId: string; memberId: string; invocationId: string; sessionId: string | null };
 
 type InvocationWithTaskState = Prisma.AgentInvocationGetPayload<{
   include: {
@@ -57,15 +68,36 @@ export const TEAM_HEARTBEAT_NUDGE = [
 
 export interface TeamReconcilerScheduler {
   releaseInvocationLocks(invocationId: string): void;
-  startNextSessions(teamRunId: string): Promise<unknown>;
+  startNextSessions(teamRunId: string): Promise<AgentInvocation[]>;
 }
 
 export interface TeamReconcilerSessionMessenger {
-  sendMessage(sessionId: string, message: string): Promise<unknown>;
+  sendMessage(
+    sessionId: string,
+    message: string,
+    providerId?: string,
+    expectedTeamRunInvocationId?: string,
+  ): Promise<unknown>;
   stop?(sessionId: string, options?: { skipTeamRunReconcile?: boolean }): Promise<unknown>;
+  disposeRuntimeSession?(sessionId: string, expectedRuntimeInstanceId?: string): Promise<void>;
+  retryRuntimeProcessCleanup?(input: {
+    sessionId: string;
+    runtimeInstanceId: string;
+    launchClaimNumber?: number | null;
+    pid: number;
+    processGroupId?: string | null;
+    birthMarker?: string | null;
+    ownershipToken: string;
+  }): Promise<void>;
+  hasRuntimeProcessOwner?(
+    runtimeInstanceId: string,
+    sessionId?: string,
+    launchClaimNumber?: number | null,
+  ): boolean;
   hasActivePipeline?(sessionId: string): boolean;
   hasActiveTurn?(sessionId: string): boolean;
   isAwaitingPermission?(sessionId: string): boolean;
+  isRuntimeCleanupConfirmed?(sessionId: string): Promise<boolean>;
 }
 
 export interface TeamReconcilerDependencies {
@@ -104,7 +136,7 @@ export class TeamReconcilerService {
     this.absoluteNudgeBudgetMs = dependencies.absoluteNudgeBudgetMs ?? DEFAULT_ABSOLUTE_NUDGE_BUDGET_MS;
   }
 
-  async handleSessionExit(sessionId: string): Promise<boolean> {
+  async handleSessionExit(sessionId: string, expectedRuntimeInstanceId?: string): Promise<boolean> {
     const invocation = await prisma.agentInvocation.findFirst({
       where: { sessionId },
       select: { id: true },
@@ -113,62 +145,109 @@ export class TeamReconcilerService {
       return false;
     }
 
-    await this.reconcileInvocation(invocation.id);
+    await this.reconcileInvocation(invocation.id, expectedRuntimeInstanceId);
     return true;
   }
 
-  async handleSessionStopped(sessionId: string): Promise<boolean> {
+  async handleSessionStopped(sessionId: string): Promise<AgentInvocation[]> {
     const invocation = await prisma.agentInvocation.findFirst({
       where: { sessionId },
       select: {
         id: true,
         teamRunId: true,
+        memberId: true,
+        status: true,
         teamRun: { select: { task: { select: { deletedAt: true } } } },
       },
     });
     if (!invocation) {
-      return false;
+      return [];
     }
 
-    const cancelled = await prisma.agentInvocation.updateMany({
-      where: {
-        id: invocation.id,
-        status: { in: ACTIVE_INVOCATION_STATUSES },
-      },
-      data: {
-        status: 'CANCELLED',
-        nextRoomReplyReminderAt: null,
-      },
+    if (TERMINAL_INVOCATION_STATUSES.includes(invocation.status as AgentInvocationStatus)) {
+      return this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
+    }
+
+    await prisma.agentInvocation.updateMany({
+      where: { id: invocation.id, status: { in: ACTIVE_INVOCATION_STATUSES } },
+      data: { dispatchRevokedAt: this.now(), nextRoomReplyReminderAt: null },
     });
-    this.clearReminderTimer(invocation.id);
-    if (cancelled.count !== 1) {
-      return true;
-    }
-
-    await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
-    if (isTaskDeleted(invocation.teamRun.task)) {
-      await this.syncTerminalWorkRequest(invocation.id);
-      const scheduler = await this.getScheduler();
-      scheduler.releaseInvocationLocks(invocation.id);
-      return true;
-    }
-    await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
-    return true;
+    return this.terminalizeRevokedInvocation(invocation.id);
   }
 
-  async reconcileInvocation(invocationId: string): Promise<void> {
+  async isSessionRuntimeCleanupConfirmed(sessionId: string): Promise<boolean> {
+    return (await evaluateSessionRuntimeCleanup(sessionId, {
+      hasActiveTurn: (candidateId) => this.hasActiveTurn(candidateId),
+      hasRuntimeProcessOwner: this.sessionMessenger?.hasRuntimeProcessOwner
+        ? (runtimeInstanceId, ownerSessionId, launchClaimNumber) => this.sessionMessenger!.hasRuntimeProcessOwner!(
+          runtimeInstanceId,
+          ownerSessionId ?? sessionId,
+          launchClaimNumber,
+        )
+        : undefined,
+    }, this.now())).confirmed;
+  }
+
+  async reconcileInvocation(invocationId: string, expectedRuntimeInstanceId?: string): Promise<void> {
+    const candidate = await prisma.agentInvocation.findUnique({
+      where: { id: invocationId },
+      select: { teamRunId: true, memberId: true },
+    });
+    if (!candidate) {
+      return;
+    }
+    let result: Awaited<ReturnType<TeamReconcilerService['reconcileInvocationUnderAdmission']>>;
+    const releaseAdmission = await acquireTeamMemberAdmission(candidate.teamRunId, candidate.memberId);
+    try {
+      result = await this.reconcileInvocationUnderAdmission(invocationId);
+    } finally {
+      releaseAdmission();
+    }
+
+    if (result.kind === 'task_deleted') {
+      const scheduler = await this.getScheduler();
+      scheduler.releaseInvocationLocks(invocationId);
+      return;
+    }
+    if (result.kind === 'terminal') {
+      await this.emitTeamRunInvalidated(
+        result.teamRunId,
+        ['agent-invocations', 'team-run'],
+        'agent-invocation-updated',
+      );
+      this.clearReminderTimer(result.invocationId);
+      await this.afterInvocationTerminal(
+        result.teamRunId,
+        result.invocationId,
+        expectedRuntimeInstanceId,
+      );
+    }
+  }
+
+  private async reconcileInvocationUnderAdmission(invocationId: string): Promise<
+    | { kind: 'none' }
+    | { kind: 'task_deleted' }
+    | { kind: 'terminal'; teamRunId: string; invocationId: string }
+  > {
     const invocation = await prisma.agentInvocation.findUnique({
       where: { id: invocationId },
       include: { teamRun: { select: { heartbeatTimeoutMinutes: true, task: { select: { deletedAt: true } } } } },
     });
-    if (!invocation) {
-      return;
-    }
+    if (!invocation) return { kind: 'none' };
     if (isTaskDeleted(invocation.teamRun.task)) {
-      const scheduler = await this.getScheduler();
-      scheduler.releaseInvocationLocks(invocation.id);
       this.clearReminderTimer(invocation.id);
-      return;
+      return { kind: 'task_deleted' };
+    }
+
+    // Stop admission is authoritative for all reminder/follow-up paths. A
+    // revoked invocation is completed by the cleanup recovery boundary once
+    // its owned tree is confirmed; it must never be nudged back into a turn.
+    if (
+      invocation.dispatchRevokedAt
+      && ACTIVE_INVOCATION_STATUSES.includes(invocation.status as AgentInvocationStatus)
+    ) {
+      this.clearReminderTimer(invocation.id);
+      return { kind: 'none' };
     }
 
     const hasRoomReply = await prisma.roomMessage.count({
@@ -181,8 +260,12 @@ export class TeamReconcilerService {
     }) > 0;
 
     if (hasRoomReply) {
-      await prisma.agentInvocation.update({
-        where: { id: invocation.id },
+      const completed = await prisma.agentInvocation.updateMany({
+        where: {
+          id: invocation.id,
+          status: { in: ACTIVE_INVOCATION_STATUSES },
+          dispatchRevokedAt: null,
+        },
         data: {
           status: 'COMPLETED',
           roomReplyReminderCount: 0,
@@ -190,10 +273,9 @@ export class TeamReconcilerService {
           firstNudgeAt: null,
         },
       });
-      await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
-      this.clearReminderTimer(invocation.id);
-      await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
-      return;
+      return completed.count === 1
+        ? { kind: 'terminal', teamRunId: invocation.teamRunId, invocationId: invocation.id }
+        : { kind: 'none' };
     }
 
     if (
@@ -202,12 +284,16 @@ export class TeamReconcilerService {
       && invocation.nextRoomReplyReminderAt.getTime() > this.now().getTime()
     ) {
       this.scheduleReminderTimer(invocation.id, invocation.nextRoomReplyReminderAt);
-      return;
+      return { kind: 'none' };
     }
 
     if (invocation.roomReplyReminderCount >= this.maxRoomReplyReminders) {
-      await prisma.agentInvocation.update({
-        where: { id: invocation.id },
+      const failed = await prisma.agentInvocation.updateMany({
+        where: {
+          id: invocation.id,
+          status: { in: ACTIVE_INVOCATION_STATUSES },
+          dispatchRevokedAt: null,
+        },
         data: {
           status: 'FAILED',
           roomReplyReminderCount: 0,
@@ -215,35 +301,44 @@ export class TeamReconcilerService {
           firstNudgeAt: null,
         },
       });
-      await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
-      this.clearReminderTimer(invocation.id);
-      await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
-      return;
+      return failed.count === 1
+        ? { kind: 'terminal', teamRunId: invocation.teamRunId, invocationId: invocation.id }
+        : { kind: 'none' };
     }
 
     const nextReminderCount = invocation.roomReplyReminderCount + 1;
     const nextReminderAt = this.addDelay(this.now(), this.getReminderDelayMs(nextReminderCount));
-
-    await prisma.agentInvocation.update({
-      where: { id: invocation.id },
+    const claimed = await prisma.agentInvocation.updateMany({
+      where: {
+        id: invocation.id,
+        status: { in: ACTIVE_INVOCATION_STATUSES },
+        dispatchRevokedAt: null,
+      },
       data: {
         status: 'WAITING_ROOM_REPLY',
         roomReplyReminderCount: nextReminderCount,
         nextRoomReplyReminderAt: nextReminderAt,
       },
     });
-    await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
+    if (claimed.count !== 1) return { kind: 'none' };
+    await this.emitTeamRunInvalidated(
+      invocation.teamRunId,
+      ['agent-invocations', 'team-run'],
+      'agent-invocation-updated',
+    );
     this.scheduleReminderTimer(invocation.id, nextReminderAt);
 
     if (invocation.sessionId) {
-      await this.sendRoomReplyReminder(invocation.sessionId);
+      await this.sendRoomReplyReminder(invocation.sessionId, invocation.id);
     }
+    return { kind: 'none' };
   }
 
   async reconcileDueRoomReplyReminders(limit = 50): Promise<number> {
     const dueInvocations = await prisma.agentInvocation.findMany({
       where: {
         status: 'WAITING_ROOM_REPLY',
+        dispatchRevokedAt: null,
         nextRoomReplyReminderAt: { lte: this.now() },
       },
       select: { id: true },
@@ -315,14 +410,35 @@ export class TeamReconcilerService {
    */
   async reconcileStalledInvocations(): Promise<void> {
     const candidates = await prisma.agentInvocation.findMany({
-      where: { status: 'RUNNING', sessionId: { not: null } },
+      where: { status: 'RUNNING', dispatchRevokedAt: null, sessionId: { not: null } },
       include: { teamRun: { select: { heartbeatTimeoutMinutes: true, task: { select: { deletedAt: true } } } } },
     });
     const now = this.now();
 
     for (const invocation of candidates) {
       try {
-        await this.reconcileStalledCandidate(invocation, now);
+        let action: StalledReconcileAction = { kind: 'none' };
+        const releaseAdmission = await acquireTeamMemberAdmission(invocation.teamRunId, invocation.memberId);
+        try {
+          const current = await prisma.agentInvocation.findUnique({
+            where: { id: invocation.id },
+            include: { teamRun: { select: { heartbeatTimeoutMinutes: true, task: { select: { deletedAt: true } } } } },
+          });
+          if (current) {
+            action = await this.reconcileStalledCandidate(current, now);
+          }
+        } finally {
+          releaseAdmission();
+        }
+        if (action.kind === 'nudge') {
+          const nudgeSent = await this.sendHeartbeatNudge(action.sessionId, action.invocationId);
+          if (!nudgeSent && this.isSessionPipelineMissing(action.sessionId)) {
+            action = await this.claimStalledTerminal(action.invocationId, action.sessionId, now);
+          }
+        }
+        if (action.kind === 'terminal') {
+          await this.finishStalledTerminal(action);
+        }
       } catch (error) {
         this.logCandidateFailure('stalled invocation', invocation.id, error);
       }
@@ -335,14 +451,15 @@ export class TeamReconcilerService {
    */
   async reconcileOrphanInvocations(): Promise<void> {
     const candidates = await prisma.agentInvocation.findMany({
-      where: { status: 'RUNNING', sessionId: { not: null } },
+      where: { status: 'RUNNING', dispatchRevokedAt: null, sessionId: { not: null } },
       include: { teamRun: { select: { heartbeatTimeoutMinutes: true, task: { select: { deletedAt: true } } } } },
     });
     const failures: unknown[] = [];
 
     for (const invocation of candidates) {
       try {
-        await this.reconcileOrphanCandidate(invocation);
+        const action = await this.reconcileOrphanCandidate(invocation);
+        if (action?.kind === 'terminal') await this.finishStalledTerminal(action);
       } catch (error) {
         this.logCandidateFailure('orphan invocation', invocation.id, error);
         failures.push(error);
@@ -368,6 +485,10 @@ export class TeamReconcilerService {
 
     for (const invocation of candidates) {
       try {
+        if (
+          invocation.sessionId
+          && !await this.isSessionRuntimeCleanupConfirmed(invocation.sessionId)
+        ) continue;
         await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
       } catch (error) {
         this.logCandidateFailure('incomplete terminal invocation', invocation.id, error);
@@ -383,15 +504,267 @@ export class TeamReconcilerService {
     }
   }
 
+  async reconcilePendingRuntimeCleanup(limit = 50): Promise<number> {
+    const now = this.now();
+    const quarantineCount = await reportDueRuntimeCleanupQuarantines(limit, now);
+    const retryable = this.sessionMessenger?.retryRuntimeProcessCleanup
+      ? await prisma.executionProcess.findMany({
+      where: {
+        runtimeInstanceId: { not: null },
+        ownershipToken: { not: null },
+        cleanupState: { in: ['PENDING', 'FAILED'] },
+        OR: [
+          { nextCleanupRetryAt: null },
+          { nextCleanupRetryAt: { lte: now } },
+        ],
+      },
+      select: {
+        sessionId: true,
+        runtimeInstanceId: true,
+        launchClaimNumber: true,
+        pid: true,
+        processGroupId: true,
+        birthMarker: true,
+        ownershipToken: true,
+        cleanupState: true,
+      },
+      orderBy: [{ nextCleanupRetryAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      take: limit,
+      })
+      : [];
+
+    // ACTIVE belongs to a live runtime in the current server generation. An
+    // ACTIVE row without an in-memory owner is from an abrupt prior shutdown
+    // and must enter the same persisted recovery path.
+    const staleActive = this.sessionMessenger?.retryRuntimeProcessCleanup && retryable.length < limit
+      ? (await prisma.executionProcess.findMany({
+        where: {
+          runtimeInstanceId: { not: null },
+          ownershipToken: { not: null },
+          cleanupState: 'ACTIVE',
+        },
+        select: {
+          sessionId: true,
+          runtimeInstanceId: true,
+          launchClaimNumber: true,
+          pid: true,
+          processGroupId: true,
+          birthMarker: true,
+          ownershipToken: true,
+          cleanupState: true,
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: limit - retryable.length,
+      })).filter((candidate) => (
+        candidate.runtimeInstanceId
+        && Number.isInteger(candidate.launchClaimNumber)
+        && candidate.launchClaimNumber! > 0
+        && this.sessionMessenger?.hasRuntimeProcessOwner != null
+      && !this.sessionMessenger.hasRuntimeProcessOwner(
+        candidate.runtimeInstanceId,
+        candidate.sessionId,
+        candidate.launchClaimNumber,
+      )
+      ))
+      : [];
+    const candidates = [...retryable, ...staleActive];
+    const sessionMessenger = this.sessionMessenger;
+    const retryRuntimeProcessCleanup = sessionMessenger?.retryRuntimeProcessCleanup;
+
+    for (const candidate of candidates) {
+      if (
+        !candidate.runtimeInstanceId
+        || !candidate.ownershipToken
+        || candidate.pid == null
+        || !Number.isInteger(candidate.launchClaimNumber)
+        || candidate.launchClaimNumber! <= 0
+      ) continue;
+      try {
+        if (!retryRuntimeProcessCleanup) continue;
+        // Keep the messenger as the receiver. SessionManager's cleanup method
+        // updates its own durable state through `this`, so invoking a detached
+        // function here would turn every restart recovery into a TypeError.
+        await sessionMessenger!.retryRuntimeProcessCleanup!({
+          sessionId: candidate.sessionId,
+          runtimeInstanceId: candidate.runtimeInstanceId,
+          launchClaimNumber: candidate.launchClaimNumber,
+          pid: candidate.pid,
+          processGroupId: candidate.processGroupId,
+          birthMarker: candidate.birthMarker,
+          ownershipToken: candidate.ownershipToken,
+        });
+        const invocation = await prisma.agentInvocation.findFirst({
+          where: { sessionId: candidate.sessionId },
+          select: {
+            id: true,
+            teamRunId: true,
+            status: true,
+            dispatchRevokedAt: true,
+          },
+        });
+        if (!invocation) continue;
+        if (
+          invocation.dispatchRevokedAt
+          && ACTIVE_INVOCATION_STATUSES.includes(invocation.status as AgentInvocationStatus)
+        ) {
+          const process = await prisma.executionProcess.findFirst({
+            where: {
+              sessionId: candidate.sessionId,
+              runtimeInstanceId: candidate.runtimeInstanceId,
+              launchClaimNumber: candidate.launchClaimNumber,
+            },
+            select: { cleanupState: true },
+          });
+          if (
+            process?.cleanupState === 'CONFIRMED'
+            && await this.canTerminalizeRevokedInvocation(invocation.id, candidate.sessionId)
+          ) {
+            await this.terminalizeRevokedInvocation(invocation.id);
+          } else {
+            await this.sessionMessenger?.stop?.(candidate.sessionId, { skipTeamRunReconcile: true });
+            if (await this.canTerminalizeRevokedInvocation(invocation.id, candidate.sessionId)) {
+              await this.terminalizeRevokedInvocation(invocation.id);
+            }
+          }
+        } else if (TERMINAL_INVOCATION_STATUSES.includes(invocation.status as AgentInvocationStatus)) {
+          await this.afterInvocationTerminal(
+            invocation.teamRunId,
+            invocation.id,
+            candidate.runtimeInstanceId,
+          );
+        }
+      } catch (error) {
+        this.logCandidateFailure('runtime cleanup', candidate.runtimeInstanceId, error);
+      }
+    }
+
+    // A tree can be confirmed immediately before a transient DB failure in
+    // terminalization. Such rows are no longer PENDING/FAILED, so scan
+    // confirmed ownership records for the revoked + active recovery case.
+    const confirmedCandidates = await this.findConfirmedRevokedCandidates(limit);
+    for (const candidate of confirmedCandidates) {
+      try {
+        if (await this.canTerminalizeRevokedInvocation(candidate.invocationId, candidate.sessionId)) {
+          await this.terminalizeRevokedInvocation(candidate.invocationId);
+        }
+      } catch (error) {
+        this.logCandidateFailure('revoked terminalization', candidate.invocationId, error);
+      }
+    }
+    return candidates.length + quarantineCount;
+  }
+
+  private async findConfirmedRevokedCandidates(limit: number): Promise<Array<{
+    invocationId: string;
+    sessionId: string;
+  }>> {
+    const results: Array<{ invocationId: string; sessionId: string }> = [];
+    const pageSize = Math.max(50, limit);
+    let cursor: string | undefined;
+    while (results.length < limit) {
+      const invocations = await prisma.agentInvocation.findMany({
+        where: {
+          dispatchRevokedAt: { not: null },
+          status: { in: ACTIVE_INVOCATION_STATUSES },
+          sessionId: { not: null },
+        },
+        select: { id: true, sessionId: true },
+        orderBy: { id: 'asc' },
+        take: pageSize,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      });
+      for (const invocation of invocations) {
+        if (
+          invocation.sessionId
+          && await this.canTerminalizeRevokedInvocation(invocation.id, invocation.sessionId)
+        ) {
+          results.push({ invocationId: invocation.id, sessionId: invocation.sessionId });
+          if (results.length >= limit) break;
+        }
+      }
+      if (invocations.length < pageSize) break;
+      cursor = invocations[invocations.length - 1]!.id;
+    }
+    return results;
+  }
+
+  private async canTerminalizeRevokedInvocation(
+    invocationId: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    return this.canTerminalizeAfterRuntimeCleanup(invocationId, sessionId, true);
+  }
+
+  /** All terminal paths share the durable launch + ownership cleanup gate. */
+  private async canTerminalizeAfterRuntimeCleanup(
+    invocationId: string,
+    sessionId: string,
+    requireDispatchRevoked = false,
+  ): Promise<boolean> {
+    if (!await this.isSessionRuntimeCleanupConfirmed(sessionId)) return false;
+    const invocation = await prisma.agentInvocation.findUnique({
+      where: { id: invocationId },
+      select: { status: true, dispatchRevokedAt: true, sessionId: true },
+    });
+    return invocation?.sessionId === sessionId
+      && (!requireDispatchRevoked || invocation.dispatchRevokedAt != null)
+      && ACTIVE_INVOCATION_STATUSES.includes(invocation.status as AgentInvocationStatus);
+  }
+
+  private async terminalizeRevokedInvocation(invocationId: string): Promise<AgentInvocation[]> {
+    const candidate = await prisma.agentInvocation.findUnique({
+      where: { id: invocationId },
+      select: { teamRunId: true, memberId: true, sessionId: true },
+    });
+    if (!candidate?.sessionId) return [];
+    if (!await this.canTerminalizeAfterRuntimeCleanup(invocationId, candidate.sessionId, true)) return [];
+    const releaseAdmission = await acquireTeamMemberAdmission(candidate.teamRunId, candidate.memberId);
+    let result: { teamRunId: string } | null = null;
+    try {
+      if (!await this.canTerminalizeAfterRuntimeCleanup(invocationId, candidate.sessionId, true)) return [];
+      result = await prisma.$transaction(async (tx) => {
+        const invocation = await tx.agentInvocation.findUnique({
+          where: { id: invocationId },
+          select: { id: true, teamRunId: true, sessionId: true, workRequestId: true, status: true, dispatchRevokedAt: true },
+        });
+        if (
+          !invocation
+          || !invocation.dispatchRevokedAt
+          || !ACTIVE_INVOCATION_STATUSES.includes(invocation.status as AgentInvocationStatus)
+        ) return null;
+
+        const updated = await tx.agentInvocation.updateMany({
+          where: { id: invocation.id, status: { in: ACTIVE_INVOCATION_STATUSES }, dispatchRevokedAt: { not: null } },
+          data: { status: 'CANCELLED', nextRoomReplyReminderAt: null, roomReplyReminderCount: 0, firstNudgeAt: null },
+        });
+        if (updated.count !== 1) return null;
+        if (invocation.sessionId) {
+          await tx.session.updateMany({
+            where: { id: invocation.sessionId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
+            data: { status: 'CANCELLED' },
+          });
+        }
+        return { teamRunId: invocation.teamRunId };
+      });
+    } finally {
+      releaseAdmission();
+    }
+    if (!result) return [];
+    this.clearReminderTimer(invocationId);
+    await this.emitTeamRunInvalidated(result.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
+    return this.afterInvocationTerminal(result.teamRunId, invocationId);
+  }
+
   private async findIncompleteTerminalInvocationCandidates(): Promise<Array<{
     id: string;
     teamRunId: string;
+    sessionId: string | null;
   }>> {
     const startedWorkRequests = await prisma.workRequest.findMany({
       where: { status: 'STARTED' },
       select: { id: true },
     });
-    const candidates: Array<{ id: string; teamRunId: string }> = [];
+    const candidates: Array<{ id: string; teamRunId: string; sessionId: string | null }> = [];
 
     for (let offset = 0; offset < startedWorkRequests.length; offset += 500) {
       const workRequestIds = startedWorkRequests
@@ -402,11 +775,15 @@ export class TeamReconcilerService {
           workRequestId: { in: workRequestIds },
           status: { in: [...ACTIVE_INVOCATION_STATUSES, ...TERMINAL_INVOCATION_STATUSES] },
         },
-        select: { id: true, teamRunId: true, workRequestId: true, status: true },
+        select: { id: true, teamRunId: true, sessionId: true, workRequestId: true, status: true },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
       const activeWorkRequestIds = new Set<string>();
-      const latestTerminalByWorkRequest = new Map<string, { id: string; teamRunId: string }>();
+      const latestTerminalByWorkRequest = new Map<string, {
+        id: string;
+        teamRunId: string;
+        sessionId: string | null;
+      }>();
 
       for (const invocation of invocations) {
         if (ACTIVE_INVOCATION_STATUSES.includes(invocation.status as AgentInvocationStatus)) {
@@ -429,22 +806,29 @@ export class TeamReconcilerService {
     return candidates;
   }
 
-  private async reconcileStalledCandidate(invocation: InvocationWithTaskState, now: Date): Promise<void> {
+  private async reconcileStalledCandidate(
+    invocation: InvocationWithTaskState,
+    now: Date,
+  ): Promise<StalledReconcileAction> {
+    if (invocation.dispatchRevokedAt) {
+      return { kind: 'none' };
+    }
     if (isTaskDeleted(invocation.teamRun.task)) {
-      return;
+      return { kind: 'none' };
     }
     const sessionId = invocation.sessionId;
     if (!sessionId) {
-      return;
+      return { kind: 'none' };
     }
     // Permission waits are an active turn controlled by the user. They do not
     // count as agent silence and must not trigger an automated nudge.
     if (this.sessionMessenger?.isAwaitingPermission?.(sessionId)) {
-      return;
+      return { kind: 'none' };
     }
-    // 进程已不在内存管理中：交给首扫 orphan 或正常 exit 流程，避免运行期对刚退出瞬态的误判。
+    // 进程已不在内存管理中：仍需通过 persisted cleanup gate，避免把
+    // hasActiveTurn=false 误当成 owned process tree 已退出。
     if (!this.hasActiveTurn(sessionId)) {
-      return;
+      return this.claimStalledTerminalUnderAdmission(invocation.id, sessionId, now);
     }
 
     const lastActivity = invocation.lastHeartbeatAt ?? invocation.createdAt;
@@ -455,58 +839,70 @@ export class TeamReconcilerService {
       ?? (configuredThresholdMs > 0 ? configuredThresholdMs : DEFAULT_HEARTBEAT_IDLE_THRESHOLD_MS);
     if (idleMs < heartbeatIdleThresholdMs) {
       if (invocation.roomReplyReminderCount > 0 || invocation.nextRoomReplyReminderAt) {
-        await prisma.agentInvocation.update({
-          where: { id: invocation.id },
+        await prisma.agentInvocation.updateMany({
+          where: { id: invocation.id, status: 'RUNNING', dispatchRevokedAt: null },
           data: { roomReplyReminderCount: 0, nextRoomReplyReminderAt: null },
         });
         await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations'], 'agent-invocation-updated');
       }
-      return;
+      return { kind: 'none' };
     }
 
     if (invocation.firstNudgeAt && now.getTime() - invocation.firstNudgeAt.getTime() > this.absoluteNudgeBudgetMs) {
-      await this.releaseStalledInvocation(invocation);
-      return;
+      const claimed = await this.claimStalledRelease(invocation.id, now);
+      return claimed
+        ? { kind: 'terminal', teamRunId: invocation.teamRunId, memberId: invocation.memberId, invocationId: invocation.id, sessionId }
+        : { kind: 'none' };
     }
     if (invocation.roomReplyReminderCount >= this.maxRoomReplyReminders) {
-      await this.releaseStalledInvocation(invocation);
-      return;
+      const claimed = await this.claimStalledRelease(invocation.id, now);
+      return claimed
+        ? { kind: 'terminal', teamRunId: invocation.teamRunId, memberId: invocation.memberId, invocationId: invocation.id, sessionId }
+        : { kind: 'none' };
     }
     if (invocation.nextRoomReplyReminderAt && invocation.nextRoomReplyReminderAt.getTime() > now.getTime()) {
-      return;
+      return { kind: 'none' };
     }
 
     const nextCount = invocation.roomReplyReminderCount + 1;
     const nextAt = this.addDelay(now, this.getReminderDelayMs(nextCount));
-    await prisma.agentInvocation.update({
-      where: { id: invocation.id },
+    const claimed = await prisma.agentInvocation.updateMany({
+      where: { id: invocation.id, status: 'RUNNING', dispatchRevokedAt: null },
       data: {
         roomReplyReminderCount: nextCount,
         nextRoomReplyReminderAt: nextAt,
         firstNudgeAt: invocation.firstNudgeAt ?? now,
       },
     });
+    if (claimed.count !== 1) return { kind: 'none' };
     await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations'], 'agent-invocation-updated');
-    const nudgeSent = await this.sendHeartbeatNudge(sessionId);
-    if (!nudgeSent && this.isSessionPipelineMissing(sessionId)) {
-      const current = await prisma.agentInvocation.findUnique({
-        where: { id: invocation.id },
-        select: { id: true, teamRunId: true, sessionId: true, status: true },
-      });
-      if (current?.status === 'RUNNING') {
-        await this.releaseStalledInvocation(current);
-      }
-    }
+    return { kind: 'nudge', sessionId, invocationId: invocation.id };
   }
 
-  private async reconcileOrphanCandidate(invocation: InvocationWithTaskState): Promise<void> {
+  private async claimStalledRelease(invocationId: string, now: Date): Promise<boolean> {
+    const claimed = await prisma.agentInvocation.updateMany({
+      where: { id: invocationId, status: 'RUNNING', dispatchRevokedAt: null },
+      data: { dispatchRevokedAt: now, nextRoomReplyReminderAt: null },
+    });
+    return claimed.count === 1;
+  }
+
+  private async reconcileOrphanCandidate(
+    invocation: InvocationWithTaskState,
+  ): Promise<StalledReconcileAction> {
     if (isTaskDeleted(invocation.teamRun.task) || !invocation.sessionId) {
-      return;
+      return { kind: 'none' };
     }
     const alive = this.hasActiveTurn(invocation.sessionId);
     if (!alive) {
-      await this.releaseStalledInvocation(invocation);
+      const releaseAdmission = await acquireTeamMemberAdmission(invocation.teamRunId, invocation.memberId);
+      try {
+        return this.claimStalledTerminalUnderAdmission(invocation.id, invocation.sessionId, this.now());
+      } finally {
+        releaseAdmission();
+      }
     }
+    return { kind: 'none' };
   }
 
   private logCandidateFailure(kind: string, invocationId: string, error: unknown): void {
@@ -516,42 +912,125 @@ export class TeamReconcilerService {
     );
   }
 
-  private async releaseStalledInvocation(invocation: {
-    id: string;
-    teamRunId: string;
-    sessionId: string | null;
-  }): Promise<void> {
-    const sessionId = invocation.sessionId;
-    const alive = sessionId ? !this.isSessionPipelineMissing(sessionId) : false;
-
-    // 进程仍存活：走 stop，由 handleSessionStopped 置 CANCELLED 并触发 afterInvocationTerminal 闭环。
-    if (sessionId && alive && this.sessionMessenger?.stop) {
-      this.clearReminderTimer(invocation.id);
-      await this.sessionMessenger.stop(sessionId);
-      return;
+  private async claimStalledTerminal(
+    invocationId: string,
+    sessionId: string,
+    now: Date,
+  ): Promise<StalledReconcileAction> {
+    const candidate = await prisma.agentInvocation.findUnique({
+      where: { id: invocationId },
+      select: { teamRunId: true, memberId: true },
+    });
+    if (!candidate) return { kind: 'none' };
+    const releaseAdmission = await acquireTeamMemberAdmission(candidate.teamRunId, candidate.memberId);
+    try {
+      return await this.claimStalledTerminalUnderAdmission(invocationId, sessionId, now);
+    } finally {
+      releaseAdmission();
     }
+  }
 
-    // 无存活进程（已退出 / orphan）：直接置 FAILED 并手动走释放闭环。
-    await prisma.agentInvocation.update({
-      where: { id: invocation.id },
+  private async claimStalledTerminalUnderAdmission(
+    invocationId: string,
+    sessionId: string,
+    now: Date,
+  ): Promise<StalledReconcileAction> {
+    const current = await prisma.agentInvocation.findUnique({
+      where: { id: invocationId },
+      select: { id: true, teamRunId: true, memberId: true, sessionId: true, status: true, dispatchRevokedAt: true },
+    });
+    if (!current || current.status !== 'RUNNING' || current.dispatchRevokedAt) return { kind: 'none' };
+    if (!await this.canTerminalizeAfterRuntimeCleanup(invocationId, sessionId)) {
+      await prisma.agentInvocation.updateMany({
+        where: { id: invocationId, status: 'RUNNING', dispatchRevokedAt: null },
+        data: { dispatchRevokedAt: now, nextRoomReplyReminderAt: null },
+      });
+      return { kind: 'none' };
+    }
+    const failed = await prisma.agentInvocation.updateMany({
+      where: { id: invocationId, status: 'RUNNING', dispatchRevokedAt: null },
       data: {
         status: 'FAILED',
-        roomReplyReminderCount: 0,
         nextRoomReplyReminderAt: null,
+        roomReplyReminderCount: 0,
         firstNudgeAt: null,
       },
     });
-    await this.emitTeamRunInvalidated(invocation.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
-    this.clearReminderTimer(invocation.id);
-    await this.afterInvocationTerminal(invocation.teamRunId, invocation.id);
+    if (failed.count !== 1) return { kind: 'none' };
+    await prisma.session.updateMany({
+      where: { id: sessionId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
+      data: { status: 'FAILED' },
+    });
+    return { kind: 'terminal', teamRunId: current.teamRunId, memberId: current.memberId, invocationId, sessionId };
   }
 
-  private async sendHeartbeatNudge(sessionId: string): Promise<boolean> {
+  private async finishStalledTerminal(action: Extract<StalledReconcileAction, { kind: 'terminal' }>): Promise<void> {
+    this.clearReminderTimer(action.invocationId);
+    const before = await prisma.agentInvocation.findUnique({
+      where: { id: action.invocationId },
+      select: { status: true, dispatchRevokedAt: true },
+    });
+    if (!before) return;
+    if (ACTIVE_INVOCATION_STATUSES.includes(before.status as AgentInvocationStatus)) {
+      if (action.sessionId && this.hasActiveTurn(action.sessionId) && this.sessionMessenger?.stop) {
+        await this.sessionMessenger.stop(action.sessionId, { skipTeamRunReconcile: true });
+      }
+      if (
+        action.sessionId
+        && !await this.canTerminalizeAfterRuntimeCleanup(action.invocationId, action.sessionId, true)
+      ) {
+        return;
+      }
+    }
+
+    const releaseAdmission = await acquireTeamMemberAdmission(action.teamRunId, action.memberId);
+    let cancelled = false;
+    try {
+      const current = await prisma.agentInvocation.findUnique({
+        where: { id: action.invocationId },
+        select: { teamRunId: true, memberId: true, status: true, dispatchRevokedAt: true },
+      });
+      if (current?.status === 'FAILED') {
+        cancelled = true;
+      } else if (current && current.dispatchRevokedAt && ACTIVE_INVOCATION_STATUSES.includes(current.status as AgentInvocationStatus)) {
+        const updated = await prisma.agentInvocation.updateMany({
+          where: { id: action.invocationId, status: { in: ACTIVE_INVOCATION_STATUSES }, dispatchRevokedAt: { not: null } },
+          data: {
+            status: 'CANCELLED',
+            nextRoomReplyReminderAt: null,
+            roomReplyReminderCount: 0,
+            firstNudgeAt: null,
+          },
+        });
+        cancelled = updated.count === 1;
+        if (cancelled && action.sessionId) {
+          await prisma.session.updateMany({
+            where: { id: action.sessionId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
+            data: { status: 'CANCELLED' },
+          });
+        }
+      }
+    } finally {
+      releaseAdmission();
+    }
+    if (!cancelled) return;
+    await this.emitTeamRunInvalidated(action.teamRunId, ['agent-invocations', 'team-run'], 'agent-invocation-updated');
+    await this.afterInvocationTerminal(action.teamRunId, action.invocationId);
+  }
+
+  private async sendHeartbeatNudge(sessionId: string, invocationId?: string): Promise<boolean> {
     if (!this.sessionMessenger) {
       return false;
     }
     try {
-      await this.sessionMessenger.sendMessage(sessionId, TEAM_HEARTBEAT_NUDGE);
+      if (invocationId) {
+        const admitted = await prisma.agentInvocation.findFirst({
+          where: { id: invocationId, sessionId, status: 'RUNNING', dispatchRevokedAt: null },
+          select: { id: true },
+        });
+        if (!admitted) return false;
+      }
+      await this.sessionMessenger.sendMessage(sessionId, TEAM_HEARTBEAT_NUDGE, undefined, invocationId);
       return true;
     } catch (error) {
       console.warn(
@@ -585,8 +1064,6 @@ export class TeamReconcilerService {
     if (!teamRun) {
       return false;
     }
-
-    await this.releaseTerminalInvocationLocks(teamRun.invocations);
 
     if (teamRun.task.deletedAt) {
       return false;
@@ -674,13 +1151,46 @@ export class TeamReconcilerService {
     }, this.eventBus);
   }
 
-  private async afterInvocationTerminal(teamRunId: string, invocationId: string): Promise<void> {
+  private async afterInvocationTerminal(
+    teamRunId: string,
+    invocationId: string,
+    expectedRuntimeInstanceId?: string,
+  ): Promise<AgentInvocation[]> {
+    const terminalInvocation = await prisma.agentInvocation.findUnique({
+      where: { id: invocationId },
+      select: {
+        sessionId: true,
+        status: true,
+        teamRun: { select: { task: { select: { deletedAt: true } } } },
+      },
+    });
+    if (!terminalInvocation || !TERMINAL_INVOCATION_STATUSES.includes(
+      terminalInvocation.status as AgentInvocationStatus,
+    )) return [];
+
+    if (terminalInvocation.sessionId) {
+      // TeamRun sessions are one invocation per Tower Session. Dispose only
+      // after the invocation is genuinely terminal; WAITING_ROOM_REPLY keeps
+      // the runtime open for the legal reminder/follow-up path.
+      await this.sessionMessenger?.disposeRuntimeSession?.(
+        terminalInvocation.sessionId,
+        expectedRuntimeInstanceId,
+      );
+      if (!await this.isSessionRuntimeCleanupConfirmed(terminalInvocation.sessionId)) return [];
+    }
+
+    // WorkRequest STARTED -> terminal is the unique durable winner for all
+    // after-terminal side effects. Repeated heartbeat/startup reconciliation is
+    // therefore idempotent once cleanup has been confirmed.
+    if (!await this.syncTerminalWorkRequest(invocationId)) return [];
     const scheduler = await this.getScheduler();
     scheduler.releaseInvocationLocks(invocationId);
-    await this.syncTerminalWorkRequest(invocationId);
 
+    if (isTaskDeleted(terminalInvocation.teamRun.task)) return [];
+
+    let startedInvocations: AgentInvocation[] = [];
     try {
-      await scheduler.startNextSessions(teamRunId);
+      startedInvocations = await scheduler.startNextSessions(teamRunId);
     } catch (error) {
       console.warn(
         `[TeamReconcilerService] Failed to start queued TeamRun work for ${teamRunId}:`,
@@ -689,28 +1199,30 @@ export class TeamReconcilerService {
     }
 
     await this.maybeAdvanceTeamRunToReview(teamRunId);
+    return startedInvocations;
   }
 
-  private async syncTerminalWorkRequest(invocationId: string): Promise<void> {
+  private async syncTerminalWorkRequest(invocationId: string): Promise<boolean> {
     const invocation = await prisma.agentInvocation.findUnique({
       where: { id: invocationId },
       select: { status: true, workRequestId: true },
     });
     if (!invocation) {
-      return;
+      return false;
     }
     const terminalWorkRequestStatus = this.toTerminalWorkRequestStatus(invocation.status);
     if (!terminalWorkRequestStatus) {
-      return;
+      return false;
     }
 
-    await prisma.workRequest.updateMany({
+    const updated = await prisma.workRequest.updateMany({
       where: {
         id: invocation.workRequestId,
         status: 'STARTED',
       },
       data: { status: terminalWorkRequestStatus },
     });
+    return updated.count === 1;
   }
 
   private toTerminalWorkRequestStatus(status: string): 'COMPLETED' | 'FAILED' | 'CANCELLED' | null {
@@ -720,23 +1232,19 @@ export class TeamReconcilerService {
     return null;
   }
 
-  private async releaseTerminalInvocationLocks(invocations: Array<{ id: string; status: string }>): Promise<void> {
-    const scheduler = await this.getScheduler();
-    for (const invocation of invocations) {
-      if (TERMINAL_INVOCATION_STATUSES.includes(invocation.status as AgentInvocationStatus)) {
-        scheduler.releaseInvocationLocks(invocation.id);
-      }
-    }
-  }
-
-  private async sendRoomReplyReminder(sessionId: string): Promise<void> {
+  private async sendRoomReplyReminder(sessionId: string, invocationId: string): Promise<void> {
     if (!this.sessionMessenger) {
       console.warn(`[TeamReconcilerService] No session messenger configured for room reply reminder: ${sessionId}`);
       return;
     }
 
     try {
-      await this.sessionMessenger.sendMessage(sessionId, TEAM_ROOM_REPLY_REMINDER);
+      await this.sessionMessenger.sendMessage(
+        sessionId,
+        TEAM_ROOM_REPLY_REMINDER,
+        undefined,
+        invocationId,
+      );
     } catch (error) {
       console.warn(
         `[TeamReconcilerService] Failed to send room reply reminder to session ${sessionId}:`,

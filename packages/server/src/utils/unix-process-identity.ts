@@ -9,6 +9,7 @@ interface UnixProcessRow {
   ppid: number;
   pgid: number;
   birthMarker: string;
+  ownershipToken?: string | null;
 }
 
 export interface UnixProcessIdentity {
@@ -26,10 +27,24 @@ export interface UnixProcessGroupIdentity {
 export interface UnixProcessIdentityAdapter {
   captureProcess(pid: number, ownershipToken: string): Promise<UnixProcessIdentity | null>;
   captureDescendantGroups(root: UnixProcessIdentity): Promise<UnixProcessGroupIdentity[]>;
+  /**
+   * Capture all processes carrying an ownership token, including descendants
+   * that were re-parented after the launch root exited.
+   */
+  captureOwnedGroups?(
+    ownershipToken: string,
+    processGroupId?: number,
+  ): Promise<UnixProcessGroupIdentity[]>;
   isProcessAlive(identity: UnixProcessIdentity): Promise<boolean>;
   isProcessGroupAlive(identity: UnixProcessGroupIdentity): Promise<boolean>;
   signalProcess(identity: UnixProcessIdentity, signal: NodeJS.Signals): Promise<boolean>;
   signalProcessGroup(identity: UnixProcessGroupIdentity, signal: NodeJS.Signals): Promise<boolean>;
+}
+
+export interface UnixProcessIdentityAdapterDependencies {
+  execFile?: typeof execFile;
+  readFile?: typeof readFile;
+  readdir?: typeof readdir;
 }
 
 export function unixProcessIdentityMatches(
@@ -45,12 +60,20 @@ export function unixProcessIdentityMatches(
 
 export function createUnixProcessIdentityAdapter(
   platform: NodeJS.Platform = process.platform,
+  dependencies: UnixProcessIdentityAdapterDependencies = {},
 ): UnixProcessIdentityAdapter {
-  return new DefaultUnixProcessIdentityAdapter(platform);
+  return new DefaultUnixProcessIdentityAdapter(platform, {
+    execFile: dependencies.execFile ?? execFile,
+    readFile: dependencies.readFile ?? readFile,
+    readdir: dependencies.readdir ?? readdir,
+  });
 }
 
 class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
-  constructor(private readonly platform: NodeJS.Platform) {}
+  constructor(
+    private readonly platform: NodeJS.Platform,
+    private readonly dependencies: Required<UnixProcessIdentityAdapterDependencies>,
+  ) {}
 
   async captureProcess(pid: number, ownershipToken: string): Promise<UnixProcessIdentity | null> {
     const row = (await this.listProcesses()).find((candidate) => candidate.pid === pid);
@@ -85,6 +108,29 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
     )))).filter((identity): identity is UnixProcessIdentity => identity !== null);
     const groups = new Map<number, UnixProcessIdentity[]>();
     for (const identity of identities) {
+      const members = groups.get(identity.pgid) ?? [];
+      members.push(identity);
+      groups.set(identity.pgid, members);
+    }
+    return [...groups].map(([pgid, members]) => ({ pgid, members }));
+  }
+
+  async captureOwnedGroups(
+    ownershipToken: string,
+    processGroupId?: number,
+  ): Promise<UnixProcessGroupIdentity[]> {
+    const rows = await this.listProcessesWithOwnership();
+    const owned = rows
+      .filter((row) => (processGroupId === undefined || row.pgid === processGroupId)
+        && row.ownershipToken === ownershipToken)
+      .map((row): UnixProcessIdentity => ({
+        pid: row.pid,
+        pgid: row.pgid,
+        birthIdentity: `${row.birthMarker}:${ownershipToken}`,
+        ownershipToken,
+      }));
+    const groups = new Map<number, UnixProcessIdentity[]>();
+    for (const identity of owned) {
       const members = groups.get(identity.pgid) ?? [];
       members.push(identity);
       groups.set(identity.pgid, members);
@@ -131,14 +177,68 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
     return this.listPsProcesses();
   }
 
+  private async listProcessesWithOwnership(): Promise<UnixProcessRow[]> {
+    if (this.platform === 'linux') {
+      const rows = await this.listLinuxProcesses();
+      const withOwnership = await Promise.all(rows.map(async (row) => ({
+        ...row,
+        ownershipToken: await this.readOwnershipToken(row.pid),
+      })));
+      return withOwnership;
+    }
+
+    const output = await execFileText(
+      this.dependencies.execFile,
+      'ps',
+      ['eww', '-axo', 'pid=,ppid=,pgid=,lstart=,command='],
+    );
+    const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      throw new Error('Unix process enumeration returned empty output');
+    }
+    const rows = lines.map((line): UnixProcessRow | null => {
+      const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$/.exec(line);
+      if (!match) return null;
+      const pid = Number(match[1]);
+      const ppid = Number(match[2]);
+      const pgid = Number(match[3]);
+      return pid > 0 && Number.isFinite(ppid) && pgid > 0
+        ? {
+            pid,
+            ppid,
+            pgid,
+            birthMarker: `${this.platform}:${match[4]}`,
+            ownershipToken: extractOwnershipToken(match[5]),
+          }
+        : null;
+    });
+    if (rows.length === 0 || rows.some((row) => row === null)) {
+      throw new Error('Unix process enumeration returned malformed output');
+    }
+    return rows as UnixProcessRow[];
+  }
+
   private async listLinuxProcesses(): Promise<UnixProcessRow[]> {
-    const entries = await readdir('/proc', { withFileTypes: true }).catch(() => []);
+    let entries;
+    try {
+      entries = await this.dependencies.readdir('/proc', { withFileTypes: true });
+    } catch (error) {
+      throw new Error('Unix process enumeration failed', { cause: error });
+    }
+    if (entries.length === 0) {
+      throw new Error('Unix process enumeration returned empty output');
+    }
     const rows = await Promise.all(entries
       .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
       .map(async (entry): Promise<UnixProcessRow | null> => {
         const pid = Number(entry.name);
-        const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => null);
-        if (!stat) return null;
+        let stat: string;
+        try {
+          stat = await this.dependencies.readFile(`/proc/${pid}/stat`, 'utf8');
+        } catch (error) {
+          if (isProcessDisappearanceError(error)) return null;
+          throw new Error(`Unix process identity probe failed for pid ${pid}`, { cause: error });
+        }
         const closeParen = stat.lastIndexOf(')');
         if (closeParen < 0) return null;
         const fields = stat.slice(closeParen + 1).trim().split(/\s+/);
@@ -149,12 +249,20 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
           ? { pid, ppid, pgid, birthMarker: `linux:${startTicks}` }
           : null;
       }));
-    return rows.filter((row): row is UnixProcessRow => row !== null);
+    const validRows = rows.filter((row): row is UnixProcessRow => row !== null);
+    if (validRows.length === 0) {
+      throw new Error('Unix process enumeration returned malformed output');
+    }
+    return validRows;
   }
 
   private async listPsProcesses(): Promise<UnixProcessRow[]> {
-    const output = await execFileText('ps', ['-axo', 'pid=,ppid=,pgid=,lstart=']);
-    return output.split('\n').map((line): UnixProcessRow | null => {
+    const output = await execFileText(this.dependencies.execFile, 'ps', ['-axo', 'pid=,ppid=,pgid=,lstart=']);
+    const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      throw new Error('Unix process enumeration returned empty output');
+    }
+    const rows = lines.map((line): UnixProcessRow | null => {
       const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
       if (!match) return null;
       const pid = Number(match[1]);
@@ -164,22 +272,41 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
       return pid > 0 && Number.isFinite(ppid) && pgid > 0 && startedAt
         ? { pid, ppid, pgid, birthMarker: `${this.platform}:${startedAt}` }
         : null;
-    }).filter((row): row is UnixProcessRow => row !== null);
+    });
+    if (rows.length === 0 || rows.some((row) => row === null)) {
+      throw new Error('Unix process enumeration returned malformed output');
+    }
+    return rows as UnixProcessRow[];
   }
 
   private async readOwnershipToken(pid: number): Promise<string | null> {
     if (this.platform === 'linux') {
-      const environ = await readFile(`/proc/${pid}/environ`).catch(() => null);
-      if (!environ) return null;
+      let environ: Buffer;
+      try {
+        environ = await this.dependencies.readFile(`/proc/${pid}/environ`);
+      } catch (error) {
+        if (isProcessDisappearanceError(error)) return null;
+        throw new Error(`Unix process environment probe failed for pid ${pid}`, { cause: error });
+      }
       return extractOwnershipToken(environ.toString('utf8').replaceAll('\0', ' '));
     }
-    const commandWithEnvironment = await execFileText('ps', [
-      'eww',
-      '-p',
-      String(pid),
-      '-o',
-      'command=',
-    ]);
+    let commandWithEnvironment: string;
+    try {
+      commandWithEnvironment = await execFileText(this.dependencies.execFile, 'ps', [
+        'eww',
+        '-p',
+        String(pid),
+        '-o',
+        'command=',
+      ]);
+    } catch (error) {
+      // ps reports a non-zero exit when the process disappears between the
+      // process-list snapshot and its environment probe. Re-enumeration is the
+      // proof that distinguishes that race from permission/command failures.
+      const stillPresent = (await this.listPsProcesses()).some((row) => row.pid === pid);
+      if (!stillPresent) return null;
+      throw error;
+    }
     return extractOwnershipToken(commandWithEnvironment);
   }
 }
@@ -192,10 +319,30 @@ function extractOwnershipToken(value: string): string | null {
   return null;
 }
 
-function execFileText(command: string, args: string[]): Promise<string> {
-  return new Promise((resolve) => {
-    execFile(command, args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
-      resolve(error ? '' : stdout);
+function execFileText(
+  runExecFile: typeof execFile,
+  command: string,
+  args: string[],
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    runExecFile(command, args, {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+      // `ps lstart` is parsed as a machine-readable identity. Locale-specific
+      // day/month names or date layouts would make a valid snapshot look
+      // malformed and leave cleanup permanently unresolved.
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    }, (error, stdout) => {
+      if (error) {
+        reject(new Error(`Unix process enumeration failed: ${command}`, { cause: error }));
+        return;
+      }
+      resolve(stdout);
     });
   });
+}
+
+function isProcessDisappearanceError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOENT' || code === 'ESRCH';
 }

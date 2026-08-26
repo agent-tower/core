@@ -45,7 +45,7 @@ import type {
 } from '@prisma/client';
 import { ServiceError, NotFoundError, ValidationError } from '../errors.js';
 import { prisma } from '../utils/index.js';
-import { getEventBus } from '../core/container.js';
+import { getEventBus, getSessionManager } from '../core/container.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
@@ -53,6 +53,12 @@ import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import { buildTextPreview, TASK_TITLE_MAX_LENGTH } from './task.service.js';
 import { ensureProjectSupportsWorktrees } from './project-guards.js';
 import { isRuntimeAwaitingPermission } from '../runtime/runtime-state-view.js';
+
+const TERMINAL_AGENT_INVOCATION_STATUSES = new Set<AgentInvocationStatus>([
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+]);
 
 export interface CreateMemberPresetInput {
   name: string;
@@ -538,7 +544,13 @@ export class TeamRunService {
   // 懒加载 reconciler，用于 agent room message 的即时 reconcile（WAITING_ROOM_REPLY→COMPLETED / RUNNING 清零）。
   private getReconciler(): TeamReconcilerService {
     if (!this.reconciler) {
-      this.reconciler = new TeamReconcilerService({ eventBus: getEventBus() });
+      // Room replies can terminalize a TeamRun invocation. The reconciler
+      // must own the same SessionManager so that terminalization also disposes
+      // the runtime process tree instead of only updating database state.
+      this.reconciler = new TeamReconcilerService({
+        eventBus: getEventBus(),
+        sessionMessenger: getSessionManager(),
+      });
     }
     return this.reconciler;
   }
@@ -1316,6 +1328,8 @@ export class TeamRunService {
     const workRequestInstruction = this.contentPreview(input.content);
 
     let messageId = '';
+    let senderInvocationCanDispatch = true;
+    let shouldReconcileAgentRoomMessage = false;
     await prisma.$transaction(async (tx) => {
       const liveTeamRun = await tx.teamRun.findFirst({
         where: { id: teamRunId, task: { deletedAt: null } },
@@ -1347,11 +1361,14 @@ export class TeamRunService {
               teamRunId,
               memberId: input.senderId,
             },
-            select: { id: true },
+            select: { id: true, status: true, dispatchRevokedAt: true },
           });
           if (!invocation) {
             throw new ValidationError('Agent RoomMessage senderInvocationId must belong to the sender member in this TeamRun');
           }
+          senderInvocationCanDispatch = invocation.dispatchRevokedAt == null
+            && !TERMINAL_AGENT_INVOCATION_STATUSES.has(invocation.status as AgentInvocationStatus);
+          shouldReconcileAgentRoomMessage = senderInvocationCanDispatch;
         }
       }
 
@@ -1372,12 +1389,14 @@ export class TeamRunService {
       });
       messageId = message.id;
 
-      const targetRequests = resolveRoomMessageTargetRequests({
-        mentions,
-        members,
-        senderType,
-        requesterMemberId,
-      });
+      const targetRequests = senderInvocationCanDispatch
+        ? resolveRoomMessageTargetRequests({
+          mentions,
+          members,
+          senderType,
+          requesterMemberId,
+        })
+        : [];
 
       const workRequestIds: string[] = [];
       for (const targetRequest of targetRequests) {
@@ -1410,7 +1429,7 @@ export class TeamRunService {
     // 成员（agent）就某次 invocation 发出 room message 后立即交给 reconciler 处理：
     // WAITING_ROOM_REPLY → 转 COMPLETED、释放锁、推进调度/review；RUNNING → 清零唤醒计数/绝对兜底并刷新心跳（不终态）。
     // user/system 消息不触发，避免误终态化或误清零。
-    if (senderType === 'agent' && normalizedSenderInvocationId) {
+    if (senderType === 'agent' && normalizedSenderInvocationId && shouldReconcileAgentRoomMessage) {
       await this.getReconciler().handleAgentRoomMessage(normalizedSenderInvocationId);
     }
 
@@ -1447,6 +1466,7 @@ export class TeamRunService {
     const workRequestInstruction = this.contentPreview(input.content);
 
     let messageId = '';
+    let senderInvocationCanDispatch = true;
     await prisma.$transaction(async (tx) => {
       const members = await tx.teamMember.findMany({ where: activeTeamMembersWhere(teamRunId) });
       const memberIds = new Set(members.map((member) => member.id));
@@ -1478,11 +1498,13 @@ export class TeamRunService {
               teamRunId,
               memberId: input.senderId,
             },
-            select: { id: true },
+            select: { id: true, status: true, dispatchRevokedAt: true },
           });
           if (!invocation) {
             throw new ValidationError('Agent RoomMessage senderInvocationId must belong to the sender member in this TeamRun');
           }
+          senderInvocationCanDispatch = invocation.dispatchRevokedAt == null
+            && !TERMINAL_AGENT_INVOCATION_STATUSES.has(invocation.status as AgentInvocationStatus);
         }
       } else if (senderType === 'user') {
         if (input.senderInvocationId) {
@@ -1537,8 +1559,10 @@ export class TeamRunService {
       }
 
       const workRequestIds: string[] = [];
-      const targetData = await buildWorkRequestTargetData(tx, teamRunId, input.target);
-      for (const recipientMemberId of recipientMemberIds) {
+      const targetData = senderInvocationCanDispatch
+        ? await buildWorkRequestTargetData(tx, teamRunId, input.target)
+        : {};
+      for (const recipientMemberId of senderInvocationCanDispatch ? recipientMemberIds : []) {
         const workRequest = await tx.workRequest.create({
           data: {
             teamRunId,
@@ -2035,6 +2059,7 @@ export class TeamRunService {
         : null,
       lastHeartbeatAt: invocation.lastHeartbeatAt ? toIso(invocation.lastHeartbeatAt) : null,
       firstNudgeAt: invocation.firstNudgeAt ? toIso(invocation.firstNudgeAt) : null,
+      dispatchRevokedAt: invocation.dispatchRevokedAt ? toIso(invocation.dispatchRevokedAt) : null,
     };
   }
 }

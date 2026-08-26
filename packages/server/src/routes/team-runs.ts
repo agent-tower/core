@@ -405,7 +405,19 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
   app.post<{ Params: { id: string } }>('/team-runs/:id/messages', async (request, reply) => {
     try {
       const body = roomMessageSchema.parse(request.body);
-      const message = await service.createRoomMessage(request.params.id, body);
+      // Agent identity is transport-authenticated. Ignore sender fields from
+      // the request body so a late/forged invocation cannot dispatch work.
+      const invocationId = getInvocationId(request);
+      const invocationIdentity = await resolveAgentInvocationIdentity(request.params.id, request);
+      if (invocationId && !invocationIdentity) {
+        throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
+      }
+      const message = await service.createRoomMessage(request.params.id, {
+        ...body,
+        senderType: invocationIdentity ? 'agent' : 'user',
+        senderId: invocationIdentity?.memberId ?? null,
+        senderInvocationId: invocationIdentity?.invocationId ?? null,
+      });
       const workRequestIds = message.workRequestIds ?? [];
       if (workRequestIds.length > 0) {
         const teamRun = await service.getTeamRunById(request.params.id);

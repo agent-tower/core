@@ -27,6 +27,7 @@ const serverRoot = path.resolve(__dirname, '../../..');
 const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let TeamSchedulerService: typeof import('../team-scheduler.service.js').TeamSchedulerService;
+let TeamRunService: typeof import('../team-run.service.js').TeamRunService;
 let prisma: PrismaClient;
 let CommandBuildError: typeof import('../../executors/command-builder.js').CommandBuildError;
 let ExecutorNotFoundError: typeof import('../../executors/start-error.js').ExecutorNotFoundError;
@@ -269,9 +270,9 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
-async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+async function waitForCondition(predicate: () => boolean | Promise<boolean>, timeoutMs = 1000): Promise<void> {
   const startedAt = Date.now();
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() - startedAt > timeoutMs) {
       throw new Error('Timed out waiting for condition');
     }
@@ -295,10 +296,12 @@ describe('TeamSchedulerService', () => {
     );
 
     const serviceModule = await import('../team-scheduler.service.js');
+    const teamRunServiceModule = await import('../team-run.service.js');
     const utilsModule = await import('../../utils/index.js');
     const commandBuilderModule = await import('../../executors/command-builder.js');
     const startErrorModule = await import('../../executors/start-error.js');
     TeamSchedulerService = serviceModule.TeamSchedulerService;
+    TeamRunService = teamRunServiceModule.TeamRunService;
     prisma = utilsModule.prisma;
     CommandBuildError = commandBuilderModule.CommandBuildError;
     ExecutorNotFoundError = startErrorModule.ExecutorNotFoundError;
@@ -858,6 +861,155 @@ describe('TeamSchedulerService', () => {
     await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
       status: 'QUEUED',
     });
+  });
+
+  it('does not admit queued work while a terminal invocation still has failed process cleanup', async () => {
+    const { teamRun, workspace, members } = await createTeamRunFixture();
+    const previousRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'COMPLETED',
+    });
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'previous',
+        status: 'COMPLETED',
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: previousRequest.id,
+        memberId: members[0]!.id,
+        sessionId: previousSession.id,
+        status: 'COMPLETED',
+      },
+    });
+    await prisma.executionProcess.create({
+      data: {
+        sessionId: previousSession.id,
+        runtimeInstanceId: 'runtime-failed-cleanup',
+        cleanupState: 'FAILED',
+      },
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+    expect(sessionManager.create).not.toHaveBeenCalled();
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+  });
+
+  it('quarantines a claimed launch with no process row and keeps queue admission blocked', async () => {
+    const { teamRun, workspace, members } = await createTeamRunFixture();
+    const previousRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'COMPLETED',
+    });
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'claimed before spawn',
+        status: 'RUNNING',
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 0,
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: previousRequest.id,
+        memberId: members[0]!.id,
+        sessionId: previousSession.id,
+        status: 'COMPLETED',
+      },
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    await expect(service.startNextSessions(teamRun.id)).resolves.toEqual([]);
+
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'QUEUED',
+    });
+    await expect(prisma.session.findUnique({ where: { id: previousSession.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'QUARANTINED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 0,
+      runtimeLaunchDiagnostic: expect.stringContaining('no durable resolution'),
+    });
+    expect(sessionManager.create).not.toHaveBeenCalled();
+  });
+
+  it('admits queued work after a terminal invocation with a proven pre-child launch failure', async () => {
+    const { teamRun, workspace, members } = await createTeamRunFixture();
+    const previousRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'FAILED',
+    });
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'known pre-child failure',
+        status: 'CANCELLED',
+        runtimeLaunchState: 'SAFE_PRE_CHILD_FAILURE',
+        runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 1,
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: previousRequest.id,
+        memberId: members[0]!.id,
+        sessionId: previousSession.id,
+        status: 'FAILED',
+      },
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+    });
+    const sessionManager = createSessionManagerMock();
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const started = await service.startNextSessions(teamRun.id);
+
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ workRequestId: request.id, status: 'RUNNING' });
   });
 
   it('starts only one queued WorkRequest for the same member in a single batch', async () => {
@@ -1818,7 +1970,7 @@ describe('TeamSchedulerService', () => {
     const previousRequest = await createWorkRequest({
       teamRunId: teamRun.id,
       targetMemberId: members[0]!.id,
-      status: 'STARTED',
+      status: 'COMPLETED',
       instruction: 'Previous work',
     });
     const previousSession = await prisma.session.create({
@@ -1891,7 +2043,7 @@ describe('TeamSchedulerService', () => {
     const previousRequest = await createWorkRequest({
       teamRunId: teamRun.id,
       targetMemberId: members[0]!.id,
-      status: 'STARTED',
+      status: 'COMPLETED',
       target: {
         targetKind: 'WORKSPACE_COMMIT',
         targetPurpose: 'REVIEW',
@@ -1974,7 +2126,7 @@ describe('TeamSchedulerService', () => {
     const previousRequest = await createWorkRequest({
       teamRunId: teamRun.id,
       targetMemberId: members[0]!.id,
-      status: 'STARTED',
+      status: 'COMPLETED',
       instruction: 'Previous work',
     });
     const previousSession = await prisma.session.create({
@@ -2094,7 +2246,7 @@ describe('TeamSchedulerService', () => {
     const previousRequest = await createWorkRequest({
       teamRunId: teamRun.id,
       targetMemberId: members[0]!.id,
-      status: 'STARTED',
+      status: 'COMPLETED',
       instruction: 'Previous work in another workspace',
     });
     const otherWorkspaceSession = await prisma.session.create({
@@ -2153,6 +2305,10 @@ describe('TeamSchedulerService', () => {
     });
     await prisma.agentInvocation.update({
       where: { id: firstRun[0]!.id },
+      data: { status: 'COMPLETED' },
+    });
+    await prisma.workRequest.update({
+      where: { id: firstRun[0]!.workRequestId },
       data: { status: 'COMPLETED' },
     });
     const followUpRequest = await createWorkRequest({
@@ -2332,7 +2488,7 @@ describe('TeamSchedulerService', () => {
 
     const result = await service.stopMemberWork(teamRun.id, members[0]!.id);
 
-    expect(sessionManager.stop).toHaveBeenCalledWith(session.id);
+    expect(sessionManager.stop).toHaveBeenCalledWith(session.id, { skipTeamRunReconcile: true });
     expect(result.stoppedSessionIds).toEqual([session.id]);
     expect(result.cancelledInvocationIds).toEqual([]);
     expect(result.cancelledWorkRequestIds).toEqual([]);
@@ -2349,9 +2505,201 @@ describe('TeamSchedulerService', () => {
       status: 'CANCELLED',
       nextRoomReplyReminderAt: null,
     });
+    await expect(prisma.workRequest.findUnique({ where: { id: activeRequest.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
     expect(lockService.listLocks()).toEqual([
       { key: `workspace:task:${task.id}:write`, ownerId: result.startedInvocations[0]!.id },
     ]);
+  });
+
+  it('revokes public and private dispatch while stop waits for process-tree cleanup', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities, readOnlyCapabilities],
+    });
+    const activeRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'Active work',
+        status: 'RUNNING',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: activeRequest.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace!.id,
+        sessionId: session.id,
+        status: 'RUNNING',
+      },
+    });
+    const stopEntered = createDeferred<void>();
+    const cleanup = createDeferred<void>();
+    const sessionManager = createSessionManagerMock();
+    sessionManager.stop.mockImplementation(async () => {
+      stopEntered.resolve();
+      await cleanup.promise;
+      return prisma.session.update({ where: { id: session.id }, data: { status: 'CANCELLED' } });
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const stopping = service.stopMemberWork(teamRun.id, members[0]!.id, { cancelQueued: true });
+    await stopEntered.promise;
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'RUNNING',
+      dispatchRevokedAt: expect.any(Date),
+    });
+
+    const roomService = new TeamRunService();
+    const publicMessage = await roomService.createRoomMessage(teamRun.id, {
+      content: 'Late public handoff',
+      senderType: 'agent',
+      senderId: members[0]!.id,
+      senderInvocationId: invocation.id,
+      mentions: [{ memberId: members[1]!.id }],
+    });
+    const privateMessage = await roomService.createPrivateRoomMessage(teamRun.id, {
+      content: 'Late private handoff',
+      senderType: 'agent',
+      senderId: members[0]!.id,
+      senderInvocationId: invocation.id,
+      recipientMemberIds: [members[1]!.id],
+    });
+    expect(publicMessage.workRequestIds).toEqual([]);
+    expect(privateMessage.workRequestIds).toEqual([]);
+    await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(1);
+
+    cleanup.resolve();
+    await stopping;
+    await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(1);
+  });
+
+  it('serializes direct TeamRun session stop against concurrent queue admission', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities],
+    });
+    const activeRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const activeSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'Active work',
+        status: 'RUNNING',
+      },
+    });
+    const activeInvocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: activeRequest.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace!.id,
+        sessionId: activeSession.id,
+        status: 'RUNNING',
+      },
+    });
+    const nextRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+    const stopEntered = createDeferred<void>();
+    const allowStop = createDeferred<void>();
+    const sessionManager = createSessionManagerMock();
+    sessionManager.stop.mockImplementation(async () => {
+      stopEntered.resolve();
+      await allowStop.promise;
+      return prisma.session.update({ where: { id: activeSession.id }, data: { status: 'CANCELLED' } });
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const directStop = service.stopSession(activeSession.id);
+    await stopEntered.promise;
+    const concurrentPump = service.startNextSessions(teamRun.id);
+    expect(sessionManager.start).not.toHaveBeenCalled();
+    allowStop.resolve();
+    await Promise.all([directStop, concurrentPump]);
+
+    expect(sessionManager.start).toHaveBeenCalledTimes(1);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: activeInvocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      dispatchRevokedAt: expect.any(Date),
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: nextRequest.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+  });
+
+  it('does not spawn when direct stop wins after Session creation but before Invocation creation', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture({
+      memberCapabilities: [readOnlyCapabilities],
+    });
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'QUEUED',
+    });
+    const sessionCreated = createDeferred<{ id: string }>();
+    const allowInvocation = createDeferred<void>();
+    const sessionManager = createSessionManagerMock();
+    sessionManager.create.mockImplementation(async () => {
+      const session = await prisma.session.create({
+        data: {
+          workspaceId: workspace!.id,
+          agentType: AgentType.CODEX,
+          providerId: members[0]!.providerId,
+          prompt: 'queued work',
+          status: 'PENDING',
+        },
+      });
+      sessionCreated.resolve(session);
+      await allowInvocation.promise;
+      return session;
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager,
+      getProviderById: createProviderLookup(),
+    });
+
+    const starting = service.startNextSessions(teamRun.id);
+    const session = await sessionCreated.promise;
+    const stopping = service.stopSession(session.id);
+    await waitForCondition(() => sessionManager.stop.mock.calls.length === 1);
+    await waitForCondition(async () => (
+      (await prisma.session.findUnique({ where: { id: session.id } }))?.status === 'CANCELLED'
+    ));
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+    allowInvocation.resolve();
+    await Promise.all([starting, stopping]);
+
+    expect(sessionManager.start).not.toHaveBeenCalled();
+    await expect(prisma.agentInvocation.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
   });
 
   it('does not start queued work when stopping a member with no active invocation and no queue cancellation', async () => {

@@ -1,8 +1,15 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { formatErrorLogEntry, getErrorLogFilePath, getLogsDir, writeErrorLog } from './error-log.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  formatErrorLogEntry,
+  getErrorLogFilePath,
+  getLogsDir,
+  installProcessErrorLogging,
+  registerProcessShutdownHandler,
+  writeErrorLog,
+} from './error-log.js';
 
 const tempRoots: string[] = [];
 const longAuthorizationPadding = 'x'.repeat(4200);
@@ -20,6 +27,19 @@ afterEach(() => {
 });
 
 describe('error-log', () => {
+  it('routes unhandled rejection cleanup through the registered shutdown owner', async () => {
+    const dataDir = makeTempRoot();
+    const shutdown = vi.fn(async () => undefined);
+    registerProcessShutdownHandler(shutdown);
+    installProcessErrorLogging(dataDir);
+    const error = new Error('fatal rejection');
+    process.emit('unhandledRejection', error, Promise.resolve());
+    await Promise.resolve();
+    expect(shutdown).toHaveBeenCalledWith(error);
+    registerProcessShutdownHandler(undefined);
+    process.exitCode = 0;
+  });
+
   it('creates the logs directory and appends JSON log lines', () => {
     const dataDir = makeTempRoot();
     const logFile = writeErrorLog({

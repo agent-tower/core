@@ -12,6 +12,16 @@ MemberPreset/TeamTemplate 是配置；创建 TeamRun 时将成员配置快照到
 
 `sessionPolicy = resume_last` 仍为每个 WorkRequest 创建独立的 Tower Session 与 AgentInvocation，只复用同一成员在匹配 workspace/target 上的 Agent 原生上下文。ACP 应使用 context-only `session/resume`；Agent 不支持时可回退 `session/load`，但历史回放属于旧 Session，不能写入新 invocation 的日志或计作新进展。
 
+TeamRun invocation 进入 `COMPLETED`、`FAILED` 或 `CANCELLED` 后，必须等待对应 Tower Session 的全部 runtime generation cleanup 确认且不存在 current owner，再 admission 下一项；`WAITING_ROOM_REPLY` 及其合法 reminder/follow-up 期间保持 runtime。`WorkRequest STARTED -> terminal` 条件更新是 after-terminal 的唯一 durable winner，只有 winner 可以 unlock、启动下一项和推进 review；人工 stop、session exit、heartbeat/startup recovery 和重复 reconcile 全部复用同一 cleanup gate。cleanup 未确认时 invocation/WorkRequest、锁、队列和 review 都保持 pending，重复恢复必须幂等。
+
+runtime launch evidence 独立于 `Session.status`：initial 与 `resume_last` 的新 Tower Session、普通 follow-up 在任何可能 spawn 前都先写 durable claim。只有明确从未跨过 launch gate，或已知在创建 child 前失败并安全补偿，空 `ExecutionProcess` 集合才允许终态；claimed 但无 row、row identity 不完整或历史 ownership 不明必须持久 quarantine、周期告警并继续阻塞成员，不能猜测为 never-launched 或按裸 PID 清理。
+
+Initial TeamRun Session creation and Invocation creation are a short-lived admission boundary: process ownership requires a PENDING -> RUNNING Session CAS plus a fresh dispatch/session check. Direct stop may cancel a Session before its Invocation exists; no later scheduler or follow-up path may spawn after that cancellation.
+
+成员 stop 与通用 TeamRun Session stop 共用同一 per-member scheduling barrier。stop 开始时在同一事务写入 invocation `dispatchRevokedAt` admission gate，并按请求清理已有队列；该 gate 在 OS cleanup 等待、失败和恢复期间保持。带 sender invocation 的公开/私聊消息仍可落库供审计和参与者读取，但 terminal/revoked sender 不得创建 WorkRequest 或触发 reconcile；开始 stop 后的迟到消息不能在 barrier 释放后重新启动成员。
+
+TeamRun Session 的 direct follow-up（REST `sessions/:id/message`、MCP `sessions.send_message` 和内部 `SessionManager.sendMessage`）必须携带当前未撤销 invocation 身份，并在同一 member barrier 内复核 invocation、Session 和 ACTIVE member；终态或 revoked invocation 一律拒绝。普通 conversation Session 保持终态 follow-up 兼容行为。
+
 公开或私聊消息使用结构化 mention/recipient 创建 WorkRequest。不要从显示文本解析 `@name`；使用稳定 `memberId`、busy policy 和可选 commit target。
 
 - `CONFIRM` 请求先进入 `PENDING_APPROVAL`。

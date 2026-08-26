@@ -16,6 +16,7 @@ describe('MemberHeartbeatScheduler queue pump', () => {
 
   it('pumps queued work on the startup scan and every heartbeat tick', async () => {
     const reconciler = {
+      reconcilePendingRuntimeCleanup: vi.fn(async () => 0),
       reconcileOrphanInvocations: vi.fn(async () => undefined),
       reconcileIncompleteTerminalInvocations: vi.fn(async () => undefined),
       reconcileStalledInvocations: vi.fn(async () => undefined),
@@ -35,6 +36,7 @@ describe('MemberHeartbeatScheduler queue pump', () => {
     scheduler.start();
     await vi.advanceTimersByTimeAsync(10_000);
 
+    expect(reconciler.reconcilePendingRuntimeCleanup).toHaveBeenCalledTimes(1);
     expect(reconciler.reconcileOrphanInvocations).toHaveBeenCalledTimes(1);
     expect(reconciler.reconcileIncompleteTerminalInvocations).toHaveBeenCalledTimes(1);
     expect(reconciler.reconcileStalledInvocations).toHaveBeenCalledTimes(1);
@@ -43,6 +45,7 @@ describe('MemberHeartbeatScheduler queue pump', () => {
 
     await vi.advanceTimersByTimeAsync(20_000);
 
+    expect(reconciler.reconcilePendingRuntimeCleanup).toHaveBeenCalledTimes(2);
     expect(reconciler.reconcileOrphanInvocations).toHaveBeenCalledTimes(1);
     expect(reconciler.reconcileIncompleteTerminalInvocations).toHaveBeenCalledTimes(2);
     expect(reconciler.reconcileStalledInvocations).toHaveBeenCalledTimes(2);
@@ -54,6 +57,7 @@ describe('MemberHeartbeatScheduler queue pump', () => {
   it('still pumps queued work when every preceding reconciliation stage fails', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const reconciler = {
+      reconcilePendingRuntimeCleanup: vi.fn(async () => { throw new Error('cleanup recovery failure'); }),
       reconcileOrphanInvocations: vi.fn(async () => { throw new Error('orphan failure'); }),
       reconcileIncompleteTerminalInvocations: vi.fn(async () => { throw new Error('terminal recovery failure'); }),
       reconcileStalledInvocations: vi.fn(async () => { throw new Error('stalled failure'); }),
@@ -73,6 +77,7 @@ describe('MemberHeartbeatScheduler queue pump', () => {
     scheduler.start();
     await vi.advanceTimersByTimeAsync(10_000);
 
+    expect(reconciler.reconcilePendingRuntimeCleanup).toHaveBeenCalledTimes(1);
     expect(reconciler.reconcileOrphanInvocations).toHaveBeenCalledTimes(1);
     expect(reconciler.reconcileIncompleteTerminalInvocations).toHaveBeenCalledTimes(1);
     expect(reconciler.reconcileStalledInvocations).toHaveBeenCalledTimes(1);
@@ -80,6 +85,7 @@ describe('MemberHeartbeatScheduler queue pump', () => {
     expect(queuePump.reconcileQueuedWork).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(20_000);
+    expect(reconciler.reconcilePendingRuntimeCleanup).toHaveBeenCalledTimes(2);
     expect(reconciler.reconcileOrphanInvocations).toHaveBeenCalledTimes(2);
     expect(reconciler.reconcileIncompleteTerminalInvocations).toHaveBeenCalledTimes(2);
     expect(queuePump.reconcileQueuedWork).toHaveBeenCalledTimes(2);

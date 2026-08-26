@@ -5,6 +5,9 @@ import { MsgStore, type NormalizedEntry } from '../../output/index.js';
 import type { RuntimeDriverEventSink } from '../contracts.js';
 import { AgentRuntimeError } from '../errors.js';
 import { WorkspaceBackgroundProcessManager } from '../../services/workspace-background-process-manager.js';
+import { RuntimeCoordinator } from '../runtime-coordinator.js';
+import { StaticRuntimeRegistry } from '../runtime-registry.js';
+import * as acpRegistry from '../acp/agents/registry.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -35,6 +38,8 @@ const acpState = vi.hoisted(() => ({
   close: undefined as unknown as ReturnType<typeof vi.fn>,
   processStarts: 0,
   processStops: 0,
+  processStopErrors: [] as unknown[],
+  initializeError: undefined as unknown,
 }));
 
 const providerState = vi.hoisted(() => ({
@@ -78,6 +83,7 @@ vi.mock('@agentclientprotocol/sdk', () => {
   };
   acpState.request = vi.fn(async (method: string) => {
     if (method === methods.agent.initialize) {
+      if (acpState.initializeError) throw acpState.initializeError;
       return {
         protocolVersion: 1,
         authMethods: acpState.authMethods,
@@ -136,6 +142,8 @@ vi.mock('../acp/process-manager.js', () => ({
     onExit() {}
     async stop() {
       acpState.processStops += 1;
+      const error = acpState.processStopErrors.shift();
+      if (error) throw error;
     }
   },
 }));
@@ -169,10 +177,23 @@ beforeEach(() => {
   acpState.prompt = deferred<{ stopReason?: string }>();
   acpState.processStarts = 0;
   acpState.processStops = 0;
+  acpState.processStopErrors = [];
+  acpState.initializeError = undefined;
   providerState.provider = null;
 });
 
 describe('AcpRuntimeDriver lifecycle', () => {
+  function installLaunchCleanup(cleanup: () => Promise<void>) {
+    const definition = acpRegistry.getAcpAgentDefinition(AgentType.CODEX);
+    return vi.spyOn(acpRegistry, 'getAcpAgentDefinition').mockReturnValue({
+      ...definition,
+      resolveLaunch: async (input, profile) => {
+        const launch = await definition.resolveLaunch(input, profile);
+        return { ...launch, cleanup };
+      },
+    });
+  }
+
   it('uses non-persistent permission approval as the unrestricted fallback', async () => {
     providerState.provider = {
       id: 'opencode-acp-unrestricted',
@@ -316,6 +337,78 @@ describe('AcpRuntimeDriver lifecycle', () => {
       await backgroundManager.stopAll().catch(() => undefined);
     }
   }, 15_000);
+
+  it('retries ACP transport cleanup after the first process-tree stop fails', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    acpState.processStopErrors.push(new Error('tree still alive'));
+
+    await expect(session.close()).rejects.toThrow('tree still alive');
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(acpState.processStops).toBe(2);
+  });
+
+  it('retries auxiliary launch cleanup during a normal DriverSession close', async () => {
+    const cleanup = vi.fn()
+      .mockRejectedValueOnce(new Error('managed directory busy'))
+      .mockResolvedValueOnce(undefined);
+    const definitionSpy = installLaunchCleanup(cleanup);
+    const { sink, input } = setup();
+
+    try {
+      const session = await new AcpRuntimeDriver().open(input, sink);
+      await expect(session.close()).resolves.toBeUndefined();
+      expect(cleanup).toHaveBeenCalledTimes(2);
+    } finally {
+      definitionSpy.mockRestore();
+    }
+  });
+
+  it('retries auxiliary launch cleanup before coordinator disposal releases the DriverSession', async () => {
+    const cleanup = vi.fn()
+      .mockRejectedValueOnce(new Error('managed directory busy'))
+      .mockResolvedValueOnce(undefined);
+    const definitionSpy = installLaunchCleanup(cleanup);
+    const { input } = setup();
+    const coordinator = new RuntimeCoordinator(
+      new StaticRuntimeRegistry([new AcpRuntimeDriver()]),
+      {
+        onTurnEvent: vi.fn(),
+        onRuntimeState: vi.fn(),
+        onProcessEvent: vi.fn(async () => undefined),
+      },
+    );
+
+    try {
+      await coordinator.startTurn({
+        ...input,
+        msgStore: new MsgStore(),
+        prompt: 'managed cleanup',
+      });
+      await expect(coordinator.disposeSession(input.towerSessionId)).resolves.toBeUndefined();
+      expect(cleanup).toHaveBeenCalledTimes(2);
+      expect(coordinator.getState(input.towerSessionId).turnState).toBe('IDLE');
+    } finally {
+      definitionSpy.mockRestore();
+      await coordinator.destroyAll();
+    }
+  });
+
+  it('retries auxiliary launch cleanup when ACP initialization fails', async () => {
+    const cleanup = vi.fn()
+      .mockRejectedValueOnce(new Error('managed directory busy'))
+      .mockResolvedValueOnce(undefined);
+    const definitionSpy = installLaunchCleanup(cleanup);
+    acpState.initializeError = new Error('initialize failed');
+    const { sink, input } = setup();
+
+    try {
+      await expect(new AcpRuntimeDriver().open(input, sink)).rejects.toThrow('initialize failed');
+      expect(cleanup).toHaveBeenCalledTimes(2);
+    } finally {
+      definitionSpy.mockRestore();
+    }
+  });
 
   it('reconciles session/load history with one entries patch', async () => {
     const { sink, input } = setup();

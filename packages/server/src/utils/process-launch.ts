@@ -11,28 +11,65 @@ export function getNodeRuntimeCommand(): string {
   return process.env.AGENT_TOWER_NODE_RUNTIME || process.execPath;
 }
 
+/**
+ * Electron packaged builds can use the Electron executable itself as a Node
+ * fallback when a bundled Node runtime is unavailable. That executable needs
+ * ELECTRON_RUN_AS_NODE; a real Node binary does not.
+ */
+function isStandaloneNodeRuntime(runtimeCommand: string): boolean {
+  // `runtimeCommand` may be a Windows path even when this helper is exercised
+  // from a POSIX test process, so do not rely on the host platform's separator.
+  const executableName = runtimeCommand.replace(/^.*[\\/]/, '').toLowerCase();
+  return executableName === 'node' || executableName === 'node.exe';
+}
+
 export const PTY_WRAPPER_ENV_KEYS = [
   'AGENT_TOWER_NODE_RUNTIME',
   'ELECTRON_RUN_AS_NODE',
+  'AGENT_TOWER_TREE_CLEANUP_CHANNEL',
+  'AGENT_TOWER_TREE_CLEANUP_SECRET',
+  'AGENT_TOWER_PROCESS_IDENTITY',
+  'AGENT_TOWER_PTY_IDENTITY_SEED',
 ] as const;
 
 export function buildPtyWrapperEnv(
   agentEnv: Record<string, string>,
   parentEnv: NodeJS.ProcessEnv = process.env,
+  ownershipToken?: string,
+  cleanupChannel?: Record<string, string>,
 ): Record<string, string> {
   const wrapperEnv = { ...agentEnv };
+  const runtimeCommand = parentEnv.AGENT_TOWER_NODE_RUNTIME || process.execPath;
+  const preserveElectronNodeMode = !isStandaloneNodeRuntime(runtimeCommand);
+  if (!preserveElectronNodeMode) {
+    delete wrapperEnv.ELECTRON_RUN_AS_NODE;
+  }
   for (const key of PTY_WRAPPER_ENV_KEYS) {
+    if (key === 'AGENT_TOWER_TREE_CLEANUP_CHANNEL'
+      || key === 'AGENT_TOWER_TREE_CLEANUP_SECRET'
+      || key === 'AGENT_TOWER_PROCESS_IDENTITY'
+      || key === 'AGENT_TOWER_PTY_IDENTITY_SEED'
+      // Electron's bootstrap marker is a parent-runtime implementation detail.
+      // It is only needed when the wrapper itself runs through Electron.
+      || (key === 'ELECTRON_RUN_AS_NODE' && !preserveElectronNodeMode)) continue;
     const value = parentEnv[key];
     if (value !== undefined) {
       wrapperEnv[key] = value;
     }
   }
+  if (ownershipToken) {
+    wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY = ownershipToken;
+    wrapperEnv.AGENT_TOWER_PTY_IDENTITY_SEED = ownershipToken;
+  }
+  // Completion is parent-owned and intentionally has no environment
+  // representation. Keep this argument for API compatibility, but never copy
+  // endpoint/secret material into a wrapper or Agent environment.
+  void cleanupChannel;
   return wrapperEnv;
 }
 
 const PTY_WRAPPER_SCRIPT = String.raw`
 const { spawn, spawnSync } = require('node:child_process');
-const { randomBytes } = require('node:crypto');
 const { createReadStream, unlinkSync } = require('node:fs');
 
 const [mode, programPath, ...rest] = process.argv.slice(1);
@@ -42,24 +79,28 @@ const internalEnvKeys = ${JSON.stringify(PTY_WRAPPER_ENV_KEYS)};
 const processIdentityEnvKey = 'AGENT_TOWER_PROCESS_IDENTITY';
 const processIdentitySeedEnvKey = 'AGENT_TOWER_PTY_IDENTITY_SEED';
 const processIdentityToken = process.env[processIdentitySeedEnvKey]
-  || randomBytes(24).toString('base64url');
+  || process.env[processIdentityEnvKey];
 
 let child;
 let cleanupTarget = null;
-const sentSignals = new Set();
 let forceKillTimer = null;
 let treeExitPoll = null;
 let finishing = false;
 let groupIdentityTimers = [];
 const trackedGroupMembers = new Map();
+const trackedWindowsMembers = new Map();
+let identityIncomplete = false;
+let childExited = false;
 
 function getChildEnv() {
   const env = { ...process.env };
   for (const key of internalEnvKeys) {
+    if (key === processIdentityEnvKey) continue;
     delete env[key];
   }
   delete env[processIdentitySeedEnvKey];
-  env[processIdentityEnvKey] = processIdentityToken;
+  // Keep the ownership marker in Agent descendants. It is only an ownership
+  // label used for process discovery, never a completion capability.
   return env;
 }
 
@@ -72,58 +113,105 @@ function cleanup() {
   try { unlinkSync(target); } catch {}
 }
 
-function readProcessTable() {
-  if (!child || isWin) return [];
-  const base = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid='], {
-    encoding: 'utf8',
-    windowsHide: true,
-  });
-  if (base.status !== 0 || typeof base.stdout !== 'string') return [];
-  const groupPids = base.stdout.split('\n').map((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line);
-    return match && Number(match[3]) === child.pid ? Number(match[1]) : null;
-  }).filter(Boolean);
-  if (groupPids.length === 0) return [];
-  const result = spawnSync('ps', [
-    'eww',
-    '-p',
-    groupPids.join(','),
-    '-o',
-    'pid=,ppid=,pgid=,lstart=,command=',
-  ], {
-    encoding: 'utf8',
-    windowsHide: true,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.status !== 0 || typeof result.stdout !== 'string') return [];
-  return result.stdout.split('\n').map((line) => {
+function parseProcessRows(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return null;
+  const rows = stdout.split('\n').filter((line) => line.trim()).map((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$/.exec(line);
-    const token = match
-      ? new RegExp('(?:^|\\s)' + processIdentityEnvKey + '=([^\\s]+)').exec(match[5])?.[1]
-      : null;
     return match ? {
       pid: Number(match[1]),
       ppid: Number(match[2]),
       pgid: Number(match[3]),
-      birthIdentity: match[4] + ':' + token,
-      ownershipToken: token,
+      birthIdentity: match[4],
+      command: match[5],
     } : null;
-  }).filter((row) => row && row.ownershipToken === processIdentityToken);
+  });
+  return rows.length > 0 && !rows.some((row) => !row) ? rows : null;
+}
+
+function readProcessTable() {
+  if (!child || isWin) return { status: 'IDENTITY_INCOMPLETE', rows: [], complete: false };
+  const probeEnv = { ...process.env };
+  delete probeEnv[processIdentityEnvKey];
+  delete probeEnv[processIdentitySeedEnvKey];
+  // 'lstart' is parsed below as a stable process birth identity. Force the
+  // portable C layout even when the server inherits a localized user env.
+  probeEnv.LC_ALL = 'C';
+  probeEnv.LANG = 'C';
+  const base = spawnSync('ps', ['eww', '-axo', 'pid=,ppid=,pgid=,lstart=,command='], {
+    encoding: 'utf8',
+    windowsHide: true,
+    maxBuffer: 256 * 1024 * 1024,
+    env: probeEnv,
+  });
+  if (base.error || base.status !== 0 || typeof base.stdout !== 'string' || !base.stdout.trim()) {
+    return { status: 'PROBE_UNAVAILABLE', rows: [], complete: false };
+  }
+  const rows = parseProcessRows(base.stdout);
+  if (!rows) {
+    return { status: 'IDENTITY_INCOMPLETE', rows: [], complete: false };
+  }
+  if (rows.length > 16_384) {
+    return { status: 'IDENTITY_INCOMPLETE', rows: [], complete: false };
+  }
+  const owned = rows.filter((row) => (
+    row.pid !== process.pid
+      && row.command.includes(processIdentityEnvKey + '=' + processIdentityToken)
+  ));
+  // The complete flag distinguishes a valid system snapshot with no marker-bearing
+  // rows from an empty/failed probe. Only the former can prove that an
+  // already-observed child has no remaining owned descendants.
+  // Keep the complete process table as well as the marker-bearing owner rows.
+  // Native agent launchers are allowed to scrub this marker from descendants;
+  // ownership is established by a marked root and then expanded through its
+  // process group / parent-child edges below.
+  return { status: 'ALIVE', rows, owned, complete: true };
 }
 
 function captureProcessGroupIdentity() {
   if (!child || isWin) return;
-  const rows = readProcessTable();
-  const leader = rows.find((row) => row.pid === child.pid && row.pgid === child.pid);
+  const probe = readProcessTable();
+  if (probe.status !== 'ALIVE') return;
   const trackedLeader = trackedGroupMembers.get(child.pid);
-  if (!leader || (trackedLeader && trackedLeader !== leader.birthIdentity)) return;
-  for (const row of rows) {
-    if (row.pgid === child.pid) trackedGroupMembers.set(row.pid, row.birthIdentity);
+  const leader = probe.owned.find((row) => row.pid === child.pid);
+  // A short-lived launcher can disappear before the first scheduled ps
+  // snapshot. The launch token is unique to this wrapper, so visible marker
+  // rows are still valid ownership evidence even when the direct leader row
+  // has already exited. If the leader was observed before, reject a birth
+  // identity change (PID reuse) rather than widening the owner set.
+  if (trackedLeader && (!leader || trackedLeader.birthIdentity !== leader.birthIdentity)) return;
+  const ownedPids = new Set(probe.owned.map((row) => row.pid));
+  const ownedGroups = new Set(probe.owned.map((row) => row.pgid));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of probe.rows) {
+      if (ownedPids.has(row.pid) || !ownedPids.has(row.ppid)) continue;
+      ownedPids.add(row.pid);
+      changed = true;
+    }
+  }
+  for (const row of probe.rows) {
+    if (!ownedPids.has(row.pid) && !ownedGroups.has(row.pgid)) continue;
+    const existing = trackedGroupMembers.get(row.pid);
+    if (existing && existing.birthIdentity !== row.birthIdentity) {
+      identityIncomplete = true;
+      continue;
+    }
+    trackedGroupMembers.set(row.pid, { pgid: row.pgid, birthIdentity: row.birthIdentity });
   }
 }
 
 function scheduleProcessGroupIdentityCapture() {
-  if (!child || isWin) return;
+  if (!child) return;
+  if (isWin) {
+    captureWindowsTree();
+    for (const delay of [50, 250, 1000, 5000]) {
+      const timer = setTimeout(captureWindowsTree, delay);
+      if (timer.unref) timer.unref();
+      groupIdentityTimers.push(timer);
+    }
+    return;
+  }
   // Capture synchronously while the group leader is still our known child.
   // Fast commands may spawn a background process and exit before a zero-delay
   // timer runs, leaving no trustworthy identity from which to sweep the group.
@@ -137,23 +225,47 @@ function scheduleProcessGroupIdentityCapture() {
 
 function captureRemainingProcessGroupIdentity() {
   if (!child || isWin) return;
-  const rows = readProcessTable();
-  const groupRows = rows.filter((row) => row.pgid === child.pid);
-  // A known PID with a different birth marker proves that the numeric group
-  // identity was reused. Never replace captured identities in that case.
-  if (groupRows.some((row) => {
-    const startedAt = trackedGroupMembers.get(row.pid);
-    return startedAt !== undefined && startedAt !== row.birthIdentity;
-  })) return;
-  for (const row of groupRows) {
-    if (!trackedGroupMembers.has(row.pid)) trackedGroupMembers.set(row.pid, row.birthIdentity);
+  const probe = readProcessTable();
+  if (probe.status !== 'ALIVE') return;
+  // Seed from any marker-bearing rows that are still visible. This matters
+  // when the direct launcher exits before the first capture but a native
+  // descendant remains alive and carries the launch token.
+  const trackedPids = new Set([
+    ...trackedGroupMembers.keys(),
+    ...probe.owned.map((row) => row.pid),
+  ]);
+  const trackedGroups = new Set([
+    ...[...trackedGroupMembers.values()].map((member) => member.pgid),
+    ...probe.owned.map((row) => row.pgid),
+  ]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of probe.rows) {
+      if (trackedPids.has(row.pid) || !trackedPids.has(row.ppid)) continue;
+      trackedPids.add(row.pid);
+      trackedGroups.add(row.pgid);
+      changed = true;
+    }
+  }
+  for (const row of probe.rows) {
+    if (!trackedPids.has(row.pid) && !trackedGroups.has(row.pgid)) continue;
+    const existing = trackedGroupMembers.get(row.pid);
+    if (existing && existing.birthIdentity !== row.birthIdentity) {
+      identityIncomplete = true;
+      continue;
+    }
+    if (!existing) trackedGroupMembers.set(row.pid, { pgid: row.pgid, birthIdentity: row.birthIdentity });
   }
 }
 
 function matchingTrackedGroupMembers() {
   if (!child || isWin || trackedGroupMembers.size === 0) return [];
-  return readProcessTable().filter((row) => (
-    row.pgid === child.pid && trackedGroupMembers.get(row.pid) === row.birthIdentity
+  const probe = readProcessTable();
+  if (probe.status !== 'ALIVE') return null;
+  return probe.rows.filter((row) => (
+    trackedGroupMembers.get(row.pid)?.pgid === row.pgid
+      && trackedGroupMembers.get(row.pid)?.birthIdentity === row.birthIdentity
   ));
 }
 
@@ -162,30 +274,139 @@ const unixIdentityAdapter = {
   captureRemainingGroup: captureRemainingProcessGroupIdentity,
   matchingGroupMembers: matchingTrackedGroupMembers,
   signalGroup(signal) {
-    if (!child || matchingTrackedGroupMembers().length === 0) return false;
-    try {
-      process.kill(-child.pid, signal);
-      return true;
-    } catch {
-      return false;
+    const members = matchingTrackedGroupMembers();
+    if (!members || members.length === 0) return false;
+    let signalled = false;
+    for (const pgid of new Set(members.map((row) => row.pgid))) {
+      try {
+        process.kill(-pgid, signal);
+        signalled = true;
+      } catch {}
     }
+    return signalled;
   },
   isGroupAlive() {
-    return matchingTrackedGroupMembers().length > 0;
+    const members = matchingTrackedGroupMembers();
+    return members !== null && members.length > 0;
+  },
+  groupState() {
+    if (!child || isWin) return 'IDENTITY_INCOMPLETE';
+    const probe = readProcessTable();
+    if (probe.status !== 'ALIVE') return probe.status;
+    if (identityIncomplete) return 'IDENTITY_INCOMPLETE';
+    if (trackedGroupMembers.size === 0) {
+      // A complete system snapshot after the direct child exit and with no
+      // marker-bearing descendants is the only fast-exit exception. Empty or
+      // malformed probes fail closed; there is no safe inference from an empty result.
+      return childExited && probe.complete ? 'CLEAN_EMPTY' : 'IDENTITY_INCOMPLETE';
+    }
+    const matches = probe.rows.filter((row) => (
+      trackedGroupMembers.get(row.pid)?.pgid === row.pgid
+        && trackedGroupMembers.get(row.pid)?.birthIdentity === row.birthIdentity
+    ));
+    return matches.length > 0 ? 'ALIVE' : 'CLEAN_EMPTY';
   },
 };
+
+function terminateWindowsTree() {
+  if (!child || !isWin || child.pid == null) return false;
+  try {
+    const result = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function readWindowsProcessRows() {
+  if (!isWin) return { status: 'IDENTITY_INCOMPLETE', rows: [] };
+  try {
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress',
+    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    if (result.error || result.status !== 0 || typeof result.stdout !== 'string') {
+      return { status: 'PROBE_UNAVAILABLE', rows: [] };
+    }
+    if (!result.stdout.trim()) return { status: 'IDENTITY_INCOMPLETE', rows: [] };
+    const parsed = JSON.parse(result.stdout);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    const normalized = rows.map((row) => ({
+      pid: Number(row.ProcessId),
+      ppid: Number(row.ParentProcessId),
+      birthMarker: String(row.CreationDate || ''),
+    }));
+    if (normalized.some((row) => row.pid <= 0 || row.ppid < 0 || !row.birthMarker)) {
+      return { status: 'IDENTITY_INCOMPLETE', rows: [] };
+    }
+    return { status: 'ALIVE', rows: normalized };
+  } catch {
+    return { status: 'PROBE_UNAVAILABLE', rows: [] };
+  }
+}
+
+function captureWindowsTree() {
+  if (!child || !isWin || child.pid == null) return;
+  const probe = readWindowsProcessRows();
+  if (probe.status !== 'ALIVE') return;
+  const rows = probe.rows;
+  const descendants = new Set([child.pid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (descendants.has(row.pid) || !descendants.has(row.ppid)) continue;
+      descendants.add(row.pid);
+      changed = true;
+    }
+  }
+  for (const row of rows) {
+    if (descendants.has(row.pid)) {
+      const existing = trackedWindowsMembers.get(row.pid);
+      if (!existing || existing === row.birthMarker) trackedWindowsMembers.set(row.pid, row.birthMarker);
+    }
+  }
+}
+
+function windowsTreeAlive() {
+  if (!child || !isWin) return false;
+  const probe = readWindowsProcessRows();
+  if (probe.status !== 'ALIVE') return true;
+  if (trackedWindowsMembers.size === 0) return false;
+  const rows = probe.rows;
+  return [...trackedWindowsMembers].some(([pid, birthMarker]) => rows.some((row) => (
+    row.pid === pid && row.birthMarker === birthMarker
+  )));
+}
+
+function windowsTreeState() {
+  if (!child || !isWin) return 'IDENTITY_INCOMPLETE';
+  const probe = readWindowsProcessRows();
+  if (probe.status !== 'ALIVE') return probe.status;
+  if (trackedWindowsMembers.size === 0) return 'IDENTITY_INCOMPLETE';
+  const alive = [...trackedWindowsMembers].some(([pid, birthMarker]) => probe.rows.some((row) => (
+    row.pid === pid && row.birthMarker === birthMarker
+  )));
+  return alive ? 'ALIVE' : 'CLEAN_EMPTY';
+}
 
 // 终止 child 及其整个进程组。
 // Unix 下 child 以 detached 启动（pgid === child.pid），组播信号可覆盖
 // child 派生的整棵子树（pnpm dev、tsc --watch 等），防止孙进程被 init
 // 收养成为孤儿。同一信号只发送一次；每次组播前重新校验组成员的
 // birth identity 与本次 launch token，身份不匹配时拒绝发送。
-// Windows 没有进程组信号语义，维持单进程击杀。
+// Windows 使用 taskkill /T /F 处理整个 descendant tree。
 function killTree(signal) {
-  if (!child || sentSignals.has(signal)) return;
-  sentSignals.add(signal);
+  if (!child) return;
   if (isWin) {
-    if (!child.killed) {
+    // Keep the wrapper alive until the child handle settles. A root exit by
+    // itself is not tree-cleanup evidence; taskkill owns the descendant kill.
+    if (!terminateWindowsTree() && !child.killed) {
       try { child.kill(signal); } catch {}
     }
     return;
@@ -194,6 +415,19 @@ function killTree(signal) {
     unixIdentityAdapter.captureGroup();
   }
   unixIdentityAdapter.signalGroup(signal);
+  // The direct child handle is still authoritative while Node reports it
+  // alive. Detached Unix children have their own PGID equal to child.pid, so
+  // this fallback reaches launchers that scrub the ownership marker before
+  // the process-table capture observes them (for example Codex's native
+  // launcher). It never targets a reused PID after the child has exited.
+  if (child.exitCode === null && child.signalCode === null && child.pid != null) {
+    try { process.kill(-child.pid, signal); } catch {}
+    // Some launchers replace the detached process-group leader or report a
+    // stale group while Node still owns the child handle. Signalling the
+    // handle is race-safe (it cannot target a reused PID) and makes the
+    // wrapper observe the child exit so its cleanup state machine can finish.
+    try { child['kill'](signal); } catch {}
+  }
 }
 
 // 收到终止信号后兜底：5 秒内进程组未退干净则升级为 SIGKILL。
@@ -210,36 +444,63 @@ function childProcessGroupExists() {
   return unixIdentityAdapter.isGroupAlive();
 }
 
-function exitWithChildResult(code, signal) {
+async function exitWithChildResult(code, signal) {
   if (finishing) return;
   finishing = true;
+  childExited = true;
   // The group leader may already be reaped. Capture the remaining members with
   // birth identities once, then every poll/signal revalidates those identities
   // so a later PGID/PID reuse cannot be mistaken for this process tree.
   unixIdentityAdapter.captureRemainingGroup();
+  captureWindowsTree();
   cleanup();
   // child 已退出：清扫其进程组内残留的后台孙进程（dev server、watch 等）。
-  // SIGHUP 与 PTY 关闭语义一致。Unix wrapper 必须等到整个组消失后才能退出，
+  // SIGHUP 与 PTY 关闭语义一致。Unix wrapper 必须等到所有 marker-owned groups 消失后才能退出，
   // 否则 PTY owner 会把 wrapper exit 误判为进程树已清空。
   killTree('SIGHUP');
   const exitCode = typeof code === 'number' ? code : signal ? 1 : 0;
-  if (isWin || !childProcessGroupExists()) process.exit(exitCode);
+  const initialState = isWin ? windowsTreeState() : unixIdentityAdapter.groupState();
+  if (initialState === 'CLEAN_EMPTY') {
+    process.exit(exitCode);
+  }
 
   scheduleForceKill();
-  treeExitPoll = setInterval(() => {
-    if (childProcessGroupExists()) return;
-    clearInterval(treeExitPoll);
-    treeExitPoll = null;
-    if (forceKillTimer) clearTimeout(forceKillTimer);
-    forceKillTimer = null;
-    process.exit(exitCode);
-  }, 50);
+  const pollTree = async (attempt = 0) => {
+    // Descendants may call setsid or fork after the root exit. Refresh the
+    // marker-owned identity set before every state decision and signal every
+    // known group, rather than freezing the initial PGID snapshot.
+    unixIdentityAdapter.captureRemainingGroup();
+    captureWindowsTree();
+    const state = isWin ? windowsTreeState() : unixIdentityAdapter.groupState();
+    if (state === 'CLEAN_EMPTY') {
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      forceKillTimer = null;
+      process.exit(exitCode);
+      return;
+    }
+    killTree(attempt >= 5 ? 'SIGKILL' : 'SIGHUP');
+    scheduleTreePoll(attempt + 1);
+  };
+  const scheduleTreePoll = (attempt) => {
+    const delay = [50, 100, 250, 500, 1_000, 2_000, 5_000][Math.min(attempt, 6)];
+    treeExitPoll = setTimeout(() => {
+      treeExitPoll = null;
+      void pollTree(attempt);
+    }, delay);
+  };
+  scheduleTreePoll(0);
 }
 
 function exitWithError(error) {
-  cleanup();
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);
+  if (child) {
+    // Every post-spawn error shares the same tree cleanup state machine. A
+    // direct process.exit here would strand detached descendants.
+    void exitWithChildResult(1);
+    return;
+  }
+  cleanup();
   process.exit(1);
 }
 
@@ -326,7 +587,7 @@ if (mode === 'pipe-file') {
 
   function exitWithPipeError(error) {
     killTree('SIGTERM');
-    afterInputClosed(() => exitWithError(error));
+    afterInputClosed(() => exitWithChildResult(1));
   }
 
   child = isCmdBat
@@ -335,7 +596,8 @@ if (mode === 'pipe-file') {
   scheduleProcessGroupIdentityCapture();
 
   child.on('error', (error) => {
-    afterInputClosed(() => exitWithError(error));
+    console.error(error instanceof Error ? error.message : String(error));
+    afterInputClosed(() => exitWithChildResult(1));
   });
   child.on('exit', finishWithChildResult);
 

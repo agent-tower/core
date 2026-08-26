@@ -13,12 +13,19 @@ const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-team-run-'));
 const dbPath = path.join(testDir, 'test.db');
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
 
-const { appendAttachmentMarkdownContextMock, fakeEventBus } = vi.hoisted(() => ({
+const { appendAttachmentMarkdownContextMock, fakeEventBus, fakeSessionManager } = vi.hoisted(() => ({
   appendAttachmentMarkdownContextMock: vi.fn(),
   fakeEventBus: {
     emit: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
+  },
+  fakeSessionManager: {
+    disposeRuntimeSession: vi.fn(async () => undefined),
+    hasActiveTurn: vi.fn(() => false),
+    hasRuntimeProcessOwner: vi.fn(() => false),
+    retryRuntimeProcessCleanup: vi.fn(async () => undefined),
+    sendMessage: vi.fn(async () => null),
   },
 }));
 
@@ -31,6 +38,7 @@ vi.mock('../../core/container.js', async (importOriginal) => {
   return {
     ...actual,
     getEventBus: vi.fn(() => fakeEventBus),
+    getSessionManager: vi.fn(() => fakeSessionManager),
   };
 });
 
@@ -134,6 +142,11 @@ describe('TeamRunService', () => {
     fakeEventBus.emit.mockClear();
     fakeEventBus.on.mockClear();
     fakeEventBus.off.mockClear();
+    fakeSessionManager.disposeRuntimeSession.mockClear();
+    fakeSessionManager.hasActiveTurn.mockClear();
+    fakeSessionManager.hasRuntimeProcessOwner.mockClear();
+    fakeSessionManager.retryRuntimeProcessCleanup.mockClear();
+    fakeSessionManager.sendMessage.mockClear();
     appendAttachmentMarkdownContextMock.mockImplementation(async (content: string, attachmentIds?: string[] | null) => {
       const ids = Array.from(new Set((attachmentIds ?? []).map((id) => id.trim()).filter(Boolean)));
       if (ids.length === 0) return content.trim();
@@ -1022,6 +1035,162 @@ describe('TeamRunService', () => {
     await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
       status: 'STARTED',
     });
+  });
+
+  it('disposes the shared runtime when an agent RoomMessage completes an invocation', async () => {
+    const preset = await service.createMemberPreset(presetInput('Runtime Coder'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [preset.id],
+    });
+    const member = teamRun.members?.[0];
+    expect(member).toBeDefined();
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member!.id,
+        triggerMessageId: 'runtime-reply-trigger',
+        instruction: 'Current work',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: teamRun.mainWorkspaceId,
+        agentType: 'CODEX',
+        providerId: member!.providerId,
+        prompt: 'Current work',
+        status: 'COMPLETED',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: member!.id,
+        workspaceId: teamRun.mainWorkspaceId,
+        sessionId: session.id,
+        status: 'WAITING_ROOM_REPLY',
+      },
+    });
+
+    await service.createRoomMessage(teamRun.id, {
+      content: 'Runtime result',
+      senderType: 'agent',
+      senderId: member!.id,
+      senderInvocationId: invocation.id,
+    });
+
+    expect(fakeSessionManager.disposeRuntimeSession).toHaveBeenCalledWith(session.id, undefined);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'COMPLETED',
+    });
+  });
+
+  it('does not dispatch mentions from a terminal agent invocation', async () => {
+    const senderPreset = await service.createMemberPreset(presetInput('Sender'));
+    const recipientPreset = await service.createMemberPreset(presetInput('Recipient'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [senderPreset.id, recipientPreset.id],
+    });
+    const sender = teamRun.members!.find((member) => member.name === 'Sender')!;
+    const recipient = teamRun.members!.find((member) => member.name === 'Recipient')!;
+    const trigger = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: sender.id,
+        triggerMessageId: 'terminal-invocation-trigger',
+        instruction: 'Already complete',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: teamRun.mainWorkspaceId,
+        agentType: 'CODEX',
+        providerId: sender.providerId,
+        prompt: 'Already complete',
+        status: 'COMPLETED',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: trigger.id,
+        memberId: sender.id,
+        sessionId: session.id,
+        status: 'COMPLETED',
+      },
+    });
+
+    const message = await service.createRoomMessage(teamRun.id, {
+      content: 'Late result @Recipient',
+      senderType: 'agent',
+      senderId: sender.id,
+      senderInvocationId: invocation.id,
+      mentions: [{ memberId: recipient.id }],
+    });
+
+    expect(message.workRequestIds).toEqual([]);
+    await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(1);
+  });
+
+  it('keeps terminal and stop-revoked private messages visible without dispatching WorkRequests', async () => {
+    const senderPreset = await service.createMemberPreset(presetInput('Private Sender'));
+    const recipientPreset = await service.createMemberPreset(presetInput('Private Recipient'));
+    const task = await createTask();
+    const teamRun = await service.createTeamRun(task.id, {
+      mode: 'AUTO',
+      memberPresetIds: [senderPreset.id, recipientPreset.id],
+    });
+    const sender = teamRun.members!.find((member) => member.name === 'Private Sender')!;
+    const recipient = teamRun.members!.find((member) => member.name === 'Private Recipient')!;
+    const trigger = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: sender.id,
+        triggerMessageId: 'private-terminal-trigger',
+        instruction: 'Current work',
+        status: 'STARTED',
+      },
+    });
+    const terminalInvocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: trigger.id,
+        memberId: sender.id,
+        status: 'COMPLETED',
+      },
+    });
+    const revokedInvocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: trigger.id,
+        memberId: sender.id,
+        status: 'RUNNING',
+        dispatchRevokedAt: new Date(),
+      },
+    });
+
+    for (const invocation of [terminalInvocation, revokedInvocation]) {
+      const message = await service.createPrivateRoomMessage(teamRun.id, {
+        content: `Late private result from ${invocation.id}`,
+        recipientMemberIds: [recipient.id],
+        senderType: 'agent',
+        senderId: sender.id,
+        senderInvocationId: invocation.id,
+      });
+      expect(message.workRequestIds).toEqual([]);
+      expect(message.recipientMemberIds).toEqual([recipient.id]);
+    }
+
+    await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(1);
   });
 
   it('creates private RoomMessages with participants and WorkRequests for recipients', async () => {

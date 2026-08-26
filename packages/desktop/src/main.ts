@@ -9,6 +9,8 @@ import net from 'node:net';
 import { promisify } from 'node:util';
 import { resolveDesktopDataMode } from './data-mode.js';
 import { redactDesktopLogText, sanitizeDesktopLogValue } from './log-redaction.js';
+import { stopChildProcessAndWait } from './backend-shutdown.js';
+import { createBeforeQuitHandler } from './before-quit.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +27,12 @@ let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
 let backendPort: number | null = null;
 let quitting = false;
+let backendStopPromise: Promise<void> | null = null;
+/** A crashed backend still owns the server's Agent descendants. Keep a durable
+ * recovery owner until a replacement backend has performed shutdown. */
+let backendRecoveryRequired = false;
+let backendRecoveryPromise: Promise<void> | null = null;
+let backendRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
 const userDataOverride = process.env.AGENT_TOWER_DESKTOP_USER_DATA_DIR;
 if (userDataOverride) {
@@ -346,7 +354,8 @@ async function startBackend(): Promise<string> {
     if (backendProcess === child) {
       backendProcess = null;
     }
-    if (backendReady && !quitting) {
+    if (backendReady && !quitting && !backendStopPromise) {
+      backendRecoveryRequired = true;
       writeDesktopLog('error', 'desktop.backend.error', 'Backend process error after startup', {
         message: error.message,
         stack: error.stack,
@@ -356,7 +365,9 @@ async function startBackend(): Promise<string> {
         title: 'Agent Tower backend failed to start',
         message: 'The local Agent Tower backend process failed.',
         detail: error.message,
-      }).finally(() => app.quit());
+      }).finally(() => {
+        void recoverBackendAfterCrash().catch(() => undefined);
+      });
     }
   });
 
@@ -365,7 +376,8 @@ async function startBackend(): Promise<string> {
     if (backendProcess === child) {
       backendProcess = null;
     }
-    if (backendReady && !quitting) {
+    if (backendReady && !quitting && !backendStopPromise) {
+      backendRecoveryRequired = true;
       writeDesktopLog('error', 'desktop.backend.exit', 'Backend process exited after startup', {
         code,
         signal,
@@ -375,7 +387,9 @@ async function startBackend(): Promise<string> {
         title: 'Agent Tower backend exited',
         message: 'The local Agent Tower backend process exited.',
         detail: `code=${code ?? 'null'} signal=${signal ?? 'null'}`,
-      }).finally(() => app.quit());
+      }).finally(() => {
+        void recoverBackendAfterCrash().catch(() => undefined);
+      });
     }
   });
 
@@ -561,23 +575,75 @@ async function logMemorySnapshot(): Promise<void> {
   }
 }
 
-function stopBackend(): void {
-  if (!backendProcess) return;
-  const child = backendProcess;
-  backendProcess = null;
-  log(`Stopping backend pid=${child.pid}`);
-  child.kill('SIGTERM');
+async function recoverBackendAfterCrash(): Promise<void> {
+  if (!backendRecoveryRequired) return;
+  if (backendRecoveryPromise) return backendRecoveryPromise;
 
-  setTimeout(() => {
-    if (child.exitCode === null) {
-      child.kill('SIGKILL');
+  backendRecoveryPromise = (async () => {
+    // A replacement backend is the durable cleanup owner. It starts with the
+    // same isolated/shared data configuration, then receives the normal
+    // SIGTERM shutdown path which drains SessionManager/runtime owners.
+    await startBackend();
+    backendRecoveryRequired = false;
+    await stopBackend();
+  })();
+
+  try {
+    await backendRecoveryPromise;
+  } catch (error) {
+    backendRecoveryRequired = true;
+    if (!backendRecoveryTimer) {
+      backendRecoveryTimer = setTimeout(() => {
+        backendRecoveryTimer = null;
+        void recoverBackendAfterCrash().catch(() => undefined);
+      }, 1_000);
     }
-  }, 5_000).unref();
+    throw error;
+  } finally {
+    backendRecoveryPromise = null;
+  }
 }
 
-app.on('before-quit', () => {
+async function stopBackend(): Promise<void> {
+  if (backendStopPromise) return backendStopPromise;
+  if (backendRecoveryRequired) {
+    await recoverBackendAfterCrash();
+  }
+  const child = backendProcess;
+  if (!child) return;
+
+  backendStopPromise = (async () => {
+    // The backend owns Agent Tower's process cleanup contract. Normal desktop
+    // quit waits for its explicit exit instead of imposing a fixed kill window.
+    if (child.exitCode === null && child.signalCode === null) {
+      log(`Stopping backend pid=${child.pid}`);
+      await stopChildProcessAndWait(child);
+    }
+    if (backendProcess === child) backendProcess = null;
+  })();
+
+  try {
+    await backendStopPromise;
+  } finally {
+    backendStopPromise = null;
+  }
+}
+
+const beforeQuitHandler = createBeforeQuitHandler({
+  stopBackend,
+  quit: () => app.quit(),
+  onError: (error: unknown) => {
+    // Keep the quit gate closed and retry with a referenced backoff timer.
+    log(`Backend shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+    writeDesktopLog('error', 'desktop.backend.shutdown', 'Backend shutdown failed', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  },
+});
+
+app.on('before-quit', (event) => {
   quitting = true;
-  stopBackend();
+  beforeQuitHandler(event);
 });
 
 app.on('window-all-closed', () => {
@@ -606,10 +672,5 @@ app.whenReady()
 
 process.on('SIGINT', () => app.quit());
 process.on('SIGTERM', () => app.quit());
-process.on('exit', () => {
-  if (backendProcess) {
-    backendProcess.kill('SIGTERM');
-  }
-});
 
 export {};

@@ -81,6 +81,7 @@ let SessionManager: typeof import('../session-manager.js').SessionManager;
 let sessionMsgStoreManager: typeof import('../../output/index.js').sessionMsgStoreManager;
 let WorkspaceBackgroundService: typeof import('../workspace-background-service.service.js').WorkspaceBackgroundService;
 let WorkspaceBackgroundProcessManager: typeof import('../workspace-background-process-manager.js').WorkspaceBackgroundProcessManager;
+let markPreChildProcessFailure: typeof import('../../executors/start-error.js').markPreChildProcessFailure;
 
 /** 可手动触发事件的 fake PTY，语义对齐 node-pty（不重放事件） */
 class ControlledPty {
@@ -88,6 +89,7 @@ class ControlledPty {
   killed = false;
   private dataListeners: Array<(data: string) => void> = [];
   private exitListeners: Array<(e: { exitCode: number; signal?: number }) => void> = [];
+  private exited = false;
 
   onData = (cb: (data: string) => void) => {
     this.dataListeners.push(cb);
@@ -104,18 +106,26 @@ class ControlledPty {
   }
 
   emitExit(exitCode: number) {
+    if (this.exited) return;
+    this.exited = true;
     for (const l of [...this.exitListeners]) l({ exitCode });
   }
 
   write() {}
   resize() {}
-  kill() { this.killed = true; }
+  kill() {
+    this.killed = true;
+    this.emitExit(0);
+  }
 }
 
 function spawnResultFor(pty: ControlledPty, earlyEvents: EarlyPtyEvent[] = []) {
   let taken = false;
   return {
     pid: pty.pid,
+    processGroupId: String(pty.pid),
+    birthMarker: `test-birth:${pty.pid}`,
+    ownershipToken: `test-owner:${pty.pid}`,
     pty,
     takeEarlyEvents: () => {
       if (taken) return [];
@@ -190,11 +200,13 @@ describe('SessionManager session status vs real process state', () => {
     const outputModule = await import('../../output/index.js');
     const backgroundServiceModule = await import('../workspace-background-service.service.js');
     const backgroundManagerModule = await import('../workspace-background-process-manager.js');
+    const startErrorModule = await import('../../executors/start-error.js');
     prisma = utilsModule.prisma;
     SessionManager = sessionManagerModule.SessionManager;
     sessionMsgStoreManager = outputModule.sessionMsgStoreManager;
     WorkspaceBackgroundService = backgroundServiceModule.WorkspaceBackgroundService;
     WorkspaceBackgroundProcessManager = backgroundManagerModule.WorkspaceBackgroundProcessManager;
+    markPreChildProcessFailure = startErrorModule.markPreChildProcessFailure;
   });
 
   beforeEach(async () => {
@@ -204,6 +216,7 @@ describe('SessionManager session status vs real process state', () => {
     getExecutorByProviderMock.mockImplementation(createMockExecutor);
     clearAgentApiCredentials();
     await prisma.executionProcess.deleteMany();
+    await prisma.conversation.deleteMany();
     await prisma.session.deleteMany();
     await prisma.workspace.deleteMany();
     await prisma.task.deleteMany();
@@ -274,7 +287,7 @@ describe('SessionManager session status vs real process state', () => {
     expect(getExecutorByProviderMock).toHaveBeenNthCalledWith(1, 'provider-snapshot');
     expect(getExecutorByProviderMock).toHaveBeenNthCalledWith(2, 'provider-snapshot');
     expect(executorSnapshots).toEqual([false, true]);
-    manager.destroyAll();
+    await manager.destroyAll();
   });
 
   it('uses one latest Provider snapshot for follow-up resume and its new-session fallback', async () => {
@@ -298,7 +311,7 @@ describe('SessionManager session status vs real process state', () => {
         spawnFollowUp: vi.fn(async () => {
           observed.push({ path: 'resume', disabled });
           provider.config.disableResponsesWebsocket = false;
-          throw new Error('synthetic resume failure');
+          throw markPreChildProcessFailure(new Error('synthetic resume failure'));
         }),
         spawn: vi.fn(async () => {
           observed.push({ path: 'fallback', disabled });
@@ -320,7 +333,43 @@ describe('SessionManager session status vs real process state', () => {
       { path: 'resume', disabled: true },
       { path: 'fallback', disabled: true },
     ]);
-    manager.destroyAll();
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'PROCESS_RECORDED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 1,
+      runtimeLaunchProcessCount: 1,
+    });
+    await manager.destroyAll();
+  });
+
+  it('keeps terminal conversation follow-ups compatible without a TeamRun invocation identity', async () => {
+    const conversation = await prisma.conversation.create({
+      data: {
+        title: 'Lifecycle conversation',
+        directoryName: `lifecycle-conversation-${Date.now()}`,
+        workingDir: testDir,
+        session: {
+          create: {
+            context: 'CONVERSATION',
+            agentType: AgentType.CODEX,
+            variant: 'DEFAULT',
+            prompt: 'initial question',
+            status: SessionStatus.COMPLETED,
+          },
+        },
+      },
+      include: { session: true },
+    });
+    spawnMock.mockResolvedValueOnce(spawnResultFor(new ControlledPty()));
+    const manager = new SessionManager(new EventBus());
+
+    await expect(manager.sendMessage(conversation.session!.id, 'follow-up question'))
+      .resolves.toMatchObject({ id: conversation.session!.id });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    await expect(prisma.session.findUnique({ where: { id: conversation.session!.id } }))
+      .resolves.toMatchObject({ status: SessionStatus.RUNNING });
+    await manager.destroyAll();
   });
 
   it('marks a reused ACP follow-up RUNNING without a new process event and allows it to stop', async () => {
@@ -340,6 +389,10 @@ describe('SessionManager session status vs real process state', () => {
       data: {
         runtimeType: 'ACP',
         status: SessionStatus.COMPLETED,
+        runtimeLaunchState: 'PROCESS_RECORDED',
+        runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 1,
+        runtimeLaunchProcessCount: 1,
         externalSessionId: 'external-acp-session',
         logSnapshot: JSON.stringify({
           sessionId: 'external-acp-session',
@@ -348,15 +401,36 @@ describe('SessionManager session status vs real process state', () => {
         }),
       },
     });
+    await prisma.executionProcess.create({
+      data: {
+        sessionId: session.id,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'reused-acp-runtime',
+        pid: 4301,
+        processGroupId: '4301',
+        birthMarker: 'test-birth:4301',
+        ownershipToken: 'test-owner:4301',
+        cleanupState: 'ACTIVE',
+      },
+    });
 
     const completion = new Promise<never>(() => undefined);
-    const hasActiveTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const hasActiveTurn = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
     const runtimeCoordinator = {
       hasActiveTurn,
       startTurn: vi.fn(async (_input: StartRuntimeTurnInput) => ({ turnId: 'turn-2', completion })),
       abandonTurn: vi.fn(async () => true),
       cancelTurn: vi.fn(async () => undefined),
-      disposeSession: vi.fn(async () => undefined),
+      disposeSession: vi.fn(async () => {
+        await prisma.executionProcess.updateMany({
+          where: { sessionId: session.id },
+          data: { cleanupState: 'CONFIRMED' },
+        });
+      }),
+      hasRuntimeProcessOwner: vi.fn(() => false),
       destroyAll: vi.fn(async () => undefined),
     };
     const manager = new SessionManager(new EventBus());
@@ -377,7 +451,13 @@ describe('SessionManager session status vs real process state', () => {
       .toBe(startInput?.historyBoundaryEntryId);
     expect((await prisma.session.findUnique({ where: { id: session.id } }))?.status)
       .toBe(SessionStatus.RUNNING);
-    expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(0);
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'REUSED',
+      runtimeLaunchClaimCount: 2,
+      runtimeLaunchResolvedCount: 2,
+      runtimeLaunchProcessCount: 1,
+    });
+    expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(1);
 
     // Even if a stale terminal value is observed, an active Runtime turn wins.
     await prisma.session.update({
@@ -790,7 +870,7 @@ describe('SessionManager session status vs real process state', () => {
       providerId: provider.id,
       status: SessionStatus.RUNNING,
     });
-    manager.destroyAll();
+    await manager.destroyAll();
   });
 
   it('keeps completed-turn post-processing alive when a follow-up provider was deleted', async () => {
@@ -817,12 +897,12 @@ describe('SessionManager session status vs real process state', () => {
 
     await expect(manager.sendMessage(session.id, 'follow-up', 'deleted-provider'))
       .rejects.toThrow('Provider not found: deleted-provider');
-    expect(autoCommitSpy).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(autoCommitSpy).toHaveBeenCalledTimes(1));
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
     releaseAutoCommit();
     await vi.waitFor(async () => {
-      expect(reconcileSpy).toHaveBeenCalledWith(session.id);
+      expect(reconcileSpy).toHaveBeenCalledWith(session.id, expect.any(String));
       expect((await prisma.task.findUnique({ where: { id: task.id } }))?.status)
         .toBe(TaskStatus.IN_REVIEW);
       expect(commitMessageSpy).toHaveBeenCalledWith(workspace.id);
@@ -866,7 +946,7 @@ describe('SessionManager session status vs real process state', () => {
 
     releaseAutoCommit();
     await vi.waitFor(async () => {
-      expect(reconcileSpy).toHaveBeenCalledWith(session.id);
+      expect(reconcileSpy).toHaveBeenCalledWith(session.id, expect.any(String));
       expect((await prisma.task.findUnique({ where: { id: task.id } }))?.status)
         .toBe(TaskStatus.IN_REVIEW);
       expect(commitMessageSpy).toHaveBeenCalledWith(workspace.id);
@@ -932,7 +1012,7 @@ describe('SessionManager session status vs real process state', () => {
     await followUp;
     expect(reconcileSpy).not.toHaveBeenCalled();
     expect(spawnMock).toHaveBeenCalledTimes(2);
-    manager.destroyAll();
+    await manager.destroyAll();
   });
 
   it('keeps turn.failed terminal when the wrapper exits with code 0', async () => {
@@ -1102,4 +1182,359 @@ describe('SessionManager session status vs real process state', () => {
       await backgroundManager.stopAll().catch(() => undefined);
     }
   }, 15_000);
+
+  it('does not confirm ACP tree cleanup on root exit or let a late old cleanup overwrite a new runtime', async () => {
+    const { session } = await createSessionFixture();
+    const manager = new SessionManager(new EventBus());
+    const handleProcessEvent = (manager as unknown as {
+      handleRuntimeProcessEvent(event: Record<string, unknown>): Promise<void>;
+    }).handleRuntimeProcessEvent.bind(manager);
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        status: SessionStatus.RUNNING,
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+      },
+    });
+
+    await handleProcessEvent({
+      type: 'started',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-old',
+      launchClaimNumber: 1,
+      pid: 4101,
+      processGroupId: '4101',
+      birthMarker: 'darwin:old:token-old',
+      ownershipToken: 'token-old',
+    });
+    await handleProcessEvent({
+      type: 'exited',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-old',
+      exitCode: 0,
+      launchClaimNumber: 1,
+    });
+    await expect(prisma.executionProcess.findFirst({
+      where: { sessionId: session.id, runtimeInstanceId: 'runtime-old' },
+    })).resolves.toMatchObject({ exitCode: 0, cleanupState: 'PENDING' });
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 2,
+      },
+    });
+
+    await handleProcessEvent({
+      type: 'started',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-new',
+      launchClaimNumber: 2,
+      pid: 4102,
+      processGroupId: '4102',
+      birthMarker: 'darwin:new:token-new',
+      ownershipToken: 'token-new',
+    });
+    await handleProcessEvent({
+      type: 'exited',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-shared',
+      launchClaimNumber: 1,
+      exitCode: 0,
+      signal: null,
+    });
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, launchClaimNumber: 1 },
+    })).resolves.toMatchObject({ cleanupState: 'PENDING' });
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, launchClaimNumber: 2 },
+    })).resolves.toMatchObject({ cleanupState: 'ACTIVE' });
+
+    await handleProcessEvent({
+      type: 'tree_cleanup_completed',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-old',
+      launchClaimNumber: 1,
+    });
+    await handleProcessEvent({
+      type: 'exited',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-old',
+      exitCode: 0,
+      launchClaimNumber: 1,
+    });
+
+    await expect(prisma.executionProcess.findFirst({
+      where: { sessionId: session.id, runtimeInstanceId: 'runtime-old' },
+    })).resolves.toMatchObject({ cleanupState: 'CONFIRMED' });
+    await expect(prisma.executionProcess.findFirst({
+      where: { sessionId: session.id, runtimeInstanceId: 'runtime-new' },
+    })).resolves.toMatchObject({ cleanupState: 'ACTIVE' });
+    await manager.destroyAll();
+  });
+
+  it('requires the launch claim when cleanup events share a runtime instance id', async () => {
+    const { session } = await createSessionFixture();
+    const manager = new SessionManager(new EventBus());
+    const handleProcessEvent = (manager as unknown as {
+      handleRuntimeProcessEvent(event: Record<string, unknown>): Promise<void>;
+    }).handleRuntimeProcessEvent.bind(manager);
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        status: SessionStatus.RUNNING,
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+      },
+    });
+    await handleProcessEvent({
+      type: 'started',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-shared',
+      launchClaimNumber: 1,
+      pid: 4111,
+      processGroupId: '4111',
+      birthMarker: 'darwin:shared:one',
+      ownershipToken: 'token-shared-one',
+    });
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 2,
+      },
+    });
+    await handleProcessEvent({
+      type: 'started',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-shared',
+      launchClaimNumber: 2,
+      pid: 4112,
+      processGroupId: '4112',
+      birthMarker: 'darwin:shared:two',
+      ownershipToken: 'token-shared-two',
+    });
+
+    // A late event without the generation claim cannot be assigned to either
+    // owner, even when runtimeInstanceId is shared across reconnects.
+    await handleProcessEvent({
+      type: 'tree_cleanup_completed',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-shared',
+    });
+    await expect(prisma.executionProcess.findMany({
+      where: { sessionId: session.id, runtimeInstanceId: 'runtime-shared' },
+      orderBy: { launchClaimNumber: 'asc' },
+    })).resolves.toMatchObject([
+      { launchClaimNumber: 1, cleanupState: 'ACTIVE' },
+      { launchClaimNumber: 2, cleanupState: 'ACTIVE' },
+    ]);
+
+    await handleProcessEvent({
+      type: 'tree_cleanup_completed',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-shared',
+      launchClaimNumber: 1,
+    });
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, launchClaimNumber: 1 },
+    })).resolves.toMatchObject({ cleanupState: 'CONFIRMED' });
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, launchClaimNumber: 2 },
+    })).resolves.toMatchObject({ cleanupState: 'ACTIVE' });
+
+    await handleProcessEvent({
+      type: 'tree_cleanup_completed',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-shared',
+      launchClaimNumber: 2,
+    });
+    await expect(prisma.executionProcess.findMany({
+      where: { sessionId: session.id, runtimeInstanceId: 'runtime-shared' },
+      orderBy: { launchClaimNumber: 'asc' },
+    })).resolves.toMatchObject([
+      { launchClaimNumber: 1, cleanupState: 'CONFIRMED' },
+      { launchClaimNumber: 2, cleanupState: 'CONFIRMED' },
+    ]);
+    await manager.destroyAll();
+  });
+
+  it('replays early process events after deferred started persistence', async () => {
+    const { session } = await createSessionFixture();
+    const manager = new SessionManager(new EventBus());
+    const handleProcessEvent = (manager as unknown as {
+      handleRuntimeProcessEvent(event: Record<string, unknown>): Promise<void>;
+    }).handleRuntimeProcessEvent.bind(manager);
+
+    // Simulate the raw wrapper exit arriving before the started transaction.
+    await handleProcessEvent({
+      type: 'exited',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-deferred',
+      exitCode: 0,
+      launchClaimNumber: 1,
+    });
+    await handleProcessEvent({
+      type: 'tree_cleanup_completed',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-deferred',
+      launchClaimNumber: 1,
+    });
+    await expect(prisma.session.findUnique({ where: { id: session.id } }))
+      .resolves.toMatchObject({
+        runtimeLaunchState: 'QUARANTINED',
+        runtimeLaunchDiagnostic: expect.stringContaining('before started persistence'),
+      });
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        status: SessionStatus.RUNNING,
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+      },
+    });
+    await handleProcessEvent({
+      type: 'started',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-deferred',
+      launchClaimNumber: 1,
+      pid: 4301,
+      processGroupId: '4301',
+      birthMarker: 'linux:deferred',
+      ownershipToken: 'owner-deferred',
+    });
+
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, runtimeInstanceId: 'runtime-deferred' },
+    })).resolves.toMatchObject({ exitCode: 0, cleanupState: 'CONFIRMED' });
+    expect(manager.hasRuntimeProcessOwner('runtime-deferred')).toBe(false);
+    await manager.destroyAll();
+  });
+
+  it('does not let late runtime events downgrade incomplete ownership quarantine', async () => {
+    const { session } = await createSessionFixture();
+    const manager = new SessionManager(new EventBus());
+    const handleProcessEvent = (manager as unknown as {
+      handleRuntimeProcessEvent(event: Record<string, unknown>): Promise<void>;
+    }).handleRuntimeProcessEvent.bind(manager);
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        status: SessionStatus.RUNNING,
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+      },
+    });
+
+    await handleProcessEvent({
+      type: 'started',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-incomplete',
+      launchClaimNumber: 1,
+      pid: 4151,
+      processGroupId: '4151',
+      birthMarker: '',
+      ownershipToken: 'token-incomplete',
+    });
+    await handleProcessEvent({
+      type: 'exited',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-incomplete',
+      exitCode: 0,
+      launchClaimNumber: 1,
+    });
+    await handleProcessEvent({
+      type: 'tree_cleanup_completed',
+      towerSessionId: session.id,
+      runtimeInstanceId: 'runtime-incomplete',
+      launchClaimNumber: 1,
+    });
+
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, runtimeInstanceId: 'runtime-incomplete' },
+    })).resolves.toMatchObject({
+      cleanupState: 'QUARANTINED',
+      cleanupError: expect.stringContaining('complete process ownership identity'),
+    });
+    await manager.destroyAll();
+  });
+
+  it('bounds pending process events per generation and expires them', async () => {
+    vi.useFakeTimers();
+    try {
+      const { session } = await createSessionFixture();
+      const manager = new SessionManager(new EventBus());
+      const handleProcessEvent = (manager as unknown as {
+        handleRuntimeProcessEvent(event: Record<string, unknown>): Promise<void>;
+        pendingRuntimeProcessEvents: Map<string, unknown[]>;
+      });
+      for (let index = 0; index < 9; index += 1) {
+        await handleProcessEvent.handleRuntimeProcessEvent({
+          type: 'exited',
+          towerSessionId: session.id,
+          runtimeInstanceId: 'runtime-overflow',
+          launchClaimNumber: 1,
+          exitCode: 1,
+        });
+      }
+      expect(handleProcessEvent.pendingRuntimeProcessEvents.size).toBe(0);
+
+      await handleProcessEvent.handleRuntimeProcessEvent({
+        type: 'exited',
+        towerSessionId: session.id,
+        runtimeInstanceId: 'runtime-expiry',
+        launchClaimNumber: 2,
+        exitCode: 1,
+      });
+      expect(handleProcessEvent.pendingRuntimeProcessEvents.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(handleProcessEvent.pendingRuntimeProcessEvents.size).toBe(0);
+      await manager.destroyAll();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('persists bounded cleanup retry attempts for recovery scans', async () => {
+    const { session } = await createSessionFixture();
+    const manager = new SessionManager(new EventBus());
+    const processRecord = await prisma.executionProcess.create({
+      data: {
+        sessionId: session.id,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'runtime-retry',
+        pid: 4201,
+        processGroupId: '4201',
+        birthMarker: 'linux:200:owner-retry',
+        ownershipToken: 'owner-retry',
+        cleanupState: 'PENDING',
+      },
+    });
+    const markCleanup = (manager as unknown as {
+      markRuntimeProcessCleanupState(
+        sessionId: string,
+        runtimeInstanceId: string,
+        state: 'CONFIRMED' | 'FAILED',
+        error?: string,
+        launchClaimNumber?: number | null,
+      ): Promise<void>;
+    }).markRuntimeProcessCleanupState.bind(manager);
+
+    await markCleanup(session.id, 'runtime-retry', 'FAILED', 'first failure', 1);
+    const first = await prisma.executionProcess.findUniqueOrThrow({ where: { id: processRecord.id } });
+    await markCleanup(session.id, 'runtime-retry', 'FAILED', 'second failure', 1);
+    const second = await prisma.executionProcess.findUniqueOrThrow({ where: { id: processRecord.id } });
+
+    expect(first).toMatchObject({ cleanupState: 'FAILED', cleanupAttemptCount: 1, cleanupError: 'first failure' });
+    expect(second).toMatchObject({ cleanupState: 'FAILED', cleanupAttemptCount: 2, cleanupError: 'second failure' });
+    expect(first.nextCleanupRetryAt).not.toBeNull();
+    expect(second.nextCleanupRetryAt!.getTime()).toBeGreaterThan(first.nextCleanupRetryAt!.getTime());
+    await manager.destroyAll();
+  });
 });

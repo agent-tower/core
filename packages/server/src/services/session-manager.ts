@@ -4,6 +4,8 @@ import { AgentType, SessionStatus, SessionPurpose, TaskStatus, SessionContext } 
 import {
   getProviderById,
   ExecutionEnv,
+  isPreChildProcessFailure,
+  markPreChildProcessFailure,
   normalizeExecutorStartError,
 } from '../executors/index.js';
 import { filterAgentSubprocessExternalEnv } from '../executors/execution-env.js';
@@ -17,7 +19,9 @@ import { execGit } from '../git/git-cli.js';
 import type { EventBus } from '../core/event-bus.js';
 import { getCommitMessageService } from '../core/container.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
-import { NotFoundError, ValidationError } from '../errors.js';
+import { acquireTeamMemberAdmission } from './team-member-admission-barrier.js';
+import { NotFoundError, ServiceError, ValidationError } from '../errors.js';
+import { AgentRuntimeError } from '../runtime/errors.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import {
   getWorkspaceWorkingDir,
@@ -47,8 +51,24 @@ import {
   type RuntimeTurnEventEnvelope,
 } from '../runtime/index.js';
 import { buildWorkspaceRuntimePrompt } from '../prompts/workspace-background-service-policy.js';
+import {
+  cleanupPersistedAcpProcessTree,
+  type PersistedAcpProcessIdentity,
+} from '../runtime/acp/process-manager.js';
+import {
+  evaluateSessionRuntimeCleanup,
+  RUNTIME_LAUNCH_STATES,
+} from './session-runtime-cleanup-gate.js';
 
 const DEBUG_SNAPSHOT = process.env.DEBUG_SNAPSHOT === 'true';
+const PROCESS_CLEANUP_RETRY_DELAYS_MS = [1_000, 5_000, 30_000, 120_000, 300_000];
+const PENDING_RUNTIME_EVENT_TTL_MS = 60_000;
+const PENDING_RUNTIME_EVENTS_PER_KEY = 8;
+const PENDING_RUNTIME_EVENTS_GLOBAL = 128;
+
+function eventKey(sessionId: string, runtimeInstanceId: string, launchClaimNumber: number): string {
+  return `${sessionId}:${runtimeInstanceId}:${launchClaimNumber}`;
+}
 
 function hashForLog(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 12);
@@ -133,9 +153,22 @@ export class SessionManager {
   private heartbeatThrottle = new Map<string, number>();
   private readonly teamReconciler: TeamReconcilerService;
   private readonly runtimeCoordinator: RuntimeCoordinator;
+  /** In-memory process owners are generation-scoped, never runtime-id global. */
   private readonly runtimeProcessIds = new Map<string, string>();
+  /** Early exit/tree completion events can arrive before started-row persistence. */
+  private readonly pendingRuntimeProcessEvents = new Map<string, Array<{
+    event: RuntimeProcessEvent;
+    expiresAt: number;
+  }>>();
+  private readonly pendingRuntimeEventExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly runtimePermissionStates = new Map<string, boolean>();
   private readonly externalSessionPersistence = new Map<string, Promise<void>>();
+  /** Admission boundary covering the short initial-start -> process-owning handoff. */
+  private readonly pendingInitialStarts = new Map<string, Promise<void>>();
+  private readonly initialStartResolvers = new Map<string, () => void>();
+  /** Same boundary for follow-up/reply turns, which can race a direct stop. */
+  private readonly pendingProcessStarts = new Map<string, Promise<void>>();
+  private readonly processStartResolvers = new Map<string, () => void>();
   private readonly artifactService = new AgentArtifactService();
   private static readonly SNAPSHOT_CHECKPOINT_MS = 15_000;
   private static readonly HEARTBEAT_THROTTLE_MS = 30_000;
@@ -161,7 +194,31 @@ export class SessionManager {
         onTurnEvent: (event) => this.handleRuntimeTurnEvent(event),
         onRuntimeState: (state) => this.handleRuntimeState(state),
         onProcessEvent: (event) => this.handleRuntimeProcessEvent(event),
-        onDriverSessionDisposed: (sessionId) => revokeAgentApiCredential(sessionId),
+        onDriverSessionDisposeStarted: (sessionId, runtimeInstanceId, launchClaimNumber) => {
+          return this.markRuntimeProcessCleanupPending(sessionId, runtimeInstanceId, launchClaimNumber);
+        },
+        onDriverSessionDisposed: (sessionId) => {
+          revokeAgentApiCredential(sessionId);
+        },
+        onDriverSessionDisposedInstance: (sessionId, runtimeInstanceId, launchClaimNumber) => {
+          return this.markRuntimeProcessCleanupState(
+            sessionId,
+            runtimeInstanceId,
+            'CONFIRMED',
+            undefined,
+            launchClaimNumber,
+          );
+        },
+        onDriverSessionDisposeFailed: (sessionId, runtimeInstanceId, error, launchClaimNumber) => {
+          this.logSessionError('session.runtimeDispose', error, { sessionId, runtimeInstanceId });
+          return this.markRuntimeProcessCleanupState(
+            sessionId,
+            runtimeInstanceId,
+            'FAILED',
+            error instanceof Error ? error.message : String(error),
+            launchClaimNumber,
+          );
+        },
       },
     );
 
@@ -186,7 +243,10 @@ export class SessionManager {
       // The parser has already written raw stdout, the final assistant entry,
       // usage and all other state from the turn.completed chunk at this point.
       this.terminalSessions.set(sessionId, SessionStatus.COMPLETED);
-      this.startSessionFinalization(sessionId, 0, { logicalCompletion: true });
+      this.startSessionFinalization(sessionId, 0, {
+        logicalCompletion: true,
+        runtimeInstanceId: this.runtimeCoordinator.getRuntimeInstanceId(sessionId),
+      });
     });
 
     this.eventBus.on('session:turn-failed', ({ sessionId }) => {
@@ -195,7 +255,10 @@ export class SessionManager {
       // without an exit code. Use a synthetic non-zero code for the shared
       // finalization path so success-only post-processing cannot run.
       this.terminalSessions.set(sessionId, SessionStatus.FAILED);
-      this.startSessionFinalization(sessionId, 1, { logicalCompletion: true });
+      this.startSessionFinalization(sessionId, 1, {
+        logicalCompletion: true,
+        runtimeInstanceId: this.runtimeCoordinator.getRuntimeInstanceId(sessionId),
+      });
     });
 
     // NOTE: checkTaskAutoRevert is called directly (awaited) inside start()
@@ -214,6 +277,127 @@ export class SessionManager {
 
   getRuntimeState(sessionId: string, runtimeType: RuntimeType = RuntimeType.CLI): RuntimeStateDto {
     return this.runtimeCoordinator.getState(sessionId, runtimeType);
+  }
+
+  /** Dispose a TeamRun-owned runtime after its invocation reaches a terminal state. */
+  async disposeRuntimeSession(sessionId: string, expectedRuntimeInstanceId?: string): Promise<void> {
+    await this.runtimeCoordinator.disposeSession(sessionId, expectedRuntimeInstanceId);
+  }
+
+  async retryRuntimeProcessCleanup(input: PersistedAcpProcessIdentity & {
+    sessionId: string;
+    runtimeInstanceId: string;
+  }): Promise<void> {
+    if (!Number.isInteger(input.launchClaimNumber) || input.launchClaimNumber! <= 0) {
+      await this.quarantinePersistedRuntimeProcess(
+        input.sessionId,
+        input.runtimeInstanceId,
+        'Runtime cleanup evidence is missing launchClaimNumber; automated signalling is disabled',
+        null,
+      );
+      throw new AgentRuntimeError(
+        'process_identity_mismatch',
+        'close',
+        'Runtime cleanup evidence is missing launchClaimNumber',
+        true,
+      );
+    }
+    try {
+      if (this.runtimeCoordinator.hasRuntimeInstance(input.sessionId, input.runtimeInstanceId)) {
+        await this.runtimeCoordinator.disposeSession(input.sessionId, input.runtimeInstanceId);
+        return;
+      }
+      await cleanupPersistedAcpProcessTree(input);
+      await this.markRuntimeProcessCleanupState(
+        input.sessionId,
+        input.runtimeInstanceId,
+        'CONFIRMED',
+        undefined,
+        input.launchClaimNumber,
+      );
+    } catch (error) {
+      await this.markRuntimeProcessCleanupState(
+        input.sessionId,
+        input.runtimeInstanceId,
+        'FAILED',
+        error instanceof Error ? error.message : String(error),
+        input.launchClaimNumber,
+      );
+      throw error;
+    }
+  }
+
+  hasRuntimeProcessOwner(
+    runtimeInstanceId: string,
+    sessionId?: string,
+    launchClaimNumber?: number | null,
+  ): boolean {
+    if (sessionId && Number.isInteger(launchClaimNumber) && launchClaimNumber! > 0) {
+      return this.runtimeProcessIds.has(eventKey(sessionId, runtimeInstanceId, launchClaimNumber!));
+    }
+    return [...this.runtimeProcessIds.keys()].some((key) => key.split(':')[1] === runtimeInstanceId);
+  }
+
+  private async quarantinePersistedRuntimeProcess(
+    sessionId: string,
+    runtimeInstanceId: string,
+    diagnostic: string,
+    launchClaimNumber?: number | null,
+  ): Promise<void> {
+    if (!Number.isInteger(launchClaimNumber) || launchClaimNumber! <= 0) {
+      // Without a generation claim there is no safe process-row target. Keep
+      // the session blocked, but never mutate another launch's owner row.
+      await prisma.session.updateMany({
+        where: { id: sessionId },
+        data: {
+          runtimeLaunchState: RUNTIME_LAUNCH_STATES.QUARANTINED,
+          runtimeLaunchDiagnostic: diagnostic.slice(0, 2_000),
+          runtimeLaunchDiagnosticCount: { increment: 1 },
+          runtimeLaunchNextDiagnosticAt: new Date(Date.now() + 5 * 60_000),
+        },
+      }).catch((error) => {
+        this.logSessionError('session.processCleanupQuarantine', error, { sessionId, runtimeInstanceId });
+      });
+      return;
+    }
+    await prisma.executionProcess.updateMany({
+      where: {
+        sessionId,
+        runtimeInstanceId,
+        launchClaimNumber,
+        cleanupState: { not: 'CONFIRMED' },
+      },
+      data: {
+        cleanupState: 'QUARANTINED',
+        cleanupError: diagnostic.slice(0, 2_000),
+        cleanupAttemptCount: { increment: 1 },
+        nextCleanupRetryAt: new Date(Date.now() + 5 * 60_000),
+      },
+    }).catch((error) => {
+      this.logSessionError('session.processCleanupQuarantine', error, { sessionId, runtimeInstanceId });
+    });
+  }
+
+  private runtimeProcessKeyFor(sessionId: string, runtimeInstanceId: string): string | undefined {
+    const prefix = sessionId + ':' + runtimeInstanceId + ':';
+    return [...this.runtimeProcessIds.keys()].find((key) => key.startsWith(prefix));
+  }
+
+  private launchClaimFromRuntimeProcessKey(key: string | undefined): number | undefined {
+    if (!key) return undefined;
+    const claim = Number(key.slice(key.lastIndexOf(':') + 1));
+    return Number.isInteger(claim) && claim > 0 ? claim : undefined;
+  }
+
+  async isRuntimeCleanupConfirmed(sessionId: string): Promise<boolean> {
+    return (await evaluateSessionRuntimeCleanup(sessionId, {
+      hasActiveTurn: (candidateId) => this.hasActiveTurn(candidateId),
+      hasRuntimeProcessOwner: (runtimeInstanceId, ownerSessionId, launchClaimNumber) => this.hasRuntimeProcessOwner(
+        runtimeInstanceId,
+        ownerSessionId ?? sessionId,
+        launchClaimNumber,
+      ),
+    })).confirmed;
   }
 
   async resolveRuntimePermission(sessionId: string, requestId: string, optionId: string): Promise<void> {
@@ -266,10 +450,12 @@ export class SessionManager {
       console.log('[SessionManager] ❌ Session not found:', id);
       return null;
     }
-    await this.waitForPendingAutoCommit(id);
-    this.beginSessionExecution(id);
-    this.ensureExecutionRecordIsLive(session);
-    const workingDir = this.getExecutionWorkingDir(session);
+    const initialStart = this.reserveInitialStart(id);
+    try {
+      await this.waitForPendingAutoCommit(id);
+      this.beginSessionExecution(id);
+      this.ensureExecutionRecordIsLive(session);
+      const workingDir = this.getExecutionWorkingDir(session);
 
     console.log('[SessionManager] Session details:', {
       id: session.id,
@@ -279,8 +465,19 @@ export class SessionManager {
       workingDir,
     });
 
-    await this.startRuntimeTurn(session, session.prompt, session.externalSessionId);
-    return session;
+      await this.startRuntimeTurn(
+        session,
+        session.prompt,
+        session.externalSessionId,
+        session.providerId,
+        'load',
+        undefined,
+        true,
+      );
+      return session;
+    } finally {
+      initialStart.release();
+    }
   }
 
   async startFollowUp(id: string, resumeFromSessionId: string) {
@@ -292,34 +489,52 @@ export class SessionManager {
       console.log('[SessionManager] ❌ Session not found:', id);
       return null;
     }
-    await this.waitForPendingAutoCommit(id);
-    this.beginSessionExecution(id);
-    this.ensureExecutionRecordIsLive(session);
+    const initialStart = this.reserveInitialStart(id);
+    try {
+      await this.waitForPendingAutoCommit(id);
+      this.beginSessionExecution(id);
+      this.ensureExecutionRecordIsLive(session);
 
-    const resumeFromSession = await prisma.session.findUnique({
-      where: { id: resumeFromSessionId },
-      select: { logSnapshot: true, externalSessionId: true },
-    });
-    const agentSessionId = resumeFromSession
-      ? resumeFromSession.externalSessionId
-        ?? this.resolveAgentSessionId(resumeFromSessionId, resumeFromSession.logSnapshot)
-      : null;
+      const resumeFromSession = await prisma.session.findUnique({
+        where: { id: resumeFromSessionId },
+        select: { logSnapshot: true, externalSessionId: true },
+      });
+      const agentSessionId = resumeFromSession
+        ? resumeFromSession.externalSessionId
+          ?? this.resolveAgentSessionId(resumeFromSessionId, resumeFromSession.logSnapshot)
+        : null;
 
-    console.log('[SessionManager] Follow-up session details:', {
-      id: session.id,
-      resumeFromSessionId,
-      agentSessionId,
-      agentType: session.agentType,
-      variant: session.variant,
-      prompt: summarizeTextForLog(session.prompt),
-      workingDir: this.getExecutionWorkingDir(session),
-    });
+      console.log('[SessionManager] Follow-up session details:', {
+        id: session.id,
+        resumeFromSessionId,
+        agentSessionId,
+        agentType: session.agentType,
+        variant: session.variant,
+        prompt: summarizeTextForLog(session.prompt),
+        workingDir: this.getExecutionWorkingDir(session),
+      });
 
-    await this.startRuntimeTurn(session, session.prompt, agentSessionId, session.providerId, 'resume');
-    return session;
+      await this.startRuntimeTurn(
+        session,
+        session.prompt,
+        agentSessionId,
+        session.providerId,
+        'resume',
+        undefined,
+        true,
+      );
+      return session;
+    } finally {
+      initialStart.release();
+    }
   }
 
-  async sendMessage(id: string, message: string, providerId?: string) {
+  async sendMessage(
+    id: string,
+    message: string,
+    providerId?: string,
+    expectedTeamRunInvocationId?: string,
+  ) {
     console.log('[SessionManager] 📨 Sending message to session:', id);
     console.log('[SessionManager] Message summary:', summarizeTextForLog(message));
     if (providerId) {
@@ -327,6 +542,7 @@ export class SessionManager {
     }
 
     const reservation = this.reserveFollowUp(id);
+    let releaseTeamRunAdmission: (() => void) | undefined;
     try {
       // Serialize concurrent follow-ups for the same session while retaining
       // the reservation in the map so the old finalizer cannot reconcile.
@@ -336,6 +552,31 @@ export class SessionManager {
       if (!session) {
         console.log('[SessionManager] ❌ Session not found:', id);
         return null;
+      }
+
+      // TeamRun follow-ups are admission-controlled just like initial starts.
+      // A REST/MCP caller must carry the current invocation identity; browser
+      // or stale/terminal callers must never be able to resurrect a member.
+      const teamRunInvocation = await prisma.agentInvocation.findFirst({
+        where: { sessionId: id },
+        select: { id: true, teamRunId: true, memberId: true },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      if (teamRunInvocation) {
+        if (expectedTeamRunInvocationId !== teamRunInvocation.id) {
+          throw new ServiceError(
+            'TeamRun follow-up requires the current invocation identity',
+            'SESSION_NOT_ADMITTED',
+            409,
+          );
+        }
+        releaseTeamRunAdmission = await acquireTeamMemberAdmission(
+          teamRunInvocation.teamRunId,
+          teamRunInvocation.memberId,
+        );
+        await this.assertTeamRunDispatchAdmitted(id, expectedTeamRunInvocationId);
+      } else if (expectedTeamRunInvocationId) {
+        await this.assertTeamRunDispatchAdmitted(id, expectedTeamRunInvocationId);
       }
       this.ensureExecutionRecordIsLive(session);
       const resumeMode: RuntimeResumeMode = this.normalizeRuntimeType(session.runtimeType) === RuntimeType.ACP
@@ -441,16 +682,24 @@ export class SessionManager {
       if (providerId && providerId !== session.providerId) {
         await this.runtimeCoordinator.disposeSession(id);
       }
-      await this.startRuntimeTurn(
-        session,
-        message,
-        agentSessionId,
-        effectiveProviderId,
-        resumeMode,
-        userEntry.id,
-      );
-      return session;
+      const processStart = this.reserveProcessStart(id);
+      try {
+        await this.startRuntimeTurn(
+          session,
+          message,
+          agentSessionId,
+          effectiveProviderId,
+          resumeMode,
+          userEntry.id,
+          false,
+          expectedTeamRunInvocationId,
+        );
+        return session;
+      } finally {
+        processStart.release();
+      }
     } finally {
+      releaseTeamRunAdmission?.();
       reservation.release();
     }
   }
@@ -458,6 +707,20 @@ export class SessionManager {
   async stop(id: string, options: StopSessionOptions = {}) {
     const session = await prisma.session.findUnique({ where: { id } });
     if (!session) return null;
+
+    // If initial start has already crossed into its short admission handoff,
+    // let it establish the runtime first; this stop then owns and cleans it.
+    // If stop wins before that handoff, the PENDING -> RUNNING CAS below fails
+    // and no process-owning call can occur after stop returns.
+    await this.pendingInitialStarts.get(id);
+    await this.pendingProcessStarts.get(id);
+
+    // Revoke TeamRun dispatch before waiting for runtime cleanup. A direct
+    // Session stop does not pass through TeamSchedulerService, so delaying this
+    // until cleanup succeeds would leave heartbeat/follow-up admission open.
+    if (!options.skipTeamRunReconcile && !this.isConversationSession(session)) {
+      await this.teamReconciler.handleSessionStopped(id);
+    }
 
     const terminalStatus = this.terminalSessions.get(id);
     const hasActiveTurn = this.runtimeCoordinator.hasActiveTurn(id);
@@ -473,10 +736,17 @@ export class SessionManager {
       // backing TeamRun invocation may still be waiting for a room reply, so
       // it must still pass through the cancellation reconciler.
       await this.runtimeCoordinator.disposeSession(id);
+      if (!await this.isRuntimeCleanupConfirmed(id)) {
+        this.terminalSessions.delete(id);
+        return session;
+      }
       this.maybeClearTerminalState(id);
       await pendingFinalization;
-      if (!options.skipTeamRunReconcile && !this.isConversationSession(session)) {
-        await this.teamReconciler.handleSessionStopped(id);
+      if (terminalStatus && !persistedTerminal) {
+        await prisma.session.updateMany({
+          where: { id, status: { notIn: [SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED] } },
+          data: { status: terminalStatus },
+        });
       }
       revokeAgentApiCredential(id);
       return session;
@@ -495,9 +765,14 @@ export class SessionManager {
     }
     // Explicit stop revokes the DriverSession-bound workspace-service credential.
     // A later follow-up reopens from the persisted external session id with a new credential.
-    await this.runtimeCoordinator.disposeSession(id).catch((error) => {
-      this.logSessionError('session.runtimeDispose', error, { sessionId: id });
-    });
+    // Do not report a stopped TeamRun member until the owned process tree has
+    // confirmed cleanup. The scheduler will retain the invocation and block
+    // the next admission when this rejects, allowing a later retry/recovery.
+    await this.runtimeCoordinator.disposeSession(id);
+    if (!await this.isRuntimeCleanupConfirmed(id)) {
+      this.terminalSessions.delete(id);
+      return session;
+    }
 
     const msgStore = sessionMsgStoreManager.get(id);
     if (msgStore) {
@@ -518,9 +793,6 @@ export class SessionManager {
       });
     }
 
-    if (!options.skipTeamRunReconcile && !this.isConversationSession(session)) {
-      await this.teamReconciler.handleSessionStopped(id);
-    }
     this.eventBus.emit('session:stopped', { sessionId: id });
     // Cancellation does not run normal terminal finalization, so release the
     // store after the CANCELLED snapshot has been persisted above.
@@ -576,6 +848,15 @@ export class SessionManager {
   /** Close all runtime driver sessions during graceful server shutdown. */
   async destroyAll(): Promise<void> {
     await this.runtimeCoordinator.destroyAll();
+    for (const resolve of this.initialStartResolvers.values()) resolve();
+    this.initialStartResolvers.clear();
+    this.pendingInitialStarts.clear();
+    for (const resolve of this.processStartResolvers.values()) resolve();
+    this.processStartResolvers.clear();
+    this.pendingProcessStarts.clear();
+    this.pendingRuntimeProcessEvents.clear();
+    for (const timer of this.pendingRuntimeEventExpiryTimers.values()) clearTimeout(timer);
+    this.pendingRuntimeEventExpiryTimers.clear();
     await Promise.allSettled(this.externalSessionPersistence.values());
     this.externalSessionPersistence.clear();
     this.terminalSessions.clear();
@@ -613,6 +894,8 @@ export class SessionManager {
     providerId: string | null = session.providerId,
     resumeMode: RuntimeResumeMode = 'load',
     historyBoundaryEntryId?: string,
+    initialStart = false,
+    expectedTeamRunInvocationId?: string,
   ): Promise<void> {
     const workingDir = this.getExecutionWorkingDir(session);
     const env = ExecutionEnv.default(workingDir);
@@ -637,14 +920,18 @@ export class SessionManager {
       }
     }
 
+    let launchClaimNumber: number | null = null;
     try {
-      // Session status follows the logical Runtime turn, not the lifetime of
-      // its backing OS process. ACP reuses one adapter process across turns,
-      // so a follow-up must become RUNNING even when no process starts.
-      await prisma.session.update({
-        where: { id: session.id },
-        data: { status: SessionStatus.RUNNING },
-      });
+      // Every turn claim is durable before RuntimeCoordinator can call a driver.
+      // Initial admission updates PENDING -> RUNNING and the claim counter in
+      // one transaction; follow-ups use the same evidence without pretending
+      // that an existing ACP transport necessarily spawns a new child.
+      launchClaimNumber = await this.claimRuntimeLaunch(session.id, initialStart);
+      try {
+        await this.assertTeamRunDispatchAdmitted(session.id, expectedTeamRunInvocationId);
+      } catch (error) {
+        throw markPreChildProcessFailure(error);
+      }
       const runtimePrompt = buildWorkspaceRuntimePrompt(session, prompt);
       const handle = await this.runtimeCoordinator.startTurn({
         towerSessionId: session.id,
@@ -662,7 +949,9 @@ export class SessionManager {
         resumeExternalSessionId,
         resumeMode,
         historyBoundaryEntryId,
+        launchClaimNumber,
       });
+      await this.resolveReusedRuntimeLaunch(session.id, launchClaimNumber);
       // Terminal persistence is driven by Runtime turn events. Attach a catch
       // so the public start/message methods do not leave a rejected handle
       // unobserved after they have returned to the HTTP caller.
@@ -672,10 +961,20 @@ export class SessionManager {
     } catch (error) {
       await this.runtimeCoordinator.disposeSession(session.id).catch(() => undefined);
       revokeAgentApiCredential(session.id);
-      await prisma.session.update({
-        where: { id: session.id },
-        data: { status: SessionStatus.CANCELLED },
-      }).catch(() => undefined);
+      if (launchClaimNumber != null) {
+        if (isPreChildProcessFailure(error)) {
+          await this.resolvePreChildRuntimeLaunchFailure(session.id, launchClaimNumber, error);
+        } else {
+          await this.quarantineRuntimeLaunch(session.id, launchClaimNumber, error);
+        }
+      }
+      const cleanupConfirmed = await this.isRuntimeCleanupConfirmed(session.id).catch(() => false);
+      if (cleanupConfirmed) {
+        await prisma.session.update({
+          where: { id: session.id },
+          data: { status: SessionStatus.CANCELLED },
+        }).catch(() => undefined);
+      }
       sessionMsgStoreManager.delete(session.id);
       this.releaseSnapshotPersistenceState(session.id);
       this.logSessionError('session.runtimeStart', error, {
@@ -686,6 +985,185 @@ export class SessionManager {
         workingDir,
       });
       throw normalizeExecutorStartError(error);
+    }
+  }
+
+  private async claimRuntimeLaunch(sessionId: string, initialStart: boolean): Promise<number> {
+    return prisma.$transaction(async (tx) => {
+      const current = await tx.session.findUnique({
+        where: { id: sessionId },
+        select: { status: true, runtimeLaunchClaimCount: true, runtimeLaunchResolvedCount: true },
+      });
+      const admittedStatuses = initialStart
+        ? [SessionStatus.PENDING]
+        : [
+          SessionStatus.PENDING,
+          SessionStatus.RUNNING,
+          SessionStatus.COMPLETED,
+          SessionStatus.FAILED,
+          SessionStatus.CANCELLED,
+        ];
+      if (
+        !current
+        || !admittedStatuses.includes(current.status as SessionStatus)
+        || current.runtimeLaunchClaimCount !== current.runtimeLaunchResolvedCount
+      ) {
+        throw new ServiceError(
+          initialStart
+            ? 'Session start was revoked before process ownership was acquired'
+            : 'Session follow-up was revoked before process ownership was acquired',
+          'SESSION_NOT_ADMITTED',
+          409,
+        );
+      }
+      const claimNumber = current.runtimeLaunchClaimCount + 1;
+      const admitted = await tx.session.updateMany({
+        where: {
+          id: sessionId,
+          status: current.status,
+          runtimeLaunchClaimCount: current.runtimeLaunchClaimCount,
+          runtimeLaunchResolvedCount: current.runtimeLaunchResolvedCount,
+        },
+        data: {
+          status: SessionStatus.RUNNING,
+          runtimeLaunchState: RUNTIME_LAUNCH_STATES.CLAIMED,
+          runtimeLaunchClaimCount: { increment: 1 },
+          runtimeLaunchDiagnostic: null,
+          runtimeLaunchNextDiagnosticAt: null,
+        },
+      });
+      if (admitted.count !== 1) {
+        throw new ServiceError('Session runtime launch admission changed concurrently', 'SESSION_NOT_ADMITTED', 409);
+      }
+      return claimNumber;
+    });
+  }
+
+  private async resolveReusedRuntimeLaunch(sessionId: string, claimNumber: number): Promise<void> {
+    await prisma.session.updateMany({
+      where: {
+        id: sessionId,
+        runtimeLaunchClaimCount: claimNumber,
+        runtimeLaunchResolvedCount: claimNumber - 1,
+        runtimeLaunchState: RUNTIME_LAUNCH_STATES.CLAIMED,
+      },
+      data: {
+        runtimeLaunchState: RUNTIME_LAUNCH_STATES.REUSED,
+        runtimeLaunchResolvedCount: { increment: 1 },
+        runtimeLaunchDiagnostic: null,
+        runtimeLaunchNextDiagnosticAt: null,
+      },
+    });
+  }
+
+  private async resolvePreChildRuntimeLaunchFailure(
+    sessionId: string,
+    claimNumber: number,
+    error: unknown,
+  ): Promise<void> {
+    await prisma.session.updateMany({
+      where: {
+        id: sessionId,
+        runtimeLaunchClaimCount: claimNumber,
+        runtimeLaunchResolvedCount: claimNumber - 1,
+        runtimeLaunchState: RUNTIME_LAUNCH_STATES.CLAIMED,
+      },
+      data: {
+        runtimeLaunchState: RUNTIME_LAUNCH_STATES.SAFE_PRE_CHILD_FAILURE,
+        runtimeLaunchResolvedCount: { increment: 1 },
+        runtimeLaunchDiagnostic: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
+        runtimeLaunchNextDiagnosticAt: null,
+      },
+    });
+  }
+
+  private async quarantineRuntimeLaunch(
+    sessionId: string,
+    claimNumber: number,
+    error: unknown,
+  ): Promise<void> {
+    const diagnostic = `Runtime launch claim ${claimNumber} failed without proof that no child was created: ${error instanceof Error ? error.message : String(error)}`;
+    await prisma.session.updateMany({
+      where: {
+        id: sessionId,
+        runtimeLaunchClaimCount: claimNumber,
+        runtimeLaunchResolvedCount: { lt: claimNumber },
+      },
+      data: {
+        runtimeLaunchState: RUNTIME_LAUNCH_STATES.QUARANTINED,
+        runtimeLaunchDiagnostic: diagnostic.slice(0, 2_000),
+        runtimeLaunchDiagnosticCount: { increment: 1 },
+        runtimeLaunchNextDiagnosticAt: new Date(Date.now() + 5 * 60_000),
+      },
+    });
+    console.warn(`[SessionManager] Session ${sessionId} runtime launch quarantined: ${diagnostic}`);
+  }
+
+  private reserveInitialStart(sessionId: string): { release: () => void } {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    this.pendingInitialStarts.set(sessionId, promise);
+    this.initialStartResolvers.set(sessionId, resolve);
+    return {
+      release: () => {
+        if (this.pendingInitialStarts.get(sessionId) !== promise) return;
+        this.pendingInitialStarts.delete(sessionId);
+        this.initialStartResolvers.delete(sessionId);
+        resolve();
+      },
+    };
+  }
+
+  private reserveProcessStart(sessionId: string): { release: () => void } {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    this.pendingProcessStarts.set(sessionId, promise);
+    this.processStartResolvers.set(sessionId, resolve);
+    return {
+      release: () => {
+        if (this.pendingProcessStarts.get(sessionId) !== promise) return;
+        this.pendingProcessStarts.delete(sessionId);
+        this.processStartResolvers.delete(sessionId);
+        resolve();
+      },
+    };
+  }
+
+  private async assertTeamRunDispatchAdmitted(
+    sessionId: string,
+    expectedInvocationId?: string,
+  ): Promise<void> {
+    const invocation = await prisma.agentInvocation.findFirst({
+      where: {
+        sessionId,
+        ...(expectedInvocationId ? { id: expectedInvocationId } : {}),
+      },
+      select: { id: true, teamRunId: true, memberId: true, status: true, dispatchRevokedAt: true },
+    });
+    const member = invocation
+      ? await prisma.teamMember.findUnique({
+        where: { id: invocation.memberId },
+        select: { teamRunId: true, membershipStatus: true },
+      })
+      : null;
+    if (
+      invocation?.dispatchRevokedAt
+      || (expectedInvocationId && (
+        !invocation
+        || !['QUEUED', 'RUNNING', 'SESSION_ENDED', 'WAITING_ROOM_REPLY'].includes(invocation.status)
+      ))
+      || (invocation && (
+        !member
+        || member.teamRunId !== invocation.teamRunId
+        || member.membershipStatus !== 'ACTIVE'
+        || !['QUEUED', 'RUNNING', 'SESSION_ENDED', 'WAITING_ROOM_REPLY'].includes(invocation.status)
+      ))
+    ) {
+      throw new ServiceError(
+        'TeamRun dispatch was revoked before process ownership was acquired',
+        'SESSION_NOT_ADMITTED',
+        409,
+      );
     }
   }
 
@@ -788,35 +1266,440 @@ export class SessionManager {
   }
 
   private async handleRuntimeProcessEvent(event: RuntimeProcessEvent): Promise<void> {
+    this.prunePendingRuntimeProcessEvents();
+    const launchClaimNumber = Number.isInteger(event.launchClaimNumber) && event.launchClaimNumber! > 0
+      ? event.launchClaimNumber!
+      : null;
     if (event.type === 'started') {
-      const processRecord = await prisma.$transaction(async (tx) => {
+      let processRecord: { id: string; cleanupState: string };
+      try {
+        processRecord = await prisma.$transaction(async (tx) => {
         const session = await tx.session.findUnique({
           where: { id: event.towerSessionId },
           include: { workspace: { include: { task: true } }, conversation: true },
         });
         if (!session) throw new NotFoundError('Session', event.towerSessionId);
         this.ensureExecutionRecordIsLive(session);
-        return tx.executionProcess.create({
-          data: { sessionId: event.towerSessionId, pid: event.pid },
-          select: { id: true },
+        const launchClaimNumber = Number.isInteger(event.launchClaimNumber)
+          && event.launchClaimNumber > 0
+          ? event.launchClaimNumber
+          : null;
+        const runtimeInstanceId = typeof event.runtimeInstanceId === 'string'
+          && event.runtimeInstanceId.length > 0
+          ? event.runtimeInstanceId
+          : null;
+        const processGroupId = typeof event.processGroupId === 'string'
+          && event.processGroupId.length > 0
+          ? event.processGroupId
+          : null;
+        const birthMarker = typeof event.birthMarker === 'string'
+          && event.birthMarker.length > 0
+          ? event.birthMarker
+          : null;
+        const ownershipToken = typeof event.ownershipToken === 'string'
+          && event.ownershipToken.length > 0
+          ? event.ownershipToken
+          : null;
+        const identityComplete = runtimeInstanceId != null
+          && Number.isInteger(event.pid)
+          && event.pid > 0
+          && processGroupId != null
+          && birthMarker != null
+          && ownershipToken != null;
+        const existing = runtimeInstanceId
+          ? await tx.executionProcess.findFirst({
+            where: {
+              sessionId: event.towerSessionId,
+              runtimeInstanceId,
+            launchClaimNumber,
+            },
+            select: { id: true, cleanupState: true },
+          })
+          : null;
+        // started is a generation barrier and may be retried after a caller
+        // timeout. Do not create a second row or advance the launch claim a
+        // second time when the first transaction already committed.
+        if (existing) return existing;
+        const diagnostic = launchClaimNumber == null
+          ? 'New runtime generation did not provide a valid launch claim number'
+          : 'New runtime generation did not provide complete process ownership identity';
+        const process = await tx.executionProcess.create({
+          data: {
+            sessionId: event.towerSessionId,
+            launchClaimNumber,
+            runtimeInstanceId,
+            processGroupId,
+            birthMarker,
+            ownershipToken,
+            cleanupState: identityComplete && launchClaimNumber != null ? 'ACTIVE' : 'QUARANTINED',
+            cleanupError: identityComplete && launchClaimNumber != null ? null : diagnostic,
+            cleanupAttemptCount: identityComplete && launchClaimNumber != null ? 0 : 1,
+            nextCleanupRetryAt: identityComplete && launchClaimNumber != null
+              ? null
+              : new Date(Date.now() + 5 * 60_000),
+            pid: Number.isInteger(event.pid) && event.pid > 0 ? event.pid : null,
+          },
+          select: { id: true, cleanupState: true },
         });
-      });
-      this.runtimeProcessIds.set(event.runtimeInstanceId, processRecord.id);
+        if (launchClaimNumber == null) {
+          await tx.session.update({
+            where: { id: event.towerSessionId },
+            data: {
+              runtimeLaunchState: RUNTIME_LAUNCH_STATES.QUARANTINED,
+              runtimeLaunchProcessCount: { increment: 1 },
+              runtimeLaunchDiagnostic: diagnostic,
+              runtimeLaunchDiagnosticCount: { increment: 1 },
+              runtimeLaunchNextDiagnosticAt: new Date(Date.now() + 5 * 60_000),
+            },
+          });
+          return process;
+        }
+        const resolved = await tx.session.updateMany({
+          where: {
+            id: event.towerSessionId,
+            runtimeLaunchClaimCount: launchClaimNumber,
+            runtimeLaunchResolvedCount: launchClaimNumber - 1,
+          },
+          data: {
+            runtimeLaunchState: identityComplete
+              ? RUNTIME_LAUNCH_STATES.PROCESS_RECORDED
+              : RUNTIME_LAUNCH_STATES.QUARANTINED,
+            runtimeLaunchResolvedCount: { increment: 1 },
+            runtimeLaunchProcessCount: { increment: 1 },
+            runtimeLaunchDiagnostic: identityComplete ? null : diagnostic,
+            runtimeLaunchDiagnosticCount: identityComplete ? undefined : { increment: 1 },
+            runtimeLaunchNextDiagnosticAt: identityComplete ? null : new Date(Date.now() + 5 * 60_000),
+          },
+        });
+        if (resolved.count !== 1) {
+          throw new ServiceError(
+            `Runtime process started outside launch claim ${launchClaimNumber}`,
+            'RUNTIME_LAUNCH_CLAIM_MISMATCH',
+            409,
+          );
+        }
+        return process;
+        });
+      } catch (error) {
+        if (launchClaimNumber != null) {
+          this.clearPendingRuntimeEventExpiryTimer(eventKey(
+            event.towerSessionId,
+            event.runtimeInstanceId,
+            launchClaimNumber,
+          ));
+          this.pendingRuntimeProcessEvents.delete(eventKey(
+            event.towerSessionId,
+            event.runtimeInstanceId,
+            launchClaimNumber,
+          ));
+        }
+        await this.quarantineRuntimeProcessEvent(
+          event,
+          `Runtime started persistence failed permanently: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        throw error;
+      }
+      if (
+        typeof event.runtimeInstanceId === 'string'
+        && event.runtimeInstanceId.length > 0
+        && !['CONFIRMED', 'QUARANTINED'].includes(processRecord.cleanupState)
+      ) {
+        this.runtimeProcessIds.set(
+          eventKey(event.towerSessionId, event.runtimeInstanceId, launchClaimNumber ?? 0),
+          processRecord.id,
+        );
+      }
+      if (launchClaimNumber == null) return;
+      const key = eventKey(event.towerSessionId, event.runtimeInstanceId, launchClaimNumber);
+      const buffered = this.pendingRuntimeProcessEvents.get(key);
+      if (buffered) {
+        this.pendingRuntimeProcessEvents.delete(key);
+        this.clearPendingRuntimeEventExpiryTimer(key);
+        for (const bufferedEvent of buffered) {
+          await this.handleRuntimeProcessEvent(bufferedEvent.event);
+        }
+      }
       return;
     }
 
-    const processId = this.runtimeProcessIds.get(event.runtimeInstanceId);
-    if (!processId) return;
-    this.runtimeProcessIds.delete(event.runtimeInstanceId);
-    await prisma.executionProcess.update({
-      where: { id: processId },
-      data: { exitCode: event.exitCode },
+    const processKey = launchClaimNumber != null
+      ? eventKey(event.towerSessionId, event.runtimeInstanceId, launchClaimNumber)
+      : undefined;
+    const processId = processKey ? this.runtimeProcessIds.get(processKey) : undefined;
+    const processRecord = launchClaimNumber != null
+      ? await prisma.executionProcess.findFirst({
+        where: {
+          ...(processId ? { id: processId } : {}),
+          sessionId: event.towerSessionId,
+          runtimeInstanceId: event.runtimeInstanceId,
+          launchClaimNumber,
+        },
+        select: {
+          id: true,
+          launchClaimNumber: true,
+          processGroupId: true,
+          birthMarker: true,
+          ownershipToken: true,
+          cleanupState: true,
+        },
+      })
+      : null;
+    if (!processRecord) {
+      if (launchClaimNumber == null) {
+        await this.quarantineRuntimeProcessEvent(
+          event,
+          'Runtime process event arrived before started persistence without a valid launch claim',
+        );
+        return;
+      }
+      const key = eventKey(event.towerSessionId, event.runtimeInstanceId, launchClaimNumber);
+      const pending = this.pendingRuntimeProcessEvents.get(key) ?? [];
+      if (pending.length >= PENDING_RUNTIME_EVENTS_PER_KEY
+        || this.pendingRuntimeEventCount() >= PENDING_RUNTIME_EVENTS_GLOBAL) {
+        this.pendingRuntimeProcessEvents.delete(key);
+        this.clearPendingRuntimeEventExpiryTimer(key);
+        await this.quarantineRuntimeProcessEvent(event, 'Runtime process event buffer overflow; event generation quarantined');
+        return;
+      }
+      pending.push({ event, expiresAt: Date.now() + PENDING_RUNTIME_EVENT_TTL_MS });
+      this.pendingRuntimeProcessEvents.set(key, pending);
+      if (!this.pendingRuntimeEventExpiryTimers.has(key)) {
+        const timer = setTimeout(() => {
+          this.pendingRuntimeProcessEvents.delete(key);
+          this.pendingRuntimeEventExpiryTimers.delete(key);
+        }, PENDING_RUNTIME_EVENT_TTL_MS);
+        timer.unref?.();
+        this.pendingRuntimeEventExpiryTimers.set(key, timer);
+      }
+      // A process event without its started row is durable evidence that the
+      // launch handoff was interrupted. Keep the session blocked/quarantined
+      // while retaining the in-memory event for a later started retry; never
+      // treat an empty process set as a safe pre-child failure.
+      await prisma.session.updateMany({
+        where: {
+          id: event.towerSessionId,
+          // A concurrent started transaction has already established durable
+          // ownership; it must win over this stale no-row observation.
+          runtimeLaunchState: {
+            notIn: [RUNTIME_LAUNCH_STATES.PROCESS_RECORDED, RUNTIME_LAUNCH_STATES.REUSED],
+          },
+        },
+        data: {
+          runtimeLaunchState: RUNTIME_LAUNCH_STATES.QUARANTINED,
+          runtimeLaunchDiagnostic: 'Runtime process event arrived before started persistence',
+          runtimeLaunchDiagnosticCount: { increment: 1 },
+          runtimeLaunchNextDiagnosticAt: new Date(Date.now() + 5 * 60_000),
+        },
+      }).catch((error) => {
+        this.logSessionError('session.processEventBeforeStarted', error, {
+          sessionId: event.towerSessionId,
+          runtimeInstanceId: event.runtimeInstanceId,
+          eventType: event.type,
+        });
+      });
+      return;
+    }
+    if (launchClaimNumber == null || processRecord.launchClaimNumber !== launchClaimNumber) {
+      await this.quarantineRuntimeProcessEvent(
+        event,
+        'Runtime process event launch claim did not match its persisted generation',
+      );
+      return;
+    }
+    if (!processId && !['CONFIRMED', 'QUARANTINED'].includes(processRecord.cleanupState)) {
+      this.runtimeProcessIds.set(processKey!, processRecord.id);
+    }
+
+    if (event.type === 'tree_cleanup_completed') {
+      await this.markRuntimeProcessCleanupState(
+        event.towerSessionId,
+        event.runtimeInstanceId,
+        'CONFIRMED',
+        undefined,
+        launchClaimNumber,
+      );
+      if (processKey) this.runtimeProcessIds.delete(processKey);
+      return;
+    }
+    const rootExitConfirmsCleanup = processRecord != null
+      && processRecord.processGroupId == null
+      && processRecord.birthMarker == null
+      && processRecord.ownershipToken == null;
+    await prisma.executionProcess.updateMany({
+      where: {
+        sessionId: event.towerSessionId,
+        runtimeInstanceId: event.runtimeInstanceId,
+        ...(launchClaimNumber != null ? { launchClaimNumber } : {}),
+      },
+      data: {
+        exitCode: event.exitCode,
+      },
     }).catch((error) => {
       this.logSessionError('session.processExit', error, {
         sessionId: event.towerSessionId,
         processId,
         exitCode: event.exitCode,
       });
+    });
+    if (rootExitConfirmsCleanup) {
+      await this.markRuntimeProcessCleanupState(
+        event.towerSessionId,
+        event.runtimeInstanceId,
+        'CONFIRMED',
+        undefined,
+        launchClaimNumber,
+      );
+    } else if (processRecord) {
+      await this.markRuntimeProcessCleanupPending(
+        event.towerSessionId,
+        event.runtimeInstanceId,
+        launchClaimNumber,
+      );
+    }
+    if (rootExitConfirmsCleanup) {
+      if (processKey) this.runtimeProcessIds.delete(processKey);
+    }
+  }
+
+  private pendingRuntimeEventCount(): number {
+    let count = 0;
+    for (const events of this.pendingRuntimeProcessEvents.values()) count += events.length;
+    return count;
+  }
+
+  private clearPendingRuntimeProcessEvents(sessionId: string): void {
+    for (const key of this.pendingRuntimeProcessEvents.keys()) {
+      if (key.startsWith(`${sessionId}:`)) {
+        this.pendingRuntimeProcessEvents.delete(key);
+        this.clearPendingRuntimeEventExpiryTimer(key);
+      }
+    }
+  }
+
+  private clearPendingRuntimeEventExpiryTimer(key: string): void {
+    const timer = this.pendingRuntimeEventExpiryTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.pendingRuntimeEventExpiryTimers.delete(key);
+  }
+
+  private prunePendingRuntimeProcessEvents(): void {
+    const now = Date.now();
+    for (const [key, events] of this.pendingRuntimeProcessEvents) {
+      const live = events.filter((entry) => entry.expiresAt > now);
+      if (live.length === 0) {
+        this.pendingRuntimeProcessEvents.delete(key);
+        this.clearPendingRuntimeEventExpiryTimer(key);
+      }
+      else if (live.length !== events.length) this.pendingRuntimeProcessEvents.set(key, live);
+    }
+  }
+
+  private async quarantineRuntimeProcessEvent(event: RuntimeProcessEvent, diagnostic: string): Promise<void> {
+    await prisma.session.updateMany({
+      where: { id: event.towerSessionId },
+      data: {
+        runtimeLaunchState: RUNTIME_LAUNCH_STATES.QUARANTINED,
+        runtimeLaunchDiagnostic: diagnostic,
+        runtimeLaunchDiagnosticCount: { increment: 1 },
+        runtimeLaunchNextDiagnosticAt: new Date(Date.now() + 5 * 60_000),
+      },
+    }).catch((error) => {
+      this.logSessionError('session.processEventQuarantine', error, {
+        sessionId: event.towerSessionId,
+        runtimeInstanceId: event.runtimeInstanceId,
+      });
+    });
+  }
+
+  private async markRuntimeProcessCleanupPending(
+    sessionId: string,
+    runtimeInstanceId: string,
+    launchClaimNumber?: number | null,
+  ): Promise<void> {
+    if (!Number.isInteger(launchClaimNumber) || launchClaimNumber! <= 0) {
+      await this.quarantinePersistedRuntimeProcess(
+        sessionId,
+        runtimeInstanceId,
+        'Runtime cleanup transition is missing launchClaimNumber; owner remains quarantined',
+        launchClaimNumber,
+      );
+      return;
+    }
+    const resolvedClaim = launchClaimNumber as number;
+    await prisma.executionProcess.updateMany({
+      where: {
+        sessionId,
+        runtimeInstanceId,
+        launchClaimNumber: resolvedClaim,
+        cleanupState: { notIn: ['CONFIRMED', 'QUARANTINED'] },
+      },
+      data: {
+        cleanupState: 'PENDING',
+        cleanupError: null,
+        nextCleanupRetryAt: null,
+      },
+    }).catch((error) => {
+      this.logSessionError('session.processCleanupPending', error, { sessionId, runtimeInstanceId });
+    });
+  }
+
+  private async markRuntimeProcessCleanupState(
+    sessionId: string,
+    runtimeInstanceId: string,
+    cleanupState: 'CONFIRMED' | 'FAILED',
+    cleanupError?: string,
+    launchClaimNumber?: number | null,
+  ): Promise<void> {
+    if (!Number.isInteger(launchClaimNumber) || launchClaimNumber! <= 0) {
+      await this.quarantinePersistedRuntimeProcess(
+        sessionId,
+        runtimeInstanceId,
+        'Runtime cleanup transition is missing launchClaimNumber; owner remains quarantined',
+        launchClaimNumber,
+      );
+      return;
+    }
+    const resolvedClaim = launchClaimNumber as number;
+    await prisma.$transaction(async (tx) => {
+      const record = await tx.executionProcess.findFirst({
+        where: { sessionId, runtimeInstanceId, launchClaimNumber: resolvedClaim },
+        select: { id: true, cleanupAttemptCount: true, cleanupState: true },
+      });
+      if (!record) return;
+      if (cleanupState === 'CONFIRMED') {
+        if (record.cleanupState === 'QUARANTINED') return;
+        await tx.executionProcess.updateMany({
+          where: { id: record.id, sessionId, runtimeInstanceId, launchClaimNumber: resolvedClaim },
+          data: {
+            cleanupState,
+            cleanupError: null,
+            nextCleanupRetryAt: null,
+          },
+        });
+        this.runtimeProcessIds.delete(eventKey(sessionId, runtimeInstanceId, resolvedClaim));
+        return;
+      }
+      const attempt = record.cleanupAttemptCount + 1;
+      const delay = PROCESS_CLEANUP_RETRY_DELAYS_MS[
+        Math.min(attempt - 1, PROCESS_CLEANUP_RETRY_DELAYS_MS.length - 1)
+      ]!;
+      await tx.executionProcess.updateMany({
+        where: {
+          id: record.id,
+          sessionId,
+          runtimeInstanceId,
+          launchClaimNumber: resolvedClaim,
+          cleanupState: { notIn: ['CONFIRMED', 'QUARANTINED'] },
+        },
+        data: {
+          cleanupState,
+          cleanupError: cleanupError?.slice(0, 2_000) ?? 'Process cleanup failed',
+          cleanupAttemptCount: attempt,
+          nextCleanupRetryAt: new Date(Date.now() + delay),
+        },
+      });
+    }).catch((error) => {
+      this.logSessionError('session.processCleanupState', error, { sessionId, runtimeInstanceId, cleanupState });
     });
   }
 
@@ -1249,7 +2132,11 @@ export class SessionManager {
   private async handleSessionExit(
     sessionId: string,
     exitCode?: number,
-    options: { logicalCompletion?: boolean; generation?: number } = {},
+    options: {
+      logicalCompletion?: boolean;
+      generation?: number;
+      runtimeInstanceId?: string;
+    } = {},
   ): Promise<void> {
     const generation = options.generation ?? this.sessionGenerations.get(sessionId);
     await this.externalSessionPersistence.get(sessionId);
@@ -1366,7 +2253,7 @@ export class SessionManager {
 
       if (!this.isCurrentGeneration(sessionId, generation)) return;
 
-      const handledByTeamRun = await this.teamReconciler.handleSessionExit(sessionId);
+      const handledByTeamRun = await this.teamReconciler.handleSessionExit(sessionId, options.runtimeInstanceId);
       if (!this.isCurrentGeneration(sessionId, generation)) return;
 
       if (!isFailed) {
@@ -1393,6 +2280,7 @@ export class SessionManager {
     if (this.isCurrentGeneration(sessionId, generation)) {
       sessionMsgStoreManager.delete(sessionId);
       this.releaseSnapshotPersistenceState(sessionId);
+      this.clearPendingRuntimeProcessEvents(sessionId);
     }
   }
 
@@ -1412,7 +2300,7 @@ export class SessionManager {
   private startSessionFinalization(
     sessionId: string,
     exitCode?: number,
-    options: { logicalCompletion?: boolean } = {},
+    options: { logicalCompletion?: boolean; runtimeInstanceId?: string } = {},
   ): void {
     if (options.logicalCompletion) {
       this.reserveAutoCommitGate(sessionId);

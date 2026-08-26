@@ -16,6 +16,8 @@ import {
   AgentArtifactError,
   AgentArtifactService,
 } from '../services/agent-artifact.service.js';
+import { TeamSchedulerService } from '../services/team-scheduler.service.js';
+import { INTERNAL_API_INVOCATION_ID_HEADER } from '../utils/internal-api-token.js';
 
 function buildProjectReadOnlyError(project: {
   name: string;
@@ -319,7 +321,7 @@ export async function sessionRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     '/sessions/:id/stop',
     async (request, reply) => {
-      const result = await sessionService.stop(request.params.id);
+      const result = await new TeamSchedulerService().stopSession(request.params.id);
       if (!result) {
         reply.code(404);
         return { error: 'Session not found' };
@@ -348,10 +350,16 @@ export async function sessionRoutes(app: FastifyInstance) {
         const workspaceError = validateWorkspaceBackedSession(existing, reply);
         if (workspaceError) return workspaceError;
 
+        const headerInvocationId = request.headers[INTERNAL_API_INVOCATION_ID_HEADER];
+        const trustedInvocationId = request.agentTowerAgentIdentity?.invocationId
+          ?? (request.agentTowerAuthKind === 'internal' && typeof headerInvocationId === 'string'
+            ? headerInvocationId
+            : undefined);
         const result = await sessionService.sendMessage(
           request.params.id,
           body.message,
-          body.providerId
+          body.providerId,
+          trustedInvocationId,
         );
         if (!result) {
           reply.code(404);
@@ -360,6 +368,10 @@ export async function sessionRoutes(app: FastifyInstance) {
         return { success: true };
       } catch (error) {
         console.error(`[sessions] sendMessage failed for session ${request.params.id}:`, error);
+        if (error instanceof ServiceError) {
+          reply.code(error.statusCode);
+          return { error: error.message, code: error.code };
+        }
         reply.code(500);
         return { error: error instanceof Error ? error.message : 'Failed to send message' };
       }

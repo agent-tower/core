@@ -298,7 +298,11 @@ export {
   AgentCommandUnavailableError,
   ExecutorConfigurationError,
   ExecutorNotFoundError,
+  isPreChildProcessFailure,
+  markPreChildProcessFailure,
   normalizeExecutorStartError,
+  attachSpawnCleanupOwner,
+  getSpawnCleanupOwner,
 } from './start-error.js';
 export { ExecutionEnv } from './execution-env.js';
 
@@ -342,5 +346,6 @@ export type { CursorAgentConfig } from './cursor-agent.executor.js';
 export type { CodexConfig } from './codex.executor.js';
 export type { CmdOverrides, CommandParts } from './command-builder.js';
 export type { RepoContext } from './execution-env.js';
+export type { SpawnCleanupOwner } from './start-error.js';
 export type { ExecutorProfiles, VariantConfig, AgentVariants } from './profiles.js';
 export type { Provider, ProvidersData } from './providers.js';

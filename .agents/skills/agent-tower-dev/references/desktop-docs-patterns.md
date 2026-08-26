@@ -14,6 +14,7 @@
 - packaged runtime 在所有平台复制并使用构建环境中满足仓库最低版本的 bundled Node，同时携带 server、web 和 MCP；不要回退到 Electron 内嵌 Node，也不依赖全局 CLI。
 - 后端只绑定 loopback，窗口只加载预期本地 origin。
 - startup failure、early exit 和正常退出都有清理；日志使用 `log-redaction.ts`。
+- 普通桌面 quit 必须等待 backend CLI 收到 SIGTERM 后真实 `exit`，由 backend 自己完成 Agent process-tree cleanup；不能用固定时间窗口自动 SIGKILL。若未来提供强制退出，必须是独立的显式运维路径，不能由普通 quit 自动触发。
 - 路径、process kill 和 executable 选择兼容 Windows/macOS/Linux。
 
 runtime 内容变化时检查 `prepare-runtime.mjs`、`extraResources` 和平台打包 target，并运行对应 desktop build/smoke/acceptance；Pi Runtime 检查必须实际执行 bundled `pi --version`，只 import 包不足以证明可执行依赖完整。

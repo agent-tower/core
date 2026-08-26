@@ -1053,6 +1053,7 @@ export interface AgentInvocation {
   nextRoomReplyReminderAt?: string | null
   lastHeartbeatAt?: string | null
   firstNudgeAt?: string | null
+  dispatchRevokedAt?: string | null
   createdAt?: string
   updatedAt?: string
 }

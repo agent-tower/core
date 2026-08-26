@@ -13,9 +13,20 @@ import {
   isAgentSubprocessProtectedEnvKey,
 } from '../execution-env.js';
 import { PTY_WRAPPER_ENV_KEYS } from '../../utils/process-launch.js';
+import { getSpawnCleanupOwner } from '../start-error.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const whichMock = vi.hoisted(() => vi.fn(async (command: string) => `/bin/${command}`));
+const captureSpawnedProcessIdentityMock = vi.hoisted(() => vi.fn<(
+  pid: number,
+  ownershipToken: string,
+) => Promise<{ processGroupId: string; birthMarker: string; ownershipToken: string } | null>>(
+  async (pid, ownershipToken) => ({
+    processGroupId: String(pid),
+    birthMarker: `test-birth:${pid}`,
+    ownershipToken,
+  }),
+));
 
 vi.mock('@shitiandmw/node-pty', () => ({
   spawn: spawnMock,
@@ -23,6 +34,22 @@ vi.mock('@shitiandmw/node-pty', () => ({
 
 vi.mock('../../utils/index.js', () => ({
   which: whichMock,
+}));
+
+vi.mock('../../utils/spawned-process-identity.js', () => ({
+  captureSpawnedProcessIdentity: captureSpawnedProcessIdentityMock,
+}));
+
+vi.mock('../../utils/tree-cleanup-channel.js', () => ({
+  createTreeCleanupChannel: vi.fn(async () => {
+    let completed = false;
+    return {
+      env: {},
+      isCompleted: () => completed,
+      markCompleted: vi.fn(() => { completed = true; }),
+      close: vi.fn(),
+    };
+  }),
 }));
 
 class TestExecutor extends BaseExecutor {
@@ -265,6 +292,105 @@ describe('BaseExecutor.spawnWithStdin', () => {
     expect(tmpFilesForNow(now)).toEqual([]);
   });
 
+  it('terminates an unverified spawned stdin process when identity capture fails', async () => {
+    let exitCallback: ((event: { exitCode: number }) => void) | undefined;
+    const kill = vi.fn(() => {
+      exitCallback?.({ exitCode: 1 });
+    });
+    captureSpawnedProcessIdentityMock.mockResolvedValueOnce(null);
+    spawnMock.mockImplementationOnce(() => {
+      return {
+        pid: 12345,
+        onData: vi.fn(() => ({ dispose: vi.fn() })),
+        onExit: vi.fn((callback: (event: { exitCode: number }) => void) => {
+          exitCallback = callback;
+          return { dispose: vi.fn() };
+        }),
+        kill,
+      };
+    });
+
+    const executor = new TestExecutor();
+    await expect(executor.spawnForTest({ program: 'mock-agent', args: [] }, '{"message":"hello"}'))
+      .rejects.toThrow('Could not persist a verifiable process identity');
+
+    expect(kill).toHaveBeenCalledWith('SIGINT');
+    expect(tmpFilesForNow(now)).toEqual([]);
+  });
+
+  it('keeps an identity-failure cleanup owner pending until a real PTY exit', async () => {
+    vi.useFakeTimers();
+    try {
+      let exitCallback: ((event: { exitCode: number }) => void) | undefined;
+      const kill = vi.fn();
+      captureSpawnedProcessIdentityMock.mockResolvedValueOnce(null);
+      spawnMock.mockImplementationOnce(() => {
+        return {
+          pid: 12345,
+          onData: vi.fn(() => ({ dispose: vi.fn() })),
+          onExit: vi.fn((callback: (event: { exitCode: number }) => void) => {
+            exitCallback = callback;
+            return { dispose: vi.fn() };
+          }),
+          kill,
+        };
+      });
+
+      const executor = new TestExecutor();
+      const spawning = executor.spawnInternalForTest(
+        { program: 'mock-agent', args: [] },
+        ExecutionEnv.default(os.tmpdir()),
+      );
+      void spawning.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      // The wrapper owns the hard tree escalation and needs its bounded
+      // force-kill grace before reporting a complete exit.
+      await vi.advanceTimersByTimeAsync(8_000);
+      let failure: unknown;
+      try {
+        await spawning;
+      } catch (error) {
+        failure = error;
+      }
+      const owner = getSpawnCleanupOwner(failure);
+      expect(owner).toBeDefined();
+      expect(kill).toHaveBeenCalledWith('SIGINT');
+      exitCallback?.({ exitCode: 1 });
+      await expect(owner!.processExit).resolves.toBeUndefined();
+      await expect(owner!.cleanup()).resolves.toBeUndefined();
+      owner!.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('terminates a spawned stdin process when identity capture throws', async () => {
+    let exitCallback: ((event: { exitCode: number }) => void) | undefined;
+    const kill = vi.fn(() => {
+      exitCallback?.({ exitCode: 1 });
+    });
+    captureSpawnedProcessIdentityMock.mockRejectedValueOnce(new Error('identity probe failed'));
+    spawnMock.mockImplementationOnce(() => {
+      return {
+        pid: 12345,
+        onData: vi.fn(() => ({ dispose: vi.fn() })),
+        onExit: vi.fn((callback: (event: { exitCode: number }) => void) => {
+          exitCallback = callback;
+          return { dispose: vi.fn() };
+        }),
+        kill,
+      };
+    });
+
+    const executor = new TestExecutor();
+    await expect(executor.spawnForTest({ program: 'mock-agent', args: [] }, '{"message":"hello"}'))
+      .rejects.toThrow('identity probe failed');
+
+    expect(kill).toHaveBeenCalledWith('SIGINT');
+    expect(tmpFilesForNow(now)).toEqual([]);
+  });
+
   it('disposes data and exit listeners when the pty exits', async () => {
     const dataDispose = vi.fn();
     const exitDispose = vi.fn();
@@ -292,10 +418,11 @@ describe('BaseExecutor.spawnWithStdin', () => {
     expect(onExitCallback).toBeDefined();
 
     onDataCallback?.('x'.repeat(9000));
-    onExitCallback?.({ exitCode: 0 });
+    onExitCallback?.({ exitCode: 0, signal: 0 });
 
     expect(dataDispose).toHaveBeenCalledTimes(1);
     expect(exitDispose).toHaveBeenCalledTimes(1);
+    expect(result.verifyTreeCleanup?.()).toBe(true);
   });
 
   it('buffers PTY events fired before pipeline attach and hands them over exactly once', async () => {
@@ -530,5 +657,32 @@ describe('BaseExecutor subprocess env', () => {
       AGENT_TOWER_URL: 'http://127.0.0.1:42232',
     });
     expect(spawnOptions.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE');
+  });
+
+  it('terminates an unverified spawned argument process when identity capture fails', async () => {
+    let exitCallback: ((event: { exitCode: number }) => void) | undefined;
+    const kill = vi.fn(() => {
+      exitCallback?.({ exitCode: 1 });
+    });
+    captureSpawnedProcessIdentityMock.mockResolvedValueOnce(null);
+    spawnMock.mockImplementationOnce(() => {
+      return {
+        pid: 12345,
+        onData: vi.fn(() => ({ dispose: vi.fn() })),
+        onExit: vi.fn((callback: (event: { exitCode: number }) => void) => {
+          exitCallback = callback;
+          return { dispose: vi.fn() };
+        }),
+        kill,
+      };
+    });
+
+    const executor = new TestExecutor();
+    await expect(executor.spawnInternalForTest(
+      { program: 'mock-agent', args: [] },
+      ExecutionEnv.default(os.tmpdir()),
+    )).rejects.toThrow('Could not persist a verifiable process identity');
+
+    expect(kill).toHaveBeenCalledWith('SIGINT');
   });
 });

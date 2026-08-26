@@ -9,6 +9,7 @@ import { AgentType, SessionStatus } from '../../types/index.js';
 import { EventBus } from '../../core/event-bus.js';
 import type { BaseExecutor, ExecutorSpawnConfig } from '../../executors/index.js';
 import { withWorkspaceBackgroundServicePolicy } from '../../prompts/workspace-background-service-policy.js';
+import { appendAgentOutputIntentInstructions } from '../../prompts/agent-output-intents.js';
 import { TeamLockService } from '../team-lock.service.js';
 import {
   AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
@@ -143,15 +144,38 @@ function expectServiceEnvFiltered(fullEnv: Record<string, string>): void {
 }
 
 function createPty() {
+  let exited = false;
+  let exitListeners: Array<(event: { exitCode: number; signal?: number }) => void> = [];
+  const emitExit = (event: { exitCode: number; signal?: number }) => {
+    if (exited) return;
+    exited = true;
+    for (const listener of [...exitListeners]) listener(event);
+  };
+  const kill = vi.fn(() => emitExit({ exitCode: 0 }));
   return {
     pid: 12345,
     onData: vi.fn(() => ({ dispose: vi.fn() })),
-    onExit: vi.fn((_listener: (event: { exitCode: number; signal?: number }) => void) => ({
-      dispose: vi.fn(),
-    })),
+    onExit: vi.fn((listener: (event: { exitCode: number; signal?: number }) => void) => {
+      exitListeners.push(listener);
+      return {
+        dispose: vi.fn(() => {
+          exitListeners = exitListeners.filter((candidate) => candidate !== listener);
+        }),
+      };
+    }),
     write: vi.fn(),
     resize: vi.fn(),
-    kill: vi.fn(),
+    kill,
+  };
+}
+
+function spawnResult(pid: number, pty = createPty()) {
+  return {
+    pid,
+    processGroupId: String(pid),
+    birthMarker: `test-birth:${pid}`,
+    ownershipToken: `test-owner:${pid}`,
+    pty,
   };
 }
 
@@ -214,14 +238,8 @@ describe('SessionManager TeamRun env injection', () => {
   beforeEach(async () => {
     seedServiceEnv();
     vi.clearAllMocks();
-    spawnMock.mockImplementation(async () => ({
-      pid: 12345,
-      pty: createPty(),
-    }));
-    spawnFollowUpMock.mockImplementation(async () => ({
-      pid: 12346,
-      pty: createPty(),
-    }));
+    spawnMock.mockImplementation(async () => spawnResult(12345));
+    spawnFollowUpMock.mockImplementation(async () => spawnResult(12346));
     manager = new SessionManager(new EventBus());
     await prisma.executionProcess.deleteMany();
     await prisma.agentInvocation.deleteMany();
@@ -294,6 +312,16 @@ describe('SessionManager TeamRun env injection', () => {
         status: 'RUNNING',
       },
     });
+    spawnMock.mockImplementationOnce(async (config: ExecutorSpawnConfig) => {
+      expect(config.env.toObject().AGENT_TOWER_SESSION_ID).toBe(session.id);
+      await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+        status: SessionStatus.RUNNING,
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 0,
+      });
+      return spawnResult(12345);
+    });
 
     await manager.start(session.id);
 
@@ -312,7 +340,77 @@ describe('SessionManager TeamRun env injection', () => {
       AGENT_TOWER_TEAM_RUN_ID: teamRun.id,
       AGENT_TOWER_MEMBER_ID: member.id,
     });
-    manager.destroyAll();
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'PROCESS_RECORDED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 1,
+      runtimeLaunchProcessCount: 1,
+    });
+    await manager.destroyAll();
+  });
+
+  it('revokes TeamRun dispatch before a direct Session stop waits for unresolved cleanup', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { task, workspace } = await createWorkspace();
+    const teamRun = await prisma.teamRun.create({ data: { taskId: task.id, mode: 'AUTO' } });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        name: 'Direct stop member',
+        aliases: '[]',
+        providerId: 'codex-default',
+        rolePrompt: 'Role',
+        capabilities: '{}',
+        workspacePolicy: 'shared',
+        triggerPolicy: 'MENTION_ONLY',
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'direct-stop-cleanup-pending',
+        instruction: 'Run',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'prompt',
+        status: SessionStatus.RUNNING,
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        status: 'RUNNING',
+      },
+    });
+
+    await manager.stop(session.id);
+
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'RUNNING',
+      dispatchRevokedAt: expect.any(Date),
+    });
+    await expect(prisma.workRequest.findUniqueOrThrow({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.RUNNING,
+      runtimeLaunchState: 'QUARANTINED',
+      runtimeLaunchResolvedCount: 0,
+    });
   });
 
   it('injects targeted test port env when the invocation has allocated ports', async () => {
@@ -390,7 +488,7 @@ describe('SessionManager TeamRun env injection', () => {
       VITE_PORT: '21001',
       E2E_PORT: '21002',
     });
-    manager.destroyAll();
+    await manager.destroyAll();
   });
 
   it('injects only the workspace-bound session identity for a solo session', async () => {
@@ -418,7 +516,7 @@ describe('SessionManager TeamRun env injection', () => {
     expect(fullEnv).not.toHaveProperty('AGENT_TOWER_INVOCATION_ID');
     expect(fullEnv).not.toHaveProperty('AGENT_TOWER_TEAM_RUN_ID');
     expect(fullEnv).not.toHaveProperty('AGENT_TOWER_MEMBER_ID');
-    manager.destroyAll();
+    await manager.destroyAll();
   });
 
   it('starts a new Tower session as an executor follow-up while injecting the new invocation env', async () => {
@@ -483,6 +581,16 @@ describe('SessionManager TeamRun env injection', () => {
         status: 'RUNNING',
       },
     });
+    spawnFollowUpMock.mockImplementationOnce(async (config: ExecutorSpawnConfig) => {
+      expect(config.env.toObject().AGENT_TOWER_SESSION_ID).toBe(nextSession.id);
+      await expect(prisma.session.findUnique({ where: { id: nextSession.id } })).resolves.toMatchObject({
+        status: SessionStatus.RUNNING,
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 0,
+      });
+      return spawnResult(12346);
+    });
 
     const startTurnSpy = vi.spyOn((manager as any).runtimeCoordinator, 'startTurn');
     await manager.startFollowUp(nextSession.id, previousSession.id);
@@ -496,7 +604,9 @@ describe('SessionManager TeamRun env injection', () => {
     expect(spawnFollowUpMock.mock.calls[0]![1]).toBe('agent-native-session-1');
     expect(spawnMock).not.toHaveBeenCalled();
     const spawnConfig = spawnFollowUpMock.mock.calls[0]![0] as ExecutorSpawnConfig;
-    expect(spawnConfig.prompt).toBe(withWorkspaceBackgroundServicePolicy('next prompt'));
+    expect(spawnConfig.prompt).toBe(
+      appendAgentOutputIntentInstructions(withWorkspaceBackgroundServicePolicy('next prompt')),
+    );
     expect(spawnConfig.env.toObject()).toMatchObject({
       AGENT_TOWER_SESSION_ID: nextSession.id,
       AGENT_TOWER_INVOCATION_ID: invocation.id,
@@ -513,11 +623,15 @@ describe('SessionManager TeamRun env injection', () => {
     });
     await expect(prisma.session.findUnique({ where: { id: nextSession.id } })).resolves.toMatchObject({
       status: SessionStatus.RUNNING,
+      runtimeLaunchState: 'PROCESS_RECORDED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 1,
+      runtimeLaunchProcessCount: 1,
     });
-    manager.destroyAll();
+    await manager.destroyAll();
   });
 
-  it('kills a spawned process when the task is deleted during session start', async () => {
+  it('quarantines a spawned process when its process row cannot be written during session start', async () => {
     const { task, workspace } = await createWorkspace();
     const pty = createPty();
     spawnMock.mockImplementationOnce(async () => {
@@ -525,7 +639,7 @@ describe('SessionManager TeamRun env injection', () => {
         where: { id: task.id },
         data: { deletedAt: new Date() },
       });
-      return { pid: 22345, pty };
+      return spawnResult(22345, pty);
     });
     const session = await prisma.session.create({
       data: {
@@ -545,7 +659,10 @@ describe('SessionManager TeamRun env injection', () => {
     expect(pty.kill).toHaveBeenCalled();
     await expect(prisma.executionProcess.count({ where: { sessionId: session.id } })).resolves.toBe(0);
     await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
-      status: SessionStatus.CANCELLED,
+      status: SessionStatus.RUNNING,
+      runtimeLaunchState: 'QUARANTINED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 0,
     });
   });
 
@@ -565,6 +682,13 @@ describe('SessionManager TeamRun env injection', () => {
     await expect(manager.start(session.id)).rejects.toMatchObject({
       code: 'AGENT_COMMAND_UNAVAILABLE',
       statusCode: 400,
+    });
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.CANCELLED,
+      runtimeLaunchState: 'SAFE_PRE_CHILD_FAILURE',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 1,
+      runtimeLaunchProcessCount: 0,
     });
   });
 
@@ -714,7 +838,7 @@ describe('SessionManager TeamRun env injection', () => {
       },
     });
     const pty = createPty();
-    spawnMock.mockResolvedValueOnce({ pid: 52345, pty });
+    spawnMock.mockResolvedValueOnce(spawnResult(52345, pty));
     await manager.start(session.id);
 
     await expect(prisma.executionProcess.findFirst({ where: { sessionId: session.id } })).resolves.toMatchObject({
@@ -732,7 +856,170 @@ describe('SessionManager TeamRun env injection', () => {
     });
   });
 
-  it('kills a spawned follow-up process when the task is deleted during follow-up start', async () => {
+  it('rejects an initial start after direct stop has cancelled the Session', async () => {
+    const { workspace } = await createWorkspace();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'cancelled before spawn',
+        status: SessionStatus.CANCELLED,
+      },
+    });
+
+    await expect(manager.start(session.id)).rejects.toMatchObject({
+      code: 'SESSION_NOT_ADMITTED',
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.CANCELLED,
+    });
+  });
+
+  it('rejects a cross-Tower resume start after direct stop cancelled the new Session', async () => {
+    const { workspace } = await createWorkspace();
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'previous prompt',
+        status: SessionStatus.COMPLETED,
+        externalSessionId: 'native-resume-session',
+      },
+    });
+    const nextSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'cancelled resume',
+        status: SessionStatus.CANCELLED,
+      },
+    });
+
+    await expect(manager.startFollowUp(nextSession.id, previousSession.id)).rejects.toMatchObject({
+      code: 'SESSION_NOT_ADMITTED',
+    });
+    expect(spawnFollowUpMock).not.toHaveBeenCalled();
+    await expect(prisma.session.findUnique({ where: { id: nextSession.id } })).resolves.toMatchObject({
+      status: SessionStatus.CANCELLED,
+    });
+  });
+
+  it('does not spawn a real resume_last follow-up when pre-invocation direct stop wins', async () => {
+    const { task, workspace } = await createWorkspace();
+    const teamRun = await prisma.teamRun.create({ data: { taskId: task.id, mode: 'AUTO' } });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        name: 'Resume member',
+        aliases: '[]',
+        providerId: 'codex-default',
+        rolePrompt: 'Continue prior work',
+        capabilities: JSON.stringify({
+          readRoom: true,
+          postRoomMessage: true,
+          mentionMembers: true,
+          stopMemberWork: false,
+          markReadyForReview: false,
+          readFiles: true,
+          writeFiles: true,
+          runCommands: false,
+          readDiff: true,
+          mergeWorkspace: false,
+        }),
+        workspacePolicy: 'shared',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'resume_last',
+        queueManagementPolicy: 'own_only',
+      },
+    });
+    const previousRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'previous-resume-request',
+        instruction: 'Previous work',
+        status: 'COMPLETED',
+      },
+    });
+    const previousSession = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: member.providerId,
+        prompt: 'previous prompt',
+        status: SessionStatus.COMPLETED,
+        externalSessionId: 'native-resume-context',
+      },
+    });
+    await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: previousRequest.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: previousSession.id,
+        status: 'COMPLETED',
+      },
+    });
+    const nextRequest = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'next-resume-request',
+        instruction: 'Continue with the native context',
+        status: 'QUEUED',
+      },
+    });
+    let resolveSessionCreated!: (session: { id: string }) => void;
+    const sessionCreated = new Promise<{ id: string }>((resolve) => {
+      resolveSessionCreated = resolve;
+    });
+    let allowCreateReturn!: () => void;
+    const createReturn = new Promise<void>((resolve) => {
+      allowCreateReturn = resolve;
+    });
+    const originalCreate = manager.create.bind(manager);
+    vi.spyOn(manager, 'create').mockImplementationOnce(async (...args) => {
+      const session = await originalCreate(...args);
+      resolveSessionCreated(session);
+      await createReturn;
+      return session;
+    });
+    const scheduler = new TeamSchedulerService(new TeamLockService(), {
+      workspaceService: { create: vi.fn(async () => workspace) },
+      sessionManager: manager,
+      getProviderById: vi.fn(() => ({
+        id: member.providerId,
+        name: 'Codex',
+        agentType: AgentType.CODEX,
+        env: {},
+        config: {},
+        isDefault: true,
+      })),
+    });
+
+    const starting = scheduler.startNextSessions(teamRun.id);
+    const createdSession = await sessionCreated;
+    await scheduler.stopSession(createdSession.id);
+    allowCreateReturn();
+    await expect(starting).resolves.toEqual([]);
+
+    expect(spawnFollowUpMock).not.toHaveBeenCalled();
+    await expect(prisma.session.findUnique({ where: { id: createdSession.id } })).resolves.toMatchObject({
+      status: SessionStatus.CANCELLED,
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: nextRequest.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+  });
+
+  it('quarantines a spawned follow-up when its process row cannot be written', async () => {
     const { task, workspace } = await createWorkspace();
     const previousSession = await prisma.session.create({
       data: {
@@ -759,7 +1046,7 @@ describe('SessionManager TeamRun env injection', () => {
         where: { id: task.id },
         data: { deletedAt: new Date() },
       });
-      return { pid: 32345, pty };
+      return spawnResult(32345, pty);
     });
 
     await expect(manager.startFollowUp(nextSession.id, previousSession.id)).rejects.toMatchObject({
@@ -771,11 +1058,14 @@ describe('SessionManager TeamRun env injection', () => {
     expect(pty.kill).toHaveBeenCalled();
     await expect(prisma.executionProcess.count({ where: { sessionId: nextSession.id } })).resolves.toBe(0);
     await expect(prisma.session.findUnique({ where: { id: nextSession.id } })).resolves.toMatchObject({
-      status: SessionStatus.CANCELLED,
+      status: SessionStatus.RUNNING,
+      runtimeLaunchState: 'QUARANTINED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 0,
     });
   });
 
-  it('kills a spawned reply process when the task is deleted during sendMessage', async () => {
+  it('quarantines a spawned reply process when its process row cannot be written', async () => {
     const { task, workspace } = await createWorkspace();
     const session = await prisma.session.create({
       data: {
@@ -792,7 +1082,7 @@ describe('SessionManager TeamRun env injection', () => {
         where: { id: task.id },
         data: { deletedAt: new Date() },
       });
-      return { pid: 42345, pty };
+      return spawnResult(42345, pty);
     });
 
     await expect(manager.sendMessage(session.id, 'continue')).rejects.toMatchObject({
@@ -803,7 +1093,137 @@ describe('SessionManager TeamRun env injection', () => {
     expect(pty.kill).toHaveBeenCalled();
     await expect(prisma.executionProcess.count({ where: { sessionId: session.id } })).resolves.toBe(0);
     await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
-      status: SessionStatus.CANCELLED,
+      status: SessionStatus.RUNNING,
+      runtimeLaunchState: 'QUARANTINED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 0,
+    });
+  });
+
+  it('rejects a revoked TeamRun reminder before replacing the active turn', async () => {
+    const { task, workspace } = await createWorkspace();
+    const teamRun = await prisma.teamRun.create({ data: { taskId: task.id, mode: 'AUTO' } });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        name: 'Reminder member',
+        aliases: '[]',
+        providerId: 'codex-default',
+        rolePrompt: 'Role',
+        capabilities: '{}',
+        workspacePolicy: 'shared',
+        triggerPolicy: 'MENTION_ONLY',
+        sessionPolicy: 'new_per_request',
+        queueManagementPolicy: 'own_only',
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'revoked-reminder-request',
+        instruction: 'Run',
+        status: 'STARTED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'active prompt',
+        status: SessionStatus.PENDING,
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        status: 'RUNNING',
+      },
+    });
+    const activePty = createPty();
+    spawnMock.mockResolvedValueOnce({ pid: 43001, pty: activePty });
+    await manager.start(session.id);
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { dispatchRevokedAt: new Date() },
+    });
+
+    await expect(manager.sendMessage(
+      session.id,
+      'late reminder',
+      undefined,
+      invocation.id,
+    )).rejects.toMatchObject({ code: 'SESSION_NOT_ADMITTED' });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(activePty.kill).not.toHaveBeenCalled();
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.RUNNING,
+    });
+    await manager.stop(session.id, { skipTeamRunReconcile: true });
+  });
+
+  it('rejects a direct follow-up bound to a terminal TeamRun invocation', async () => {
+    const { task, workspace } = await createWorkspace();
+    const teamRun = await prisma.teamRun.create({ data: { taskId: task.id, mode: 'AUTO' } });
+    const member = await prisma.teamMember.create({
+      data: {
+        teamRunId: teamRun.id,
+        name: 'Terminal member',
+        aliases: '[]',
+        providerId: 'codex-default',
+        rolePrompt: 'Role',
+        capabilities: '{}',
+        workspacePolicy: 'shared',
+        triggerPolicy: 'MENTION_ONLY',
+      },
+    });
+    const request = await prisma.workRequest.create({
+      data: {
+        teamRunId: teamRun.id,
+        requesterType: 'user',
+        targetMemberId: member.id,
+        triggerMessageId: 'terminal-direct-send',
+        instruction: 'Run',
+        status: 'COMPLETED',
+      },
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: AgentType.CODEX,
+        providerId: 'codex-default',
+        prompt: 'completed prompt',
+        status: SessionStatus.COMPLETED,
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: member.id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        status: 'COMPLETED',
+      },
+    });
+
+    await expect(manager.sendMessage(
+      session.id,
+      'late direct follow-up',
+      undefined,
+      invocation.id,
+    )).rejects.toMatchObject({ code: 'SESSION_NOT_ADMITTED' });
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.COMPLETED,
     });
   });
 
@@ -865,7 +1285,7 @@ describe('SessionManager TeamRun env injection', () => {
       },
     });
 
-    await manager.sendMessage(session.id, 'heartbeat nudge');
+    await manager.sendMessage(session.id, 'heartbeat nudge', undefined, invocation.id);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const reloaded = await prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } });
@@ -873,6 +1293,6 @@ describe('SessionManager TeamRun env injection', () => {
     expect(reloaded.roomReplyReminderCount).toBe(3);
     expect(reloaded.nextRoomReplyReminderAt?.toISOString()).toBe(nextRoomReplyReminderAt.toISOString());
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    manager.destroyAll();
+    await manager.destroyAll();
   });
 });

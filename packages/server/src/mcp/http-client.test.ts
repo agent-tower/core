@@ -61,6 +61,32 @@ describe('AgentTowerClient workspace services', () => {
     }));
   });
 
+  it('carries the bound invocation identity through sessions.send_message', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new AgentTowerClient('http://127.0.0.1:12580');
+    client.setInternalApiToken('internal-token');
+    client.setSessionId('session-1');
+    client.setInvocationId('invocation-1');
+
+    await client.sendMessage('session-1', 'continue');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:12580/api/sessions/session-1/message',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'x-agent-tower-internal-token': 'internal-token',
+          'x-agent-tower-session-id': 'session-1',
+          'x-agent-tower-invocation-id': 'invocation-1',
+        }),
+      }),
+    );
+  });
+
   it('prefers a bound Agent credential over the global internal token', async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ services: [] }), {
       status: 200,

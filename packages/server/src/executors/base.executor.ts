@@ -22,6 +22,16 @@ import {
   getPtyLogFilePath,
 } from '../utils/process-launch.js';
 import { writeErrorLog } from '../utils/error-log.js';
+import {
+  captureSpawnedProcessIdentity,
+  type SpawnedProcessIdentity,
+} from '../utils/spawned-process-identity.js';
+import {
+  attachSpawnCleanupOwner,
+  markPreChildProcessFailure,
+  type SpawnCleanupOwner,
+} from './start-error.js';
+import { createTreeCleanupChannel, type TreeCleanupChannel } from '../utils/tree-cleanup-channel.js';
 
 const PTY_LOG_FILE = getPtyLogFilePath();
 const OUTPUT_BUFFER_LIMIT = 8000;
@@ -139,7 +149,121 @@ export type ExecutorExitSignal = Promise<ExecutorExitResult>;
  */
 export type EarlyPtyEvent =
   | { type: 'data'; data: string }
-  | { type: 'exit'; exitCode: number };
+  | { type: 'exit'; exitCode: number; signal?: number };
+
+function isTrustedWrapperExit(event: { exitCode?: number; signal?: number | null }): boolean {
+  // A wrapper that is externally killed can report a root exit while leaving
+  // detached descendants behind. Only a normal wrapper exit is allowed to
+  // mark the parent-owned completion capability.
+  // node-pty reports a normal exit with signal=0 on macOS/Linux, while test
+  // doubles and some platforms omit the field. Treat both representations as
+  // “no terminating signal”; non-zero signals remain untrusted.
+  return (event.signal == null || event.signal === 0)
+    && typeof event.exitCode === 'number'
+    && event.exitCode >= 0;
+}
+
+const POST_SPAWN_TERM_GRACE_MS = 500;
+// The PTY process is a wrapper which owns the detached agent process group.
+// Never SIGKILL the wrapper from this owner: doing so skips its killTree()
+// handler and can leave the agent descendants running. The wrapper escalates
+// its known group to SIGKILL after its own bounded grace period.
+const POST_SPAWN_WRAPPER_ESCALATION_GRACE_MS = 7_000;
+
+/**
+ * A PTY handle is the only safe owner available before process identity has
+ * been persisted. Keep this owner attached until a real wrapper exit arrives;
+ * a timed-out signal attempt is not evidence that the process tree is gone.
+ */
+function createSpawnCleanupOwner(
+  shell: IPty,
+  takeEarlyEvents?: () => EarlyPtyEvent[],
+  verifyTreeCleanup: () => boolean = () => true,
+  disposeTreeCleanupChannel?: () => void,
+  markTreeCleanupCompleted: () => void = () => undefined,
+): SpawnCleanupOwner {
+  const hasVerifiedTreeCleanup = (): boolean => {
+    try {
+      return verifyTreeCleanup();
+    } catch {
+      return false;
+    }
+  };
+  let exited = false;
+  let resolveExit!: () => void;
+  const exit = new Promise<void>((resolve) => { resolveExit = resolve; });
+  let offExit: { dispose(): void } | undefined;
+  try {
+    offExit = shell.onExit((event) => {
+      // This listener is attached by the parent launch owner. A wrapper PTY
+      // exit is the trusted completion origin; the latch is still checked by
+      // the caller before any process-exit event is released.
+      if (isTrustedWrapperExit(event)) markTreeCleanupCompleted();
+      if (!hasVerifiedTreeCleanup()) return;
+      exited = true;
+      resolveExit();
+    });
+  } catch {
+    // Keep the controlled kill path even when a test/damaged PTY cannot attach.
+  }
+
+  try {
+    const earlyEvents = takeEarlyEvents?.() ?? [];
+    if (earlyEvents.some((event) => event.type === 'exit' && isTrustedWrapperExit(event))) {
+      markTreeCleanupCompleted();
+    }
+    if (earlyEvents.some((event) => event.type === 'exit' && isTrustedWrapperExit(event)) && hasVerifiedTreeCleanup()) {
+      exited = true;
+      resolveExit();
+    }
+  } catch {
+    // The original post-spawn error is more useful than an event handoff error.
+  }
+
+  const waitForExit = async (timeoutMs: number): Promise<void> => {
+    if (exited) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      exit,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+        (timer as { unref?: () => void }).unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  };
+
+  const requestStop = (): void => {
+    if (exited) return;
+    try { shell.kill('SIGINT'); } catch { /* retry on the next cleanup attempt */ }
+  };
+
+  return {
+    processExit: exit,
+    requestStop,
+    cleanup: async () => {
+      if (!exited) {
+        requestStop();
+        await waitForExit(POST_SPAWN_TERM_GRACE_MS);
+      }
+      if (!exited) {
+        // SIGTERM is handled by the wrapper and causes it to signal the
+        // already captured child process group. A wrapper exit is the only
+        // evidence this owner accepts as complete tree cleanup.
+        try { shell.kill('SIGTERM'); } catch { /* retry on the next cleanup attempt */ }
+        await waitForExit(POST_SPAWN_WRAPPER_ESCALATION_GRACE_MS);
+      }
+      if (!exited) {
+        throw new Error('Spawned PTY did not confirm exit during cleanup');
+      }
+    },
+    dispose: () => {
+      offExit?.dispose();
+      offExit = undefined;
+    },
+    disposeTreeCleanupChannel,
+  };
+}
 
 /**
  * 生成的子进程
@@ -147,6 +271,9 @@ export type EarlyPtyEvent =
 export interface SpawnedChild {
   /** 进程 ID */
   pid: number;
+  processGroupId: string;
+  birthMarker: string;
+  ownershipToken: string;
   /** PTY 实例 */
   pty: IPty;
   /** Executor -> Container: 执行器想要退出时发出信号 */
@@ -158,6 +285,10 @@ export interface SpawnedChild {
    * 必须在实时 listener 注册完成后调用（同步同一 tick 内无事件空窗）。
    */
   takeEarlyEvents?: () => EarlyPtyEvent[];
+  /** True only after the wrapper has completed the parent-owned channel handshake. */
+  verifyTreeCleanup?: () => boolean;
+  /** Close the launch-scoped completion channel after durable acknowledgement. */
+  disposeTreeCleanupChannel?: () => void;
 }
 
 /**
@@ -302,8 +433,8 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     const offData = shell.onData((data) => {
       if (!handedOff) events.push({ type: 'data', data });
     });
-    const offExit = shell.onExit(({ exitCode }) => {
-      if (!handedOff) events.push({ type: 'exit', exitCode });
+    const offExit = shell.onExit(({ exitCode, signal }) => {
+      if (!handedOff) events.push({ type: 'exit', exitCode, signal });
     });
     return () => {
       if (handedOff) return [];
@@ -323,7 +454,13 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     config: ExecutorSpawnConfig,
     commandParts: CommandParts
   ): Promise<SpawnedChild> {
-    const { programPath, args } = await resolveCommandParts(commandParts);
+    let resolved: Awaited<ReturnType<typeof resolveCommandParts>>;
+    try {
+      resolved = await resolveCommandParts(commandParts);
+    } catch (error) {
+      throw markPreChildProcessFailure(error);
+    }
+    const { programPath, args } = resolved;
     const env = config.env.withProfile(this.cmdOverrides);
 
     const cancel = new CancellationToken();
@@ -333,7 +470,15 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     const invocation = buildPtyCommand(programPath, fullArgs);
 
     const fullEnv = env.getFullEnv();
-    const wrapperEnv = buildPtyWrapperEnv(fullEnv);
+    const ownershipToken = randomUUID();
+    let cleanupChannel: TreeCleanupChannel;
+    try {
+      cleanupChannel = await createTreeCleanupChannel();
+    } catch (error) {
+      throw markPreChildProcessFailure(error);
+    }
+    const verifyCleanup = () => cleanupChannel.isCompleted();
+    const wrapperEnv = buildPtyWrapperEnv(fullEnv, process.env, ownershipToken, cleanupChannel.env);
     ptyLog(0, `Spawning: ${programPath} ${redactArgsForLog(fullArgs.slice(0, -1))} ... <prompt>`);
     ptyLog(0, `ENV ANTHROPIC_BASE_URL=${fullEnv.ANTHROPIC_BASE_URL || '(not set)'}`);
     ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? '(set)' : '(not set)'}`);
@@ -355,6 +500,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         env: wrapperEnv,
       });
     } catch (error) {
+      cleanupChannel.close();
       writeErrorLog({
         level: 'error',
         source: 'executor.spawn',
@@ -367,59 +513,133 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
           workingDir: config.workingDir,
         },
       });
-      throw error;
+      throw markPreChildProcessFailure(error);
     }
 
     ptyLog(shell.pid, `Process spawned`);
 
-    const takeEarlyEvents = this.collectEarlyPtyEvents(shell);
-
-    // 收集并实时记录 PTY 输出（写入系统临时目录日志方便诊断）
-    let outputBuffer = '';
-    const offData = shell.onData((data) => {
-      if (outputBuffer.length < OUTPUT_BUFFER_LIMIT) {
-        outputBuffer += data;
-      }
-      logPtyOutput(shell.pid, data);
-    });
-
-    shell.onExit(({ exitCode, signal }) => {
-      offData.dispose();
-      ptyLog(shell.pid, `PTY exited code=${exitCode} signal=${signal}`);
-      if (exitCode !== 0) {
-        const cleaned = stripAnsiSequences(outputBuffer).replace(/\s+/g, ' ').trim();
-        if (cleaned) {
-          ptyLog(shell.pid, `full output: ${cleaned.slice(0, 1000)}`);
+    let takeEarlyEvents: (() => EarlyPtyEvent[]) | undefined;
+    let cleanupOwner: SpawnCleanupOwner | undefined;
+    let cleanupAttempted = false;
+    try {
+      takeEarlyEvents = this.collectEarlyPtyEvents(shell);
+      let identity: SpawnedProcessIdentity | null = null;
+      let identityError: unknown;
+      try {
+        identity = await captureSpawnedProcessIdentity(shell.pid, ownershipToken);
+        if (!identity) {
+          throw new Error(`Could not persist a verifiable process identity for ${this.displayName}`);
         }
-        writeErrorLog({
-          level: 'warn',
-          source: 'executor.exit',
-          message: `${this.displayName} exited with non-zero code ${exitCode}`,
-          metadata: {
-            agentType: this.agentType,
-            displayName: this.displayName,
-            pid: shell.pid,
-            exitCode,
-            signal,
-            workingDir: config.workingDir,
-            output: cleaned ? cleaned.slice(0, 2000) : undefined,
-          },
-        });
+      } catch (error) {
+        identityError = error;
       }
-    });
+      if (identityError) {
+        cleanupOwner = createSpawnCleanupOwner(
+          shell,
+          takeEarlyEvents,
+          verifyCleanup,
+          cleanupChannel.close,
+          cleanupChannel.markCompleted,
+        );
+        try {
+          cleanupAttempted = true;
+          await cleanupOwner.cleanup();
+          cleanupOwner.dispose();
+          cleanupChannel.close();
+        } catch {
+          // The owner remains attached to the error for Driver/session retry.
+          throw attachSpawnCleanupOwner(identityError, cleanupOwner);
+        }
+        // Only a real PTY exit makes this a safe pre-child failure.
+        throw markPreChildProcessFailure(identityError);
+      }
+      if (!identity) {
+        throw new Error(`Could not persist a verifiable process identity for ${this.displayName}`);
+      }
 
-    // 监听取消信号
-    cancel.onCancelled(() => {
-      // 发送 SIGINT 进行优雅关闭
-      shell.kill('SIGINT');
-    });
+      // 收集并实时记录 PTY 输出（写入系统临时目录日志方便诊断）
+      let outputBuffer = '';
+      const offData = shell.onData((data) => {
+        if (outputBuffer.length < OUTPUT_BUFFER_LIMIT) {
+          outputBuffer += data;
+        }
+        logPtyOutput(shell.pid, data);
+      });
 
-    return {
-      pid: shell.pid,
-      pty: shell,
-      cancel,
-      takeEarlyEvents,
-    };
+      shell.onExit(({ exitCode, signal }) => {
+        // The completion latch is parent-owned. The wrapper only exits after
+        // its marker-based multi-group cleanup reaches CLEAN_EMPTY; Agent
+        // output cannot mark this latch.
+        if (isTrustedWrapperExit({ exitCode, signal })) cleanupChannel.markCompleted();
+        offData.dispose();
+        ptyLog(shell.pid, `PTY exited code=${exitCode} signal=${signal}`);
+        if (exitCode !== 0) {
+          const cleaned = stripAnsiSequences(outputBuffer).replace(/\s+/g, ' ').trim();
+          if (cleaned) {
+            ptyLog(shell.pid, `full output: ${cleaned.slice(0, 1000)}`);
+          }
+          writeErrorLog({
+            level: 'warn',
+            source: 'executor.exit',
+            message: `${this.displayName} exited with non-zero code ${exitCode}`,
+            metadata: {
+              agentType: this.agentType,
+              displayName: this.displayName,
+              pid: shell.pid,
+              exitCode,
+              signal,
+              workingDir: config.workingDir,
+              output: cleaned ? cleaned.slice(0, 2000) : undefined,
+            },
+          });
+        }
+      });
+
+      // 监听取消信号
+      cancel.onCancelled(() => {
+        // 发送 SIGINT 进行优雅关闭
+        shell.kill('SIGINT');
+      });
+
+      cleanupOwner?.dispose();
+
+      return {
+        pid: shell.pid,
+        ...identity,
+        pty: shell,
+        cancel,
+        takeEarlyEvents,
+        verifyTreeCleanup: verifyCleanup,
+        disposeTreeCleanupChannel: cleanupChannel.close,
+      };
+    } catch (error) {
+      if (cleanupOwner && !cleanupAttempted) {
+        try {
+          cleanupAttempted = true;
+          await cleanupOwner.cleanup();
+          cleanupOwner.dispose();
+        } catch {
+          throw attachSpawnCleanupOwner(error, cleanupOwner);
+        }
+      }
+      if (!cleanupOwner) {
+        cleanupOwner = createSpawnCleanupOwner(
+          shell,
+          takeEarlyEvents,
+          verifyCleanup,
+          cleanupChannel.close,
+          cleanupChannel.markCompleted,
+        );
+        try {
+          await cleanupOwner.cleanup();
+          cleanupOwner.dispose();
+          cleanupChannel.close();
+        } catch {
+          throw attachSpawnCleanupOwner(error, cleanupOwner);
+        }
+      }
+      throw error;
+    }
   }
 
   /**
@@ -433,7 +653,13 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     commandParts: CommandParts,
     stdinData: string
   ): Promise<SpawnedChild> {
-    const { programPath, args } = await resolveCommandParts(commandParts);
+    let resolved: Awaited<ReturnType<typeof resolveCommandParts>>;
+    try {
+      resolved = await resolveCommandParts(commandParts);
+    } catch (error) {
+      throw markPreChildProcessFailure(error);
+    }
+    const { programPath, args } = resolved;
     const env = config.env.withProfile(this.cmdOverrides);
 
     const cancel = new CancellationToken();
@@ -443,19 +669,36 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
 
     // 使用临时文件传递 stdin 数据，避免命令行参数长度限制
     const tmpFile = path.join(os.tmpdir(), `agent-tower-stdin-${Date.now()}-${randomUUID()}.txt`);
-    await fs.writeFile(tmpFile, stdinData, { encoding: 'utf-8', mode: 0o600 });
+    try {
+      await fs.writeFile(tmpFile, stdinData, { encoding: 'utf-8', mode: 0o600 });
+    } catch (error) {
+      throw markPreChildProcessFailure(error);
+    }
     ptyLog(0, `Spawning with stdin: ${programPath} ${redactArgsForLog(fullArgs)} <stdin ${summarizeStdinForLog(stdinData)} file=${path.basename(tmpFile)}>`);
     const invocation = buildPtyCommandWithStdin(programPath, fullArgs, tmpFile);
 
     const fullEnv = env.getFullEnv();
-    const wrapperEnv = buildPtyWrapperEnv(fullEnv);
+    const ownershipToken = randomUUID();
+    let cleanupChannel: TreeCleanupChannel;
+    try {
+      cleanupChannel = await createTreeCleanupChannel();
+    } catch (error) {
+      await fs.unlink(tmpFile).catch(() => undefined);
+      throw markPreChildProcessFailure(error);
+    }
+    const verifyCleanup = () => cleanupChannel.isCompleted();
+    const wrapperEnv = buildPtyWrapperEnv(fullEnv, process.env, ownershipToken, cleanupChannel.env);
     ptyLog(0, `ENV ANTHROPIC_BASE_URL=${fullEnv.ANTHROPIC_BASE_URL || '(not set)'}`);
     ptyLog(0, `ENV ANTHROPIC_API_KEY=${fullEnv.ANTHROPIC_API_KEY ? '(set)' : '(not set)'}`);
     ptyLog(0, `ENV ANTHROPIC_AUTH_TOKEN=${fullEnv.ANTHROPIC_AUTH_TOKEN ? '(set)' : '(not set)'}`);
 
     let shell: IPty | undefined;
+    let identity: SpawnedProcessIdentity | null = null;
+    let takeEarlyEvents: (() => EarlyPtyEvent[]) | undefined;
     let offData: { dispose(): void } | undefined;
     let offExit: { dispose(): void } | undefined;
+    let cleanupOwner: SpawnCleanupOwner | undefined;
+    let cleanupAttempted = false;
 
     try {
       const ptyCols = process.platform === 'win32' ? 16384 : 120;
@@ -470,7 +713,37 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
 
       ptyLog(spawnedShell.pid, `Process spawned with stdin`);
 
-      const takeEarlyEvents = this.collectEarlyPtyEvents(spawnedShell);
+      takeEarlyEvents = this.collectEarlyPtyEvents(spawnedShell);
+      let identityError: unknown;
+      try {
+        identity = await captureSpawnedProcessIdentity(spawnedShell.pid, ownershipToken);
+        if (!identity) {
+          throw new Error(`Could not persist a verifiable process identity for ${this.displayName}`);
+        }
+      } catch (error) {
+        identityError = error;
+      }
+      if (identityError) {
+        cleanupOwner = createSpawnCleanupOwner(
+          spawnedShell,
+          takeEarlyEvents,
+          verifyCleanup,
+          cleanupChannel.close,
+          cleanupChannel.markCompleted,
+        );
+        try {
+          cleanupAttempted = true;
+          await cleanupOwner.cleanup();
+          cleanupOwner.dispose();
+          cleanupChannel.close();
+        } catch {
+          throw attachSpawnCleanupOwner(identityError, cleanupOwner);
+        }
+        throw markPreChildProcessFailure(identityError);
+      }
+      if (!identity) {
+        throw new Error(`Could not persist a verifiable process identity for ${this.displayName}`);
+      }
 
       let outputBuffer = '';
       offData = spawnedShell.onData((data) => {
@@ -482,6 +755,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
 
       // 监听退出事件
       offExit = spawnedShell.onExit(({ exitCode, signal }) => {
+        if (isTrustedWrapperExit({ exitCode, signal })) cleanupChannel.markCompleted();
         offData?.dispose();
         offExit?.dispose();
         ptyLog(spawnedShell.pid, `PTY exited code=${exitCode} signal=${signal} outputLength=${outputBuffer.length}`);
@@ -508,11 +782,16 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         spawnedShell.kill('SIGINT');
       });
 
+      cleanupOwner?.dispose();
+
       return {
         pid: spawnedShell.pid,
+        ...identity,
         pty: spawnedShell,
         cancel,
         takeEarlyEvents,
+        verifyTreeCleanup: verifyCleanup,
+        disposeTreeCleanupChannel: cleanupChannel.close,
       };
     } catch (error) {
       writeErrorLog({
@@ -531,17 +810,41 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       });
       offData?.dispose();
       offExit?.dispose();
-      try {
-        shell?.kill('SIGINT');
-      } catch {
-        // ignore cleanup errors; preserve original spawn failure
+      if (shell) {
+        if (cleanupOwner && !cleanupAttempted) {
+          try {
+            cleanupAttempted = true;
+            await cleanupOwner.cleanup();
+            cleanupOwner.dispose();
+          } catch {
+            throw attachSpawnCleanupOwner(error, cleanupOwner);
+          }
+        }
+        if (!cleanupOwner) {
+          cleanupOwner = createSpawnCleanupOwner(
+            shell,
+            takeEarlyEvents,
+            verifyCleanup,
+            cleanupChannel.close,
+            cleanupChannel.markCompleted,
+          );
+          try {
+            cleanupAttempted = true;
+            await cleanupOwner.cleanup();
+            cleanupOwner.dispose();
+            cleanupChannel.close();
+          } catch {
+            throw attachSpawnCleanupOwner(error, cleanupOwner);
+          }
+        }
       }
       try {
         await fs.unlink(tmpFile);
       } catch {
         // wrapper may already have cleaned it or the file may not exist
       }
-      throw error;
+      if (!shell) cleanupChannel.close();
+      throw shell ? error : markPreChildProcessFailure(error);
     }
   }
 

@@ -26,6 +26,26 @@ vi.mock('../../utils/index.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../../utils/spawned-process-identity.js', () => ({
+  captureSpawnedProcessIdentity: vi.fn(async (pid: number, ownershipToken: string) => ({
+    processGroupId: String(pid),
+    birthMarker: `test-birth:${pid}`,
+    ownershipToken,
+  })),
+}));
+
+vi.mock('../../utils/tree-cleanup-channel.js', () => ({
+  createTreeCleanupChannel: vi.fn(async () => {
+    let completed = false;
+    return {
+      env: {},
+      isCompleted: () => completed,
+      markCompleted: () => { completed = true; },
+      close: vi.fn(),
+    };
+  }),
+}));
+
 const LONG_PROMPT_MARKER = 'WINDOWS_LONG_PROMPT_MARKER';
 
 function longPrompt(): string {

@@ -14,6 +14,7 @@ import { TeamLockService } from '../team-lock.service.js';
 import type { TeamReconcilerScheduler, TeamReconcilerSessionMessenger } from '../team-reconciler.service.js';
 import type { TeamRunRouteDependencies } from '../../routes/team-runs.js';
 import type { AgentInvocation, WorkRequest } from '@agent-tower/shared';
+import { acquireTeamMemberAdmission } from '../team-member-admission-barrier.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-team-reconciler-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -450,6 +451,1302 @@ describe('TeamReconcilerService', () => {
     expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
   });
 
+  it('retries persisted cleanup even when the WorkRequest is already terminal', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'COMPLETED',
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'COMPLETED',
+    });
+    await prisma.session.update({
+      where: { id: invocation.sessionId! },
+      data: { runtimeType: 'ACP' },
+    });
+    const processRecord = await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'runtime-restart',
+        pid: 8101,
+        processGroupId: '8101',
+        birthMarker: 'linux:101:owner-restart',
+        ownershipToken: 'owner-restart',
+        cleanupState: 'FAILED',
+        cleanupAttemptCount: 1,
+        nextCleanupRetryAt: new Date(Date.UTC(2025, 11, 31, 23, 59, 0)),
+      },
+    });
+    const retryRuntimeProcessCleanup = vi.fn(async () => {
+      await prisma.executionProcess.update({
+        where: { id: processRecord.id },
+        data: { cleanupState: 'CONFIRMED', nextCleanupRetryAt: null },
+      });
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        retryRuntimeProcessCleanup,
+        disposeRuntimeSession: vi.fn(async () => undefined),
+      },
+      now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.reconcilePendingRuntimeCleanup()).resolves.toBe(1);
+    expect(retryRuntimeProcessCleanup).toHaveBeenCalledWith({
+      sessionId: invocation.sessionId,
+      runtimeInstanceId: 'runtime-restart',
+      launchClaimNumber: 1,
+      pid: 8101,
+      processGroupId: '8101',
+      birthMarker: 'linux:101:owner-restart',
+      ownershipToken: 'owner-restart',
+    });
+    expect(scheduler.startNextSessions).not.toHaveBeenCalled();
+    await expect(prisma.executionProcess.findUnique({ where: { id: processRecord.id } })).resolves.toMatchObject({
+      cleanupState: 'CONFIRMED',
+    });
+  });
+
+  it('preserves the cleanup messenger receiver during persisted recovery', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'COMPLETED',
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'COMPLETED',
+    });
+    await prisma.session.update({
+      where: { id: invocation.sessionId! },
+      data: { runtimeType: 'ACP' },
+    });
+    const processRecord = await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'runtime-receiver-check',
+        pid: 8102,
+        processGroupId: '8102',
+        birthMarker: 'linux:102:owner-receiver-check',
+        ownershipToken: 'owner-receiver-check',
+        cleanupState: 'FAILED',
+        cleanupAttemptCount: 1,
+        nextCleanupRetryAt: new Date(Date.UTC(2025, 11, 31, 23, 59, 0)),
+      },
+    });
+    const messenger: TeamReconcilerSessionMessenger & { cleanupCalls: number } = {
+      cleanupCalls: 0,
+      sendMessage: vi.fn(async () => null),
+      async retryRuntimeProcessCleanup(this: { cleanupCalls: number }) {
+        this.cleanupCalls += 1;
+        await prisma.executionProcess.update({
+          where: { id: processRecord.id },
+          data: { cleanupState: 'CONFIRMED', nextCleanupRetryAt: null },
+        });
+      },
+    };
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: messenger,
+      now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.reconcilePendingRuntimeCleanup()).resolves.toBe(1);
+    expect(messenger.cleanupCalls).toBe(1);
+    await expect(prisma.executionProcess.findUnique({ where: { id: processRecord.id } })).resolves.toMatchObject({
+      cleanupState: 'CONFIRMED',
+    });
+  });
+
+  it('does not reclaim an ACTIVE runtime still owned by this server generation', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'runtime-current',
+        pid: 8201,
+        processGroupId: '8201',
+        birthMarker: 'linux:201:owner-current',
+        ownershipToken: 'owner-current',
+        cleanupState: 'ACTIVE',
+      },
+    });
+    const retryRuntimeProcessCleanup = vi.fn(async () => undefined);
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        retryRuntimeProcessCleanup,
+        hasRuntimeProcessOwner: (runtimeInstanceId) => runtimeInstanceId === 'runtime-current',
+      },
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.reconcilePendingRuntimeCleanup()).resolves.toBe(0);
+    expect(retryRuntimeProcessCleanup).not.toHaveBeenCalled();
+  });
+
+  it('recovers an ACTIVE runtime left by a prior server generation', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'COMPLETED',
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'COMPLETED',
+    });
+    const processRecord = await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'runtime-stale-active',
+        pid: 8202,
+        processGroupId: '8202',
+        birthMarker: 'linux:202:owner-stale',
+        ownershipToken: 'owner-stale',
+        cleanupState: 'ACTIVE',
+      },
+    });
+    const retryRuntimeProcessCleanup = vi.fn(async () => {
+      await prisma.executionProcess.update({
+        where: { id: processRecord.id },
+        data: { cleanupState: 'CONFIRMED' },
+      });
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        retryRuntimeProcessCleanup,
+        hasRuntimeProcessOwner: () => false,
+        disposeRuntimeSession: vi.fn(async () => undefined),
+      },
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.reconcilePendingRuntimeCleanup()).resolves.toBe(1);
+    expect(retryRuntimeProcessCleanup).toHaveBeenCalledWith(expect.objectContaining({
+      runtimeInstanceId: 'runtime-stale-active',
+      ownershipToken: 'owner-stale',
+    }));
+  });
+
+  it('keeps stop admission revoked until a failed cleanup retry succeeds', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { dispatchRevokedAt: new Date() },
+    });
+    const processRecord = await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'runtime-stop-retry',
+        pid: 8203,
+        processGroupId: '8203',
+        birthMarker: 'linux:203:owner-stop-retry',
+        ownershipToken: 'owner-stop-retry',
+        cleanupState: 'FAILED',
+        nextCleanupRetryAt: new Date(0),
+      },
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        retryRuntimeProcessCleanup: vi.fn(async () => {
+          await prisma.executionProcess.update({
+            where: { id: processRecord.id },
+            data: { cleanupState: 'CONFIRMED', nextCleanupRetryAt: null },
+          });
+        }),
+        stop: vi.fn(async () => prisma.session.update({
+          where: { id: invocation.sessionId! },
+          data: { status: 'CANCELLED' },
+        })),
+        hasRuntimeProcessOwner: () => false,
+        hasActiveTurn: () => false,
+        disposeRuntimeSession: vi.fn(async () => undefined),
+      },
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.reconcilePendingRuntimeCleanup()).resolves.toBe(1);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      dispatchRevokedAt: expect.any(Date),
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+    expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+  });
+
+  it('terminalizes a revoked active invocation after confirmed cleanup when DB recovery previously failed', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await prisma.session.update({ where: { id: invocation.sessionId! }, data: { status: 'RUNNING' } });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { dispatchRevokedAt: new Date() },
+    });
+    await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'runtime-confirmed-recovery',
+        pid: 8204,
+        processGroupId: '8204',
+        birthMarker: 'linux:204:owner-confirmed-recovery',
+        ownershipToken: 'owner-confirmed-recovery',
+        cleanupState: 'CONFIRMED',
+      },
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        hasRuntimeProcessOwner: () => false,
+        hasActiveTurn: () => false,
+        disposeRuntimeSession: vi.fn(async () => undefined),
+      },
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.reconcilePendingRuntimeCleanup()).resolves.toBe(0);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      dispatchRevokedAt: expect.any(Date),
+    });
+    await expect(prisma.session.findUnique({ where: { id: invocation.sessionId! } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
+    expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+  });
+
+  it('recovers a revoked invocation beyond the old confirmed-process page limit', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    for (let index = 0; index < 55; index += 1) {
+      const historicalSession = await prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: 'CODEX',
+          runtimeType: 'ACP',
+          prompt: `historical ${index}`,
+          status: 'COMPLETED',
+        },
+      });
+      await prisma.executionProcess.create({
+        data: {
+          sessionId: historicalSession.id,
+          launchClaimNumber: 1,
+          runtimeInstanceId: `historical-runtime-${index}`,
+          pid: 9000 + index,
+          processGroupId: String(9000 + index),
+          birthMarker: `test-birth:${9000 + index}`,
+          ownershipToken: `historical-owner-${index}`,
+          cleanupState: 'CONFIRMED',
+        },
+      });
+    }
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { dispatchRevokedAt: new Date() },
+    });
+    await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'target-confirmed-runtime',
+        pid: 9999,
+        processGroupId: '9999',
+        birthMarker: 'test-birth:9999',
+        ownershipToken: 'target-confirmed-owner',
+        cleanupState: 'CONFIRMED',
+      },
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        hasRuntimeProcessOwner: () => false,
+        hasActiveTurn: () => false,
+      },
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.reconcilePendingRuntimeCleanup(50)).resolves.toBe(0);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+  });
+
+  it.each(['ACTIVE', 'PENDING', 'FAILED']) (
+    'does not terminalize a revoked invocation with an old CONFIRMED runtime and newer %s runtime',
+    async (newerCleanupState) => {
+      const { workspace, teamRun, members } = await createFixture();
+      const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+      const invocation = await createRunningInvocation({
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace.id,
+        status: 'RUNNING',
+      });
+      await prisma.agentInvocation.update({
+        where: { id: invocation.id },
+        data: { dispatchRevokedAt: new Date() },
+      });
+      await prisma.executionProcess.createMany({
+        data: [
+          {
+            sessionId: invocation.sessionId!,
+            launchClaimNumber: 1,
+            runtimeInstanceId: `old-confirmed-${newerCleanupState}`,
+            pid: 9101,
+            processGroupId: '9101',
+            birthMarker: `test-birth:old-${newerCleanupState}`,
+            ownershipToken: `old-owner-${newerCleanupState}`,
+            cleanupState: 'CONFIRMED',
+          },
+          {
+            sessionId: invocation.sessionId!,
+            launchClaimNumber: 2,
+            runtimeInstanceId: `new-${newerCleanupState}`,
+            pid: 9102,
+            processGroupId: '9102',
+            birthMarker: `test-birth:new-${newerCleanupState}`,
+            ownershipToken: `new-owner-${newerCleanupState}`,
+            cleanupState: newerCleanupState,
+          },
+        ],
+      });
+      const cleanupService = new TeamReconcilerService({
+        scheduler,
+        sessionMessenger: {
+          sendMessage: vi.fn(async () => null),
+          hasRuntimeProcessOwner: () => false,
+          hasActiveTurn: () => false,
+        },
+        scheduleReminders: false,
+      });
+
+      await cleanupService.reconcilePendingRuntimeCleanup();
+
+      await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+        status: 'RUNNING',
+        dispatchRevokedAt: expect.any(Date),
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'STARTED',
+      });
+    },
+  );
+
+  it('keeps post-confirm revocation recovery idempotent', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { dispatchRevokedAt: new Date() },
+    });
+    await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'idempotent-confirmed-runtime',
+        pid: 9201,
+        processGroupId: '9201',
+        birthMarker: 'test-birth:9201',
+        ownershipToken: 'idempotent-owner',
+        cleanupState: 'CONFIRMED',
+      },
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        hasRuntimeProcessOwner: () => false,
+        hasActiveTurn: () => false,
+      },
+      scheduleReminders: false,
+    });
+
+    await cleanupService.reconcilePendingRuntimeCleanup();
+    const releaseCount = vi.mocked(scheduler.releaseInvocationLocks).mock.calls.length;
+    const startCount = vi.mocked(scheduler.startNextSessions).mock.calls.length;
+    await cleanupService.reconcilePendingRuntimeCleanup();
+
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(releaseCount);
+    expect(scheduler.startNextSessions).toHaveBeenCalledTimes(startCount);
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+    });
+  });
+
+  it('proactively quarantines historical process rows with incomplete ownership', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { workspace } = await createFixture();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        prompt: 'legacy incomplete ownership',
+        status: 'RUNNING',
+      },
+    });
+    const processRecord = await prisma.executionProcess.create({
+      data: {
+        sessionId: session.id,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'legacy-incomplete-runtime',
+        pid: 9251,
+        processGroupId: '9251',
+        birthMarker: null,
+        ownershipToken: 'legacy-incomplete-owner',
+        cleanupState: 'ACTIVE',
+      },
+    });
+    const retryRuntimeProcessCleanup = vi.fn(async () => undefined);
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        hasActiveTurn: () => false,
+        hasRuntimeProcessOwner: () => false,
+        retryRuntimeProcessCleanup,
+      },
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.reconcilePendingRuntimeCleanup()).resolves.toBe(1);
+
+    expect(retryRuntimeProcessCleanup).not.toHaveBeenCalled();
+    await expect(prisma.executionProcess.findUniqueOrThrow({ where: { id: processRecord.id } })).resolves.toMatchObject({
+      cleanupState: 'QUARANTINED',
+      cleanupError: expect.stringContaining('identity is incomplete'),
+      cleanupAttemptCount: 2,
+      nextCleanupRetryAt: expect.any(Date),
+    });
+  });
+
+  it('does not downgrade confirmed cleanup when a stale gate sees incomplete metadata', async () => {
+    const { workspace } = await createFixture();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        prompt: 'confirmed legacy cleanup',
+        status: 'COMPLETED',
+      },
+    });
+    const processRecord = await prisma.executionProcess.create({
+      data: {
+        sessionId: session.id,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'confirmed-legacy-runtime',
+        pid: 9252,
+        processGroupId: '9252',
+        birthMarker: null,
+        ownershipToken: 'confirmed-legacy-owner',
+        cleanupState: 'CONFIRMED',
+      },
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        hasRuntimeProcessOwner: () => false,
+      },
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.isSessionRuntimeCleanupConfirmed(session.id)).resolves.toBe(false);
+    await expect(prisma.executionProcess.findUniqueOrThrow({ where: { id: processRecord.id } })).resolves.toMatchObject({
+      cleanupState: 'CONFIRMED',
+      cleanupAttemptCount: 0,
+      cleanupError: null,
+    });
+  });
+
+  it('re-reads a new started generation after a quarantine CAS loses the race', async () => {
+    const { workspace } = await createFixture();
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace.id,
+        agentType: 'CODEX',
+        prompt: 'CAS generation race',
+        status: 'RUNNING',
+        runtimeLaunchState: 'CLAIMED',
+        runtimeLaunchClaimCount: 1,
+      },
+    });
+    let injected = false;
+    prisma.$use(async (params, next) => {
+      const where = (params.args as { where?: Record<string, unknown> } | undefined)?.where;
+      if (
+        !injected
+        && params.model === 'Session'
+        && params.action === 'updateMany'
+        && where?.id === session.id
+        && where.runtimeLaunchState === 'CLAIMED'
+      ) {
+        injected = true;
+        await prisma.session.update({
+          where: { id: session.id },
+          data: {
+            runtimeLaunchState: 'PROCESS_RECORDED',
+            runtimeLaunchResolvedCount: 1,
+            runtimeLaunchProcessCount: 1,
+          },
+        });
+        await prisma.executionProcess.create({
+          data: {
+            sessionId: session.id,
+            launchClaimNumber: 1,
+            runtimeInstanceId: 'cas-new-runtime',
+            pid: 9253,
+            processGroupId: '9253',
+            birthMarker: 'test-birth:cas-new',
+            ownershipToken: 'cas-new-owner',
+            cleanupState: 'CONFIRMED',
+          },
+        });
+      }
+      return next(params);
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        hasRuntimeProcessOwner: () => false,
+      },
+      scheduleReminders: false,
+    });
+
+    await expect(cleanupService.isSessionRuntimeCleanupConfirmed(session.id)).resolves.toBe(true);
+    expect(injected).toBe(true);
+    await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'PROCESS_RECORDED',
+      runtimeLaunchClaimCount: 1,
+      runtimeLaunchResolvedCount: 1,
+      runtimeLaunchProcessCount: 1,
+    });
+  });
+
+  it.each([
+    ['PENDING cleanup', 'PENDING', false, false],
+    ['FAILED cleanup', 'FAILED', false, false],
+    ['ACTIVE cleanup', 'ACTIVE', false, false],
+    ['current runtime owner', 'CONFIRMED', true, false],
+    ['incomplete ownership identity', 'ACTIVE', false, true],
+  ])(
+    'keeps manual stop pending for %s until the unified cleanup gate confirms',
+    async (_caseName, cleanupState, initialOwnerPresent, incompleteIdentity) => {
+      const { workspace, task, teamRun, members } = await createFixture({
+        taskStatus: TaskStatus.IN_PROGRESS,
+        memberCount: 2,
+      });
+      const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+      const invocation = await createRunningInvocation({
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace.id,
+        status: 'RUNNING',
+      });
+      const queued = await createWorkRequest({
+        teamRunId: teamRun.id,
+        targetMemberId: members[1]!.id,
+        status: 'QUEUED',
+      });
+      const processRecord = await prisma.executionProcess.create({
+        data: {
+          sessionId: invocation.sessionId!,
+          launchClaimNumber: 1,
+          runtimeInstanceId: incompleteIdentity ? null : `manual-${cleanupState.toLowerCase()}`,
+          pid: 9301,
+          processGroupId: incompleteIdentity ? null : '9301',
+          birthMarker: incompleteIdentity ? null : `test-birth:manual-${cleanupState.toLowerCase()}`,
+          ownershipToken: incompleteIdentity ? null : `manual-owner-${cleanupState.toLowerCase()}`,
+          cleanupState,
+        },
+      });
+      expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
+      let ownerPresent = initialOwnerPresent;
+      const retryRuntimeProcessCleanup = vi.fn(async () => undefined);
+      const stopService = new TeamReconcilerService({
+        scheduler,
+        sessionMessenger: {
+          sendMessage: vi.fn(async () => null),
+          hasActiveTurn: () => false,
+          hasRuntimeProcessOwner: () => ownerPresent,
+          retryRuntimeProcessCleanup,
+          disposeRuntimeSession: vi.fn(async () => undefined),
+        },
+        now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+        scheduleReminders: false,
+      });
+
+      await expect(stopService.handleSessionStopped(invocation.sessionId!)).resolves.toEqual([]);
+
+      await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+        status: 'RUNNING',
+        dispatchRevokedAt: expect.any(Date),
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'STARTED',
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: queued.id } })).resolves.toMatchObject({
+        status: 'QUEUED',
+      });
+      await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+        status: TaskStatus.IN_PROGRESS,
+      });
+      expect(lockService.listLocks()).toEqual([
+        { key: 'workspace:task:write', ownerId: invocation.id },
+      ]);
+      expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+      expect(scheduler.startNextSessions).not.toHaveBeenCalled();
+
+      if (incompleteIdentity) {
+        await expect(prisma.executionProcess.findUnique({ where: { id: processRecord.id } })).resolves.toMatchObject({
+          cleanupState: 'QUARANTINED',
+          cleanupError: expect.stringContaining('identity is incomplete'),
+          cleanupAttemptCount: 1,
+          nextCleanupRetryAt: expect.any(Date),
+        });
+        await prisma.executionProcess.update({
+          where: { id: processRecord.id },
+          data: { nextCleanupRetryAt: new Date(0) },
+        });
+        await expect(stopService.reconcilePendingRuntimeCleanup()).resolves.toBe(1);
+        expect(retryRuntimeProcessCleanup).not.toHaveBeenCalled();
+        await expect(prisma.executionProcess.findUnique({ where: { id: processRecord.id } })).resolves.toMatchObject({
+          cleanupState: 'QUARANTINED',
+          cleanupAttemptCount: 2,
+        });
+      }
+
+      ownerPresent = false;
+      await prisma.executionProcess.update({
+        where: { id: processRecord.id },
+        data: {
+          runtimeInstanceId: `manual-confirmed-${cleanupState.toLowerCase()}`,
+          processGroupId: '9301',
+          birthMarker: `test-birth:manual-confirmed-${cleanupState.toLowerCase()}`,
+          ownershipToken: `manual-confirmed-owner-${cleanupState.toLowerCase()}`,
+          cleanupState: 'CONFIRMED',
+          cleanupError: null,
+          nextCleanupRetryAt: null,
+        },
+      });
+
+      await expect(stopService.handleSessionStopped(invocation.sessionId!)).resolves.toEqual([]);
+      const releaseCount = vi.mocked(scheduler.releaseInvocationLocks).mock.calls.length;
+      const startCount = vi.mocked(scheduler.startNextSessions).mock.calls.length;
+      await expect(stopService.handleSessionStopped(invocation.sessionId!)).resolves.toEqual([]);
+
+      await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+        status: 'CANCELLED',
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'CANCELLED',
+      });
+      expect(lockService.listLocks()).toEqual([]);
+      expect(vi.mocked(scheduler.releaseInvocationLocks).mock.calls).toEqual([[invocation.id]]);
+      expect(scheduler.startNextSessions).toHaveBeenCalledTimes(1);
+      expect(releaseCount).toBe(1);
+      expect(startCount).toBe(1);
+    },
+  );
+
+  it.each([
+    ['cleanup failure', 'FAILED', false],
+    ['current owner', 'CONFIRMED', true],
+  ])(
+    'keeps incomplete terminal recovery pending for %s and completes it exactly once after confirmation',
+    async (_caseName, cleanupState, initialOwnerPresent) => {
+      const { workspace, task, teamRun, members } = await createFixture({ taskStatus: TaskStatus.IN_PROGRESS });
+      const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+      const invocation = await createRunningInvocation({
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace.id,
+        status: 'COMPLETED',
+      });
+      const processRecord = await prisma.executionProcess.create({
+        data: {
+          sessionId: invocation.sessionId!,
+          launchClaimNumber: 1,
+          runtimeInstanceId: `incomplete-terminal-${cleanupState.toLowerCase()}`,
+          pid: 9401,
+          processGroupId: '9401',
+          birthMarker: `test-birth:incomplete-terminal-${cleanupState.toLowerCase()}`,
+          ownershipToken: `incomplete-terminal-owner-${cleanupState.toLowerCase()}`,
+          cleanupState,
+        },
+      });
+      expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
+      let ownerPresent = initialOwnerPresent;
+      const recoveryService = new TeamReconcilerService({
+        scheduler,
+        sessionMessenger: {
+          sendMessage: vi.fn(async () => null),
+          hasActiveTurn: () => false,
+          hasRuntimeProcessOwner: () => ownerPresent,
+          disposeRuntimeSession: vi.fn(async () => undefined),
+        },
+        scheduleReminders: false,
+      });
+
+      await recoveryService.reconcileIncompleteTerminalInvocations();
+      await recoveryService.reconcileIncompleteTerminalInvocations();
+
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'STARTED',
+      });
+      await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+        status: TaskStatus.IN_PROGRESS,
+      });
+      expect(lockService.listLocks()).toEqual([
+        { key: 'workspace:task:write', ownerId: invocation.id },
+      ]);
+      expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+      expect(scheduler.startNextSessions).not.toHaveBeenCalled();
+
+      ownerPresent = false;
+      await prisma.executionProcess.update({
+        where: { id: processRecord.id },
+        data: { cleanupState: 'CONFIRMED', nextCleanupRetryAt: null },
+      });
+      await recoveryService.reconcileIncompleteTerminalInvocations();
+      await recoveryService.reconcileIncompleteTerminalInvocations();
+
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'COMPLETED',
+      });
+      expect(lockService.listLocks()).toEqual([]);
+      expect(vi.mocked(scheduler.releaseInvocationLocks).mock.calls).toEqual([[invocation.id]]);
+      expect(scheduler.startNextSessions).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not nudge a stalled invocation after stop revokes dispatch', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { dispatchRevokedAt: new Date(), lastHeartbeatAt: new Date(0) },
+    });
+    const sendMessage = vi.fn(async () => null);
+    const stalledService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage,
+        hasActiveTurn: () => true,
+      },
+      now: () => new Date(Date.UTC(2026, 0, 1, 1, 0, 0)),
+      heartbeatIdleThresholdMs: 1,
+      scheduleReminders: false,
+    });
+
+    await stalledService.reconcileStalledInvocations();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      dispatchRevokedAt: expect.any(Date),
+      roomReplyReminderCount: 0,
+    });
+  });
+
+  it('does not overwrite a manual CANCELLED winner during orphan recovery', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    const orphanService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        hasActiveTurn: () => false,
+      },
+      scheduleReminders: false,
+    });
+
+    const releaseAdmission = await acquireTeamMemberAdmission(teamRun.id, members[0]!.id);
+    const recovery = orphanService.reconcileOrphanInvocations();
+    await Promise.resolve();
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { status: 'CANCELLED', dispatchRevokedAt: new Date() },
+    });
+    releaseAdmission();
+
+    await expect(recovery).resolves.toBeUndefined();
+    await expect(orphanService.reconcileOrphanInvocations()).resolves.toBeUndefined();
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      dispatchRevokedAt: expect.any(Date),
+    });
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalledWith(invocation.id);
+    expect(scheduler.startNextSessions).not.toHaveBeenCalledWith(teamRun.id);
+  });
+
+  it.each(['PENDING', 'FAILED']) (
+    'keeps an orphan invocation pending until %s runtime cleanup is confirmed',
+    async (cleanupState) => {
+      const { workspace, task, teamRun, members } = await createFixture();
+      const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+      const invocation = await createRunningInvocation({
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace.id,
+        status: 'RUNNING',
+      });
+      await prisma.executionProcess.create({
+        data: {
+          sessionId: invocation.sessionId!,
+          launchClaimNumber: 1,
+          runtimeInstanceId: `orphan-${cleanupState.toLowerCase()}`,
+          pid: 8301,
+          processGroupId: '8301',
+          birthMarker: `test-birth:orphan-${cleanupState.toLowerCase()}`,
+          ownershipToken: `orphan-owner-${cleanupState.toLowerCase()}`,
+          cleanupState,
+        },
+      });
+      expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
+      const orphanService = new TeamReconcilerService({
+        scheduler,
+        sessionMessenger: {
+          sendMessage: vi.fn(async () => null),
+          hasActiveTurn: () => false,
+          hasRuntimeProcessOwner: () => false,
+        },
+        scheduleReminders: false,
+      });
+
+      await orphanService.reconcileOrphanInvocations();
+
+      await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+        status: 'RUNNING',
+        dispatchRevokedAt: expect.any(Date),
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'STARTED',
+      });
+      await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+        status: TaskStatus.IN_PROGRESS,
+      });
+      expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+      expect(scheduler.startNextSessions).not.toHaveBeenCalled();
+
+      await prisma.executionProcess.updateMany({
+        where: { sessionId: invocation.sessionId! },
+        data: { cleanupState: 'CONFIRMED', nextCleanupRetryAt: null },
+      });
+      await orphanService.reconcilePendingRuntimeCleanup();
+      const releaseCount = scheduler.releaseInvocationLocks.mock.calls.length;
+      const startCount = scheduler.startNextSessions.mock.calls.length;
+      await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+        status: 'CANCELLED',
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'CANCELLED',
+      });
+      await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+        status: TaskStatus.IN_REVIEW,
+      });
+
+      await orphanService.reconcilePendingRuntimeCleanup();
+      expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(releaseCount);
+      expect(scheduler.startNextSessions).toHaveBeenCalledTimes(startCount);
+    },
+  );
+
+  it.each(['PENDING', 'FAILED']) (
+    'keeps a stalled invocation pending until %s runtime cleanup is confirmed',
+    async (cleanupState) => {
+      const { workspace, task, teamRun, members } = await createFixture();
+      const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+      const invocation = await createRunningInvocation({
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace.id,
+        status: 'RUNNING',
+      });
+      await prisma.executionProcess.create({
+        data: {
+          sessionId: invocation.sessionId!,
+          launchClaimNumber: 1,
+          runtimeInstanceId: `stalled-${cleanupState.toLowerCase()}`,
+          pid: 8401,
+          processGroupId: '8401',
+          birthMarker: `test-birth:stalled-${cleanupState.toLowerCase()}`,
+          ownershipToken: `stalled-owner-${cleanupState.toLowerCase()}`,
+          cleanupState,
+        },
+      });
+      expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
+      const stalledService = new TeamReconcilerService({
+        scheduler,
+        sessionMessenger: {
+          sendMessage: vi.fn(async () => null),
+          hasActiveTurn: () => false,
+          hasRuntimeProcessOwner: () => false,
+        },
+        scheduleReminders: false,
+      });
+
+      await stalledService.reconcileStalledInvocations();
+
+      await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+        status: 'RUNNING',
+        dispatchRevokedAt: expect.any(Date),
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'STARTED',
+      });
+      await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+        status: TaskStatus.IN_PROGRESS,
+      });
+      expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
+      expect(scheduler.startNextSessions).not.toHaveBeenCalled();
+
+      await prisma.executionProcess.updateMany({
+        where: { sessionId: invocation.sessionId! },
+        data: { cleanupState: 'CONFIRMED', nextCleanupRetryAt: null },
+      });
+      await stalledService.reconcilePendingRuntimeCleanup();
+      const releaseCount = scheduler.releaseInvocationLocks.mock.calls.length;
+      const startCount = scheduler.startNextSessions.mock.calls.length;
+      await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+        status: 'CANCELLED',
+      });
+      await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+        status: 'CANCELLED',
+      });
+      await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
+        status: TaskStatus.IN_REVIEW,
+      });
+
+      await stalledService.reconcilePendingRuntimeCleanup();
+      expect(scheduler.releaseInvocationLocks).toHaveBeenCalledTimes(releaseCount);
+      expect(scheduler.startNextSessions).toHaveBeenCalledTimes(startCount);
+    },
+  );
+
+  it('terminalizes a never-launched orphan with no process record', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    const orphanService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: { sendMessage: vi.fn(async () => null), hasActiveTurn: () => false },
+      scheduleReminders: false,
+    });
+
+    await orphanService.reconcileOrphanInvocations();
+
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+    });
+    await expect(prisma.workRequest.findUnique({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+    });
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
+    expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+  });
+
+  it('does not duplicate terminal side effects when manual stop wins stalled cleanup', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await prisma.executionProcess.create({
+      data: {
+        sessionId: invocation.sessionId!,
+        launchClaimNumber: 1,
+        runtimeInstanceId: 'manual-stop-pending-runtime',
+        pid: 8501,
+        processGroupId: '8501',
+        birthMarker: 'test-birth:8501',
+        ownershipToken: 'manual-stop-pending-owner',
+        cleanupState: 'PENDING',
+      },
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: {
+        lastHeartbeatAt: new Date(0),
+        roomReplyReminderCount: 3,
+        firstNudgeAt: new Date(0),
+      },
+    });
+    let releaseAutomatedStop!: () => void;
+    const automatedStopStarted = new Promise<void>((resolve) => {
+      releaseAutomatedStop = resolve;
+    });
+    let notifyAutomatedStop!: () => void;
+    const automatedStopCalled = new Promise<void>((resolve) => {
+      notifyAutomatedStop = resolve;
+    });
+    const stop = vi.fn(async () => {
+      notifyAutomatedStop();
+      await automatedStopStarted;
+      return { id: invocation.sessionId };
+    });
+    const stalledService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: {
+        sendMessage: vi.fn(async () => null),
+        hasActiveTurn: () => true,
+        stop,
+      },
+      now: () => new Date(Date.UTC(2026, 0, 1, 1, 0, 0)),
+      heartbeatIdleThresholdMs: 1,
+      scheduleReminders: false,
+    });
+
+    const recovery = stalledService.reconcileStalledInvocations();
+    await automatedStopCalled;
+    const releaseAdmission = await acquireTeamMemberAdmission(teamRun.id, members[0]!.id);
+    try {
+      await prisma.agentInvocation.update({
+        where: { id: invocation.id },
+        data: { status: 'CANCELLED' },
+      });
+    } finally {
+      releaseAdmission();
+    }
+    releaseAutomatedStop();
+
+    await expect(recovery).resolves.toBeUndefined();
+    await expect(stalledService.reconcileStalledInvocations()).resolves.toBeUndefined();
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'CANCELLED',
+      dispatchRevokedAt: expect.any(Date),
+    });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalledWith(invocation.id);
+    expect(scheduler.startNextSessions).not.toHaveBeenCalledWith(teamRun.id);
+  });
+
+  it('does not claim or send a room reminder when revocation wins after the reminder query', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { nextRoomReplyReminderAt: new Date(0) },
+    });
+    const sendMessage = vi.fn(async () => null);
+    const reminderService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: { sendMessage },
+      now: () => new Date(Date.UTC(2026, 0, 1, 1, 0, 0)),
+      scheduleReminders: false,
+    });
+    const releaseAdmission = await acquireTeamMemberAdmission(teamRun.id, members[0]!.id);
+    const reconciling = reminderService.reconcileInvocation(invocation.id);
+    await Promise.resolve();
+    try {
+      await prisma.agentInvocation.update({
+        where: { id: invocation.id },
+        data: { dispatchRevokedAt: new Date() },
+      });
+    } finally {
+      releaseAdmission();
+    }
+    await reconciling;
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+      dispatchRevokedAt: expect.any(Date),
+    });
+  });
+
+  it('does not write the max-reminder terminal state when revocation wins before its claim', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 3,
+    });
+    const releaseAdmission = await acquireTeamMemberAdmission(teamRun.id, members[0]!.id);
+    const reconciling = service.reconcileInvocation(invocation.id);
+    await Promise.resolve();
+    try {
+      await prisma.agentInvocation.update({
+        where: { id: invocation.id },
+        data: { dispatchRevokedAt: new Date() },
+      });
+    } finally {
+      releaseAdmission();
+    }
+    await reconciling;
+
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 3,
+      dispatchRevokedAt: expect.any(Date),
+    });
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalledWith(invocation.id);
+  });
+
+  it('does not claim or send a stalled nudge when revocation wins at the conditional claim', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'RUNNING',
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { lastHeartbeatAt: new Date(0) },
+    });
+    const sendMessage = vi.fn(async () => null);
+    const stalledService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: { sendMessage, hasActiveTurn: () => true },
+      now: () => new Date(Date.UTC(2026, 0, 1, 1, 0, 0)),
+      heartbeatIdleThresholdMs: 1,
+      scheduleReminders: false,
+    });
+    const releaseAdmission = await acquireTeamMemberAdmission(teamRun.id, members[0]!.id);
+    const reconciling = stalledService.reconcileStalledInvocations();
+    await Promise.resolve();
+    try {
+      await prisma.agentInvocation.update({
+        where: { id: invocation.id },
+        data: { dispatchRevokedAt: new Date() },
+      });
+    } finally {
+      releaseAdmission();
+    }
+    await reconciling;
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'RUNNING',
+      roomReplyReminderCount: 0,
+      dispatchRevokedAt: expect.any(Date),
+    });
+  });
+
   it('marks invocation waiting, increments reminder count, and sends a reminder when no RoomMessage exists', async () => {
     const { workspace, teamRun, members } = await createFixture();
     const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
@@ -466,7 +1763,12 @@ describe('TeamReconcilerService', () => {
     expect(reloaded.status).toBe('WAITING_ROOM_REPLY');
     expect(reloaded.roomReplyReminderCount).toBe(1);
     expect(reloaded.nextRoomReplyReminderAt?.toISOString()).toBe('2026-01-01T00:00:01.000Z');
-    expect(messenger.sendMessage).toHaveBeenCalledWith(invocation.sessionId, TEAM_ROOM_REPLY_REMINDER);
+    expect(messenger.sendMessage).toHaveBeenCalledWith(
+      invocation.sessionId,
+      TEAM_ROOM_REPLY_REMINDER,
+      undefined,
+      invocation.id,
+    );
     expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
   });
 
@@ -753,7 +2055,7 @@ describe('TeamReconcilerService', () => {
     });
     expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
 
-    await expect(service.handleSessionStopped(invocation.sessionId!)).resolves.toBe(true);
+    await expect(service.handleSessionStopped(invocation.sessionId!)).resolves.toHaveLength(0);
 
     await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'CANCELLED',
@@ -792,7 +2094,7 @@ describe('TeamReconcilerService', () => {
       status: 'QUEUED',
     });
 
-    await service.handleSessionStopped(invocation.sessionId!);
+    await expect(service.handleSessionStopped(invocation.sessionId!)).resolves.toHaveLength(0);
 
     await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'CANCELLED',
@@ -827,7 +2129,7 @@ describe('TeamReconcilerService', () => {
     });
     expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
 
-    await expect(service.handleSessionStopped(invocation.sessionId!)).resolves.toBe(true);
+    await expect(service.handleSessionStopped(invocation.sessionId!)).resolves.toHaveLength(0);
 
     await expect(prisma.agentInvocation.findUnique({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'CANCELLED',
@@ -1717,6 +3019,42 @@ describe('TeamReconcilerService', () => {
     }
   });
 
+  it('accepts a terminal REST private message without dispatching recipient work', async () => {
+    const { workspace, teamRun, members } = await createFixture({ memberCount: 2 });
+    const senderRequest = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'COMPLETED',
+    });
+    const senderInvocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: senderRequest.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'COMPLETED',
+    });
+    const app = Fastify({ logger: false });
+
+    try {
+      await app.register(teamRunRoutes, { prefix: '/api' });
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/team-runs/${teamRun.id}/private-messages`,
+        headers: { 'x-agent-tower-invocation-id': senderInvocation.id },
+        payload: {
+          content: 'Late terminal private result',
+          recipientMemberIds: [members[1]!.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({ workRequestIds: [] });
+      await expect(prisma.workRequest.count({ where: { teamRunId: teamRun.id } })).resolves.toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('preserves REST user private message senderId for member visibility without leaking to non-participants', async () => {
     const { workspace, teamRun, members } = await createFixture({
       memberCount: 3,
@@ -2005,6 +3343,7 @@ describe('TeamReconcilerService', () => {
       memberCount: 2,
       memberCapabilities: [{ mentionMembers: false }],
     });
+    const revoked = await createFixture({ memberCount: 2 });
     const noReadRequest = await createWorkRequest({
       teamRunId: noRead.teamRun.id,
       targetMemberId: noRead.members[0]!.id,
@@ -2037,6 +3376,21 @@ describe('TeamReconcilerService', () => {
       workRequestId: noMentionRequest.id,
       memberId: noMention.members[0]!.id,
       workspaceId: noMention.workspace.id,
+    });
+    const revokedRequest = await createWorkRequest({
+      teamRunId: revoked.teamRun.id,
+      targetMemberId: revoked.members[0]!.id,
+      status: 'STARTED',
+    });
+    const revokedInvocation = await createRunningInvocation({
+      teamRunId: revoked.teamRun.id,
+      workRequestId: revokedRequest.id,
+      memberId: revoked.members[0]!.id,
+      workspaceId: revoked.workspace.id,
+    });
+    await prisma.agentInvocation.update({
+      where: { id: revokedInvocation.id },
+      data: { dispatchRevokedAt: new Date() },
     });
     const app = Fastify({ logger: false });
 
@@ -2107,6 +3461,17 @@ describe('TeamReconcilerService', () => {
       });
       expect(noMentionResult.isError).toBe(true);
       expect(getMcpToolText(noMentionResult)).toContain('mentionMembers');
+
+      const revokedPrivateResult = await callToolForCurrentMember(revoked, revokedInvocation.id, {
+        name: 'post_private_message',
+        arguments: {
+          recipient_member_ids: [revoked.members[1]!.id],
+          content: 'Late private dispatch after stop',
+        },
+      });
+      expect(revokedPrivateResult.isError).not.toBe(true);
+      expect(JSON.parse(getMcpToolText(revokedPrivateResult))).toMatchObject({ workRequestIds: [] });
+      await expect(prisma.workRequest.count({ where: { teamRunId: revoked.teamRun.id } })).resolves.toBe(1);
 
       const noStopResult = await callToolForCurrentMember(noRead, noReadInvocation.id, {
         name: 'stop_member_work',

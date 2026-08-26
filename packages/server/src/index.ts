@@ -7,12 +7,16 @@ import { buildApp } from './app.js';
 import { getDevPort } from '@agent-tower/shared/dev-port';
 import { getBundledPrismaCommand } from './utils/process-launch.js';
 import { preparePrismaCliEnv } from './utils/prisma-cli-env.js';
-import { installProcessErrorLogging, writeErrorLog } from './utils/error-log.js';
+import { installProcessErrorLogging, registerProcessShutdownHandler, writeErrorLog } from './utils/error-log.js';
 import { getOrCreateInternalApiToken, INTERNAL_API_TOKEN_ENV } from './utils/internal-api-token.js';
+import { getSessionManager } from './core/container.js';
+import { createServerEntryShutdownCoordinator } from './runtime/server-entry-shutdown.js';
+import type { ReferencedShutdownCoordinator } from './runtime/shutdown-coordinator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = path.resolve(__dirname, '../../..');
 const PORT = getDevPort(monorepoRoot);
+let shutdownCoordinator: ReferencedShutdownCoordinator | undefined;
 
 // Dev 数据目录：与生产环境 (~/.agent-tower) 隔离
 const dataDir = path.join(homedir(), '.agent-tower-dev');
@@ -49,40 +53,47 @@ try {
       schemaPath,
     },
   }, { dataDir });
-  process.exit(1);
+  process.exitCode = 1;
+  throw err;
 }
 
 async function main() {
   const app = await buildApp();
 
-  // 优雅关闭处理
-  let shuttingDown = false;
-  const shutdown = async (signal: string) => {
-    if (shuttingDown) {
-      console.log('\nForce exit.');
-      process.exit(1);
-    }
-    shuttingDown = true;
-    console.log(`\n${signal} received, shutting down gracefully...`);
-    try {
-      await app.close();
-      console.log('Server closed');
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      process.exit(0);
-    } catch (err) {
-      console.error('Error during shutdown:', err);
+  // 优雅关闭处理。Fastify 的 onClose hook 失败后不会再次执行，因此在
+  // 应用级 coordinator 中重复 runtime cleanup，并用 referenced retry 保持
+  // 进程存活直到所有 owner 真正确认退出。
+  const shutdown = createServerEntryShutdownCoordinator({
+    closeApp: () => app.close(),
+    destroyRuntime: () => getSessionManager().destroyAll(),
+    onAppCloseError: (error) => {
+      console.warn('Fastify close reported an error after runtime cleanup; continuing shutdown', error);
+    },
+  },
+    (error, attempt) => {
+      console.error(`Shutdown cleanup pending (attempt ${attempt}); retrying`, error);
       writeErrorLog({
-        level: 'error',
-        source: 'server.index.shutdown',
-        message: 'Error during shutdown',
-        error: err,
+        level: 'warn',
+        source: 'server.index.shutdown.retry',
+        message: 'Runtime cleanup is still pending; shutdown will retry',
+        error,
+        metadata: { attempt },
       }, { dataDir });
-      process.exit(1);
-    }
+    },
+  );
+  shutdownCoordinator = shutdown;
+  registerProcessShutdownHandler(() => shutdown.request());
+
+  const requestShutdown = (signal: string) => {
+    console.log(`\n${signal} received, shutting down gracefully...`);
+    void shutdown.request().then(() => {
+      console.log('Server closed');
+      process.exit(0);
+    });
   };
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => requestShutdown('SIGTERM'));
+  process.on('SIGINT', () => requestShutdown('SIGINT'));
 
   try {
     await app.listen({ port: PORT, host: '0.0.0.0' });
@@ -97,11 +108,11 @@ async function main() {
       error: err,
       metadata: { port: PORT },
     }, { dataDir });
-    process.exit(1);
+    throw err;
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error('Fatal error:', err);
   writeErrorLog({
     level: 'error',
@@ -109,5 +120,9 @@ main().catch((err) => {
     message: 'Fatal dev server error',
     error: err,
   }, { dataDir });
-  process.exit(1);
+  const shutdown = shutdownCoordinator;
+  if (shutdown) {
+    await shutdown.request();
+  }
+  process.exitCode = 1;
 });
