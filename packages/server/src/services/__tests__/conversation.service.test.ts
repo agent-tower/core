@@ -28,7 +28,29 @@ let ConversationService: typeof import('../conversation.service.js').Conversatio
 let assertPathInsideConversationRoot: typeof import('../conversation.service.js').assertPathInsideConversationRoot;
 let CommandBuildError: typeof import('../../executors/command-builder.js').CommandBuildError;
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('Conversation service safety', () => {
+  async function waitForCondition(
+    condition: () => boolean | Promise<boolean>,
+    timeoutMs = 2_000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await condition()) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('Timed out waiting for condition');
+  }
+
   beforeAll(async () => {
     execFileSync(
       'pnpm',
@@ -150,6 +172,31 @@ describe('Conversation service safety', () => {
     expect(session?.status).toBe(SessionStatus.FAILED);
   });
 
+  it('queues the initial prompt without waiting for runtime startup', async () => {
+    const enqueueConversationMessage = vi.fn(async () => ({ turnId: 'turn-1' }));
+    const start = vi.fn();
+    const service = new ConversationService({
+      enqueueConversationMessage,
+      start,
+    } as unknown as InstanceType<typeof SessionManager>);
+
+    const result = await service.create({
+      prompt: 'hello',
+      providerId: 'claude-code-default',
+    });
+
+    expect(enqueueConversationMessage).toHaveBeenCalledWith(
+      result.sessionId,
+      'hello',
+      'claude-code-default',
+    );
+    expect(start).not.toHaveBeenCalled();
+    await expect(prisma.session.findUnique({
+      where: { id: result.sessionId },
+      select: { status: true },
+    })).resolves.toMatchObject({ status: SessionStatus.PENDING });
+  });
+
   it('maps command build failures while sending a conversation message to a service error', async () => {
     const sendMessage = vi.fn(async () => {
       throw new CommandBuildError("Executable 'claude' not found in PATH");
@@ -190,5 +237,146 @@ describe('Conversation service safety', () => {
       'continue',
       'claude-code-default',
     );
+  });
+
+  it('persists a conversation turn through the queue without waiting for runtime startup', async () => {
+    const enqueueConversationMessage = vi.fn(async () => ({ turnId: 'turn-1' }));
+    const sendMessage = vi.fn();
+    const service = new ConversationService({
+      enqueueConversationMessage,
+      sendMessage,
+    } as unknown as InstanceType<typeof SessionManager>);
+    const conversation = await prisma.conversation.create({
+      data: {
+        title: 'Queued question',
+        directoryName: '20260618-queued-question',
+        workingDir: path.join(dataDir, 'conversations', '20260618-queued-question'),
+        session: {
+          create: {
+            context: SessionContext.CONVERSATION,
+            agentType: 'CODEX',
+            providerId: 'provider-1',
+            prompt: 'Hello',
+            status: SessionStatus.COMPLETED,
+          },
+        },
+      },
+      include: { session: true },
+    });
+
+    const result = await service.sendMessage(conversation.id, {
+      message: 'continue',
+      providerId: 'provider-1',
+    });
+
+    expect(enqueueConversationMessage).toHaveBeenCalledWith(
+      conversation.session!.id,
+      'continue',
+      'provider-1',
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(result.id).toBe(conversation.id);
+  });
+
+  it('executes queued conversation turns serially without cancelling the prior turn', async () => {
+    const conversation = await prisma.conversation.create({
+      data: {
+        title: 'Serial queue',
+        directoryName: '20260618-serial-queue',
+        workingDir: path.join(dataDir, 'conversations', '20260618-serial-queue'),
+        session: {
+          create: {
+            context: SessionContext.CONVERSATION,
+            agentType: 'CODEX',
+            prompt: 'Hello',
+            status: SessionStatus.COMPLETED,
+          },
+        },
+      },
+      include: { session: true },
+    });
+    const manager = new SessionManager(new EventBus());
+    const runtimeCoordinator = (manager as any).runtimeCoordinator as {
+      waitForTurnCompletion: (...args: never[]) => Promise<void>;
+      abandonTurn: (...args: never[]) => Promise<boolean>;
+    };
+    const firstTurnCompletion = deferred<void>();
+    const waitForTurnCompletion = vi.spyOn(runtimeCoordinator, 'waitForTurnCompletion')
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(firstTurnCompletion.promise)
+      .mockResolvedValue(undefined);
+    const abandonTurn = vi.spyOn(runtimeCoordinator, 'abandonTurn');
+    const dispatch = vi.spyOn(manager, 'sendMessage').mockResolvedValue(null);
+
+    await manager.enqueueConversationMessage(conversation.session!.id, 'first');
+    await manager.enqueueConversationMessage(conversation.session!.id, 'second');
+    await waitForCondition(() => dispatch.mock.calls.length === 1);
+    expect(dispatch.mock.calls[0]?.[1]).toBe('first');
+    expect(waitForTurnCompletion).toHaveBeenCalledTimes(2);
+    expect(abandonTurn).not.toHaveBeenCalled();
+
+    await expect(prisma.conversationTurn.findMany({
+      where: { sessionId: conversation.session!.id },
+      orderBy: { queuedAt: 'asc' },
+      select: { message: true, status: true },
+    })).resolves.toEqual([
+      { message: 'first', status: 'RUNNING' },
+      { message: 'second', status: 'QUEUED' },
+    ]);
+
+    firstTurnCompletion.resolve();
+    await waitForCondition(() => dispatch.mock.calls.length === 2);
+    expect(dispatch.mock.calls[1]?.[1]).toBe('second');
+    await waitForCondition(async () => {
+      const turns = await prisma.conversationTurn.findMany({
+        where: { sessionId: conversation.session!.id },
+        orderBy: { queuedAt: 'asc' },
+        select: { message: true, status: true },
+      });
+      return turns.every((turn) => turn.status === 'COMPLETED');
+    });
+    manager.stopConversationQueue();
+  });
+
+  it('persists a failed queue turn and records the runtime error', async () => {
+    const conversation = await prisma.conversation.create({
+      data: {
+        title: 'Failed queue',
+        directoryName: '20260618-failed-queue',
+        workingDir: path.join(dataDir, 'conversations', '20260618-failed-queue'),
+        session: {
+          create: {
+            context: SessionContext.CONVERSATION,
+            agentType: 'CODEX',
+            prompt: 'Hello',
+            status: SessionStatus.COMPLETED,
+          },
+        },
+      },
+      include: { session: true },
+    });
+    const manager = new SessionManager(new EventBus());
+    const dispatch = vi.spyOn(manager, 'sendMessage')
+      .mockRejectedValue(new Error('ACP prompt failed'));
+
+    await manager.enqueueConversationMessage(conversation.session!.id, 'will fail');
+    await waitForCondition(() => dispatch.mock.calls.length === 1);
+    await waitForCondition(async () => {
+      const turn = await prisma.conversationTurn.findFirst({
+        where: { sessionId: conversation.session!.id },
+      });
+      return turn?.status === 'FAILED';
+    });
+
+    await expect(prisma.conversationTurn.findFirst({
+      where: { sessionId: conversation.session!.id },
+      select: { status: true, attempts: true, lastError: true, completedAt: true },
+    })).resolves.toMatchObject({
+      status: 'FAILED',
+      attempts: 1,
+      lastError: 'ACP prompt failed',
+      completedAt: expect.any(Date),
+    });
+    manager.stopConversationQueue();
   });
 });

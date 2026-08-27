@@ -206,7 +206,20 @@ export class ConversationService {
     }
 
     try {
-      await this.sessionManager.start(created.session.id);
+      // Initial prompts use the same durable queue as follow-up messages. The
+      // conversation resource is ready as soon as its directory/session/turn
+      // are persisted; ACP startup and model execution continue in the
+      // per-session worker so the create request never waits on initialize.
+      if (typeof this.sessionManager.enqueueConversationMessage === 'function') {
+        await this.sessionManager.enqueueConversationMessage(
+          created.session.id,
+          prompt,
+          provider.id,
+        );
+      } else {
+        // Keep lightweight test doubles and older embedders compatible.
+        await this.sessionManager.start(created.session.id);
+      }
     } catch (error) {
       await prisma.session.update({
         where: { id: created.session.id },
@@ -243,11 +256,23 @@ export class ConversationService {
     }
 
     try {
-      await this.sessionManager.sendMessage(
-        conversation.session.id,
-        message,
-        input.providerId,
-      );
+      // Queue conversation turns so the HTTP request only waits for durable
+      // persistence. SessionManager consumes the queue serially and reports
+      // runtime progress through the existing session events.
+      if (typeof this.sessionManager.enqueueConversationMessage === 'function') {
+        await this.sessionManager.enqueueConversationMessage(
+          conversation.session.id,
+          message,
+          input.providerId,
+        );
+      } else {
+        // Keep lightweight test doubles and older embedders compatible.
+        await this.sessionManager.sendMessage(
+          conversation.session.id,
+          message,
+          input.providerId,
+        );
+      }
     } catch (error) {
       if (error instanceof CommandBuildError) {
         throw toAgentCommandUnavailableError(error);

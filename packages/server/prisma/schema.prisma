@@ -404,12 +404,34 @@ model Session {
   tokenUsage     String? // JSON: { totalTokens, modelContextWindow? }
   processes      ExecutionProcess[]
   artifacts      AgentArtifact[]
+  conversationTurns ConversationTurn[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
   @@index([workspaceId])
   @@index([context])
   @@index([workspaceId, purpose, createdAt])
+}
+
+// 用户对话消息的可靠发送队列。消息先落库，再由 SessionManager 按 Session 串行执行。
+model ConversationTurn {
+  id          String    @id @default(uuid())
+  sessionId   String
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  message     String
+  userEntryId String?
+  providerId  String?
+  status      String    @default("QUEUED")
+  attempts    Int       @default(0)
+  lastError   String?
+  queuedAt    DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([sessionId, status, queuedAt])
+  @@index([status, queuedAt])
 }
 
 // Agent 输出并由 Agent Tower 持久化的可下载产物

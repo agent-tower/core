@@ -83,7 +83,11 @@ export async function conversationRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/conversations/:id/message', async (request, reply) => {
     try {
       const body = sendMessageSchema.parse(request.body);
-      return await conversationService.sendMessage(request.params.id, body);
+      const conversation = await conversationService.sendMessage(request.params.id, body);
+      // The message is durably queued; ACP startup and prompt execution are
+      // intentionally completed asynchronously by SessionManager.
+      reply.code(202);
+      return conversation;
     } catch (error) {
       return handleError(error, reply);
     }

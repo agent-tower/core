@@ -72,7 +72,7 @@ function setup() {
     prompt: 'hello',
     launchClaimNumber: undefined as number | undefined,
   };
-  return { coordinator, input, session, turns, sinks, events, states, onDriverSessionDisposed };
+  return { coordinator, input, session, driver, turns, sinks, events, states, onDriverSessionDisposed };
 }
 
 describe('RuntimeCoordinator', () => {
@@ -123,6 +123,30 @@ describe('RuntimeCoordinator', () => {
     expect(vi.mocked(session.runTurn).mock.calls[1]?.[0].msgStore).toBe(nextMsgStore);
     turns[1].resolve({});
     await second.completion;
+    await coordinator.destroyAll();
+  });
+
+  it('waits for a runtime opening and its active turn before returning', async () => {
+    const { coordinator, input, session, driver, turns } = setup();
+    const opening = deferred<DriverSession>();
+    vi.mocked(driver.open).mockReturnValueOnce(opening.promise);
+
+    const start = coordinator.startTurn(input);
+    let ready = false;
+    const wait = coordinator.waitForTurnCompletion(input.towerSessionId).then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+
+    opening.resolve(session);
+    await start;
+    await Promise.resolve();
+    expect(ready).toBe(false);
+
+    turns[0].resolve({ stopReason: 'end_turn' });
+    await wait;
+    expect(ready).toBe(true);
     await coordinator.destroyAll();
   });
 

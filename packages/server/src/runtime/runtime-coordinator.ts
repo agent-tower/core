@@ -240,6 +240,28 @@ export class RuntimeCoordinator {
     return this.sessions.get(towerSessionId)?.activeTurn !== undefined;
   }
 
+  /** Wait for the current turn, if any, without starting or cancelling it. */
+  async waitForTurnCompletion(towerSessionId: string): Promise<void> {
+    // An initial turn can be in the opening map before openSession installs
+    // the managed session. Waiting only on sessions.activeTurn would return
+    // too early, allowing a queued follow-up to race the opening turn and
+    // trigger sendMessage's ten-second abandon path.
+    while (true) {
+      const pendingOpen = this.opening.get(towerSessionId);
+      if (pendingOpen) {
+        await pendingOpen.catch(() => undefined);
+        continue;
+      }
+
+      const completion = this.sessions.get(towerSessionId)?.activeTurn?.completion;
+      if (!completion) return;
+      // Preserve a rejected turn for queue consumers. They can record FAILED
+      // and continue with the next durable message; swallowing here would make
+      // a failed ACP prompt look like a successful queue item.
+      await completion;
+    }
+  }
+
   getRuntimeInstanceId(towerSessionId: string): string | undefined {
     return this.sessions.get(towerSessionId)?.driverSession.runtimeInstanceId;
   }

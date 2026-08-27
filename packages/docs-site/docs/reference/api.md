@@ -129,9 +129,9 @@ Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspac
 | Method | Path | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/conversations` | 列出独立对话 |
-| `POST` | `/api/conversations` | 创建独立对话并启动 session |
+| `POST` | `/api/conversations` | 创建独立对话并将首条 prompt 持久化入队；接口返回后由后台启动 session |
 | `GET` | `/api/conversations/:id` | 获取独立对话详情 |
-| `POST` | `/api/conversations/:id/message` | 向独立对话发送后续消息 |
+| `POST` | `/api/conversations/:id/message` | 向独立对话发送后续消息；消息持久化入队后返回 `202`，ACP turn 在后台串行执行 |
 | `POST` | `/api/conversations/:id/stop` | 停止独立对话 session |
 | `DELETE` | `/api/conversations/:id` | 删除独立对话 |
 

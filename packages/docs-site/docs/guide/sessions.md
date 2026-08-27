@@ -33,6 +33,8 @@ Session 表示一个可包含多轮 turn 的业务会话。常规任务 session 
 
 无论 session 正在运行还是已经结束，都可以通过统一入口发送后续消息。对于支持 session id 的 agent，系统会尽量使用 follow-up 模式延续上下文。
 
+独立对话的后续消息先写入持久化 `ConversationTurn` 队列，接口完成入队后返回 HTTP `202 Accepted`，不会等待 ACP 初始化或模型回复。每个 Session 的队列按入队顺序串行执行；服务重启会把中断中的 turn 恢复为待处理状态。消息内容会立即写入对话日志，运行状态和最终回复仍通过现有 Session REST/Socket 日志链路获取。
+
 后续消息可以指定新的 `providerId`，用于在继续对话时切换 provider。这个切换只支持相同 `agentType` 和相同 `runtimeType`；切换 Agent 身份或在 CLI/ACP 之间切换都需要新建 Session。
 
 ACP Runtime 会持久化 Agent 返回的 external session ID。内存连接仍存在时直接复用；服务重启后仅在 Agent 声明支持 `session/load` 时恢复。

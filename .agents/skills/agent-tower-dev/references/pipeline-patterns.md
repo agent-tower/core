@@ -9,7 +9,7 @@ SessionManager -> RuntimeCoordinator -> CLI Driver -> Executor / PTY / AgentPipe
                                      -> MsgStore / EventBus
 ```
 
-- `SessionManager` 拥有 Session/Task/TeamRun 业务状态、环境组装、snapshot、auto-commit 和结束后处理，不持有 PTY/Pipeline。
+- `SessionManager` 拥有 Session/Task/TeamRun 业务状态、环境组装、snapshot、auto-commit 和结束后处理，不持有 PTY/Pipeline。独立对话的后续消息先持久化为 `ConversationTurn`，接口返回 `202` 后由每个 Session 的 worker 按队列顺序串行交给 RuntimeCoordinator；稳定的用户 entry id 使崩溃重放幂等，服务重启需把 `RUNNING` turn 恢复为 `QUEUED`。
 - `RuntimeCoordinator` 按 Tower session 隔离 DriverSession，维护单 active turn、turnId/sequence、权限状态、迟到事件过滤和可等待销毁。
 - CLI Driver 选择 Executor，并拥有 PTY、AgentPipeline、Parser、early event 和真实 child 退出跟踪。
 - 通用 ACP Driver 拥有 adapter/native ACP process、initialize、session new/load、prompt/cancel、权限响应和协议清理；ACP stdout 不进入普通日志。

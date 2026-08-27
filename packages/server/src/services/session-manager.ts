@@ -34,7 +34,7 @@ import {
   createAgentApiCredential,
   revokeAgentApiCredential,
 } from '../utils/agent-api-credential.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { RuntimeType, supportsAgentRuntime, type RuntimeStateDto } from '@agent-tower/shared';
 import { getProviderRuntimeType } from '../executors/providers.js';
 import { appendAgentOutputIntentInstructions } from '../prompts/agent-output-intents.js';
@@ -65,6 +65,10 @@ const PROCESS_CLEANUP_RETRY_DELAYS_MS = [1_000, 5_000, 30_000, 120_000, 300_000]
 const PENDING_RUNTIME_EVENT_TTL_MS = 60_000;
 const PENDING_RUNTIME_EVENTS_PER_KEY = 8;
 const PENDING_RUNTIME_EVENTS_GLOBAL = 128;
+const CONVERSATION_TURN_QUEUED = 'QUEUED';
+const CONVERSATION_TURN_RUNNING = 'RUNNING';
+const CONVERSATION_TURN_COMPLETED = 'COMPLETED';
+const CONVERSATION_TURN_FAILED = 'FAILED';
 
 function eventKey(sessionId: string, runtimeInstanceId: string, launchClaimNumber: number): string {
   return `${sessionId}:${runtimeInstanceId}:${launchClaimNumber}`;
@@ -127,6 +131,11 @@ type SessionExecutionRecord = Prisma.SessionGetPayload<{
   };
 }>;
 
+interface SendMessageOptions {
+  /** User message was already appended while claiming a queued turn. */
+  userEntryId?: string;
+}
+
 export class SessionManager {
   private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private snapshotFlushChains = new Map<string, Promise<void>>();
@@ -163,6 +172,9 @@ export class SessionManager {
   private readonly pendingRuntimeEventExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly runtimePermissionStates = new Map<string, boolean>();
   private readonly externalSessionPersistence = new Map<string, Promise<void>>();
+  /** Durable conversation turns are consumed one at a time per Session. */
+  private readonly conversationQueueWorkers = new Map<string, Promise<void>>();
+  private conversationQueueStopping = false;
   /** Admission boundary covering the short initial-start -> process-owning handoff. */
   private readonly pendingInitialStarts = new Map<string, Promise<void>>();
   private readonly initialStartResolvers = new Map<string, () => void>();
@@ -277,6 +289,103 @@ export class SessionManager {
 
   getRuntimeState(sessionId: string, runtimeType: RuntimeType = RuntimeType.CLI): RuntimeStateDto {
     return this.runtimeCoordinator.getState(sessionId, runtimeType);
+  }
+
+  /**
+   * Persist a conversation message and schedule its runtime turn. The caller
+   * only waits for the SQLite insert; ACP startup and prompt delivery happen
+   * in the per-session queue worker.
+   */
+  async enqueueConversationMessage(
+    sessionId: string,
+    message: string,
+    providerId?: string,
+  ): Promise<{ turnId: string }> {
+    const enqueueStartedAt = Date.now();
+    const session = await this.findSessionExecutionRecord(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session', sessionId);
+    }
+    this.ensureExecutionRecordIsLive(session);
+    if (!this.isConversationSession(session)) {
+      throw new ValidationError('Only conversation sessions support queued messages');
+    }
+    const effectiveProviderId = providerId ?? session.providerId;
+    if (effectiveProviderId) {
+      const provider = getProviderById(effectiveProviderId);
+      if (!provider) {
+        throw new ValidationError(`Provider not found: ${effectiveProviderId}`);
+      }
+      if (String(provider.agentType) !== session.agentType) {
+        throw new ValidationError(
+          `Cannot switch provider: agentType mismatch. Session uses '${session.agentType}', but provider '${provider.name}' is for '${provider.agentType}'`
+        );
+      }
+      if (getProviderRuntimeType(provider) !== this.normalizeRuntimeType(session.runtimeType)) {
+        throw new ValidationError(
+          `Cannot switch provider: runtimeType mismatch. Session uses '${session.runtimeType}', but provider '${provider.name}' uses '${getProviderRuntimeType(provider)}'`
+        );
+      }
+    }
+
+    // Generate both identifiers before the insert. The entry id is persisted
+    // with the queue row so a crash between applying the in-memory patch and
+    // updating the row remains replayable without creating a duplicate entry.
+    const turnId = randomUUID();
+    const userEntryId = `user:${turnId}`;
+    const turn = await prisma.conversationTurn.create({
+      data: {
+        id: turnId,
+        sessionId,
+        message,
+        userEntryId,
+        providerId: providerId ?? null,
+        status: CONVERSATION_TURN_QUEUED,
+      },
+      select: { id: true },
+    });
+    // Reflect the user message immediately. This is local, synchronous work;
+    // the expensive ACP startup/prompt remains exclusively in the worker. If
+    // the in-memory snapshot cannot be updated, leave the durable turn queued
+    // so the worker can retry the append instead of losing the message.
+    try {
+      this.appendUserMessageEntry(session, message, userEntryId);
+    } catch (error) {
+      this.logSessionError('conversation.queueUserEntry', error, {
+        sessionId,
+        turnId: turn.id,
+      });
+    }
+    this.kickConversationQueue(sessionId);
+    console.log(
+      `[ConversationQueue] enqueued session=${sessionId} turn=${turn.id} persistMs=${Date.now() - enqueueStartedAt}`,
+    );
+    return { turnId: turn.id };
+  }
+
+  /** Recover turns left in RUNNING state by an interrupted server process. */
+  async startConversationQueue(): Promise<void> {
+    this.conversationQueueStopping = false;
+    await prisma.conversationTurn.updateMany({
+      where: { status: CONVERSATION_TURN_RUNNING },
+      data: {
+        status: CONVERSATION_TURN_QUEUED,
+        startedAt: null,
+      },
+    });
+    const pending = await prisma.conversationTurn.findMany({
+      where: { status: CONVERSATION_TURN_QUEUED },
+      select: { sessionId: true },
+      distinct: ['sessionId'],
+    });
+    for (const turn of pending) {
+      this.kickConversationQueue(turn.sessionId);
+    }
+  }
+
+  /** Stop scheduling new work during the Fastify shutdown phase. */
+  stopConversationQueue(): void {
+    this.conversationQueueStopping = true;
   }
 
   /** Dispose a TeamRun-owned runtime after its invocation reaches a terminal state. */
@@ -534,6 +643,7 @@ export class SessionManager {
     message: string,
     providerId?: string,
     expectedTeamRunInvocationId?: string,
+    options: SendMessageOptions = {},
   ) {
     console.log('[SessionManager] 📨 Sending message to session:', id);
     console.log('[SessionManager] Message summary:', summarizeTextForLog(message));
@@ -621,61 +731,22 @@ export class SessionManager {
       this.invalidateSessionGeneration(id);
       this.beginSessionExecution(id);
 
-    // Stop the previous turn before waiting for its auto-commit boundary. The
-    // coordinator suppresses that superseded turn's terminal event so it cannot
-    // finalize the newly reserved generation.
-    if (this.runtimeCoordinator.hasActiveTurn(id)) {
-      if (DEBUG_SNAPSHOT) {
-        console.log(`[SessionManager:snapshot] sendMessage checkpoint before runtime turn replace sessionId=${id}`);
+      // Stop the previous turn before waiting for its auto-commit boundary. The
+      // coordinator suppresses that superseded turn's terminal event so it cannot
+      // finalize the newly reserved generation.
+      if (this.runtimeCoordinator.hasActiveTurn(id)) {
+        if (DEBUG_SNAPSHOT) {
+          console.log(`[SessionManager:snapshot] sendMessage checkpoint before runtime turn replace sessionId=${id}`);
+        }
+        await this.flushSnapshotPersist(id);
+        const canReuseDriverSession = await this.runtimeCoordinator.abandonTurn(id);
+        if (!canReuseDriverSession) {
+          await this.runtimeCoordinator.disposeSession(id);
+        }
       }
-      await this.flushSnapshotPersist(id);
-      const canReuseDriverSession = await this.runtimeCoordinator.abandonTurn(id);
-      if (!canReuseDriverSession) {
-        await this.runtimeCoordinator.disposeSession(id);
-      }
-    }
-    await this.waitForPendingAutoCommit(id);
+      await this.waitForPendingAutoCommit(id);
 
-    const isNewStore = !sessionMsgStoreManager.has(id);
-    const msgStore = sessionMsgStoreManager.getOrCreate(id);
-
-    if (isNewStore && session.logSnapshot) {
-      try {
-        const snapshot = JSON.parse(session.logSnapshot) as NormalizedConversation;
-        msgStore.restoreFromSnapshot(snapshot);
-      } catch (error) {
-        console.error(`[SessionManager] Failed to restore snapshot for session ${id}:`, error);
-      }
-    }
-
-    // Heal index drift caused by previously failed patches (e.g. invalid value).
-    // If entryIndex is ahead of snapshot length, subsequent add/replace paths
-    // become out-of-bounds and all later patches fail.
-    const preflightSnapshot = msgStore.getSnapshot();
-    const expectedIndex = preflightSnapshot.entries.length;
-    const currentIndex = msgStore.entryIndex.current();
-    if (currentIndex !== expectedIndex) {
-      if (DEBUG_SNAPSHOT) {
-        console.warn(
-          `[SessionManager:snapshot] rebase entryIndex sessionId=${id} currentIndex=${currentIndex} expectedIndex=${expectedIndex}`
-        );
-      }
-      msgStore.entryIndex.startFrom(expectedIndex);
-    }
-
-    const userEntry = createUserMessage(message);
-    const userIndex = msgStore.entryIndex.next();
-    const userPatch = addNormalizedEntry(userIndex, userEntry);
-    if (DEBUG_SNAPSHOT) {
-      console.log(
-        `[SessionManager:snapshot] sendMessage userPatch sessionId=${id} index=${userIndex} currentIndex=${msgStore.entryIndex.current()}`
-      );
-    }
-    const userPatchSeq = msgStore.pushPatch(userPatch);
-    // Emit directly to EventBus — the old pipeline was already destroyed so
-    // MsgStore's patchListeners are empty at this point. Without this line
-    // the user-message patch would never reach WebSocket subscribers.
-    this.eventBus.emit('session:patch', { sessionId: id, patch: userPatch, seq: userPatchSeq });
+      const userEntryId = options.userEntryId ?? this.appendUserMessageEntry(session, message);
 
       const agentSessionId = session.externalSessionId
         ?? this.resolveAgentSessionId(id, session.logSnapshot);
@@ -690,7 +761,7 @@ export class SessionManager {
           agentSessionId,
           effectiveProviderId,
           resumeMode,
-          userEntry.id,
+          userEntryId,
           false,
           expectedTeamRunInvocationId,
         );
@@ -847,6 +918,7 @@ export class SessionManager {
 
   /** Close all runtime driver sessions during graceful server shutdown. */
   async destroyAll(): Promise<void> {
+    this.stopConversationQueue();
     await this.runtimeCoordinator.destroyAll();
     for (const resolve of this.initialStartResolvers.values()) resolve();
     this.initialStartResolvers.clear();
@@ -867,6 +939,145 @@ export class SessionManager {
     this.followUpReservationReleases.clear();
     this.followUpReservations.clear();
     clearAgentApiCredentials();
+  }
+
+  private kickConversationQueue(sessionId: string): void {
+    if (this.conversationQueueStopping || this.conversationQueueWorkers.has(sessionId)) {
+      return;
+    }
+
+    const worker = new Promise<void>((resolve, reject) => {
+      setImmediate(() => {
+        this.processConversationQueue(sessionId).then(resolve, reject);
+      });
+    });
+    this.conversationQueueWorkers.set(sessionId, worker);
+    void worker
+      .catch((error) => {
+        this.logSessionError('conversation.queue', error, { sessionId });
+      })
+      .finally(() => {
+        if (this.conversationQueueWorkers.get(sessionId) === worker) {
+          this.conversationQueueWorkers.delete(sessionId);
+        }
+        // Cover an enqueue racing with the worker's final empty scan without
+        // creating a worker spin loop when the queue is actually empty.
+        if (!this.conversationQueueStopping) {
+          void prisma.conversationTurn.count({
+            where: { sessionId, status: CONVERSATION_TURN_QUEUED },
+          }).then((count) => {
+            if (count > 0) this.kickConversationQueue(sessionId);
+          }).catch((error) => {
+            this.logSessionError('conversation.queueScan', error, { sessionId });
+          });
+        }
+      });
+  }
+
+  private async processConversationQueue(sessionId: string): Promise<void> {
+    while (!this.conversationQueueStopping) {
+      const queued = await prisma.conversationTurn.findFirst({
+        where: { sessionId, status: CONVERSATION_TURN_QUEUED },
+        orderBy: [{ queuedAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      });
+      if (!queued) return;
+
+      const claimed = await prisma.conversationTurn.updateMany({
+        where: { id: queued.id, status: CONVERSATION_TURN_QUEUED },
+        data: {
+          status: CONVERSATION_TURN_RUNNING,
+          attempts: { increment: 1 },
+          startedAt: new Date(),
+          lastError: null,
+        },
+      });
+      if (claimed.count !== 1) continue;
+
+      try {
+        console.log(
+          `[ConversationQueue] claimed session=${sessionId} turn=${queued.id} queueWaitMs=${Math.max(0, Date.now() - queued.queuedAt.getTime())} attempt=${queued.attempts + 1}`,
+        );
+        // A conversation accepts one ACP prompt at a time. Waiting here keeps
+        // queued follow-ups from cancelling the previous turn (and hitting
+        // RuntimeCoordinator's ten-second abandon timeout).
+        const previousTurnWaitStartedAt = Date.now();
+        await this.runtimeCoordinator.waitForTurnCompletion(sessionId);
+        console.log(
+          `[ConversationQueue] priorTurnReady session=${sessionId} turn=${queued.id} waitMs=${Date.now() - previousTurnWaitStartedAt}`,
+        );
+        if (this.conversationQueueStopping) {
+          await this.requeueConversationTurn(queued.id);
+          return;
+        }
+
+        const session = await this.findSessionExecutionRecord(sessionId);
+        if (!session) throw new NotFoundError('Session', sessionId);
+        this.ensureExecutionRecordIsLive(session);
+        const userEntryId = queued.userEntryId ?? `user:${queued.id}`;
+        this.appendUserMessageEntry(session, queued.message, userEntryId);
+        if (!queued.userEntryId) {
+          await prisma.conversationTurn.updateMany({
+            where: { id: queued.id, status: CONVERSATION_TURN_RUNNING },
+            data: { userEntryId },
+          });
+        }
+        const dispatchStartedAt = Date.now();
+        await this.sendMessage(
+          sessionId,
+          queued.message,
+          queued.providerId ?? undefined,
+          undefined,
+          { userEntryId },
+        );
+        console.log(
+          `[ConversationQueue] dispatched session=${sessionId} turn=${queued.id} dispatchMs=${Date.now() - dispatchStartedAt}`,
+        );
+        const turnWaitStartedAt = Date.now();
+        await this.runtimeCoordinator.waitForTurnCompletion(sessionId);
+        await prisma.conversationTurn.updateMany({
+          where: { id: queued.id, status: CONVERSATION_TURN_RUNNING },
+          data: {
+            status: CONVERSATION_TURN_COMPLETED,
+            completedAt: new Date(),
+          },
+        });
+        console.log(
+          `[ConversationQueue] completed session=${sessionId} turn=${queued.id} runtimeWaitMs=${Date.now() - turnWaitStartedAt}`,
+        );
+      } catch (error) {
+        if (this.conversationQueueStopping) {
+          await this.requeueConversationTurn(queued.id);
+          return;
+        }
+        const lastError = error instanceof Error ? error.message : String(error);
+        await prisma.conversationTurn.updateMany({
+          where: { id: queued.id, status: CONVERSATION_TURN_RUNNING },
+          data: {
+            status: CONVERSATION_TURN_FAILED,
+            lastError: lastError.slice(0, 2_000),
+            completedAt: new Date(),
+          },
+        });
+        const errorSummary = summarizeTextForLog(lastError);
+        console.log(
+          `[ConversationQueue] failed session=${sessionId} turn=${queued.id} errorLength=${errorSummary.length} errorSha256=${errorSummary.sha256}`,
+        );
+        this.logSessionError('conversation.queueTurn', error, {
+          sessionId,
+          turnId: queued.id,
+        });
+      }
+    }
+  }
+
+  private async requeueConversationTurn(turnId: string): Promise<void> {
+    await prisma.conversationTurn.updateMany({
+      where: { id: turnId, status: CONVERSATION_TURN_RUNNING },
+      data: {
+        status: CONVERSATION_TURN_QUEUED,
+        startedAt: null,
+      },
+    });
   }
 
   private resolveAgentSessionId(sessionId: string, logSnapshot: string | null): string | null {
@@ -1977,6 +2188,59 @@ export class SessionManager {
         conversation: true,
       },
     });
+  }
+
+  private appendUserMessageEntry(
+    session: SessionExecutionRecord,
+    message: string,
+    entryId?: string,
+  ): string {
+    const sessionId = session.id;
+    const isNewStore = !sessionMsgStoreManager.has(sessionId);
+    const msgStore = sessionMsgStoreManager.getOrCreate(sessionId);
+
+    if (isNewStore && session.logSnapshot) {
+      try {
+        msgStore.restoreFromSnapshot(JSON.parse(session.logSnapshot) as NormalizedConversation);
+      } catch (error) {
+        console.error(`[SessionManager] Failed to restore snapshot for session ${sessionId}:`, error);
+      }
+    }
+
+    // Heal index drift caused by previously failed patches (e.g. invalid value).
+    const preflightSnapshot = msgStore.getSnapshot();
+    const expectedIndex = preflightSnapshot.entries.length;
+    const currentIndex = msgStore.entryIndex.current();
+    if (currentIndex !== expectedIndex) {
+      if (DEBUG_SNAPSHOT) {
+        console.warn(
+          `[SessionManager:snapshot] rebase entryIndex sessionId=${sessionId} currentIndex=${currentIndex} expectedIndex=${expectedIndex}`
+        );
+      }
+      msgStore.entryIndex.startFrom(expectedIndex);
+    }
+
+    // Queue retries may reach this point after the patch was already applied
+    // but before its durable userEntryId update. Reusing the stable id makes
+    // the replay a no-op instead of appending the same message twice.
+    if (entryId) {
+      const existing = preflightSnapshot.entries.find((entry) => entry.id === entryId);
+      if (existing) return entryId;
+    }
+
+    const userEntry = createUserMessage(message, entryId);
+    const userIndex = msgStore.entryIndex.next();
+    const userPatch = addNormalizedEntry(userIndex, userEntry);
+    if (DEBUG_SNAPSHOT) {
+      console.log(
+        `[SessionManager:snapshot] userPatch sessionId=${sessionId} index=${userIndex} currentIndex=${msgStore.entryIndex.current()}`
+      );
+    }
+    const userPatchSeq = msgStore.pushPatch(userPatch);
+    // Emit directly to EventBus — a previous pipeline may have been destroyed
+    // before the queued turn starts, leaving no MsgStore patch listener.
+    this.eventBus.emit('session:patch', { sessionId, patch: userPatch, seq: userPatchSeq });
+    return userEntry.id;
   }
 
   private isConversationSession(session: { context?: string | null; conversationId?: string | null }): boolean {

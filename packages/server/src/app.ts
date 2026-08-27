@@ -134,11 +134,16 @@ export async function buildApp() {
     getTaskCleanupService().start();
     app.log.info(`[startup:onReady] taskCleanupService started elapsed=${elapsed()}`);
 
+    app.log.info(`[startup:onReady] conversationTurnQueue start elapsed=${elapsed()}`);
+    await getSessionManager().startConversationQueue();
+    app.log.info(`[startup:onReady] conversationTurnQueue started elapsed=${elapsed()}`);
+
     app.log.info(`[startup:onReady] complete elapsed=${elapsed()}`);
   });
 
   // 服务器关闭时清理 Socket.IO、Tunnel 和后台调度器
   app.addHook('onClose', async () => {
+    getSessionManager().stopConversationQueue();
     hibernationScheduler?.stop();
     memberHeartbeatScheduler?.stop();
     getTaskCleanupService().stop();
