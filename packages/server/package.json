@@ -22,7 +22,7 @@
   "dependencies": {
     "@agent-tower/shared": "workspace:*",
     "@agentclientprotocol/claude-agent-acp": "0.59.0",
-    "@agentclientprotocol/codex-acp": "1.1.2",
+    "@agentclientprotocol/codex-acp": "1.7.0",
     "@agentclientprotocol/sdk": "1.2.1",
     "@earendil-works/pi-coding-agent": "0.82.1",
     "@fastify/cookie": "^9.4.0",

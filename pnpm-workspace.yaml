@@ -1,6 +1,9 @@
 packages:
   - 'packages/*'
 
+overrides:
+  '@openai/codex': 0.149.1
+
 allowBuilds:
   '@google/genai': false
   '@prisma/client': true

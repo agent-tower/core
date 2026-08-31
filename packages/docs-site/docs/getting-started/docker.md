@@ -47,7 +47,7 @@ AGENT_TOWER_WORKSPACE_DIR=/path/to/projects docker compose up -d --build
 
 镜像默认构建时安装可 pin 的 Agent CLI：
 
-- `@openai/codex@0.142.4`
+- `@openai/codex@0.149.1`
 - `@anthropic-ai/claude-code@2.1.196`
 - `@google/gemini-cli@0.23.0`
 

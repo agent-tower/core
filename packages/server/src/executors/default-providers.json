@@ -52,6 +52,7 @@
       "config": {
         "permissionMode": "ASK"
       },
+      "settings": "model_context_window = 800000\n",
       "isDefault": true,
       "builtIn": true
     },

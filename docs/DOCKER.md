@@ -7,7 +7,7 @@
 - Agent Tower 生产发布产物，构建时复用 `pnpm build:publish`。
 - Node.js 22.19、git、openssh-client、bash、curl、ripgrep、ca-certificates、tini。
 - 默认内置可 pin 的 Agent CLI：
-  - `@openai/codex@0.142.4`，提供 `codex`
+  - `@openai/codex@0.149.1`，提供 `codex`
   - `@anthropic-ai/claude-code@2.1.196`，提供 `claude`
   - `@google/gemini-cli@0.23.0`，提供 `gemini`
 - 如果外部 CLI 包或网络临时不可用，可用 `INSTALL_AGENT_CLIS=false` 构建只含 Agent Tower 和基础开发工具的镜像。

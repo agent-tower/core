@@ -1,10 +1,38 @@
 import { AgentType, RuntimeType } from '@agent-tower/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { ExecutionEnv } from '../../executors/execution-env.js';
+import { getDefaultProviders } from '../../executors/providers.js';
 import { AcpRuntimeDriver } from '../acp/acp-driver.js';
 import { projectCodexAcpProvider } from '../acp/codex-provider-config.js';
 
 describe('AcpRuntimeDriver', () => {
+  it('projects the Codex ACP context window default into custom settings that omit it', () => {
+    const builtInProvider = getDefaultProviders().find(provider => provider.id === 'codex-acp-default');
+    expect(builtInProvider).toBeDefined();
+
+    const projection = projectCodexAcpProvider({
+      ...builtInProvider!,
+      settings: 'model_reasoning_effort = "high"\n',
+    }, {});
+    expect(JSON.parse(projection.environment.CODEX_CONFIG!)).toMatchObject({
+      model_context_window: 800000,
+      model_reasoning_effort: 'high',
+    });
+  });
+
+  it.each([0, 123456])('preserves an explicit Codex ACP context window of %i', (modelContextWindow) => {
+    const builtInProvider = getDefaultProviders().find(provider => provider.id === 'codex-acp-default');
+    expect(builtInProvider).toBeDefined();
+
+    const overriddenProjection = projectCodexAcpProvider({
+      ...builtInProvider!,
+      settings: `model_context_window = ${modelContextWindow}\n`,
+    }, {});
+    expect(JSON.parse(overriddenProjection.environment.CODEX_CONFIG!)).toMatchObject({
+      model_context_window: modelContextWindow,
+    });
+  });
+
   it('projects Provider credentials, model, TOML, and ACP controls into the adapter contract', () => {
     const projection = projectCodexAcpProvider({
       id: 'codex-acp-custom',

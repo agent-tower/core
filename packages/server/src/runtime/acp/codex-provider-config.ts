@@ -13,6 +13,8 @@ import {
 } from '../../services/provider-effective-connection.service.js';
 import { AgentRuntimeError } from '../errors.js';
 
+const DEFAULT_MODEL_CONTEXT_WINDOW = 800_000;
+
 export interface CodexAcpProviderProjection {
   environment: Record<string, string>;
   permissionMode: RuntimePermissionMode;
@@ -85,6 +87,9 @@ export function projectCodexAcpProvider(
         { cause: error },
       );
     }
+  }
+  if (!Object.prototype.hasOwnProperty.call(codexConfig, 'model_context_window')) {
+    codexConfig.model_context_window = DEFAULT_MODEL_CONTEXT_WINDOW;
   }
 
   const connection = resolveEffectiveProviderConnection(provider);
