@@ -137,7 +137,14 @@ export function AgentSessionPanel({
   }, [])
 
   const handleSend = useCallback(async () => {
-    if ((!input.trim() && !hasAttachments) || sendingRef.current || isSending || isUploading) return
+    if (
+      (!input.trim() && !hasAttachments)
+      || sendingRef.current
+      || isSending
+      || isStopping
+      || isSessionCancelling
+      || isUploading
+    ) return
     sendingRef.current = true
 
     const attachmentLinks = buildMarkdownLinks()
@@ -167,6 +174,8 @@ export function AgentSessionPanel({
     input,
     hasAttachments,
     isSending,
+    isStopping,
+    isSessionCancelling,
     isUploading,
     buildMarkdownLinks,
     getDoneAttachments,
@@ -357,10 +366,20 @@ export function AgentSessionPanel({
                   <button
                     type="button"
                     onClick={handleSend}
-                    disabled={(!input.trim() && !hasAttachments) || isUploading || isSending}
+                    disabled={
+                      (!input.trim() && !hasAttachments)
+                      || isUploading
+                      || isSending
+                      || isStopping
+                      || isSessionCancelling
+                    }
                     className={cn(
                       'rounded-lg p-2 transition-all duration-200',
-                      (input.trim() || hasAttachments) && !isUploading && !isSending
+                      (input.trim() || hasAttachments)
+                        && !isUploading
+                        && !isSending
+                        && !isStopping
+                        && !isSessionCancelling
                         ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                         : 'cursor-not-allowed bg-transparent text-muted-foreground/50',
                     )}

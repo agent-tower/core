@@ -822,7 +822,14 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
 
   const sendingRef = useRef(false)
   const handleSend = useCallback(async () => {
-    if ((!input.trim() && !hasAttachments) || !logSessionId || sendingRef.current || isUploading) return
+    if (
+      (!input.trim() && !hasAttachments)
+      || !logSessionId
+      || sendingRef.current
+      || stopSession.isPending
+      || isSessionCancelling
+      || isUploading
+    ) return
     sendingRef.current = true
 
     // 拼接附件 markdown 链接到消息末尾
@@ -844,18 +851,20 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           // 确保 snapshot 已加载（全量广播下 patch 已实时到达，attach 通常为 no-op）
           attach()
         },
+        onError: () => {
+          setInput((current) => current || message)
+        },
         onSettled: () => {
           sendingRef.current = false
         },
       }
     )
-  }, [input, logSessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId])
+  }, [input, logSessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId, stopSession.isPending, isSessionCancelling])
 
-  const handleStop = useCallback(async () => {
-    if (!logSessionId) return
-    await stopSession.mutateAsync(logSessionId)
-    queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-  }, [logSessionId, stopSession, queryClient])
+  const handleStop = useCallback(() => {
+    if (!logSessionId || stopSession.isPending) return
+    stopSession.mutate(logSessionId)
+  }, [logSessionId, stopSession])
 
   // ============ File Upload Handlers ============
 
@@ -1464,9 +1473,19 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                   ) : (
                     <button
                       onClick={handleSend}
-                      disabled={(!input.trim() && !hasAttachments) || isUploading}
+                      disabled={
+                        (!input.trim() && !hasAttachments)
+                        || isUploading
+                        || sendMessageMutation.isPending
+                        || stopSession.isPending
+                        || isSessionCancelling
+                      }
                       className={`p-2 rounded-lg transition-all duration-200 ${
-                        (input.trim() || hasAttachments) && !isUploading
+                        (input.trim() || hasAttachments)
+                          && !isUploading
+                          && !sendMessageMutation.isPending
+                          && !stopSession.isPending
+                          && !isSessionCancelling
                           ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                           : 'bg-transparent text-muted-foreground/50 cursor-not-allowed'
                       }`}

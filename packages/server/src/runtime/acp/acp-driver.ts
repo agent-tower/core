@@ -37,6 +37,13 @@ interface PendingPermission {
   sink: RuntimeDriverEventSink;
 }
 
+interface ProcessCleanupEvidence {
+  sink: RuntimeDriverEventSink;
+  runtimeInstanceId: string;
+  launchClaimNumber: number;
+  confirmation?: Promise<void>;
+}
+
 export class AcpRuntimeDriver implements RuntimeDriver {
   readonly type = RuntimeType.ACP;
 
@@ -54,9 +61,12 @@ class AcpDriverSession implements DriverSession {
   private sessionReady = false;
   private sessionBootstrapUpdates?: SessionNotification[];
   private closed = false;
-  private launchCleanupOwnerId?: string;
+  private readonly launchCleanupOwnerIds = new Set<string>();
   private transportResetPromise?: Promise<void>;
   private closePromise?: Promise<void>;
+  private transportGeneration = 0;
+  private readonly processCleanupEvidence = new WeakMap<AcpProcessManager, ProcessCleanupEvidence>();
+  private readonly pendingProcessManagers = new Set<AcpProcessManager>();
   private negotiatedCapabilities: RuntimeCapabilities = {
     loadSession: false,
     terminalInput: false,
@@ -111,7 +121,7 @@ class AcpDriverSession implements DriverSession {
       throw markPreChildProcessFailure(error);
     }
     const session = new AcpDriverSession(input, definition, profile);
-    await session.connect(sink);
+    await session.connect(sink, input.launchClaimNumber ?? 1, input.admissionSignal);
     return session;
   }
 
@@ -131,7 +141,16 @@ class AcpDriverSession implements DriverSession {
     if (this.closed) {
       throw new AgentRuntimeError('connection_closed', 'prompt', 'ACP connection is closed', true);
     }
-    if (!this.connection) await this.connect(sink, turn.launchClaimNumber ?? 1);
+    if (!this.connection) {
+      await this.connect(sink, turn.launchClaimNumber ?? 1, turn.admissionSignal);
+    }
+    this.assertAdmissionActive(turn.admissionSignal, 'prompt');
+    const connection = this.connection;
+    if (!connection) {
+      throw new AgentRuntimeError('connection_closed', 'prompt', 'ACP connection is closed', true);
+    }
+    const generation = this.transportGeneration;
+    this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'prompt');
     if (this.currentTurnId) {
       throw new AgentRuntimeError('turn_already_running', 'prompt', 'ACP turn is already running', false);
     }
@@ -147,10 +166,13 @@ class AcpDriverSession implements DriverSession {
       throw error;
     }
 
-    const connection = this.connection;
-    if (!connection) {
+    try {
+      // Even a sessionReady fast path yields at the await above. Disposal can
+      // win in that microtask window, so prompt needs its own final gate.
+      this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'prompt');
+    } catch (error) {
       this.clearTurn(turn.turnId);
-      throw new AgentRuntimeError('connection_closed', 'prompt', 'ACP connection is closed', true);
+      throw error;
     }
     const request = connection.agent.request(acp.methods.agent.session.prompt, {
       sessionId: this.requireExternalSessionId(),
@@ -220,7 +242,10 @@ class AcpDriverSession implements DriverSession {
     } finally {
       // A launch-helper cleanup failure must not leave a permanently resolved
       // close promise: a later lifecycle boundary can retry the helper.
-      if (this.closePromise === close && this.launchCleanupOwnerId) {
+      if (
+        this.closePromise === close
+        && (this.pendingProcessManagers.size > 0 || this.launchCleanupOwnerIds.size > 0)
+      ) {
         this.closePromise = undefined;
       }
     }
@@ -231,34 +256,43 @@ class AcpDriverSession implements DriverSession {
   private async connect(
     sink: RuntimeDriverEventSink,
     launchClaimNumber = this.input.launchClaimNumber ?? 1,
+    admissionSignal?: AbortSignal,
   ): Promise<void> {
     if (this.transportResetPromise) await this.transportResetPromise;
-    if (this.closed) {
-      throw new AgentRuntimeError('connection_closed', 'initialize', 'ACP connection is closed', true);
-    }
+    this.assertAdmissionActive(admissionSignal, 'initialize');
     if (this.connection) return;
-    if (this.processManager) await this.resetTransport();
+    if (this.processManager || this.pendingProcessManagers.size > 0) await this.resetTransport();
+    this.assertAdmissionActive(admissionSignal, 'initialize');
+    const generation = this.transportGeneration;
     let launch: Awaited<ReturnType<AcpAgentDefinition['resolveLaunch']>>;
     try {
       launch = await this.definition.resolveLaunch(this.input, this.providerProfile);
     } catch (error) {
       throw markPreChildProcessFailure(error);
     }
-    this.launchCleanupOwnerId = launch.cleanup
+    const launchCleanupOwnerId = launch.cleanup
       ? acpLaunchCleanupRegistry.register(launch.cleanup, `${this.input.agentType}:${this.input.towerSessionId}`)
       : undefined;
+    if (launchCleanupOwnerId) this.launchCleanupOwnerIds.add(launchCleanupOwnerId);
+    let manager: AcpProcessManager | undefined;
+    let connection: acp.ClientConnection | undefined;
+    let processStarted = false;
     const runtimeInstanceId = randomUUID();
-    this.currentRuntimeInstanceId = runtimeInstanceId;
-    const manager = new AcpProcessManager({
-      command: launch.command,
-      args: launch.args,
-      cwd: launch.cwd,
-      env: launch.env,
-      maxStdoutFrameBytes: this.definition.maxStdoutFrameBytes,
-      transformStdoutFrame: this.definition.transformStdoutFrame,
-    });
-    this.processManager = manager;
     try {
+      this.assertStartupCurrent(generation, admissionSignal, 'initialize', true);
+      manager = new AcpProcessManager({
+        command: launch.command,
+        args: launch.args,
+        cwd: launch.cwd,
+        env: launch.env,
+        maxStdoutFrameBytes: this.definition.maxStdoutFrameBytes,
+        transformStdoutFrame: this.definition.transformStdoutFrame,
+      });
+      this.processManager = manager;
+      this.currentRuntimeInstanceId = runtimeInstanceId;
+      // No await occurs between the generation check and AcpProcessManager's
+      // synchronous spawn call, so disposal cannot cross this final spawn gate.
+      this.assertStartupCurrent(generation, admissionSignal, 'spawn', true);
       const streams = await manager.start();
       await sink.process({
         type: 'started',
@@ -269,6 +303,13 @@ class AcpDriverSession implements DriverSession {
         birthMarker: streams.birthMarker,
         ownershipToken: streams.ownershipToken,
       });
+      processStarted = true;
+      this.processCleanupEvidence.set(manager, {
+        sink,
+        runtimeInstanceId,
+        launchClaimNumber,
+      });
+      this.assertStartupCurrent(generation, admissionSignal, 'initialize', false);
       manager.onExit((exit) => {
         void (async () => {
           await sink.process({
@@ -278,9 +319,9 @@ class AcpDriverSession implements DriverSession {
             signal: exit.signal,
             launchClaimNumber,
           }).catch(() => undefined);
-          if (!this.closed && this.processManager === manager) {
-            const connection = this.connection;
-            connection?.close(
+          if (!this.closed && this.transportGeneration === generation && this.processManager === manager) {
+            const activeConnection = this.connection;
+            activeConnection?.close(
               new AgentRuntimeError(
                 'process_exit',
                 'runtime',
@@ -288,17 +329,13 @@ class AcpDriverSession implements DriverSession {
                 true,
               ),
             );
-            await this.resetTransport(connection);
-            await sink.process({
-              type: 'tree_cleanup_completed',
-              runtimeInstanceId,
-              launchClaimNumber,
-            });
+            await this.resetTransport(activeConnection, generation);
           }
         })().catch(() => undefined);
       });
       const app = acp.client({ name: 'agent-tower' })
         .onNotification(acp.methods.client.session.update, async ({ params }) => {
+          if (!connection || !this.isTransportCurrent(generation, connection)) return;
           if (this.sessionBootstrapUpdates) {
             this.sessionBootstrapUpdates.push(params);
             if (this.sessionBootstrapUpdates.length > MAX_SESSION_BOOTSTRAP_UPDATES) {
@@ -310,9 +347,13 @@ class AcpDriverSession implements DriverSession {
           this.projector?.project(params);
         })
         .onRequest(acp.methods.client.session.requestPermission, async ({ params, signal }) => {
+          if (!connection || !this.isTransportCurrent(generation, connection)) {
+            return { outcome: { outcome: 'cancelled' } };
+          }
           return this.handlePermission(params, signal);
         });
-      const connection = app.connect(acp.ndJsonStream(streams.input, streams.output));
+      connection = app.connect(acp.ndJsonStream(streams.input, streams.output));
+      this.assertStartupCurrent(generation, admissionSignal, 'initialize', false);
       this.connection = connection;
       const clientCapabilities = mergeClientCapabilities(
         this.definition.clientCapabilities?.(this.providerProfile),
@@ -327,6 +368,7 @@ class AcpDriverSession implements DriverSession {
         this.definition.initializeTimeoutMs ?? CONNECT_TIMEOUT_MS,
         'ACP initialize timed out',
       );
+      this.assertTransportCurrent(generation, connection, admissionSignal, 'initialize');
       if (response.protocolVersion !== acp.PROTOCOL_VERSION) {
         throw new AgentRuntimeError('protocol_mismatch', 'initialize', 'ACP protocol version mismatch', false);
       }
@@ -335,6 +377,7 @@ class AcpDriverSession implements DriverSession {
       } catch (error) {
         throw normalizeAcpError(error, 'authenticate');
       }
+      this.assertTransportCurrent(generation, connection, admissionSignal, 'authenticate');
       this.negotiatedCapabilities = {
         loadSession: response.agentCapabilities?.loadSession === true,
         terminalInput: false,
@@ -342,14 +385,100 @@ class AcpDriverSession implements DriverSession {
         permissions: true,
       };
       this.supportsSessionResume = response.agentCapabilities?.sessionCapabilities?.resume != null;
-      void connection.closed.then(
-        () => this.handleUnexpectedConnectionClose(connection),
-        () => this.handleUnexpectedConnectionClose(connection),
+      const monitoredConnection = connection;
+      void monitoredConnection.closed.then(
+        () => this.handleUnexpectedConnectionClose(monitoredConnection),
+        () => this.handleUnexpectedConnectionClose(monitoredConnection),
       );
     } catch (error) {
-      await this.resetTransport(this.connection).catch(() => undefined);
+      if (this.transportGeneration === generation && (this.processManager === manager || this.connection === connection)) {
+        await this.resetTransport(connection, generation).catch(() => undefined);
+      } else {
+        connection?.close();
+        let cleanupError: unknown;
+        if (processStarted && manager) {
+          try {
+            await this.stopAndConfirmProcessTree(manager);
+          } catch (error) {
+            cleanupError = error;
+          }
+        }
+        if (launchCleanupOwnerId) await this.cleanupLaunchWithRetry(launchCleanupOwnerId);
+        if (cleanupError) throw cleanupError;
+      }
       throw normalizeAcpError(error, 'initialize');
     }
+  }
+
+  private assertAdmissionActive(signal: AbortSignal | undefined, stage: string): void {
+    if (this.closed) {
+      throw markPreChildProcessFailure(
+        new AgentRuntimeError('connection_closed', stage, 'ACP connection is closed', true),
+      );
+    }
+    if (!signal?.aborted) return;
+    const reason = signal.reason;
+    throw markPreChildProcessFailure(reason instanceof Error
+      ? reason
+      : new AgentRuntimeError(
+          'runtime_admission_cancelled',
+          stage,
+          'ACP startup admission was cancelled by runtime disposal',
+          true,
+        ));
+  }
+
+  private assertStartupCurrent(
+    generation: number,
+    signal: AbortSignal | undefined,
+    stage: string,
+    preChild: boolean,
+  ): void {
+    let error: Error | undefined;
+    if (this.closed) {
+      error = new AgentRuntimeError('connection_closed', stage, 'ACP connection is closed', true);
+    } else if (this.transportGeneration !== generation) {
+      error = new AgentRuntimeError(
+        'runtime_generation_stale',
+        stage,
+        'ACP transport generation changed during startup',
+        true,
+      );
+    } else if (signal?.aborted) {
+      error = signal.reason instanceof Error
+        ? signal.reason
+        : new AgentRuntimeError(
+            'runtime_admission_cancelled',
+            stage,
+            'ACP startup admission was cancelled by runtime disposal',
+            true,
+          );
+    }
+    if (!error) return;
+    throw preChild ? markPreChildProcessFailure(error) : error;
+  }
+
+  private assertTransportCurrent(
+    generation: number,
+    connection: acp.ClientConnection,
+    signal: AbortSignal | undefined,
+    stage: string,
+  ): void {
+    this.assertStartupCurrent(generation, signal, stage, false);
+    if (this.connection !== connection) {
+      throw new AgentRuntimeError(
+        'runtime_generation_stale',
+        stage,
+        'ACP transport was replaced during startup',
+        true,
+      );
+    }
+  }
+
+  private isTransportCurrent(generation: number, connection: acp.ClientConnection): boolean {
+    return !this.closed
+      && this.transportGeneration === generation
+      && this.connection === connection;
   }
 
   private handleUnexpectedConnectionClose(connection: acp.ClientConnection): void {
@@ -358,34 +487,36 @@ class AcpDriverSession implements DriverSession {
     void this.resetTransport(connection).catch(() => undefined);
   }
 
-  private async resetTransport(expectedConnection?: acp.ClientConnection): Promise<void> {
+  private async resetTransport(
+    expectedConnection?: acp.ClientConnection,
+    expectedGeneration?: number,
+  ): Promise<void> {
     if (this.transportResetPromise) return this.transportResetPromise;
     if (expectedConnection && this.connection !== expectedConnection) return;
+    if (expectedGeneration != null && this.transportGeneration !== expectedGeneration) return;
 
     const connection = this.connection;
     const manager = this.processManager;
+    const managers = new Set(this.pendingProcessManagers);
+    if (manager) managers.add(manager);
+    const cleanupOwnerIds = [...this.launchCleanupOwnerIds];
+    this.transportGeneration += 1;
     this.connection = undefined;
     this.processManager = undefined;
     this.sessionReady = false;
     connection?.close();
 
     const reset = (async () => {
-      let stopError: unknown;
-      try {
-        await manager?.stop();
-      } catch (error) {
-        // Keep a failed manager attached so close/connect can retry its owned
-        // process-tree cleanup instead of treating a root exit as confirmed.
-        if (manager && !this.processManager) this.processManager = manager;
-        stopError = error;
-      }
+      const stops = await Promise.allSettled(
+        [...managers].map((ownedManager) => this.stopAndConfirmProcessTree(ownedManager)),
+      );
 
       // Owned-tree confirmation is the safety-critical result used by
       // admission/recovery. Auxiliary launch cleanup is independent and can
       // be retried without converting a confirmed tree into a failed runtime.
-      await this.cleanupLaunchWithRetry();
-      if (!stopError && this.processManager === manager) this.processManager = undefined;
-      if (stopError) throw stopError;
+      await Promise.all(cleanupOwnerIds.map((ownerId) => this.cleanupLaunchWithRetry(ownerId)));
+      const failedStop = stops.find((result) => result.status === 'rejected');
+      if (failedStop?.status === 'rejected') throw failedStop.reason;
     })();
     this.transportResetPromise = reset;
     try {
@@ -395,20 +526,47 @@ class AcpDriverSession implements DriverSession {
     }
   }
 
-  private async cleanupLaunch(): Promise<void> {
-    const ownerId = this.launchCleanupOwnerId;
-    if (!ownerId) return;
+  private async confirmProcessTreeCleanup(manager: AcpProcessManager): Promise<void> {
+    const evidence = this.processCleanupEvidence.get(manager);
+    if (!evidence) return;
+    if (evidence.confirmation) return evidence.confirmation;
+    const confirmation = evidence.sink.process({
+      type: 'tree_cleanup_completed',
+      runtimeInstanceId: evidence.runtimeInstanceId,
+      launchClaimNumber: evidence.launchClaimNumber,
+    });
+    evidence.confirmation = confirmation;
+    try {
+      await confirmation;
+    } catch (error) {
+      if (evidence.confirmation === confirmation) evidence.confirmation = undefined;
+      throw error;
+    }
+  }
+
+  private async stopAndConfirmProcessTree(manager: AcpProcessManager): Promise<void> {
+    try {
+      await manager.stop();
+      await this.confirmProcessTreeCleanup(manager);
+      this.pendingProcessManagers.delete(manager);
+    } catch (error) {
+      this.pendingProcessManagers.add(manager);
+      throw error;
+    }
+  }
+
+  private async cleanupLaunch(ownerId: string): Promise<void> {
     await acpLaunchCleanupRegistry.runWithImmediateRetries(ownerId);
     // Successful owners are removed from the registry. Keep failed owner IDs
     // attached so a later close/reset can retry the same callback.
     if (!acpLaunchCleanupRegistry.getState(ownerId)) {
-      this.launchCleanupOwnerId = undefined;
+      this.launchCleanupOwnerIds.delete(ownerId);
     }
   }
 
-  private async cleanupLaunchWithRetry(): Promise<void> {
+  private async cleanupLaunchWithRetry(ownerId: string): Promise<void> {
     try {
-      await this.cleanupLaunch();
+      await this.cleanupLaunch(ownerId);
     } catch (error) {
       console.warn('[AcpRuntimeDriver] Auxiliary launch cleanup scheduled for retry', error);
     }
@@ -418,6 +576,8 @@ class AcpDriverSession implements DriverSession {
     if (this.sessionReady) return;
     const connection = this.connection;
     if (!connection) throw new AgentRuntimeError('connection_closed', 'session', 'ACP connection is closed', true);
+    const generation = this.transportGeneration;
+    this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'session');
     const requestedExternalId = turn.resumeExternalSessionId ?? this.currentExternalSessionId;
     const mcpServers = buildAcpMcpServers(this.input.env);
     const sessionMetadata = this.definition.sessionMetadata?.(this.providerProfile) ?? {};
@@ -427,6 +587,7 @@ class AcpDriverSession implements DriverSession {
     const shouldResumeWithoutHistory = Boolean(requestedExternalId)
       && resumeMode === 'resume'
       && this.supportsSessionResume;
+    let resolvedExternalSessionId: string;
     try {
       if (requestedExternalId) {
         if (!shouldResumeWithoutHistory && !this.negotiatedCapabilities.loadSession) {
@@ -445,33 +606,39 @@ class AcpDriverSession implements DriverSession {
               mcpServers,
               ...sessionMetadata,
             });
-        this.currentExternalSessionId = requestedExternalId;
+        this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'session');
         await this.definition.configureSession?.(
           connection.agent,
           requestedExternalId,
           response,
           this.providerProfile,
         );
+        this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'session');
+        resolvedExternalSessionId = requestedExternalId;
       } else {
         const response = await connection.agent.request(acp.methods.agent.session.new, {
           cwd: this.input.workingDir,
           mcpServers,
           ...sessionMetadata,
         });
-        this.currentExternalSessionId = response.sessionId;
+        this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'session');
         await this.definition.configureSession?.(
           connection.agent,
           response.sessionId,
           response,
           this.providerProfile,
         );
+        this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'session');
+        resolvedExternalSessionId = response.sessionId;
       }
       await new Promise<void>((resolve) => setImmediate(resolve));
+      this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'session');
     } finally {
       if (this.sessionBootstrapUpdates === bootstrapUpdates) {
         this.sessionBootstrapUpdates = undefined;
       }
     }
+    this.currentExternalSessionId = resolvedExternalSessionId!;
     const externalSessionId = this.requireExternalSessionId();
     turn.msgStore.pushSessionId(externalSessionId);
     const patch = setSessionId(externalSessionId);

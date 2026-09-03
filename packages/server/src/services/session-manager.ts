@@ -1,5 +1,5 @@
 import { prisma } from '../utils/index.js';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, Session as PrismaSession } from '@prisma/client';
 import { AgentType, SessionStatus, SessionPurpose, TaskStatus, SessionContext } from '../types/index.js';
 import {
   getProviderById,
@@ -45,6 +45,7 @@ import {
   RuntimeCoordinator,
   StaticRuntimeRegistry,
   type RuntimeRegistry,
+  type RuntimeStartAdmission,
   setRuntimeStateSnapshot,
   type RuntimeResumeMode,
   type RuntimeProcessEvent,
@@ -156,6 +157,13 @@ export class SessionManager {
    */
   private followUpReservations = new Map<string, Promise<void>>();
   private followUpReservationReleases = new Set<() => void>();
+  /** Serializes user stop and direct follow-up actions for each Session. */
+  private sessionActionReservations = new Map<string, Promise<void>>();
+  private sessionActionReservationReleases = new Set<() => void>();
+  /** Public initial starts are revocable before they enter RuntimeCoordinator admission. */
+  private initialStartOperations = new Map<string, Set<AbortController>>();
+  /** A synchronous stop intent rejects starts registered while stop is still in flight. */
+  private sessionStopIntentCounts = new Map<string, number>();
   /** Incremented for every start/send cycle so late post-processing cannot affect a new turn. */
   private sessionGenerations = new Map<string, number>();
   // 每个 session 上次写入 TeamRun 心跳时间戳的时刻，用于节流 lastHeartbeatAt 落库。
@@ -175,12 +183,6 @@ export class SessionManager {
   /** Durable conversation turns are consumed one at a time per Session. */
   private readonly conversationQueueWorkers = new Map<string, Promise<void>>();
   private conversationQueueStopping = false;
-  /** Admission boundary covering the short initial-start -> process-owning handoff. */
-  private readonly pendingInitialStarts = new Map<string, Promise<void>>();
-  private readonly initialStartResolvers = new Map<string, () => void>();
-  /** Same boundary for follow-up/reply turns, which can race a direct stop. */
-  private readonly pendingProcessStarts = new Map<string, Promise<void>>();
-  private readonly processStartResolvers = new Map<string, () => void>();
   private readonly artifactService = new AgentArtifactService();
   private static readonly SNAPSHOT_CHECKPOINT_MS = 15_000;
   private static readonly HEARTBEAT_THROTTLE_MS = 30_000;
@@ -212,14 +214,50 @@ export class SessionManager {
         onDriverSessionDisposed: (sessionId) => {
           revokeAgentApiCredential(sessionId);
         },
-        onDriverSessionDisposedInstance: (sessionId, runtimeInstanceId, launchClaimNumber) => {
-          return this.markRuntimeProcessCleanupState(
+        onDriverSessionDisposedInstance: async (sessionId, runtimeInstanceId, launchClaimNumber) => {
+          await this.markRuntimeProcessCleanupState(
             sessionId,
             runtimeInstanceId,
             'CONFIRMED',
             undefined,
             launchClaimNumber,
           );
+          const resolvedClaim = Number.isInteger(launchClaimNumber) && launchClaimNumber! > 0
+            ? launchClaimNumber as number
+            : null;
+          const [process, launch] = resolvedClaim == null
+            ? [null, null]
+            : await Promise.all([
+              prisma.executionProcess.findFirst({
+                where: { sessionId, runtimeInstanceId, launchClaimNumber: resolvedClaim },
+                select: { cleanupState: true },
+              }),
+              prisma.session.findUnique({
+                where: { id: sessionId },
+                select: {
+                  runtimeLaunchState: true,
+                  runtimeLaunchClaimCount: true,
+                  runtimeLaunchResolvedCount: true,
+                },
+              }),
+            ]);
+          const processConfirmed = process?.cleanupState === 'CONFIRMED'
+            && !this.hasRuntimeProcessOwner(runtimeInstanceId, sessionId, resolvedClaim);
+          const safelyNeverStarted = process == null
+            && launch?.runtimeLaunchState === RUNTIME_LAUNCH_STATES.SAFE_PRE_CHILD_FAILURE
+            && launch.runtimeLaunchClaimCount === resolvedClaim
+            && launch.runtimeLaunchResolvedCount === resolvedClaim;
+          if (
+            !processConfirmed
+            && !safelyNeverStarted
+          ) {
+            throw new AgentRuntimeError(
+              'runtime_cleanup_pending',
+              'close',
+              `Runtime process cleanup evidence for '${runtimeInstanceId}' is not durably confirmed`,
+              true,
+            );
+          }
         },
         onDriverSessionDisposeFailed: (sessionId, runtimeInstanceId, error, launchClaimNumber) => {
           this.logSessionError('session.runtimeDispose', error, { sessionId, runtimeInstanceId });
@@ -413,7 +451,13 @@ export class SessionManager {
     }
     try {
       if (this.runtimeCoordinator.hasRuntimeInstance(input.sessionId, input.runtimeInstanceId)) {
-        await this.runtimeCoordinator.disposeSession(input.sessionId, input.runtimeInstanceId);
+        const handled = await this.runtimeCoordinator.retryDisposedSessionCleanup(
+          input.sessionId,
+          input.runtimeInstanceId,
+        );
+        if (!handled && this.runtimeCoordinator.hasRuntimeInstance(input.sessionId, input.runtimeInstanceId)) {
+          await this.runtimeCoordinator.disposeSession(input.sessionId, input.runtimeInstanceId);
+        }
         return;
       }
       await cleanupPersistedAcpProcessTree(input);
@@ -554,26 +598,31 @@ export class SessionManager {
   async start(id: string) {
     console.log('[SessionManager] 🚀 Starting session:', id);
 
-    const session = await this.findSessionExecutionRecord(id);
-    if (!session) {
-      console.log('[SessionManager] ❌ Session not found:', id);
-      return null;
-    }
-    const initialStart = this.reserveInitialStart(id);
+    const startOperation = this.reserveInitialStartOperation(id);
     try {
-      await this.waitForPendingAutoCommit(id);
-      this.beginSessionExecution(id);
+      const session = await startOperation.waitFor(() => this.findSessionExecutionRecord(id));
+      startOperation.throwIfStopped();
+      if (!session) {
+        console.log('[SessionManager] ❌ Session not found:', id);
+        return null;
+      }
+      await startOperation.waitFor(() => this.waitForPendingAutoCommit(id));
+      startOperation.throwIfStopped();
       this.ensureExecutionRecordIsLive(session);
       const workingDir = this.getExecutionWorkingDir(session);
 
-    console.log('[SessionManager] Session details:', {
-      id: session.id,
-      agentType: session.agentType,
-      variant: session.variant,
-      prompt: summarizeTextForLog(session.prompt),
-      workingDir,
-    });
+      console.log('[SessionManager] Session details:', {
+        id: session.id,
+        agentType: session.agentType,
+        variant: session.variant,
+        prompt: summarizeTextForLog(session.prompt),
+        workingDir,
+      });
 
+      // No await separates this final operation check from Coordinator lease
+      // publication inside startRuntimeTurn(). A later stop is then observed by
+      // the runtime admission signal instead of being lost between the gates.
+      startOperation.throwIfStopped();
       await this.startRuntimeTurn(
         session,
         session.prompt,
@@ -585,7 +634,7 @@ export class SessionManager {
       );
       return session;
     } finally {
-      initialStart.release();
+      startOperation.release();
     }
   }
 
@@ -593,21 +642,23 @@ export class SessionManager {
     console.log('[SessionManager] 🚀 Starting follow-up session:', id);
     console.log('[SessionManager] Resume from Tower session:', resumeFromSessionId);
 
-    const session = await this.findSessionExecutionRecord(id);
-    if (!session) {
-      console.log('[SessionManager] ❌ Session not found:', id);
-      return null;
-    }
-    const initialStart = this.reserveInitialStart(id);
+    const startOperation = this.reserveInitialStartOperation(id);
     try {
-      await this.waitForPendingAutoCommit(id);
-      this.beginSessionExecution(id);
+      const session = await startOperation.waitFor(() => this.findSessionExecutionRecord(id));
+      startOperation.throwIfStopped();
+      if (!session) {
+        console.log('[SessionManager] ❌ Session not found:', id);
+        return null;
+      }
+      await startOperation.waitFor(() => this.waitForPendingAutoCommit(id));
+      startOperation.throwIfStopped();
       this.ensureExecutionRecordIsLive(session);
 
-      const resumeFromSession = await prisma.session.findUnique({
+      const resumeFromSession = await startOperation.waitFor(() => prisma.session.findUnique({
         where: { id: resumeFromSessionId },
         select: { logSnapshot: true, externalSessionId: true },
-      });
+      }));
+      startOperation.throwIfStopped();
       const agentSessionId = resumeFromSession
         ? resumeFromSession.externalSessionId
           ?? this.resolveAgentSessionId(resumeFromSessionId, resumeFromSession.logSnapshot)
@@ -623,6 +674,7 @@ export class SessionManager {
         workingDir: this.getExecutionWorkingDir(session),
       });
 
+      startOperation.throwIfStopped();
       await this.startRuntimeTurn(
         session,
         session.prompt,
@@ -634,7 +686,7 @@ export class SessionManager {
       );
       return session;
     } finally {
-      initialStart.release();
+      startOperation.release();
     }
   }
 
@@ -652,17 +704,12 @@ export class SessionManager {
     }
 
     const reservation = this.reserveFollowUp(id);
+    let actionReservation: ReturnType<SessionManager['reserveSessionAction']> | undefined;
     let releaseTeamRunAdmission: (() => void) | undefined;
     try {
       // Serialize concurrent follow-ups for the same session while retaining
       // the reservation in the map so the old finalizer cannot reconcile.
       await reservation.previous;
-
-      const session = await this.findSessionExecutionRecord(id);
-      if (!session) {
-        console.log('[SessionManager] ❌ Session not found:', id);
-        return null;
-      }
 
       // TeamRun follow-ups are admission-controlled just like initial starts.
       // A REST/MCP caller must carry the current invocation identity; browser
@@ -688,7 +735,25 @@ export class SessionManager {
       } else if (expectedTeamRunInvocationId) {
         await this.assertTeamRunDispatchAdmitted(id, expectedTeamRunInvocationId);
       }
+
+      // TeamRun stop owns member admission before entering SessionManager.
+      // Preserve that lock order, then serialize the runtime mutation itself.
+      actionReservation = this.reserveSessionAction(id);
+      await actionReservation.previous;
+
+      const session = await this.findSessionExecutionRecord(id);
+      if (!session) {
+        console.log('[SessionManager] ❌ Session not found:', id);
+        return null;
+      }
       this.ensureExecutionRecordIsLive(session);
+
+      // A failed explicit stop leaves the DISPOSED DriverSession attached so
+      // its process owner can be retried. Confirm that cleanup before clearing
+      // the terminal gate, advancing the generation, issuing a credential, or
+      // claiming another launch; otherwise a never-opened turn is quarantined.
+      await this.runtimeCoordinator.retryDisposedSessionCleanup(id);
+
       const resumeMode: RuntimeResumeMode = this.normalizeRuntimeType(session.runtimeType) === RuntimeType.ACP
         && hasCompletePersistedSnapshot(session)
         ? 'resume'
@@ -724,13 +789,6 @@ export class SessionManager {
         console.log(`[SessionManager] ✅ Provider switched to: ${switchedProvider?.name ?? providerId}`);
       }
 
-      // A rejected follow-up must not cancel the completed turn's post-exit
-      // work. Advance the generation only after the session/provider checks and
-      // any provider persistence have succeeded, immediately before replacing
-      // the old execution with the new one.
-      this.invalidateSessionGeneration(id);
-      this.beginSessionExecution(id);
-
       // Stop the previous turn before waiting for its auto-commit boundary. The
       // coordinator suppresses that superseded turn's terminal event so it cannot
       // finalize the newly reserved generation.
@@ -753,38 +811,72 @@ export class SessionManager {
       if (providerId && providerId !== session.providerId) {
         await this.runtimeCoordinator.disposeSession(id);
       }
-      const processStart = this.reserveProcessStart(id);
-      try {
-        await this.startRuntimeTurn(
-          session,
-          message,
-          agentSessionId,
-          effectiveProviderId,
-          resumeMode,
-          userEntryId,
-          false,
-          expectedTeamRunInvocationId,
-        );
-        return session;
-      } finally {
-        processStart.release();
-      }
+      await this.startRuntimeTurn(
+        session,
+        message,
+        agentSessionId,
+        effectiveProviderId,
+        resumeMode,
+        userEntryId,
+        false,
+        expectedTeamRunInvocationId,
+        true,
+      );
+      return session;
     } finally {
       releaseTeamRunAdmission?.();
       reservation.release();
+      actionReservation?.release();
     }
   }
 
   async stop(id: string, options: StopSessionOptions = {}) {
-    const session = await prisma.session.findUnique({ where: { id } });
-    if (!session) return null;
+    // Publish stop intent synchronously, before the session-action queue can
+    // yield. Initial starts still doing DB/auto-commit preparation are revoked
+    // without making stop wait for those unrelated operations.
+    const releaseStopIntent = this.beginSessionStopIntent(id);
+    const actionReservation = this.reserveSessionAction(id);
+    let pendingFinalization: Promise<void> | undefined;
+    let stoppedSession: PrismaSession | null = null;
+    try {
+      try {
+        await actionReservation.previous;
+        const result = await this.stopWithinSessionAction(id, options);
+        stoppedSession = result.session;
+        pendingFinalization = result.pendingFinalization;
+      } finally {
+        // A follow-up queued after stop may already be blocking the old terminal
+        // finalizer. Release the action boundary before waiting for that finalizer.
+        actionReservation.release();
+      }
+      await pendingFinalization;
+      return stoppedSession;
+    } finally {
+      releaseStopIntent();
+    }
+  }
 
-    // If initial start has already crossed into its short admission handoff,
-    // let it establish the runtime first; this stop then owns and cleans it.
-    // If stop wins before that handoff, the PENDING -> RUNNING CAS below fails
-    // and no process-owning call can occur after stop returns.
-    await this.pendingInitialStarts.get(id);
-    await this.pendingProcessStarts.get(id);
+  private async stopWithinSessionAction(id: string, options: StopSessionOptions) {
+    const session = await prisma.session.findUnique({ where: { id } });
+    if (!session) return { session: null };
+
+    const hasActiveTurn = this.runtimeCoordinator.hasActiveTurn(id);
+    const runtimeDisposal = this.normalizeRuntimeType(session.runtimeType) === RuntimeType.ACP && hasActiveTurn
+      ? this.runtimeCoordinator.cancelAndDisposeSession(id)
+      : this.runtimeCoordinator.disposeSession(id);
+    // TeamRun reconciliation and snapshot persistence may run before cleanup is
+    // awaited. Observe an early rejection while retaining it for the boundary below.
+    void runtimeDisposal.catch(() => undefined);
+    if (hasActiveTurn && this.normalizeRuntimeType(session.runtimeType) !== RuntimeType.ACP) {
+      void this.runtimeCoordinator.cancelTurn(id).catch((error) => {
+        this.logSessionError('session.runtimeCancel', error, { sessionId: id });
+      });
+    }
+
+    // The disposal request above has cancelled any startup lease that can mint
+    // a DriverSession-bound credential. Revoke it before fallible persistence
+    // while the runtime owner remains available for a later cleanup retry.
+    revokeAgentApiCredential(id);
 
     // Revoke TeamRun dispatch before waiting for runtime cleanup. A direct
     // Session stop does not pass through TeamSchedulerService, so delaying this
@@ -794,7 +886,6 @@ export class SessionManager {
     }
 
     const terminalStatus = this.terminalSessions.get(id);
-    const hasActiveTurn = this.runtimeCoordinator.hasActiveTurn(id);
     const persistedTerminal = [
       SessionStatus.COMPLETED,
       SessionStatus.FAILED,
@@ -806,45 +897,37 @@ export class SessionManager {
       // clean up the PTY, but it must not regress the persisted status. The
       // backing TeamRun invocation may still be waiting for a room reply, so
       // it must still pass through the cancellation reconciler.
-      await this.runtimeCoordinator.disposeSession(id);
+      await runtimeDisposal;
       if (!await this.isRuntimeCleanupConfirmed(id)) {
         this.terminalSessions.delete(id);
-        return session;
+        return { session };
       }
       this.maybeClearTerminalState(id);
-      await pendingFinalization;
       if (terminalStatus && !persistedTerminal) {
         await prisma.session.updateMany({
           where: { id, status: { notIn: [SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED] } },
           data: { status: terminalStatus },
         });
       }
-      revokeAgentApiCredential(id);
-      return session;
+      return {
+        session,
+        pendingFinalization: options.skipTeamRunReconcile ? undefined : pendingFinalization,
+      };
     }
     this.terminalSessions.set(id, SessionStatus.CANCELLED);
 
-    if (this.normalizeRuntimeType(session.runtimeType) === RuntimeType.ACP && hasActiveTurn) {
-      await this.runtimeCoordinator.abandonTurn(id).catch((error) => {
-        this.logSessionError('session.runtimeCancel', error, { sessionId: id });
-        return false;
-      });
-    } else {
-      await this.runtimeCoordinator.cancelTurn(id).catch((error) => {
-        this.logSessionError('session.runtimeCancel', error, { sessionId: id });
-      });
-    }
+    await runtimeDisposal;
     // Explicit stop revokes the DriverSession-bound workspace-service credential.
     // A later follow-up reopens from the persisted external session id with a new credential.
     // Do not report a stopped TeamRun member until the owned process tree has
     // confirmed cleanup. The scheduler will retain the invocation and block
     // the next admission when this rejects, allowing a later retry/recovery.
-    await this.runtimeCoordinator.disposeSession(id);
     if (!await this.isRuntimeCleanupConfirmed(id)) {
       this.terminalSessions.delete(id);
-      return session;
+      return { session };
     }
 
+    await this.externalSessionPersistence.get(id);
     const msgStore = sessionMsgStoreManager.get(id);
     if (msgStore) {
       msgStore.pushFinished();
@@ -869,8 +952,7 @@ export class SessionManager {
     // store after the CANCELLED snapshot has been persisted above.
     sessionMsgStoreManager.delete(id);
     this.releaseSnapshotPersistenceState(id);
-    revokeAgentApiCredential(id);
-    return session;
+    return { session };
   }
 
   /** @deprecated Use hasActiveTurn(). */
@@ -920,12 +1002,6 @@ export class SessionManager {
   async destroyAll(): Promise<void> {
     this.stopConversationQueue();
     await this.runtimeCoordinator.destroyAll();
-    for (const resolve of this.initialStartResolvers.values()) resolve();
-    this.initialStartResolvers.clear();
-    this.pendingInitialStarts.clear();
-    for (const resolve of this.processStartResolvers.values()) resolve();
-    this.processStartResolvers.clear();
-    this.pendingProcessStarts.clear();
     this.pendingRuntimeProcessEvents.clear();
     for (const timer of this.pendingRuntimeEventExpiryTimers.values()) clearTimeout(timer);
     this.pendingRuntimeEventExpiryTimers.clear();
@@ -938,6 +1014,16 @@ export class SessionManager {
     for (const release of [...this.followUpReservationReleases]) release();
     this.followUpReservationReleases.clear();
     this.followUpReservations.clear();
+    for (const release of [...this.sessionActionReservationReleases]) release();
+    this.sessionActionReservationReleases.clear();
+    this.sessionActionReservations.clear();
+    for (const operations of this.initialStartOperations.values()) {
+      for (const controller of operations) {
+        controller.abort(this.sessionStartStoppedError());
+      }
+    }
+    this.initialStartOperations.clear();
+    this.sessionStopIntentCounts.clear();
     clearAgentApiCredentials();
   }
 
@@ -1107,78 +1193,128 @@ export class SessionManager {
     historyBoundaryEntryId?: string,
     initialStart = false,
     expectedTeamRunInvocationId?: string,
+    advanceGeneration = false,
   ): Promise<void> {
     const workingDir = this.getExecutionWorkingDir(session);
-    const env = ExecutionEnv.default(workingDir);
-    if (providerId) {
-      const provider = getProviderById(providerId);
-      if (provider && Object.keys(provider.env).length > 0) {
-        env.merge(filterAgentSubprocessExternalEnv(provider.env));
-      }
-    }
-    if (!this.isConversationSession(session)) {
-      await this.injectTeamRunInvocationEnv(session.id, env);
-    }
-    this.injectAgentTowerMcpServiceEnv(session.id, env);
-
-    const isNewStore = !sessionMsgStoreManager.has(session.id);
-    const msgStore = sessionMsgStoreManager.getOrCreate(session.id);
-    if (isNewStore && session.logSnapshot) {
-      try {
-        msgStore.restoreFromSnapshot(JSON.parse(session.logSnapshot) as NormalizedConversation);
-      } catch (error) {
-        this.logSessionError('session.snapshotRestore', error, { sessionId: session.id });
-      }
-    }
-
     let launchClaimNumber: number | null = null;
+    let admissionEntered = false;
+    let reportedError: unknown;
     try {
-      // Every turn claim is durable before RuntimeCoordinator can call a driver.
-      // Initial admission updates PENDING -> RUNNING and the claim counter in
-      // one transaction; follow-ups use the same evidence without pretending
-      // that an existing ACP transport necessarily spawns a new child.
-      launchClaimNumber = await this.claimRuntimeLaunch(session.id, initialStart);
-      try {
-        await this.assertTeamRunDispatchAdmitted(session.id, expectedTeamRunInvocationId);
-      } catch (error) {
-        throw markPreChildProcessFailure(error);
-      }
-      const runtimePrompt = buildWorkspaceRuntimePrompt(session, prompt);
-      const handle = await this.runtimeCoordinator.startTurn({
-        towerSessionId: session.id,
-        agentType: session.agentType as AgentType,
-        runtimeType: this.normalizeRuntimeType(session.runtimeType),
-        variant: session.variant ?? 'DEFAULT',
-        providerId,
-        workingDir,
-        env,
-        externalSessionId: session.externalSessionId,
-        msgStore,
-        prompt: session.purpose === SessionPurpose.CHAT
-          ? appendAgentOutputIntentInstructions(runtimePrompt)
-          : runtimePrompt,
-        resumeExternalSessionId,
-        resumeMode,
-        historyBoundaryEntryId,
-        launchClaimNumber,
+      let handle: Awaited<ReturnType<RuntimeCoordinator['startTurn']>> | undefined;
+      await this.runtimeCoordinator.withStartAdmission(session.id, async (admission) => {
+        admissionEntered = true;
+        try {
+          this.assertPreChildAdmission(admission);
+          // A rejected follow-up must not supersede the completed generation
+          // until it owns the same disposal boundary as credential/claim setup.
+          if (advanceGeneration) this.invalidateSessionGeneration(session.id);
+          this.beginSessionExecution(session.id);
+
+          const env = ExecutionEnv.default(workingDir);
+          if (providerId) {
+            const provider = getProviderById(providerId);
+            if (provider && Object.keys(provider.env).length > 0) {
+              env.merge(filterAgentSubprocessExternalEnv(provider.env));
+            }
+          }
+          if (!this.isConversationSession(session)) {
+            await this.injectTeamRunInvocationEnv(session.id, env);
+            this.assertPreChildAdmission(admission);
+          }
+          this.injectAgentTowerMcpServiceEnv(session.id, env);
+          this.assertPreChildAdmission(admission);
+
+          const isNewStore = !sessionMsgStoreManager.has(session.id);
+          const msgStore = sessionMsgStoreManager.getOrCreate(session.id);
+          if (isNewStore && session.logSnapshot) {
+            try {
+              msgStore.restoreFromSnapshot(JSON.parse(session.logSnapshot) as NormalizedConversation);
+            } catch (error) {
+              this.logSessionError('session.snapshotRestore', error, { sessionId: session.id });
+            }
+          }
+
+          // Every turn claim is durable before RuntimeCoordinator can call a driver.
+          // The lease remains held until runTurn has either failed before spawn or
+          // handed the child/transport to its DriverSession owner.
+          launchClaimNumber = await this.claimRuntimeLaunch(session.id, initialStart);
+          this.assertPreChildAdmission(admission);
+          try {
+            await this.assertTeamRunDispatchAdmitted(session.id, expectedTeamRunInvocationId);
+          } catch (error) {
+            throw markPreChildProcessFailure(error);
+          }
+          this.assertPreChildAdmission(admission);
+          const runtimePrompt = buildWorkspaceRuntimePrompt(session, prompt);
+          handle = await this.runtimeCoordinator.startTurn({
+            towerSessionId: session.id,
+            agentType: session.agentType as AgentType,
+            runtimeType: this.normalizeRuntimeType(session.runtimeType),
+            variant: session.variant ?? 'DEFAULT',
+            providerId,
+            workingDir,
+            env,
+            externalSessionId: session.externalSessionId,
+            msgStore,
+            prompt: session.purpose === SessionPurpose.CHAT
+              ? appendAgentOutputIntentInstructions(runtimePrompt)
+              : runtimePrompt,
+            resumeExternalSessionId,
+            resumeMode,
+            historyBoundaryEntryId,
+            launchClaimNumber,
+            admission,
+          });
+          await this.resolveReusedRuntimeLaunch(session.id, launchClaimNumber);
+          this.eventBus.emit('session:started', { sessionId: session.id });
+        } catch (error) {
+          const preChildFailure = launchClaimNumber != null && (
+            isPreChildProcessFailure(error)
+            || (error instanceof AgentRuntimeError && error.code === 'runtime_admission_cancelled')
+          );
+          let launchResolutionError: unknown;
+          if (preChildFailure) {
+            try {
+              // Finish the durable no-child proof before disposal may close or
+              // delete the managed session attached to this lease.
+              await this.resolvePreChildRuntimeLaunchFailure(session.id, launchClaimNumber!, error);
+            } catch (persistError) {
+              launchResolutionError = persistError;
+            }
+          }
+          revokeAgentApiCredential(session.id);
+          if (launchClaimNumber != null) {
+            if (!preChildFailure) {
+              await this.quarantineRuntimeLaunch(session.id, launchClaimNumber, error);
+            } else if (launchResolutionError) {
+              await this.quarantineRuntimeLaunch(session.id, launchClaimNumber, launchResolutionError);
+            }
+          }
+          reportedError = launchResolutionError ?? error;
+          throw reportedError;
+        }
       });
-      await this.resolveReusedRuntimeLaunch(session.id, launchClaimNumber);
       // Terminal persistence is driven by Runtime turn events. Attach a catch
       // so the public start/message methods do not leave a rejected handle
       // unobserved after they have returned to the HTTP caller.
-      void handle.completion.catch(() => undefined);
-      this.eventBus.emit('session:started', { sessionId: session.id });
+      void handle!.completion.catch(() => undefined);
       await this.checkTaskAutoRevert(session.id);
     } catch (error) {
+      // Admission may fail while waiting for an older disposal. Do not turn
+      // that retryable gate failure into a fresh disposal attempt.
+      const finalError = reportedError ?? error;
+      if (!admissionEntered) {
+        this.logSessionError('session.runtimeAdmission', finalError, {
+          sessionId: session.id,
+          agentType: session.agentType,
+          runtimeType: session.runtimeType,
+          providerId,
+          workingDir,
+        });
+        throw normalizeExecutorStartError(finalError);
+      }
       await this.runtimeCoordinator.disposeSession(session.id).catch(() => undefined);
       revokeAgentApiCredential(session.id);
-      if (launchClaimNumber != null) {
-        if (isPreChildProcessFailure(error)) {
-          await this.resolvePreChildRuntimeLaunchFailure(session.id, launchClaimNumber, error);
-        } else {
-          await this.quarantineRuntimeLaunch(session.id, launchClaimNumber, error);
-        }
-      }
       const cleanupConfirmed = await this.isRuntimeCleanupConfirmed(session.id).catch(() => false);
       if (cleanupConfirmed) {
         await prisma.session.update({
@@ -1188,14 +1324,22 @@ export class SessionManager {
       }
       sessionMsgStoreManager.delete(session.id);
       this.releaseSnapshotPersistenceState(session.id);
-      this.logSessionError('session.runtimeStart', error, {
+      this.logSessionError('session.runtimeStart', finalError, {
         sessionId: session.id,
         agentType: session.agentType,
         runtimeType: session.runtimeType,
         providerId,
         workingDir,
       });
-      throw normalizeExecutorStartError(error);
+      throw normalizeExecutorStartError(finalError);
+    }
+  }
+
+  private assertPreChildAdmission(admission: RuntimeStartAdmission): void {
+    try {
+      admission.throwIfCancelled();
+    } catch (error) {
+      throw markPreChildProcessFailure(error);
     }
   }
 
@@ -1308,36 +1452,6 @@ export class SessionManager {
       },
     });
     console.warn(`[SessionManager] Session ${sessionId} runtime launch quarantined: ${diagnostic}`);
-  }
-
-  private reserveInitialStart(sessionId: string): { release: () => void } {
-    let resolve!: () => void;
-    const promise = new Promise<void>((done) => { resolve = done; });
-    this.pendingInitialStarts.set(sessionId, promise);
-    this.initialStartResolvers.set(sessionId, resolve);
-    return {
-      release: () => {
-        if (this.pendingInitialStarts.get(sessionId) !== promise) return;
-        this.pendingInitialStarts.delete(sessionId);
-        this.initialStartResolvers.delete(sessionId);
-        resolve();
-      },
-    };
-  }
-
-  private reserveProcessStart(sessionId: string): { release: () => void } {
-    let resolve!: () => void;
-    const promise = new Promise<void>((done) => { resolve = done; });
-    this.pendingProcessStarts.set(sessionId, promise);
-    this.processStartResolvers.set(sessionId, resolve);
-    return {
-      release: () => {
-        if (this.pendingProcessStarts.get(sessionId) !== promise) return;
-        this.pendingProcessStarts.delete(sessionId);
-        this.processStartResolvers.delete(sessionId);
-        resolve();
-      },
-    };
   }
 
   private async assertTeamRunDispatchAdmitted(
@@ -2644,6 +2758,103 @@ export class SessionManager {
     this.followUpReservations.set(sessionId, reservation);
     this.followUpReservationReleases.add(release);
     return { previous, release };
+  }
+
+  private reserveSessionAction(sessionId: string): {
+    previous: Promise<void>;
+    release: () => void;
+  } {
+    const previous = this.sessionActionReservations.get(sessionId) ?? Promise.resolve();
+    let resolveReservation!: () => void;
+    const reservation = new Promise<void>((resolve) => {
+      resolveReservation = resolve;
+    });
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      resolveReservation();
+      this.sessionActionReservationReleases.delete(release);
+      if (this.sessionActionReservations.get(sessionId) === reservation) {
+        this.sessionActionReservations.delete(sessionId);
+      }
+    };
+    this.sessionActionReservations.set(sessionId, reservation);
+    this.sessionActionReservationReleases.add(release);
+    return { previous, release };
+  }
+
+  private reserveInitialStartOperation(sessionId: string): {
+    waitFor: <T>(operation: () => Promise<T>) => Promise<T>;
+    throwIfStopped: () => void;
+    release: () => void;
+  } {
+    const controller = new AbortController();
+    const operations = this.initialStartOperations.get(sessionId) ?? new Set<AbortController>();
+    operations.add(controller);
+    this.initialStartOperations.set(sessionId, operations);
+    if ((this.sessionStopIntentCounts.get(sessionId) ?? 0) > 0) {
+      controller.abort(this.sessionStartStoppedError());
+    }
+    let released = false;
+    return {
+      waitFor: <T>(operation: () => Promise<T>) => this.waitForInitialStartOperation(operation, controller.signal),
+      throwIfStopped: () => controller.signal.throwIfAborted(),
+      release: () => {
+        if (released) return;
+        released = true;
+        operations.delete(controller);
+        if (operations.size === 0 && this.initialStartOperations.get(sessionId) === operations) {
+          this.initialStartOperations.delete(sessionId);
+        }
+      },
+    };
+  }
+
+  private async waitForInitialStartOperation<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    signal.throwIfAborted();
+    let rejectStopped!: (reason: unknown) => void;
+    const stopped = new Promise<never>((_resolve, reject) => {
+      rejectStopped = reject;
+    });
+    const onStop = () => rejectStopped(signal.reason ?? this.sessionStartStoppedError());
+    signal.addEventListener('abort', onStop, { once: true });
+    try {
+      // Attach the race before starting fallible work. The second signal check
+      // prevents a stop published during setup from launching the operation,
+      // while the race continues to observe any operation that already started.
+      const pending = Promise.resolve().then(() => {
+        signal.throwIfAborted();
+        return operation();
+      });
+      return await Promise.race([pending, stopped]);
+    } finally {
+      signal.removeEventListener('abort', onStop);
+    }
+  }
+
+  private beginSessionStopIntent(sessionId: string): () => void {
+    this.sessionStopIntentCounts.set(sessionId, (this.sessionStopIntentCounts.get(sessionId) ?? 0) + 1);
+    const error = this.sessionStartStoppedError();
+    for (const controller of this.initialStartOperations.get(sessionId) ?? []) {
+      controller.abort(error);
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.sessionStopIntentCounts.get(sessionId) ?? 1) - 1;
+      if (remaining > 0) this.sessionStopIntentCounts.set(sessionId, remaining);
+      else this.sessionStopIntentCounts.delete(sessionId);
+    };
+  }
+
+  private sessionStartStoppedError(): ServiceError {
+    return new ServiceError(
+      'Session start was stopped before runtime admission',
+      'SESSION_NOT_ADMITTED',
+      409,
+    );
   }
 
   private async waitForFollowUpReservation(sessionId: string): Promise<void> {

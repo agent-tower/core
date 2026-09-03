@@ -690,6 +690,7 @@ describe('SessionManager TeamRun env injection', () => {
       runtimeLaunchResolvedCount: 1,
       runtimeLaunchProcessCount: 0,
     });
+    expect(manager.getRuntimeState(session.id).turnState).toBe('IDLE');
   });
 
   it('reports a missing executor as a deterministic start error', async () => {
@@ -1147,7 +1148,7 @@ describe('SessionManager TeamRun env injection', () => {
       },
     });
     const activePty = createPty();
-    spawnMock.mockResolvedValueOnce({ pid: 43001, pty: activePty });
+    spawnMock.mockResolvedValueOnce(spawnResult(43001, activePty));
     await manager.start(session.id);
     await prisma.agentInvocation.update({
       where: { id: invocation.id },

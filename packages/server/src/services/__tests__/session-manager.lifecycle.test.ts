@@ -12,7 +12,6 @@ import { RuntimeType, type RuntimeCapabilities } from '@agent-tower/shared';
 import type {
   DriverSession,
   RuntimeDriver,
-  RuntimeOpenInput,
   RuntimeRunTurnInput,
   StartRuntimeTurnInput,
   RuntimeTurnOutcome,
@@ -181,6 +180,130 @@ function waitForEvent(eventBus: EventBus, event: 'session:completed', timeoutMs 
       resolve(payload as { sessionId: string; status: string });
     });
   });
+}
+
+async function createRetryableAcpStopFixture(closeFailureMessages: string[]) {
+  const provider = {
+    id: 'cleanup-retry-acp-provider',
+    name: 'Cleanup Retry ACP Provider',
+    agentType: AgentType.CODEX,
+    runtimeType: RuntimeType.ACP,
+    env: {},
+    config: {},
+    isDefault: false,
+  };
+  getProviderByIdMock.mockReturnValue(provider);
+  const { workspace, session } = await createSessionFixture({ providerId: provider.id });
+  await prisma.session.update({
+    where: { id: session.id },
+    data: { runtimeType: RuntimeType.ACP },
+  });
+
+  const service = new WorkspaceBackgroundService();
+  const turns: Array<ReturnType<typeof deferred<RuntimeTurnOutcome>>> = [];
+  const observedCredentials: string[] = [];
+  const driverSessions: DriverSession[] = [];
+  const remainingCloseFailures = [...closeFailureMessages];
+  const capabilities: RuntimeCapabilities = {
+    loadSession: true,
+    terminalInput: false,
+    terminalResize: false,
+    permissions: true,
+  };
+  const driver: RuntimeDriver = {
+    type: RuntimeType.ACP,
+    open: vi.fn(async (input, openingSink) => {
+      const generation = driverSessions.length + 1;
+      const generationTurns: Array<ReturnType<typeof deferred<RuntimeTurnOutcome>>> = [];
+      const driverSession: DriverSession = {
+        runtimeInstanceId: `cleanup-retry-runtime-${generation}`,
+        capabilities,
+        externalSessionId: 'cleanup-retry-external',
+        runTurn: vi.fn(async (_turn: RuntimeRunTurnInput, sink) => {
+          const credential = input.env.get(AGENT_API_CREDENTIAL_ENV) ?? '';
+          observedCredentials.push(credential);
+          const identity = validateAgentApiCredential(credential);
+          if (!identity) throw new Error('ACP workspace-service credential is invalid');
+          await service.authorizeCaller(workspace.id, { kind: 'agent', ...identity });
+          sink.stream({
+            type: 'external_session_id',
+            externalSessionId: 'cleanup-retry-external',
+          });
+          const completion = deferred<RuntimeTurnOutcome>();
+          turns.push(completion);
+          generationTurns.push(completion);
+          return { completion: completion.promise };
+        }),
+        cancelTurn: vi.fn(async () => {
+          generationTurns.at(-1)?.resolve({ stopReason: 'cancelled' });
+        }),
+        close: vi.fn(async () => {
+          generationTurns.at(-1)?.resolve({ stopReason: 'cancelled' });
+          if (generation === 1) {
+            const failure = remainingCloseFailures.shift();
+            if (failure) throw new Error(failure);
+          }
+        }),
+      };
+      await openingSink.process({
+        type: 'started',
+        runtimeInstanceId: driverSession.runtimeInstanceId,
+        launchClaimNumber: input.launchClaimNumber!,
+        pid: 4400 + generation,
+        processGroupId: String(4400 + generation),
+        birthMarker: `test-birth:${4400 + generation}`,
+        ownershipToken: `test-owner:${4400 + generation}`,
+      });
+      driverSessions.push(driverSession);
+      return driverSession;
+    }),
+  };
+  const eventBus = new EventBus();
+  const manager = new SessionManager(
+    eventBus,
+    undefined,
+    new StaticRuntimeRegistry([driver]),
+  );
+  const completed = waitForEvent(eventBus, 'session:completed');
+
+  await manager.start(session.id);
+  turns[0]!.resolve({ stopReason: 'end_turn' });
+  await completed;
+  await vi.waitFor(() => expect(sessionMsgStoreManager.has(session.id)).toBe(false));
+  await manager.sendMessage(session.id, 'use workspace service again');
+
+  return {
+    driver,
+    driverSessions,
+    manager,
+    observedCredentials,
+    session,
+    turns,
+  };
+}
+
+async function getPersistedCleanupInput(sessionId: string, runtimeInstanceId: string) {
+  const process = await prisma.executionProcess.findFirstOrThrow({
+    where: { sessionId, runtimeInstanceId },
+  });
+  if (
+    process.launchClaimNumber == null
+    || process.pid == null
+    || process.processGroupId == null
+    || process.birthMarker == null
+    || process.ownershipToken == null
+  ) {
+    throw new Error('Test runtime process identity is incomplete');
+  }
+  return {
+    sessionId,
+    runtimeInstanceId,
+    launchClaimNumber: process.launchClaimNumber,
+    pid: process.pid,
+    processGroupId: process.processGroupId,
+    birthMarker: process.birthMarker,
+    ownershipToken: process.ownershipToken,
+  };
 }
 
 describe('SessionManager session status vs real process state', () => {
@@ -372,7 +495,7 @@ describe('SessionManager session status vs real process state', () => {
     await manager.destroyAll();
   });
 
-  it('marks a reused ACP follow-up RUNNING without a new process event and allows it to stop', async () => {
+  it('serializes ACP stop and resend, then reconnects with the persisted external session id', async () => {
     const provider = {
       id: 'reused-acp-provider',
       name: 'Reused ACP Provider',
@@ -419,11 +542,30 @@ describe('SessionManager session status vs real process state', () => {
       .mockReturnValueOnce(false)
       .mockReturnValueOnce(true)
       .mockReturnValue(false);
+    const stopCleanup = deferred<void>();
+    const withStartAdmission = async <T>(towerSessionId: string, operation: (admission: {
+      towerSessionId: string;
+      signal: AbortSignal;
+      throwIfCancelled(): void;
+    }) => Promise<T>) => operation({
+      towerSessionId,
+      signal: new AbortController().signal,
+      throwIfCancelled: () => undefined,
+    });
     const runtimeCoordinator = {
       hasActiveTurn,
+      withStartAdmission: vi.fn(withStartAdmission),
+      retryDisposedSessionCleanup: vi.fn(async () => undefined),
       startTurn: vi.fn(async (_input: StartRuntimeTurnInput) => ({ turnId: 'turn-2', completion })),
       abandonTurn: vi.fn(async () => true),
       cancelTurn: vi.fn(async () => undefined),
+      cancelAndDisposeSession: vi.fn(async () => {
+        await stopCleanup.promise;
+        await prisma.executionProcess.updateMany({
+          where: { sessionId: session.id },
+          data: { cleanupState: 'CONFIRMED' },
+        });
+      }),
       disposeSession: vi.fn(async () => {
         await prisma.executionProcess.updateMany({
           where: { sessionId: session.id },
@@ -464,12 +606,31 @@ describe('SessionManager session status vs real process state', () => {
       where: { id: session.id },
       data: { status: SessionStatus.COMPLETED },
     });
-    await manager.stop(session.id);
-    expect(runtimeCoordinator.abandonTurn).toHaveBeenCalledWith(session.id);
+    const stopping = manager.stop(session.id);
+    await vi.waitFor(() => {
+      expect(runtimeCoordinator.cancelAndDisposeSession).toHaveBeenCalledWith(session.id);
+    });
+    const resending = manager.sendMessage(session.id, 'resend after explicit stop');
+    await Promise.resolve();
+
+    expect(runtimeCoordinator.startTurn).toHaveBeenCalledTimes(1);
+    stopCleanup.resolve();
+    await stopping;
+    await resending;
+
+    expect(runtimeCoordinator.abandonTurn).not.toHaveBeenCalled();
     expect(runtimeCoordinator.cancelTurn).not.toHaveBeenCalled();
-    expect(runtimeCoordinator.disposeSession).toHaveBeenCalledWith(session.id);
+    expect(runtimeCoordinator.disposeSession).not.toHaveBeenCalled();
+    expect(runtimeCoordinator.startTurn).toHaveBeenCalledTimes(2);
+    expect(runtimeCoordinator.startTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      towerSessionId: session.id,
+      externalSessionId: 'external-acp-session',
+      resumeExternalSessionId: 'external-acp-session',
+      resumeMode: 'resume',
+      prompt: expect.stringContaining('resend after explicit stop'),
+    }));
     expect((await prisma.session.findUnique({ where: { id: session.id } }))?.status)
-      .toBe(SessionStatus.CANCELLED);
+      .toBe(SessionStatus.RUNNING);
     await manager.destroyAll();
   });
 
@@ -500,8 +661,19 @@ describe('SessionManager session status vs real process state', () => {
     });
 
     const completion = new Promise<never>(() => undefined);
+    const withStartAdmission = async <T>(towerSessionId: string, operation: (admission: {
+      towerSessionId: string;
+      signal: AbortSignal;
+      throwIfCancelled(): void;
+    }) => Promise<T>) => operation({
+      towerSessionId,
+      signal: new AbortController().signal,
+      throwIfCancelled: () => undefined,
+    });
     const runtimeCoordinator = {
       hasActiveTurn: vi.fn(() => false),
+      withStartAdmission: vi.fn(withStartAdmission),
+      retryDisposedSessionCleanup: vi.fn(async () => undefined),
       startTurn: vi.fn(async (_input: StartRuntimeTurnInput) => ({ turnId: 'turn-2', completion })),
       abandonTurn: vi.fn(async () => true),
       cancelTurn: vi.fn(async () => undefined),
@@ -526,81 +698,509 @@ describe('SessionManager session status vs real process state', () => {
     await manager.destroyAll();
   });
 
-  it('keeps an ACP DriverSession credential valid across completed follow-up and revokes it on stop', async () => {
-    const provider = {
-      id: 'credential-acp-provider',
-      name: 'Credential ACP Provider',
-      agentType: AgentType.CODEX,
-      runtimeType: RuntimeType.ACP,
-      env: {},
-      config: {},
-      isDefault: false,
-    };
-    getProviderByIdMock.mockReturnValue(provider);
-    const { workspace, session } = await createSessionFixture({ providerId: provider.id });
-    await prisma.session.update({
-      where: { id: session.id },
-      data: { runtimeType: RuntimeType.ACP },
-    });
-    const service = new WorkspaceBackgroundService();
-    const turns: Array<ReturnType<typeof deferred<RuntimeTurnOutcome>>> = [];
-    const observedCredentials: string[] = [];
-    let openInput: RuntimeOpenInput | undefined;
-    const capabilities: RuntimeCapabilities = {
-      loadSession: true,
-      terminalInput: false,
-      terminalResize: false,
-      permissions: true,
-    };
-    const driverSession: DriverSession = {
-      runtimeInstanceId: 'credential-acp-runtime',
-      capabilities,
-      externalSessionId: 'credential-acp-external',
-      runTurn: vi.fn(async (_turn: RuntimeRunTurnInput) => {
-        const credential = openInput?.env.get(AGENT_API_CREDENTIAL_ENV) ?? '';
-        observedCredentials.push(credential);
-        const identity = validateAgentApiCredential(credential);
-        if (!identity) throw new Error('ACP workspace-service credential is invalid');
-        await service.authorizeCaller(workspace.id, { kind: 'agent', ...identity });
-        const completion = deferred<RuntimeTurnOutcome>();
-        turns.push(completion);
-        return { completion: completion.promise };
-      }),
-      cancelTurn: vi.fn(async () => {
-        turns.at(-1)?.resolve({ stopReason: 'cancelled' });
-      }),
-      close: vi.fn(async () => undefined),
-    };
-    const driver: RuntimeDriver = {
-      type: RuntimeType.ACP,
-      open: vi.fn(async (input) => {
-        openInput = input;
-        return driverSession;
-      }),
-    };
-    const eventBus = new EventBus();
-    const manager = new SessionManager(
-      eventBus,
-      undefined,
-      new StaticRuntimeRegistry([driver]),
-    );
-    const completed = waitForEvent(eventBus, 'session:completed');
+  it('retries a retained DISPOSED owner before an immediate ACP resend starts a new generation', async () => {
+    const {
+      driver,
+      driverSessions,
+      manager,
+      observedCredentials,
+      session,
+    } = await createRetryableAcpStopFixture(['owned tree still alive']);
+    const firstDriverSession = driverSessions[0]!;
 
-    await manager.start(session.id);
-    turns[0].resolve({ stopReason: 'end_turn' });
-    await completed;
-    await vi.waitFor(() => expect(sessionMsgStoreManager.has(session.id)).toBe(false));
-
-    await manager.sendMessage(session.id, 'use workspace service again');
     expect(observedCredentials).toHaveLength(2);
     expect(observedCredentials[1]).toBe(observedCredentials[0]);
-    expect(validateAgentApiCredential(observedCredentials[1]!)).toMatchObject({ sessionId: session.id });
-
-    await manager.stop(session.id);
-    expect(driverSession.close).toHaveBeenCalledOnce();
+    await expect(manager.stop(session.id)).rejects.toThrow('owned tree still alive');
+    expect(firstDriverSession.close).toHaveBeenCalledOnce();
     expect(validateAgentApiCredential(observedCredentials[1]!)).toBeNull();
+
+    await expect(manager.sendMessage(session.id, 'resend immediately after failed stop'))
+      .resolves.toMatchObject({ id: session.id });
+
+    expect(firstDriverSession.close).toHaveBeenCalledTimes(2);
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(driver.open).mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      externalSessionId: 'cleanup-retry-external',
+    }));
+    expect(observedCredentials).toHaveLength(3);
+    expect(observedCredentials[2]).not.toBe(observedCredentials[1]);
+    expect(validateAgentApiCredential(observedCredentials[2]!)).toMatchObject({ sessionId: session.id });
+    expect(manager.hasRuntimeProcessOwner('cleanup-retry-runtime-1', session.id, 1)).toBe(false);
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, runtimeInstanceId: 'cleanup-retry-runtime-1' },
+    })).resolves.toMatchObject({
+      launchClaimNumber: 1,
+      cleanupState: 'CONFIRMED',
+      cleanupError: null,
+      cleanupAttemptCount: 1,
+    });
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.RUNNING,
+      runtimeLaunchState: 'PROCESS_RECORDED',
+      runtimeLaunchClaimCount: 3,
+      runtimeLaunchResolvedCount: 3,
+      runtimeLaunchProcessCount: 2,
+      runtimeLaunchDiagnostic: null,
+    });
+    expect(await prisma.executionProcess.count({
+      where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
+    })).toBe(0);
     await manager.destroyAll();
   });
+
+  it('rejects an immediate ACP resend without advancing launch state when retained cleanup fails again', async () => {
+    const {
+      driver,
+      driverSessions,
+      manager,
+      observedCredentials,
+      session,
+    } = await createRetryableAcpStopFixture([
+      'owned tree still alive',
+      'owned tree still alive on resend',
+    ]);
+    const firstDriverSession = driverSessions[0]!;
+
+    await expect(manager.stop(session.id)).rejects.toThrow('owned tree still alive');
+    const launchStateBeforeResend = await prisma.session.findUniqueOrThrow({
+      where: { id: session.id },
+      select: {
+        status: true,
+        runtimeLaunchState: true,
+        runtimeLaunchClaimCount: true,
+        runtimeLaunchResolvedCount: true,
+        runtimeLaunchProcessCount: true,
+        runtimeLaunchDiagnostic: true,
+      },
+    });
+    expect((manager as any).terminalSessions.get(session.id)).toBe(SessionStatus.CANCELLED);
+
+    await expect(manager.sendMessage(session.id, 'resend while cleanup still fails'))
+      .rejects.toThrow('owned tree still alive on resend');
+
+    expect(firstDriverSession.close).toHaveBeenCalledTimes(2);
+    expect(driver.open).toHaveBeenCalledOnce();
+    expect(observedCredentials).toHaveLength(2);
+    expect(validateAgentApiCredential(observedCredentials[1]!)).toBeNull();
+    expect((manager as any).terminalSessions.get(session.id)).toBe(SessionStatus.CANCELLED);
+    await expect(prisma.session.findUniqueOrThrow({
+      where: { id: session.id },
+      select: {
+        status: true,
+        runtimeLaunchState: true,
+        runtimeLaunchClaimCount: true,
+        runtimeLaunchResolvedCount: true,
+        runtimeLaunchProcessCount: true,
+        runtimeLaunchDiagnostic: true,
+      },
+    })).resolves.toEqual(launchStateBeforeResend);
+    expect(manager.hasRuntimeProcessOwner('cleanup-retry-runtime-1', session.id, 1)).toBe(true);
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, runtimeInstanceId: 'cleanup-retry-runtime-1' },
+    })).resolves.toMatchObject({
+      launchClaimNumber: 1,
+      pid: 4401,
+      processGroupId: '4401',
+      birthMarker: 'test-birth:4401',
+      ownershipToken: 'test-owner:4401',
+      cleanupState: 'FAILED',
+      cleanupError: 'owned tree still alive on resend',
+      cleanupAttemptCount: 2,
+    });
+    expect(await prisma.executionProcess.count({
+      where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
+    })).toBe(0);
+
+    await expect(manager.stop(session.id)).resolves.toMatchObject({ id: session.id });
+    expect(firstDriverSession.close).toHaveBeenCalledTimes(3);
+    await expect(manager.sendMessage(session.id, 'send after cleanup recovery'))
+      .resolves.toMatchObject({ id: session.id });
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(observedCredentials).toHaveLength(3);
+    expect(validateAgentApiCredential(observedCredentials[2]!)).toMatchObject({ sessionId: session.id });
+    await expect(prisma.session.findUnique({ where: { id: session.id } })).resolves.toMatchObject({
+      status: SessionStatus.RUNNING,
+      runtimeLaunchState: 'PROCESS_RECORDED',
+      runtimeLaunchClaimCount: 3,
+      runtimeLaunchResolvedCount: 3,
+      runtimeLaunchProcessCount: 2,
+      runtimeLaunchDiagnostic: null,
+    });
+    expect(await prisma.executionProcess.count({
+      where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
+    })).toBe(0);
+    await manager.destroyAll();
+  });
+
+  it('holds background cleanup retry and resend behind the same disposal evidence boundary', async () => {
+    const {
+      driver,
+      driverSessions,
+      manager,
+      observedCredentials,
+      session,
+    } = await createRetryableAcpStopFixture([]);
+    const firstDriverSession = driverSessions[0]!;
+    const evidenceStarted = deferred<void>();
+    const evidenceRelease = deferred<void>();
+    const originalMarkCleanup = (manager as any).markRuntimeProcessCleanupState.bind(manager);
+    const markCleanupSpy = vi.spyOn(manager as any, 'markRuntimeProcessCleanupState')
+      .mockImplementation(async (...args: unknown[]) => {
+        if (args[1] === 'cleanup-retry-runtime-1' && args[2] === 'CONFIRMED') {
+          evidenceStarted.resolve();
+          await evidenceRelease.promise;
+        }
+        return originalMarkCleanup(...args);
+      });
+    const coordinator = (manager as any).runtimeCoordinator;
+    const retryDisposedSpy = vi.spyOn(coordinator, 'retryDisposedSessionCleanup');
+
+    const disposal = manager.disposeRuntimeSession(session.id, 'cleanup-retry-runtime-1');
+    await evidenceStarted.promise;
+    const cleanupInput = await getPersistedCleanupInput(session.id, 'cleanup-retry-runtime-1');
+    const launchStateBeforeAdmission = await prisma.session.findUniqueOrThrow({
+      where: { id: session.id },
+      select: {
+        status: true,
+        runtimeLaunchState: true,
+        runtimeLaunchClaimCount: true,
+        runtimeLaunchResolvedCount: true,
+        runtimeLaunchProcessCount: true,
+        runtimeLaunchDiagnostic: true,
+      },
+    });
+
+    const backgroundCleanup = manager.retryRuntimeProcessCleanup(cleanupInput);
+    const resend = manager.sendMessage(session.id, 'resend during cleanup evidence persistence');
+    await vi.waitFor(() => expect(retryDisposedSpy).toHaveBeenCalledTimes(2));
+
+    expect(firstDriverSession.close).toHaveBeenCalledOnce();
+    expect(driver.open).toHaveBeenCalledOnce();
+    expect(observedCredentials).toHaveLength(2);
+    await expect(prisma.session.findUniqueOrThrow({
+      where: { id: session.id },
+      select: {
+        status: true,
+        runtimeLaunchState: true,
+        runtimeLaunchClaimCount: true,
+        runtimeLaunchResolvedCount: true,
+        runtimeLaunchProcessCount: true,
+        runtimeLaunchDiagnostic: true,
+      },
+    })).resolves.toEqual(launchStateBeforeAdmission);
+    expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(1);
+    expect(await prisma.executionProcess.count({
+      where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
+    })).toBe(0);
+
+    evidenceRelease.resolve();
+    await Promise.all([disposal, backgroundCleanup, resend]);
+
+    expect(firstDriverSession.close).toHaveBeenCalledOnce();
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(observedCredentials).toHaveLength(3);
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, runtimeInstanceId: 'cleanup-retry-runtime-1' },
+    })).resolves.toMatchObject({ cleanupState: 'CONFIRMED' });
+    expect(await prisma.executionProcess.count({
+      where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
+    })).toBe(0);
+
+    retryDisposedSpy.mockRestore();
+    markCleanupSpy.mockRestore();
+    await manager.destroyAll();
+  });
+
+  it('rejects concurrent cleanup and resend without a phantom claim when disposal evidence remains unconfirmed', async () => {
+    const {
+      driver,
+      driverSessions,
+      manager,
+      observedCredentials,
+      session,
+    } = await createRetryableAcpStopFixture([]);
+    const firstDriverSession = driverSessions[0]!;
+    const evidenceStarted = deferred<void>();
+    const evidenceRelease = deferred<void>();
+    let skipEvidencePersistence = true;
+    const originalMarkCleanup = (manager as any).markRuntimeProcessCleanupState.bind(manager);
+    const markCleanupSpy = vi.spyOn(manager as any, 'markRuntimeProcessCleanupState')
+      .mockImplementation(async (...args: unknown[]) => {
+        if (
+          args[1] === 'cleanup-retry-runtime-1'
+          && args[2] === 'CONFIRMED'
+          && skipEvidencePersistence
+        ) {
+          evidenceStarted.resolve();
+          await evidenceRelease.promise;
+          skipEvidencePersistence = false;
+          return undefined;
+        }
+        return originalMarkCleanup(...args);
+      });
+    const coordinator = (manager as any).runtimeCoordinator;
+    const retryDisposedSpy = vi.spyOn(coordinator, 'retryDisposedSessionCleanup');
+
+    const disposal = manager.disposeRuntimeSession(session.id, 'cleanup-retry-runtime-1');
+    await evidenceStarted.promise;
+    const cleanupInput = await getPersistedCleanupInput(session.id, 'cleanup-retry-runtime-1');
+    const launchStateBeforeAdmission = await prisma.session.findUniqueOrThrow({
+      where: { id: session.id },
+      select: {
+        status: true,
+        runtimeLaunchState: true,
+        runtimeLaunchClaimCount: true,
+        runtimeLaunchResolvedCount: true,
+        runtimeLaunchProcessCount: true,
+        runtimeLaunchDiagnostic: true,
+      },
+    });
+    const backgroundCleanup = manager.retryRuntimeProcessCleanup(cleanupInput);
+    const resend = manager.sendMessage(session.id, 'resend while evidence persistence fails');
+    await vi.waitFor(() => expect(retryDisposedSpy).toHaveBeenCalledTimes(2));
+    const disposalResult = expect(disposal).rejects.toThrow('is not durably confirmed');
+    const backgroundResult = expect(backgroundCleanup).rejects.toMatchObject({
+      code: 'runtime_cleanup_pending',
+      retryable: true,
+    });
+    const resendResult = expect(resend).rejects.toMatchObject({
+      code: 'runtime_cleanup_pending',
+      retryable: true,
+    });
+
+    evidenceRelease.resolve();
+    await Promise.all([disposalResult, backgroundResult, resendResult]);
+
+    expect(firstDriverSession.close).toHaveBeenCalledOnce();
+    expect(driver.open).toHaveBeenCalledOnce();
+    expect(observedCredentials).toHaveLength(2);
+    await expect(prisma.session.findUniqueOrThrow({
+      where: { id: session.id },
+      select: {
+        status: true,
+        runtimeLaunchState: true,
+        runtimeLaunchClaimCount: true,
+        runtimeLaunchResolvedCount: true,
+        runtimeLaunchProcessCount: true,
+        runtimeLaunchDiagnostic: true,
+      },
+    })).resolves.toEqual(launchStateBeforeAdmission);
+    expect(manager.hasRuntimeProcessOwner('cleanup-retry-runtime-1', session.id, 1)).toBe(true);
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, runtimeInstanceId: 'cleanup-retry-runtime-1' },
+    })).resolves.toMatchObject({ cleanupState: 'FAILED' });
+    expect(await prisma.executionProcess.count({
+      where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
+    })).toBe(0);
+
+    await expect(manager.retryRuntimeProcessCleanup(cleanupInput)).resolves.toBeUndefined();
+    expect(firstDriverSession.close).toHaveBeenCalledOnce();
+    expect(manager.hasRuntimeProcessOwner('cleanup-retry-runtime-1', session.id, 1)).toBe(false);
+    await expect(manager.sendMessage(session.id, 'resend after evidence recovery'))
+      .resolves.toMatchObject({ id: session.id });
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(observedCredentials).toHaveLength(3);
+    expect(await prisma.executionProcess.count({
+      where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
+    })).toBe(0);
+
+    retryDisposedSpy.mockRestore();
+    markCleanupSpy.mockRestore();
+    await manager.destroyAll();
+  });
+
+  it('cancels an admission-first resend before background cleanup can close its DriverSession', async () => {
+    const {
+      driver,
+      driverSessions,
+      manager,
+      observedCredentials,
+      session,
+      turns,
+    } = await createRetryableAcpStopFixture([]);
+    const driverSession = driverSessions[0]!;
+    turns.at(-1)!.resolve({ stopReason: 'end_turn' });
+    await vi.waitFor(async () => {
+      const current = await prisma.session.findUniqueOrThrow({ where: { id: session.id } });
+      expect(current.status).toBe(SessionStatus.COMPLETED);
+    });
+
+    const runTurnEntered = deferred<void>();
+    const runTurnRelease = deferred<void>();
+    vi.mocked(driverSession.runTurn).mockImplementationOnce(async (turn) => {
+      runTurnEntered.resolve();
+      await runTurnRelease.promise;
+      turn.admissionSignal?.throwIfAborted();
+      return { completion: new Promise<RuntimeTurnOutcome>(() => undefined) };
+    });
+    const cleanupInput = await getPersistedCleanupInput(session.id, 'cleanup-retry-runtime-1');
+
+    const resend = manager.sendMessage(session.id, 'resend interrupted during driver handoff');
+    await runTurnEntered.promise;
+    const backgroundCleanup = manager.retryRuntimeProcessCleanup(cleanupInput);
+    await Promise.resolve();
+
+    expect(driverSession.close).not.toHaveBeenCalled();
+    runTurnRelease.resolve();
+    await expect(resend).rejects.toMatchObject({ code: 'runtime_admission_cancelled', retryable: true });
+    await expect(backgroundCleanup).resolves.toBeUndefined();
+
+    expect(driver.open).toHaveBeenCalledOnce();
+    expect(driverSession.close).toHaveBeenCalledOnce();
+    expect(new Set(observedCredentials).size).toBe(1);
+    expect(validateAgentApiCredential(observedCredentials[0]!)).toBeNull();
+    await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+      runtimeLaunchState: 'SAFE_PRE_CHILD_FAILURE',
+      runtimeLaunchClaimCount: 3,
+      runtimeLaunchResolvedCount: 3,
+      runtimeLaunchProcessCount: 1,
+    });
+    await expect(prisma.executionProcess.findFirstOrThrow({
+      where: { sessionId: session.id, runtimeInstanceId: 'cleanup-retry-runtime-1' },
+    })).resolves.toMatchObject({ cleanupState: 'CONFIRMED' });
+    expect(await prisma.executionProcess.count({
+      where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
+    })).toBe(0);
+    await manager.destroyAll();
+  });
+
+  it.each(['start', 'startFollowUp'] as const)(
+    'revokes a public %s before runtime admission when stop wins during preparation',
+    async (method) => {
+      const { workspace, session } = await createSessionFixture();
+      const resumeSource = await prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: AgentType.CODEX,
+          prompt: 'previous turn',
+          status: SessionStatus.COMPLETED,
+          externalSessionId: 'previous-external-session',
+        },
+      });
+      const manager = new SessionManager(new EventBus());
+      const coordinator = (manager as any).runtimeCoordinator;
+      const withStartAdmission = vi.spyOn(coordinator, 'withStartAdmission');
+      const sessionRead = deferred<void>();
+      const originalFindSession = (manager as any).findSessionExecutionRecord.bind(manager);
+      vi.spyOn(manager as any, 'findSessionExecutionRecord').mockImplementation(async (sessionId: unknown) => {
+        const record = await originalFindSession(String(sessionId));
+        sessionRead.resolve();
+        return record;
+      });
+      const preparationGate = deferred<void>();
+      (manager as any).pendingAutoCommits.set(session.id, preparationGate.promise);
+
+      const starting = method === 'start'
+        ? manager.start(session.id)
+        : manager.startFollowUp(session.id, resumeSource.id);
+      const startingResult = expect(starting).rejects.toMatchObject({ code: 'SESSION_NOT_ADMITTED' });
+      await sessionRead.promise;
+      expect(withStartAdmission).not.toHaveBeenCalled();
+
+      await expect(manager.stop(session.id)).resolves.toMatchObject({ id: session.id });
+      await startingResult;
+      expect(withStartAdmission).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+        status: SessionStatus.CANCELLED,
+        runtimeLaunchState: 'NOT_STARTED',
+        runtimeLaunchClaimCount: 0,
+      });
+
+      preparationGate.resolve();
+      expect(withStartAdmission).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+
+      const recoveryPty = new ControlledPty();
+      spawnMock.mockResolvedValueOnce(spawnResultFor(recoveryPty));
+      await expect(manager.sendMessage(session.id, 'recover after the completed stop'))
+        .resolves.toMatchObject({ id: session.id });
+      expect(spawnMock).toHaveBeenCalledOnce();
+      await manager.stop(session.id);
+      await manager.destroyAll();
+    },
+  );
+
+  it.each(['start', 'startFollowUp'] as const)(
+    'does not start public %s preparation while stop intent is already in flight',
+    async (method) => {
+      const { workspace, session } = await createSessionFixture();
+      const resumeSource = await prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: AgentType.CODEX,
+          prompt: 'previous turn',
+          status: SessionStatus.COMPLETED,
+        },
+      });
+      const manager = new SessionManager(new EventBus());
+      const findSession = vi.spyOn(manager as any, 'findSessionExecutionRecord');
+      const waitForAutoCommit = vi.spyOn(manager as any, 'waitForPendingAutoCommit');
+      const stopBlocker = (manager as any).reserveSessionAction(session.id);
+      const stopping = manager.stop(session.id);
+
+      try {
+        const starting = method === 'start'
+          ? manager.start(session.id)
+          : manager.startFollowUp(session.id, resumeSource.id);
+
+        await expect(starting).rejects.toMatchObject({ code: 'SESSION_NOT_ADMITTED' });
+        expect(findSession).not.toHaveBeenCalled();
+        expect(waitForAutoCommit).not.toHaveBeenCalled();
+        expect(spawnMock).not.toHaveBeenCalled();
+      } finally {
+        stopBlocker.release();
+        await stopping;
+        await manager.destroyAll();
+      }
+    },
+  );
+
+  it.each(['start', 'startFollowUp'] as const)(
+    'observes a late public %s preparation rejection after stop',
+    async (method) => {
+      const { workspace, session } = await createSessionFixture();
+      const resumeSource = await prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: AgentType.CODEX,
+          prompt: 'previous turn',
+          status: SessionStatus.COMPLETED,
+        },
+      });
+      const manager = new SessionManager(new EventBus());
+      const queryStarted = deferred<void>();
+      const query = deferred<never>();
+      vi.spyOn(manager as any, 'findSessionExecutionRecord').mockImplementation(() => {
+        queryStarted.resolve();
+        return query.promise;
+      });
+      const unhandledRejections: unknown[] = [];
+      const recordUnhandledRejection = (reason: unknown) => {
+        unhandledRejections.push(reason);
+      };
+      process.on('unhandledRejection', recordUnhandledRejection);
+
+      try {
+        const starting = method === 'start'
+          ? manager.start(session.id)
+          : manager.startFollowUp(session.id, resumeSource.id);
+        const startingResult = expect(starting).rejects.toMatchObject({ code: 'SESSION_NOT_ADMITTED' });
+        await queryStarted.promise;
+
+        await expect(manager.stop(session.id)).resolves.toMatchObject({ id: session.id });
+        await startingResult;
+        query.reject(new Error('late session lookup failure'));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(unhandledRejections).toEqual([]);
+        expect(spawnMock).not.toHaveBeenCalled();
+      } finally {
+        process.off('unhandledRejection', recordUnhandledRejection);
+        await manager.destroyAll();
+      }
+    },
+  );
 
   afterAll(async () => {
     await prisma.$disconnect();

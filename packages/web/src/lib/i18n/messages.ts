@@ -141,6 +141,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Failed to load file': '加载文件失败',
     'Failed to load': '加载失败',
     'Failed to start. Please try again.': '启动失败，请重试',
+    'Failed to stop session. Refreshing status; check it and try again.':
+      '停止会话失败。正在刷新状态，请确认后重试。',
     'Files': '文件',
     'No working directory': '未选择工作目录',
     'Refresh file tree': '刷新文件树',

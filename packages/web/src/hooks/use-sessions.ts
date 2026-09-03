@@ -13,9 +13,11 @@ import {
   type SessionRuntimeStateChangedPayload,
 } from '@agent-tower/shared/socket'
 import { apiClient } from '../lib/api-client'
+import { translate } from '../lib/i18n'
 import { queryKeys } from './query-keys'
 import { socketManager } from '@/lib/socket/manager'
 import { useEffect } from 'react'
+import { toast } from 'sonner'
 
 // ============ Queries ============
 
@@ -138,8 +140,22 @@ export function useStopSession() {
   return useMutation({
     mutationFn: (id: string) =>
       apiClient.post<Session>(`/sessions/${id}/stop`),
-    onSuccess: (_data, id) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.sessions.detail(id) })
+    onError: (error) => {
+      toast.error(
+        translate('Failed to stop session. Refreshing status; check it and try again.'),
+        { description: error instanceof Error ? error.message : undefined },
+      )
+    },
+    onSettled: (_data, _error, id) => {
+      queryClient.setQueryData<RuntimeStateDto>(queryKeys.sessions.runtime(id), (state) => (
+        state?.turnState === 'CANCELLING' ? { ...state, turnState: 'IDLE' } : state
+      ))
+      void Promise.allSettled([
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessions.detail(id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessions.runtime(id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all }),
+      ])
     },
   })
 }

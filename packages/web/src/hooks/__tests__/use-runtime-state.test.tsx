@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { handlers, socket, getMock } = vi.hoisted(() => {
+const { handlers, socket, getMock, postMock, toastErrorMock } = vi.hoisted(() => {
   const handlers = new Map<string, (payload?: any) => void>();
   return {
     handlers,
@@ -21,6 +21,8 @@ const { handlers, socket, getMock } = vi.hoisted(() => {
       }),
     },
     getMock: vi.fn(),
+    postMock: vi.fn(),
+    toastErrorMock: vi.fn(),
   };
 });
 
@@ -31,14 +33,19 @@ vi.mock('@/lib/socket/manager', () => ({
 vi.mock('@/lib/api-client', () => ({
   apiClient: {
     get: getMock,
-    post: vi.fn(),
+    post: postMock,
   },
+}));
+
+vi.mock('sonner', () => ({
+  toast: { error: toastErrorMock },
 }));
 
 import {
   isRuntimeTurnActive,
   isSessionStatusActive,
   useRuntimeState,
+  useStopSession,
 } from '../use-sessions';
 
 const idleState = {
@@ -54,6 +61,34 @@ function Probe() {
   return <div data-state={data?.turnState}>{data?.turnState ?? 'loading'}</div>;
 }
 
+let onStopSettled: (() => void) | undefined;
+
+function StopProbe() {
+  const stop = useStopSession();
+  const { data } = useRuntimeState('session-1');
+  const disabled = stop.isPending || data?.turnState === 'CANCELLING';
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      data-runtime-state={data?.turnState}
+      onClick={() => stop.mutate('session-1', { onSettled: () => onStopSettled?.() })}
+    >
+      stop
+    </button>
+  );
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('useRuntimeState reconnect behavior', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -64,6 +99,9 @@ describe('useRuntimeState reconnect behavior', () => {
     socket.on.mockClear();
     socket.off.mockClear();
     getMock.mockReset().mockResolvedValue(idleState);
+    postMock.mockReset().mockResolvedValue({ success: true });
+    toastErrorMock.mockReset();
+    onStopSettled = undefined;
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -107,6 +145,80 @@ describe('useRuntimeState reconnect behavior', () => {
       queryKey: ['sessions', 'runtime', 'session-1'],
     });
     expect(getMock).toHaveBeenCalledWith('/sessions/session-1/runtime');
+  });
+
+  it('invalidates every cache that contributes to stopped session activity', async () => {
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <StopProbe />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('button')?.click();
+      await vi.waitFor(() => expect(postMock).toHaveBeenCalledWith('/sessions/session-1/stop'));
+    });
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions', 'detail', 'session-1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions', 'runtime', 'session-1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['workspaces'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['tasks'] });
+  });
+
+  it('refreshes authoritative state and releases the stop UI after rejection', async () => {
+    const stopping = deferred<never>();
+    const settled = deferred<void>();
+    onStopSettled = () => settled.resolve();
+    postMock.mockReturnValueOnce(stopping.promise);
+    getMock.mockReset()
+      .mockResolvedValueOnce(idleState)
+      .mockRejectedValue(new Error('status refresh unavailable'));
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <StopProbe />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector('button')?.dataset.runtimeState).toBe('IDLE');
+
+    await act(async () => {
+      container.querySelector('button')?.click();
+      handlers.get(ServerEvents.SESSION_RUNTIME_STATE_CHANGED)?.({
+        sessionId: 'session-1',
+        state: { ...idleState, turnState: 'CANCELLING' },
+      });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(container.querySelector('button')?.hasAttribute('disabled')).toBe(true);
+      });
+    });
+
+    await act(async () => {
+      stopping.reject(new Error('cleanup not confirmed'));
+      await settled.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector('button')?.hasAttribute('disabled')).toBe(false);
+    expect(container.querySelector('button')?.dataset.runtimeState).toBe('IDLE');
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      'Failed to stop session. Refreshing status; check it and try again.',
+      { description: 'cleanup not confirmed' },
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions', 'detail', 'session-1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions', 'runtime', 'session-1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['workspaces'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['tasks'] });
+    expect(getMock).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -204,6 +204,29 @@ describe('RuntimeCoordinator', () => {
     await coordinator.destroyAll();
   });
 
+  it('cancels and disposes an explicit stop without waiting for prompt settlement', async () => {
+    const { coordinator, input, session, turns, events } = setup();
+    const handle = await coordinator.startTurn(input);
+    const close = deferred<void>();
+    vi.mocked(session.cancelTurn).mockReturnValueOnce(new Promise<void>(() => undefined));
+    vi.mocked(session.close).mockReturnValueOnce(close.promise);
+
+    const firstStop = coordinator.cancelAndDisposeSession(input.towerSessionId);
+    const repeatedStop = coordinator.cancelAndDisposeSession(input.towerSessionId);
+    await vi.waitFor(() => {
+      expect(session.cancelTurn).toHaveBeenCalledWith(handle.turnId);
+      expect(session.close).toHaveBeenCalledTimes(1);
+    });
+
+    close.resolve();
+    await expect(Promise.all([firstStop, repeatedStop])).resolves.toEqual([undefined, undefined]);
+    turns[0].resolve({ stopReason: 'cancelled' });
+    await handle.completion;
+
+    expect(events).toHaveLength(0);
+    expect(coordinator.getState(input.towerSessionId).turnState).toBe('IDLE');
+  });
+
   it('validates permission option ids and returns to running after resolution', async () => {
     const { coordinator, input, sinks, session } = setup();
     const handle = await coordinator.startTurn(input);
@@ -243,9 +266,11 @@ describe('RuntimeCoordinator', () => {
       .mockRejectedValueOnce(new Error('tree still alive'))
       .mockResolvedValueOnce(undefined);
 
+    await expect(coordinator.retryDisposedSessionCleanup(input.towerSessionId)).resolves.toBe(false);
+    expect(session.close).not.toHaveBeenCalled();
     await expect(coordinator.disposeSession(input.towerSessionId)).rejects.toThrow('tree still alive');
     expect(coordinator.getState(input.towerSessionId).turnState).toBe('DISPOSED');
-    await expect(coordinator.disposeSession(input.towerSessionId)).resolves.toBeUndefined();
+    await expect(coordinator.retryDisposedSessionCleanup(input.towerSessionId)).resolves.toBe(true);
     expect(session.close).toHaveBeenCalledTimes(2);
   });
 
@@ -331,17 +356,212 @@ describe('RuntimeCoordinator', () => {
     expect(onDisposeStarted).toHaveBeenCalledWith(input.towerSessionId, session.runtimeInstanceId, 7);
   });
 
-  it('rejects a new turn once disposal has claimed the Tower session', async () => {
+  it('bounds admission waiting without releasing an unfinished disposal gate', async () => {
+    vi.useFakeTimers();
+    try {
+      const { coordinator, input, session, driver } = setup();
+      await coordinator.startTurn(input);
+      const close = deferred<void>();
+      vi.mocked(session.close).mockReturnValueOnce(close.promise);
+
+      const disposal = coordinator.disposeSession(input.towerSessionId);
+      const admission = coordinator.startTurn({ ...input, prompt: 'must time out' });
+      const admissionResult = expect(admission).rejects.toMatchObject({
+        code: 'runtime_cleanup_pending',
+        retryable: true,
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await admissionResult;
+
+      expect(driver.open).toHaveBeenCalledOnce();
+      expect(session.close).toHaveBeenCalledOnce();
+      close.resolve();
+      await disposal;
+      expect(driver.open).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an admission-first driver handoff before disposal closes its session', async () => {
     const { coordinator, input, session } = setup();
+    const runTurnEntered = deferred<void>();
+    const runTurnRelease = deferred<void>();
+    const callOrder: string[] = [];
+    vi.mocked(session.runTurn).mockImplementationOnce(async (turn) => {
+      runTurnEntered.resolve();
+      await runTurnRelease.promise;
+      turn.admissionSignal?.throwIfAborted();
+      callOrder.push('runTurn');
+      return { completion: new Promise<RuntimeTurnOutcome>(() => undefined) };
+    });
+    vi.mocked(session.close).mockImplementationOnce(async () => {
+      callOrder.push('close');
+    });
+
+    const admission = coordinator.startTurn(input);
+    await runTurnEntered.promise;
+    const firstDisposal = coordinator.disposeSession(input.towerSessionId);
+    const repeatedDisposal = coordinator.disposeSession(input.towerSessionId);
+    await Promise.resolve();
+
+    expect(session.close).not.toHaveBeenCalled();
+    runTurnRelease.resolve();
+    await expect(admission).rejects.toMatchObject({ code: 'runtime_admission_cancelled', retryable: true });
+    await expect(Promise.all([firstDisposal, repeatedDisposal])).resolves.toEqual([undefined, undefined]);
+
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(callOrder).toEqual(['close']);
+    expect(coordinator.getState(input.towerSessionId).turnState).toBe('IDLE');
+  });
+
+  it('orders concurrent admissions behind one cancellable lease without lock inversion', async () => {
+    const { coordinator, input } = setup();
+    const firstEntered = deferred<void>();
+    const firstRelease = deferred<void>();
+    const order: string[] = [];
+    const firstAdmission = coordinator.withStartAdmission(input.towerSessionId, async (admission) => {
+      order.push('first-entered');
+      firstEntered.resolve();
+      await firstRelease.promise;
+      expect(admission.signal.aborted).toBe(true);
+      order.push('first-released');
+    });
+    await firstEntered.promise;
+    const secondAdmission = coordinator.withStartAdmission(input.towerSessionId, async () => {
+      order.push('second-entered');
+    });
+    const disposal = coordinator.disposeSession(input.towerSessionId).then(() => {
+      order.push('disposed');
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(['first-entered']);
+    firstRelease.resolve();
+    await Promise.all([firstAdmission, secondAdmission, disposal]);
+
+    expect(order).toEqual(['first-entered', 'first-released', 'disposed', 'second-entered']);
+  });
+
+  it('bounds disposal waiting on a non-cooperative admission and keeps its owner retryable', async () => {
+    vi.useFakeTimers();
+    try {
+      const { coordinator, input, session } = setup();
+      const runTurnEntered = deferred<void>();
+      const runTurnRelease = deferred<void>();
+      vi.mocked(session.runTurn).mockImplementationOnce(async () => {
+        runTurnEntered.resolve();
+        await runTurnRelease.promise;
+        return { completion: new Promise<RuntimeTurnOutcome>(() => undefined) };
+      });
+
+      const admission = coordinator.startTurn(input);
+      await runTurnEntered.promise;
+      const disposal = coordinator.disposeSession(input.towerSessionId);
+      const disposalResult = expect(disposal).rejects.toMatchObject({
+        code: 'runtime_cleanup_pending',
+        retryable: true,
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await disposalResult;
+
+      expect(session.close).not.toHaveBeenCalled();
+      runTurnRelease.resolve();
+      await expect(admission).resolves.toMatchObject({ turnId: expect.any(String) });
+      await expect(coordinator.disposeSession(input.towerSessionId)).resolves.toBeUndefined();
+      expect(session.close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reuses one disposal while cleanup retry and admission wait for durable evidence', async () => {
+    const { coordinator, input, session, driver } = setup();
     await coordinator.startTurn(input);
-    const close = deferred<void>();
-    vi.mocked(session.close).mockReturnValueOnce(close.promise);
+    const evidence = deferred<void>();
+    const host = (coordinator as unknown as { host: RuntimeCoordinatorHost }).host;
+    host.onDriverSessionDisposedInstance = vi.fn(async () => evidence.promise);
+    const replacement: DriverSession = {
+      ...session,
+      runtimeInstanceId: 'runtime-2',
+      runTurn: vi.fn(async () => ({ completion: new Promise<RuntimeTurnOutcome>(() => undefined) })),
+      close: vi.fn(async () => undefined),
+    };
+    vi.mocked(driver.open).mockResolvedValueOnce(replacement);
 
     const disposal = coordinator.disposeSession(input.towerSessionId);
-    await expect(coordinator.startTurn(input)).rejects.toMatchObject({ code: 'runtime_disposed' });
+    await vi.waitFor(() => {
+      expect(host.onDriverSessionDisposedInstance).toHaveBeenCalledOnce();
+    });
+    const cleanupRetry = coordinator.retryDisposedSessionCleanup(input.towerSessionId, 'runtime-1');
+    const repeatedDisposal = coordinator.disposeSession(input.towerSessionId);
+    const admission = coordinator.startTurn({ ...input, prompt: 'after stop' });
+    await Promise.resolve();
 
-    close.resolve();
-    await disposal;
+    expect(driver.open).toHaveBeenCalledOnce();
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(replacement.close).not.toHaveBeenCalled();
+
+    evidence.resolve();
+    await expect(Promise.all([disposal, repeatedDisposal, cleanupRetry]))
+      .resolves.toEqual([undefined, undefined, true]);
+    await expect(admission).resolves.toMatchObject({ turnId: expect.any(String) });
+
+    expect(driver.open).toHaveBeenCalledTimes(2);
     expect(session.runTurn).toHaveBeenCalledTimes(1);
+    expect(replacement.runTurn).toHaveBeenCalledOnce();
+    expect(replacement.close).not.toHaveBeenCalled();
+    await coordinator.destroyAll();
+  });
+
+  it('blocks replacement admission when disposal evidence fails and keeps cleanup retryable', async () => {
+    const { coordinator, input, session, driver } = setup();
+    await coordinator.startTurn(input);
+    const evidence = deferred<void>();
+    const host = (coordinator as unknown as { host: RuntimeCoordinatorHost }).host;
+    host.onDriverSessionDisposedInstance = vi.fn()
+      .mockImplementationOnce(async () => evidence.promise)
+      .mockResolvedValueOnce(undefined);
+    host.onDriverSessionDisposeFailed = vi.fn(async () => undefined);
+    const replacement: DriverSession = {
+      ...session,
+      runtimeInstanceId: 'runtime-2',
+      runTurn: vi.fn(async () => ({ completion: new Promise<RuntimeTurnOutcome>(() => undefined) })),
+      close: vi.fn(async () => undefined),
+    };
+    vi.mocked(driver.open).mockResolvedValueOnce(replacement);
+
+    const disposal = coordinator.disposeSession(input.towerSessionId);
+    await vi.waitFor(() => {
+      expect(host.onDriverSessionDisposedInstance).toHaveBeenCalledOnce();
+    });
+    const cleanupRetry = coordinator.retryDisposedSessionCleanup(input.towerSessionId, 'runtime-1');
+    const admission = coordinator.startTurn({ ...input, prompt: 'must remain blocked' });
+    const disposalResult = expect(disposal).rejects.toThrow('evidence persistence failed');
+    const cleanupRetryResult = expect(cleanupRetry).rejects.toMatchObject({
+      code: 'runtime_cleanup_pending',
+      retryable: true,
+    });
+    const admissionResult = expect(admission).rejects.toMatchObject({
+      code: 'runtime_cleanup_pending',
+      retryable: true,
+    });
+
+    evidence.reject(new Error('evidence persistence failed'));
+    await Promise.all([disposalResult, cleanupRetryResult, admissionResult]);
+
+    expect(driver.open).toHaveBeenCalledOnce();
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(replacement.close).not.toHaveBeenCalled();
+    expect(coordinator.getState(input.towerSessionId).turnState).toBe('DISPOSED');
+
+    await expect(coordinator.retryDisposedSessionCleanup(input.towerSessionId, 'runtime-1'))
+      .resolves.toBe(true);
+    expect(session.close).toHaveBeenCalledOnce();
+    await expect(coordinator.startTurn({ ...input, prompt: 'after evidence recovery' }))
+      .resolves.toMatchObject({ turnId: expect.any(String) });
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(replacement.runTurn).toHaveBeenCalledOnce();
+    await coordinator.destroyAll();
   });
 });

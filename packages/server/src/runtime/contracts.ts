@@ -83,6 +83,8 @@ export interface RuntimeOpenInput {
   env: ExecutionEnv;
   externalSessionId?: string | null;
   launchClaimNumber?: number;
+  /** Cancelled when disposal wins before the runtime startup handoff completes. */
+  admissionSignal?: AbortSignal;
 }
 
 /** `load` restores this transcript; `resume` only continues the agent's native context. */
@@ -97,6 +99,15 @@ export interface RuntimeRunTurnInput {
   /** Local entry that must remain after any history imported by session/load. */
   historyBoundaryEntryId?: string;
   launchClaimNumber?: number;
+  /** Cancelled when disposal wins before the runtime startup handoff completes. */
+  admissionSignal?: AbortSignal;
+}
+
+/** Short-lived, per-Tower-session lease for durable launch preparation and driver handoff. */
+export interface RuntimeStartAdmission {
+  readonly towerSessionId: string;
+  readonly signal: AbortSignal;
+  throwIfCancelled(): void;
 }
 
 export interface RuntimeTurnOutcome {
@@ -157,6 +168,8 @@ export interface StartRuntimeTurnInput extends RuntimeOpenInput {
   resumeExternalSessionId?: string | null;
   resumeMode?: RuntimeResumeMode;
   historyBoundaryEntryId?: string;
+  /** Supplied only by RuntimeCoordinator.withStartAdmission(). */
+  admission?: RuntimeStartAdmission;
 }
 
 export interface RuntimeTurnHandle {

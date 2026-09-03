@@ -550,7 +550,14 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
 
   const sendingRef = useRef(false)
   const handleSend = useCallback(async () => {
-    if ((!input.trim() && !hasAttachments) || !sessionId || sendingRef.current || isUploading) return
+    if (
+      (!input.trim() && !hasAttachments)
+      || !sessionId
+      || sendingRef.current
+      || stopSession.isPending
+      || isSessionCancelling
+      || isUploading
+    ) return
     sendingRef.current = true
 
     const attachmentLinks = buildMarkdownLinks()
@@ -564,16 +571,16 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
       { id: sessionId, message, providerId: selectedProviderId ?? undefined },
       {
         onSuccess: () => attach(),
+        onError: () => setInput((current) => current || message),
         onSettled: () => { sendingRef.current = false },
       }
     )
-  }, [input, sessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId])
+  }, [input, sessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId, stopSession.isPending, isSessionCancelling])
 
-  const handleStop = useCallback(async () => {
-    if (!sessionId) return
-    await stopSession.mutateAsync(sessionId)
-    queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-  }, [sessionId, stopSession, queryClient])
+  const handleStop = useCallback(() => {
+    if (!sessionId || stopSession.isPending) return
+    stopSession.mutate(sessionId)
+  }, [sessionId, stopSession])
 
   const handlePostRoomMessage = useCallback(
     (messageInput: Parameters<typeof postRoomMessage.mutateAsync>[0]) => postRoomMessage.mutateAsync(messageInput),
@@ -1083,9 +1090,19 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                     ) : (
                       <button
                         onClick={handleSend}
-                        disabled={(!input.trim() && !hasAttachments) || isUploading}
+                        disabled={
+                          (!input.trim() && !hasAttachments)
+                          || isUploading
+                          || sendMessageMutation.isPending
+                          || stopSession.isPending
+                          || isSessionCancelling
+                        }
                         className={`p-1.5 rounded-lg transition-colors ${
-                          (input.trim() || hasAttachments) && !isUploading
+                          (input.trim() || hasAttachments)
+                            && !isUploading
+                            && !sendMessageMutation.isPending
+                            && !stopSession.isPending
+                            && !isSessionCancelling
                             ? 'bg-neutral-900 text-white active:bg-black'
                             : 'bg-transparent text-neutral-300'
                         }`}

@@ -28,6 +28,13 @@ const acpState = vi.hoisted(() => ({
     params: Record<string, unknown>;
     signal: AbortSignal;
   }) => Promise<unknown>),
+  notificationHandlers: [] as Array<(request: { params: unknown }) => Promise<void>>,
+  permissionHandlers: [] as Array<(request: {
+    params: Record<string, unknown>;
+    signal: AbortSignal;
+  }) => Promise<unknown>>,
+  loadRequestGate: undefined as Promise<void> | undefined,
+  loadRequestEntered: undefined as (() => void) | undefined,
   prompt: undefined as undefined | {
     promise: Promise<{ stopReason?: string }>;
     resolve: (value: { stopReason?: string }) => void;
@@ -39,6 +46,7 @@ const acpState = vi.hoisted(() => ({
   processStarts: 0,
   processStops: 0,
   processStopErrors: [] as unknown[],
+  processStopGate: undefined as undefined | Promise<void>,
   initializeError: undefined as unknown,
 }));
 
@@ -94,6 +102,8 @@ vi.mock('@agentclientprotocol/sdk', () => {
       };
     }
     if (method === methods.agent.session.load) {
+      acpState.loadRequestEntered?.();
+      await acpState.loadRequestGate;
       for (const params of acpState.loadUpdates) {
         await acpState.notificationHandler?.({ params });
       }
@@ -109,21 +119,22 @@ vi.mock('@agentclientprotocol/sdk', () => {
     }
   });
   acpState.close = vi.fn();
-  const connection = {
-    agent: { request: acpState.request, notify: acpState.notify },
-    close: acpState.close,
-    closed: new Promise<void>(() => undefined),
-  };
   const app = {
     onNotification: vi.fn((_method: string, handler: typeof acpState.notificationHandler) => {
       acpState.notificationHandler = handler;
+      if (handler) acpState.notificationHandlers.push(handler);
       return app;
     }),
     onRequest: vi.fn((_method: string, handler: typeof acpState.permissionHandler) => {
       acpState.permissionHandler = handler;
+      if (handler) acpState.permissionHandlers.push(handler);
       return app;
     }),
-    connect: vi.fn(() => connection),
+    connect: vi.fn(() => ({
+      agent: { request: acpState.request, notify: acpState.notify },
+      close: acpState.close,
+      closed: new Promise<void>(() => undefined),
+    })),
   };
   return {
     PROTOCOL_VERSION: 1,
@@ -142,6 +153,7 @@ vi.mock('../acp/process-manager.js', () => ({
     onExit() {}
     async stop() {
       acpState.processStops += 1;
+      await acpState.processStopGate;
       const error = acpState.processStopErrors.shift();
       if (error) throw error;
     }
@@ -174,10 +186,15 @@ beforeEach(() => {
   acpState.supportsResume = true;
   acpState.notificationHandler = undefined;
   acpState.permissionHandler = undefined;
+  acpState.notificationHandlers.length = 0;
+  acpState.permissionHandlers.length = 0;
+  acpState.loadRequestGate = undefined;
+  acpState.loadRequestEntered = undefined;
   acpState.prompt = deferred<{ stopReason?: string }>();
   acpState.processStarts = 0;
   acpState.processStops = 0;
   acpState.processStopErrors = [];
+  acpState.processStopGate = undefined;
   acpState.initializeError = undefined;
   providerState.provider = null;
 });
@@ -314,6 +331,48 @@ describe('AcpRuntimeDriver lifecycle', () => {
     await session.close();
   });
 
+  it('does not send a prompt when admission is cancelled in the ready-session microtask window', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const first = await session.runTurn({
+      turnId: 'turn-ready',
+      prompt: 'prepare the reusable session',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+    acpState.prompt?.resolve({ stopReason: 'end_turn' });
+    await first.completion;
+
+    const promptCallsBefore = vi.mocked(acpState.request).mock.calls
+      .filter(([method]) => method === 'session/prompt').length;
+    const streamCallsBefore = vi.mocked(sink.stream).mock.calls.length;
+    const controller = new AbortController();
+    queueMicrotask(() => controller.abort(new AgentRuntimeError(
+      'runtime_admission_cancelled',
+      'prompt',
+      'disposal won before prompt',
+      true,
+    )));
+    const nextStore = new MsgStore();
+
+    await expect(session.runTurn({
+      turnId: 'turn-aborted-before-prompt',
+      prompt: 'must never be sent',
+      msgStore: nextStore,
+      resumeExternalSessionId: 'external-1',
+      admissionSignal: controller.signal,
+    }, sink)).rejects.toMatchObject({
+      code: 'runtime_admission_cancelled',
+      retryable: true,
+    });
+
+    expect(vi.mocked(acpState.request).mock.calls
+      .filter(([method]) => method === 'session/prompt')).toHaveLength(promptCallsBefore);
+    expect(vi.mocked(sink.stream).mock.calls).toHaveLength(streamCallsBefore);
+    expect(nextStore.getSnapshot().entries).toEqual([]);
+    await session.close();
+  });
+
   it('does not stop a real workspace service when the ACP driver is disposed', async () => {
     const backgroundManager = new WorkspaceBackgroundProcessManager({
       resolveCommand: async () => process.execPath,
@@ -344,8 +403,156 @@ describe('AcpRuntimeDriver lifecycle', () => {
     acpState.processStopErrors.push(new Error('tree still alive'));
 
     await expect(session.close()).rejects.toThrow('tree still alive');
+    expect(vi.mocked(sink.process).mock.calls.filter(([event]) => (
+      event.type === 'tree_cleanup_completed'
+    ))).toHaveLength(0);
     await expect(session.close()).resolves.toBeUndefined();
     expect(acpState.processStops).toBe(2);
+    expect(vi.mocked(sink.process).mock.calls.filter(([event]) => (
+      event.type === 'tree_cleanup_completed'
+    ))).toHaveLength(1);
+  });
+
+  it('confirms cleanup evidence for every successfully reset ACP transport generation', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const firstRuntimeInstanceId = session.runtimeInstanceId;
+
+    await (session as unknown as { resetTransport(): Promise<void> }).resetTransport();
+    await (session as unknown as {
+      connect(sink: RuntimeDriverEventSink, claim: number, signal?: AbortSignal): Promise<void>;
+    }).connect(sink, 2);
+    const secondRuntimeInstanceId = session.runtimeInstanceId;
+    await session.close();
+
+    const cleanupEvents = vi.mocked(sink.process).mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === 'tree_cleanup_completed');
+    expect(cleanupEvents).toEqual([
+      {
+        type: 'tree_cleanup_completed',
+        runtimeInstanceId: firstRuntimeInstanceId,
+        launchClaimNumber: 1,
+      },
+      {
+        type: 'tree_cleanup_completed',
+        runtimeInstanceId: secondRuntimeInstanceId,
+        launchClaimNumber: 2,
+      },
+    ]);
+  });
+
+  it('drops stale transport updates and permissions after a new generation is active', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const firstNotification = acpState.notificationHandlers[0]!;
+    const firstPermission = acpState.permissionHandlers[0]!;
+    const first = await session.runTurn({
+      turnId: 'turn-old-generation',
+      prompt: 'first generation',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+    acpState.prompt?.resolve({ stopReason: 'end_turn' });
+    await first.completion;
+
+    await (session as unknown as { resetTransport(): Promise<void> }).resetTransport();
+    await (session as unknown as {
+      connect(sink: RuntimeDriverEventSink, claim: number, signal?: AbortSignal): Promise<void>;
+    }).connect(sink, 2);
+    const currentNotification = acpState.notificationHandlers[1]!;
+    const currentPermission = acpState.permissionHandlers[1]!;
+    acpState.prompt = deferred<{ stopReason?: string }>();
+    const currentStore = new MsgStore();
+    const loadEntered = deferred<void>();
+    const releaseLoad = deferred<void>();
+    acpState.loadRequestEntered = () => loadEntered.resolve();
+    acpState.loadRequestGate = releaseLoad.promise;
+    const currentStart = session.runTurn({
+      turnId: 'turn-current-generation',
+      prompt: 'second generation',
+      msgStore: currentStore,
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+    await loadEntered.promise;
+    const streamCallsBeforeStaleHandlers = vi.mocked(sink.stream).mock.calls.length;
+
+    await firstNotification({
+      params: {
+        sessionId: 'external-1',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'stale-message',
+          content: { type: 'text', text: 'stale transport output' },
+        },
+      },
+    });
+    await expect(firstPermission({
+      params: {
+        sessionId: 'external-1',
+        options: [{ optionId: 'stale-allow', name: 'Allow', kind: 'allow_once' }],
+        toolCall: { toolCallId: 'stale-tool', title: 'Stale tool', kind: 'execute' },
+      },
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+
+    expect(vi.mocked(sink.stream).mock.calls).toHaveLength(streamCallsBeforeStaleHandlers);
+    expect(currentStore.getSnapshot().entries).toEqual([]);
+
+    releaseLoad.resolve();
+    const current = await currentStart;
+    expect(currentStore.getSnapshot().entries).toEqual([]);
+
+    await currentNotification({
+      params: {
+        sessionId: 'external-1',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'current-message',
+          content: { type: 'text', text: 'current transport output' },
+        },
+      },
+    });
+    const permissionAbort = new AbortController();
+    const currentPermissionResponse = currentPermission({
+      params: {
+        sessionId: 'external-1',
+        options: [{ optionId: 'current-allow', name: 'Allow', kind: 'allow_once' }],
+        toolCall: { toolCallId: 'current-tool', title: 'Current tool', kind: 'execute' },
+      },
+      signal: permissionAbort.signal,
+    });
+
+    expect(currentStore.getSnapshot().entries.map((entry) => entry.content)).toEqual([
+      'current transport output',
+    ]);
+    expect(vi.mocked(sink.stream).mock.calls.map(([event]) => event.type))
+      .toContain('permission_requested');
+    permissionAbort.abort();
+    await expect(currentPermissionResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+
+    acpState.prompt.resolve({ stopReason: 'end_turn' });
+    await current.completion;
+    await session.close();
+  });
+
+  it('retains a stopped transport until its cleanup evidence can be persisted', async () => {
+    const { sink, input } = setup();
+    let cleanupAttempts = 0;
+    vi.mocked(sink.process).mockImplementation(async (event) => {
+      if (event.type === 'tree_cleanup_completed' && cleanupAttempts++ === 0) {
+        throw new Error('cleanup evidence unavailable');
+      }
+    });
+    const session = await new AcpRuntimeDriver().open(input, sink);
+
+    await expect(session.close()).rejects.toThrow('cleanup evidence unavailable');
+    await expect(session.close()).resolves.toBeUndefined();
+
+    expect(acpState.processStops).toBe(2);
+    expect(vi.mocked(sink.process).mock.calls.filter(([event]) => (
+      event.type === 'tree_cleanup_completed'
+    ))).toHaveLength(2);
   });
 
   it('retries auxiliary launch cleanup during a normal DriverSession close', async () => {
@@ -406,6 +613,71 @@ describe('AcpRuntimeDriver lifecycle', () => {
       await expect(new AcpRuntimeDriver().open(input, sink)).rejects.toThrow('initialize failed');
       expect(cleanup).toHaveBeenCalledTimes(2);
     } finally {
+      definitionSpy.mockRestore();
+    }
+  });
+
+  it('does not spawn a reconnect after close begins while transport reset is pending', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const resetRelease = deferred<void>();
+    acpState.processStopGate = resetRelease.promise;
+
+    const reset = (session as unknown as {
+      resetTransport(): Promise<void>;
+    }).resetTransport();
+    await vi.waitFor(() => expect(acpState.processStops).toBe(1));
+    const reconnect = (session as unknown as {
+      connect(sink: RuntimeDriverEventSink, claim: number, signal?: AbortSignal): Promise<void>;
+    }).connect(sink, 2);
+    const closing = session.close();
+
+    resetRelease.resolve();
+    await reset;
+    await closing;
+    await expect(reconnect).rejects.toMatchObject({ code: 'connection_closed' });
+    expect(acpState.processStarts).toBe(1);
+    expect(acpState.processStops).toBe(1);
+  });
+
+  it('cleans a late resolveLaunch result without spawning after close', async () => {
+    const resolveLaunchEntered = deferred<void>();
+    const resolveLaunchRelease = deferred<void>();
+    const cleanup = vi.fn(async () => undefined);
+    const definition = acpRegistry.getAcpAgentDefinition(AgentType.CODEX);
+    let launchCount = 0;
+    const definitionSpy = vi.spyOn(acpRegistry, 'getAcpAgentDefinition').mockReturnValue({
+      ...definition,
+      resolveLaunch: async (launchInput, profile) => {
+        launchCount += 1;
+        if (launchCount === 2) {
+          resolveLaunchEntered.resolve();
+          await resolveLaunchRelease.promise;
+        }
+        const launch = await definition.resolveLaunch(launchInput, profile);
+        return { ...launch, cleanup };
+      },
+    });
+    const { sink, input } = setup();
+
+    try {
+      const session = await new AcpRuntimeDriver().open(input, sink);
+      await (session as unknown as { resetTransport(): Promise<void> }).resetTransport();
+      expect(acpState.processStarts).toBe(1);
+
+      const reconnect = (session as unknown as {
+        connect(sink: RuntimeDriverEventSink, claim: number, signal?: AbortSignal): Promise<void>;
+      }).connect(sink, 2);
+      await resolveLaunchEntered.promise;
+      await session.close();
+      resolveLaunchRelease.resolve();
+
+      await expect(reconnect).rejects.toMatchObject({ code: 'connection_closed' });
+      expect(acpState.processStarts).toBe(1);
+      expect(acpState.processStops).toBe(1);
+      expect(cleanup).toHaveBeenCalledTimes(2);
+    } finally {
+      resolveLaunchRelease.resolve();
       definitionSpy.mockRestore();
     }
   });
