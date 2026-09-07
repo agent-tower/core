@@ -65,7 +65,7 @@ description: >-
 | server | `pnpm --filter @agent-tower/server build`，包含 Prisma generate |
 | web | `pnpm --filter web build`；需要 lint 时用 `pnpm --filter web lint` |
 | desktop / 公开文档 | `pnpm --filter @agent-tower/desktop build` / `pnpm docs:build` |
-| 安装和发布产物 | `pnpm build:publish` 后 `pnpm publish:smoke`；桌面验收见对应 reference |
+| 安装和发布产物 | 按 publish skill 构建并只打包一次；完整验证用 `pnpm publish:smoke --tarball <path>`；桌面验收见对应 reference |
 
 根 `vitest.config.ts` 收集 `packages/**/*.test.{ts,tsx}`；根目录没有 `pnpm test` 脚本。`pnpm lint` 当前只覆盖声明 lint 的包，不能代替 server/desktop 类型检查。`pnpm build` 包含文档站，按需使用，跨包构建遵循 `shared -> server -> web/desktop`。
 

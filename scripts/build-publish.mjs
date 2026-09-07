@@ -293,8 +293,8 @@ cpSync(resolve(root, 'README.md'), resolve(publishDir, 'README.md'));
 // 我们在 cli.ts 中设置 AGENT_TOWER_WEB_DIR=web（相对于 __dirname）
 
 console.log(`\nPublish package ready at: ${publishDir}`);
-console.log('\nTo publish:');
-console.log(`  cd ${publishDir}`);
-console.log('  npm publish --tag latest');
-console.log('\nTo test locally:');
-console.log('  pnpm publish:smoke');
+console.log('\nPack once (from the repository root):');
+console.log('  npm pack ./packages/server/publish --json --pack-destination ./packages/server/publish > ./packages/server/publish/pack-result.json');
+console.log('\nFor full install validation, reuse that tarball:');
+console.log(`  pnpm publish:smoke --tarball ./packages/server/publish/agent-tower-${serverPkg.version}.tgz`);
+console.log('\nPublish the same tarball with an explicit dist-tag; follow .agents/skills/publish/SKILL.md.');

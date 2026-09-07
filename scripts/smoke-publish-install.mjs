@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,8 +18,20 @@ const publishDir = path.join(repoRoot, 'packages/server/publish');
 const publishPackagePath = path.join(publishDir, 'package.json');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const piPackageName = '@earendil-works/pi-coding-agent';
+const args = process.argv.slice(2);
+if (args[0] === '--') args.shift();
 
-if (!existsSync(publishPackagePath)) {
+if (args.length > 0 && (
+  args.length !== 2 || args[0] !== '--tarball' || !args[1] || args[1].startsWith('--')
+)) {
+  throw new Error('Usage: pnpm publish:smoke [--tarball <local-package.tgz>]');
+}
+
+let tarballPath = args.length > 0 ? path.resolve(args[1]) : undefined;
+if (tarballPath && (!existsSync(tarballPath) || !statSync(tarballPath).isFile())) {
+  throw new Error(`Tarball not found or not a file: ${tarballPath}`);
+}
+if (!tarballPath && !existsSync(publishPackagePath)) {
   throw new Error('Publish package not found. Run pnpm build:publish first.');
 }
 
@@ -28,20 +41,23 @@ const installPrefix = path.join(tempRoot, 'prefix');
 const consumerDir = path.join(tempRoot, 'consumer-project');
 
 try {
-  mkdirSync(packDir, { recursive: true });
   mkdirSync(consumerDir, { recursive: true });
   writeFileSync(path.join(consumerDir, 'package.json'), JSON.stringify({
     name: 'agent-tower-publish-smoke-consumer',
     private: true,
   }, null, 2) + '\n');
-  const tarballName = execFileSync(
-    npmCommand,
-    ['pack', '--silent', '--pack-destination', packDir],
-    { cwd: publishDir, encoding: 'utf8' },
-  ).trim().split(/\r?\n/).at(-1);
-  if (!tarballName) throw new Error('npm pack did not return a tarball name.');
+  if (!tarballPath) {
+    mkdirSync(packDir, { recursive: true });
+    const tarballName = execFileSync(
+      npmCommand,
+      ['pack', '--silent', '--pack-destination', packDir],
+      { cwd: publishDir, encoding: 'utf8' },
+    ).trim().split(/\r?\n/).at(-1);
+    if (!tarballName) throw new Error('npm pack did not return a tarball name.');
+    tarballPath = path.join(packDir, tarballName);
+  }
 
-  const tarballPath = path.join(packDir, tarballName);
+  console.log(`[publish-smoke] tarball=${tarballPath}`);
   execFileSync(
     npmCommand,
     [
@@ -71,6 +87,9 @@ try {
   ).trim();
   const installedRoot = path.join(globalRoot, 'agent-tower');
   const installedPackage = JSON.parse(readFileSync(path.join(installedRoot, 'package.json'), 'utf8'));
+  if (installedPackage.name !== 'agent-tower') {
+    throw new Error(`Unexpected installed package: ${installedPackage.name}`);
+  }
   const clientPackagePath = path.join(installedRoot, 'node_modules/@prisma/client/package.json');
   const generatedClientDir = path.join(installedRoot, 'node_modules/.prisma/client');
   const generatedClientPath = path.join(generatedClientDir, 'index.js');
