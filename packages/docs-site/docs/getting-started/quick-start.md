@@ -18,7 +18,7 @@ Agent Tower 本身不负责执行代码，它会通过 CLI Driver 或 ACP Driver
 | 执行器 | 可用 Runtime | 安装说明 |
 | --- | --- | --- |
 | Claude Code | CLI、ACP | ACP 已内置；CLI Runtime 见 [Claude Code Setup](https://code.claude.com/docs/en/setup) |
-| Codex CLI | CLI、ACP | ACP 已内置；CLI Runtime 见 [Codex CLI](https://developers.openai.com/codex/cli) |
+| Codex CLI | CLI、ACP | ACP 优先使用系统 Codex，未安装时用内置版本兜底；CLI Runtime 见 [Codex CLI](https://developers.openai.com/codex/cli) |
 | Cursor CLI | CLI、ACP | [Cursor CLI](https://cursor.com/cli) |
 | Gemini CLI | CLI、ACP | [Gemini CLI Get started](https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/index.md) |
 | Qwen Code | ACP | [Qwen Code](https://github.com/QwenLM/qwen-code) |
@@ -27,7 +27,7 @@ Agent Tower 本身不负责执行代码，它会通过 CLI Driver 或 ACP Driver
 | Pi Coding Agent | ACP | Agent Tower 内置，无需单独安装 |
 | Grok Build | ACP | 安装提供 `grok` 命令并支持 `grok agent stdio` 的版本 |
 
-Claude Code ACP、Codex ACP 和 Pi Coding Agent 不要求全局安装对应 CLI；它们可以直接使用 Provider 中配置的凭证、API 地址和模型。Claude Code 与 Codex 的 CLI Runtime 仍要求本机 CLI。需要覆盖内置 ACP Runtime 时，可以分别使用 `CLAUDE_PATH`/`CLAUDE_CODE_EXECUTABLE`、`CODEX_PATH` 或 `PI_CODING_AGENT_PATH`/`PI_PATH`。
+Claude Code ACP、Codex ACP 和 Pi Coding Agent 不要求全局安装对应 CLI；它们可以直接使用 Provider 中配置的凭证、API 地址和模型。Codex ACP 会自动优先使用 Agent Tower 服务所在环境检测到的系统 `codex`，未检测到时才使用内置版本，无需手动指定路径。Claude Code 与 Codex 的 CLI Runtime 仍要求本机 CLI。Claude Code 和 Pi 的内置 ACP Runtime 仍可分别通过 `CLAUDE_PATH`/`CLAUDE_CODE_EXECUTABLE` 或 `PI_CODING_AGENT_PATH`/`PI_PATH` 覆盖。
 
 ## 安装
 

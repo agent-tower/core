@@ -2,7 +2,7 @@ packages:
   - 'packages/*'
 
 overrides:
-  '@openai/codex': 0.149.1
+  '@openai/codex': 0.153.4
 
 allowBuilds:
   '@google/genai': false

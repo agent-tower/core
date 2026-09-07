@@ -9,7 +9,7 @@ import {
   codexAcpMaxStdoutFrameBytes,
   normalizeCodexAcpStdoutFrame,
 } from './codex-frame-normalizer.js';
-import { isExecutableFile, resolveBundledCodexEntrypoint } from './executable-resolution.js';
+import { resolveBundledCodexEntrypoint } from './executable-resolution.js';
 import type { AcpAgentDefinition } from './types.js';
 
 const require = createRequire(import.meta.url);
@@ -59,9 +59,9 @@ export const codexAcpAgentDefinition: AcpAgentDefinition = {
         { cause: error },
       );
     }
-    const codexPath = await resolveCodexOverride(profile.environment);
+    const codexPath = await resolveSystemCodex(profile.environment);
     if (!codexPath && !resolveBundledCodexEntrypoint()) {
-      throw new AgentRuntimeError('missing_codex', 'dependency_check', 'Bundled Codex Runtime was not found', false);
+      throw new AgentRuntimeError('missing_codex', 'dependency_check', 'Neither system nor bundled Codex Runtime was found', false);
     }
     const environment = { ...profile.environment };
     if (codexPath) environment.CODEX_PATH = codexPath;
@@ -87,10 +87,10 @@ export const codexAcpAgentDefinition: AcpAgentDefinition = {
       return { type: 'NOT_FOUND', error: 'Codex ACP adapter is not installed' };
     }
     const environment = { ...process.env, ...provider.env };
-    const available = await resolveCodexOverride(environment) || resolveBundledCodexEntrypoint();
+    const available = await resolveSystemCodex(environment) || resolveBundledCodexEntrypoint();
     return available
       ? { type: 'INSTALLATION_FOUND' }
-      : { type: 'NOT_FOUND', error: 'Bundled Codex Runtime was not found' };
+      : { type: 'NOT_FOUND', error: 'Neither system nor bundled Codex Runtime was found' };
   },
 
   async configureSession(context, sessionId, response, profile) {
@@ -123,11 +123,14 @@ export const codexAcpAgentDefinition: AcpAgentDefinition = {
   },
 };
 
-async function resolveCodexOverride(environment: NodeJS.ProcessEnv): Promise<string | undefined> {
-  const configured = environment.CODEX_PATH?.trim();
-  if (!configured) return undefined;
-  if (path.isAbsolute(configured)) {
-    return await isExecutableFile(configured) ? configured : undefined;
+async function resolveSystemCodex(environment: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const searchEnvironment = { ...environment };
+  for (const key of Object.keys(searchEnvironment)) {
+    if (key.toUpperCase() !== 'PATH') continue;
+    searchEnvironment[key] = searchEnvironment[key]
+      ?.split(path.delimiter)
+      .filter(directory => path.isAbsolute(directory) && !/[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/i.test(directory))
+      .join(path.delimiter);
   }
-  return await which(configured, { env: environment }) ?? undefined;
+  return await which('codex', { env: searchEnvironment }) ?? undefined;
 }
