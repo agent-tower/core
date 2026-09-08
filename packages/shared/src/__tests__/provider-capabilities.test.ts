@@ -53,7 +53,7 @@ describe('provider capability matrix', () => {
     expect(PROVIDER_CAPABILITIES[AgentType.MINION_CODE].disableResponsesWebsocket).toBeUndefined()
   })
 
-  it('declares ordered five-level effort options', () => {
+  it('declares ordered effort options', () => {
     expect(PROVIDER_CAPABILITIES[AgentType.CLAUDE_CODE].reasoningEffort?.options)
       .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     expect(PROVIDER_CAPABILITIES[AgentType.CODEX].reasoningEffort?.options)

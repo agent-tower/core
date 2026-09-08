@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api-client'
 import { queryKeys } from './query-keys'
 import type {
+  AgentType,
   ProviderCapabilityMatrix,
   ProviderBackupFile,
   ProviderDraftInput,
@@ -44,11 +45,18 @@ export function useProvider(id: string) {
   })
 }
 
-export function useProviderCapabilities() {
+export function useProviderCapabilities(agentType?: AgentType | string, model?: string) {
+  const normalizedModel = model?.trim() || undefined
   return useQuery({
-    queryKey: queryKeys.providers.capabilities,
-    queryFn: () => apiClient.get<Partial<ProviderCapabilityMatrix>>('/providers/capabilities'),
-    staleTime: Infinity,
+    queryKey: queryKeys.providers.capabilities(agentType, normalizedModel),
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (agentType) params.set('agentType', agentType)
+      if (normalizedModel) params.set('model', normalizedModel)
+      const suffix = params.toString()
+      return apiClient.get<Partial<ProviderCapabilityMatrix>>(`/providers/capabilities${suffix ? `?${suffix}` : ''}`)
+    },
+    staleTime: 5 * 60 * 1000,
   })
 }
 

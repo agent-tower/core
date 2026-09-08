@@ -29,6 +29,10 @@ import {
   validateProviderBackupDrafts,
 } from '../services/provider-config.service.js';
 import {
+  getCodexReasoningEffortOptions,
+  validateCodexReasoningEffort,
+} from '../services/codex-model-capabilities.service.js';
+import {
   probeEffectiveProviderConnection,
   resolveEffectiveProviderConnection,
   type ProviderConnectionProbeOptions,
@@ -83,6 +87,11 @@ const updateProviderSchema = z.object({
 
 const testProviderSchema = createProviderSchema.extend({
   providerId: z.string().min(1).optional(),
+});
+
+const capabilitiesQuerySchema = z.object({
+  agentType: z.nativeEnum(SharedAgentType).optional(),
+  model: z.string().optional(),
 });
 
 const backupProviderSchema = z.object({
@@ -149,9 +158,23 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
     }));
   });
 
-  app.get('/providers/capabilities', async () => Object.fromEntries(
-    USER_VISIBLE_AGENT_TYPES.map(agentType => [agentType, PROVIDER_CAPABILITIES[agentType]]),
-  ));
+  app.get('/providers/capabilities', async (request) => {
+    const query = capabilitiesQuerySchema.parse(request.query ?? {});
+    const capabilities = Object.fromEntries(
+      USER_VISIBLE_AGENT_TYPES.map(agentType => [agentType, PROVIDER_CAPABILITIES[agentType]]),
+    ) as typeof PROVIDER_CAPABILITIES;
+    if (query.agentType === SharedAgentType.CODEX && query.model?.trim()) {
+      const reasoningEffort = capabilities[SharedAgentType.CODEX].reasoningEffort;
+      if (reasoningEffort) {
+        const resolved = await getCodexReasoningEffortOptions(query.model);
+        capabilities[SharedAgentType.CODEX] = {
+          ...capabilities[SharedAgentType.CODEX],
+          reasoningEffort: { ...reasoningEffort, options: resolved.options },
+        };
+      }
+    }
+    return capabilities;
+  });
 
   app.post('/providers/test', async (request, reply) => {
     const parsed = testProviderSchema.safeParse(request.body);
@@ -165,7 +188,14 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
       reply.code(404);
       return { ok: false, stage: 'validation', summary: 'Provider not found' };
     }
-    const { provider, diagnostics } = normalizeProviderDraft(input, existing);
+    const normalized = normalizeProviderDraft(input, existing);
+    const provider = normalized.provider;
+    const diagnostics = [
+      ...normalized.diagnostics,
+    ];
+    if (!diagnostics.some(diagnostic => diagnostic.field === 'reasoningEffort')) {
+      diagnostics.push(...await validateCodexReasoningEffort(provider));
+    }
     if (diagnostics.length > 0) {
       return { ok: false, stage: 'validation', summary: 'Configuration validation failed', diagnostics };
     }
@@ -274,9 +304,15 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
     }
     const input = parsed.data as ProviderDraftInput;
     const normalized = normalizeProviderDraft(input);
-    if (normalized.diagnostics.length > 0) {
+    const diagnostics = [
+      ...normalized.diagnostics,
+    ];
+    if (!diagnostics.some(diagnostic => diagnostic.field === 'reasoningEffort')) {
+      diagnostics.push(...await validateCodexReasoningEffort(normalized.provider));
+    }
+    if (diagnostics.length > 0) {
       reply.code(400);
-      return { error: 'Invalid provider configuration', diagnostics: normalized.diagnostics };
+      return { error: 'Invalid provider configuration', diagnostics };
     }
     try {
       const provider = createProvider(persistedData(normalized.provider));
@@ -306,9 +342,15 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
       agentType: existing.agentType as SharedAgentType,
     };
     const normalized = normalizeProviderDraft(input, existing);
-    if (normalized.diagnostics.length > 0) {
+    const diagnostics = [
+      ...normalized.diagnostics,
+    ];
+    if (!diagnostics.some(diagnostic => diagnostic.field === 'reasoningEffort')) {
+      diagnostics.push(...await validateCodexReasoningEffort(normalized.provider));
+    }
+    if (diagnostics.length > 0) {
       reply.code(400);
-      return { error: 'Invalid provider configuration', diagnostics: normalized.diagnostics };
+      return { error: 'Invalid provider configuration', diagnostics };
     }
     try {
       const provider = updateProvider(existing.id, persistedData(normalized.provider));

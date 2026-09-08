@@ -467,8 +467,11 @@ export function validateProviderMappedFields(
     } else if (provider.settings?.trim() && validateSettings(provider.agentType, provider.settings).length === 0) {
       effort = (parseToml(provider.settings) as Record<string, unknown>)[capability.reasoningEffort.path];
     }
+    const codexDynamicEffort = provider.agentType === AgentType.CODEX
+      && (effort === 'max' || effort === 'ultra');
     if (effort !== undefined && (
-      typeof effort !== 'string' || !capability.reasoningEffort.options.includes(effort)
+      typeof effort !== 'string'
+      || (!capability.reasoningEffort.options.includes(effort) && !codexDynamicEffort)
     )) {
       diagnostics.push({
         field: 'reasoningEffort',

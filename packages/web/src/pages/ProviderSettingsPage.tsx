@@ -158,7 +158,7 @@ const CODEX_SETTINGS_TEMPLATE_ZH = `# Codex config.toml 配置片段 — 通过 
 # 参考: https://developers.openai.com/codex/config-sample
 
 # ─── 模型与推理 ─────────────────────────────────────────────
-# model_reasoning_effort = "medium"     # minimal | low | medium | high | xhigh
+# model_reasoning_effort = "medium"     # minimal | low | medium | high | xhigh | max | ultra
 # model_reasoning_summary = "auto"      # auto | concise | detailed | none
 # model_verbosity = "medium"            # low | medium | high
 # service_tier = "fast"
@@ -193,7 +193,7 @@ const CODEX_SETTINGS_TEMPLATE_EN = `# Codex config.toml snippet — injected thr
 # Reference: https://developers.openai.com/codex/config-sample
 
 # ─── Model and reasoning ────────────────────────────────────
-# model_reasoning_effort = "medium"     # minimal | low | medium | high | xhigh
+# model_reasoning_effort = "medium"     # minimal | low | medium | high | xhigh | max | ultra
 # model_reasoning_summary = "auto"      # auto | concise | detailed | none
 # model_verbosity = "medium"            # low | medium | high
 # service_tier = "fast"
@@ -327,6 +327,7 @@ function getEffortLabel(value: string): string {
     high: '高',
     xhigh: '超高',
     max: '最高',
+    ultra: 'Ultra',
   } as Record<string, string>)[value] ?? value
 }
 
@@ -449,7 +450,6 @@ export function ProviderFormModal({
   onSave: (data: CreateProviderInput | UpdateProviderInput) => void
 }) {
   const { locale, t } = useI18n()
-  const { data: capabilities } = useProviderCapabilities()
   const testProvider = useTestProviderDraft()
   const [formData, setFormData] = useState<ProviderFormData>(
     initialData ?? {
@@ -481,6 +481,7 @@ export function ProviderFormModal({
   const [conflictResolutions, setConflictResolutions] = useState<Record<string, ProviderConflictResolution>>({})
   const testSequence = useRef(createProviderDraftTestSequence())
 
+  const { data: capabilities } = useProviderCapabilities(formData.agentType, formData.simplified.model)
   const capability = capabilities?.[formData.agentType] ?? PROVIDER_CAPABILITIES[formData.agentType]
   const apiBaseUrlError = capability.apiBaseUrl
     ? getApiBaseUrlValidationError(formData.simplified.apiBaseUrl)

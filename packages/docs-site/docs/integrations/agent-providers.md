@@ -69,6 +69,14 @@ Codex CLI 和 Codex (ACP) Provider 都可以启用 Fast 模式。它只对 Codex
 
 Provider 未配置该字段时沿用 Codex 自身配置；显式关闭时，该 Provider 使用标准速度。
 
+### Codex 推理强度
+
+Codex Provider 的推理强度会根据所选模型和运行时目录动态显示。基础档位为 `minimal`、`low`、`medium`、`high` 和 `xhigh`；支持的新版模型还可能声明 `max` 或 `ultra`。`ultra` 会原样写入 `model_reasoning_effort`，不会自动转换为 `max`。
+
+Agent Tower 会调用 Codex 的模型目录发现能力，并在保存或测试 Provider 时再次校验。旧版 Codex、无法读取模型目录或未识别的自定义模型会回退到基础档位；如果已保存的 Provider 使用当前运行时不支持的档位，保存或测试会返回明确诊断，不会静默降级。
+
+Claude Code 当前文档列出的 effort 档位为 `low`、`medium`、`high`、`xhigh` 和 `max`，具体可用档位仍由模型和 Claude Code 版本决定。`ultracode` 是独立的 Claude Code 设置，不是一个 effort 值；它以 `xhigh` 推理并启用动态工作流编排，不能写成 `effort = "ultracode"`。
+
 Claude Code 与 Codex 的 ACP adapter 及其兼容 Runtime 随 Agent Tower 发布，不要求全局安装 `claude` 或 `codex`。Codex ACP 自动检测 Agent Tower 服务所在环境的系统 `codex`，优先使用检测到的版本；未检测到时才使用内置版本兜底，无需配置路径。检测会排除项目 `node_modules/.bin` 和相对 PATH 目录，避免将项目依赖当作系统安装；检测到的 Codex 启动失败时会报告错误，不会静默切换到内置版本。`CODEX_PATH` 由 Agent Tower 根据检测结果设置，不再作为手动选择运行时的入口。远程或 Docker 部署检测的是服务器或容器内的安装，而非浏览器所在电脑。
 
 Claude Code 仍可以通过 `CLAUDE_PATH`/`CLAUDE_CODE_EXECUTABLE` 显式覆盖内置版本。Pi Coding Agent 的 npm Runtime 同样随 Agent Tower 发布，可以通过 `PI_CODING_AGENT_PATH` 或 `PI_PATH` 覆盖。

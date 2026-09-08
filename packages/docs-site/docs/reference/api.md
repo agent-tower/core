@@ -140,6 +140,7 @@ Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspac
 | Method | Path | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/providers` | 列出 providers |
+| `GET` | `/api/providers/capabilities[?agentType=CODEX&model=...]` | 获取 Provider 能力；指定 Codex 模型时返回该 runtime 声明的推理强度档位 |
 | `GET` | `/api/providers/backup` | 导出 provider 备份 |
 | `POST` | `/api/providers/import/preview` | 预览导入 |
 | `POST` | `/api/providers/import` | 导入备份 |

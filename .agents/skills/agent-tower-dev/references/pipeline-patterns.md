@@ -26,6 +26,7 @@ Parser / Projector -> MsgStore -> Runtime events -> SessionManager / EventBus ->
 - `SessionManager` 负责数据库状态、执行环境、快照、auto-commit 和 Task/TeamRun 结束处理；PTY、Pipeline 和 ACP 连接由 Driver 持有。Route 不直接 spawn，Parser/Projector 不更新 Prisma 或任务状态。
 - `RuntimeCoordinator` 按 Tower Session 管理 DriverSession，保证单 active turn，并统一 turn ID、事件顺序、权限请求与可等待的销毁。Driver 通过 `contracts.ts` 的 sink 报告输出和进程事件。
 - `AgentType` 是 Agent 身份，`RuntimeType` 是 CLI/ACP 协议。创建 Session 时按 shared 支持矩阵校验并固化 Runtime；follow-up 可切换同 Agent、同 Runtime 的 Provider，不能跨身份或协议。纯 ACP Agent 没有 Provider 时不能默认为 CLI。
+- Codex reasoning effort 的基础档位由 shared capability 提供；`max`/`ultra` 由 server 根据 `codex debug models` 的模型目录动态过滤，保存和测试不得静默降级，CLI/ACP 启动时保留原始值交给 Codex runtime 处理。
 - 区分 Tower Session ID、每轮 `turnId`、Agent 原生 `externalSessionId` 与每次 OS 启动的 `runtimeInstanceId`。一次逻辑 turn 完成不代表 DriverSession 关闭，也不代表整个 OS 进程树退出。
 - `Session.status` 是持久化业务状态，`RuntimeStateDto` 是当前运行状态。`hasActiveTurn()` 用于存活判断；`AWAITING_PERMISSION` 是活跃的用户等待，不能按无输出超时处理。旧 `hasActivePipeline()` 仅作兼容。
 
