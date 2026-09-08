@@ -19,8 +19,8 @@
 - packaged 在所有平台使用构建环境中满足根 `engines.node` 的独立 Node，把其目录加入 PATH 并设置 `AGENT_TOWER_NODE_RUNTIME`；清除 `ELECTRON_RUN_AS_NODE`。不要回退到 Electron 内嵌 Node 或全局 CLI。
 - 后端绑定 `127.0.0.1`；BrowserWindow 设置 `contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`。当前只是初始加载本地 URL，不能把它描述为已实现导航/新窗口 origin allowlist；修改外链、窗口或 preload 时以实际 webContents handler 为准。
 - Web 通过 query 参数识别桌面平台与 integrated titlebar，联查 `packages/web/src/lib/desktop-titlebar.tsx` 和 RootLayout；macOS/Windows 的系统按钮占位不能影响普通浏览器。
-- 普通退出由 `before-quit.ts` 挡住 Electron quit，`backend-shutdown.ts` 给后端 SIGTERM 并等待真实 `exit`，让 backend 清理 Agent process tree。发送信号失败要重试，不能当成功，也不能在普通 quit 中加固定时间后的 SIGKILL。
-- 后端已启动后崩溃，`main.ts` 的 recovery owner 会用同一 data 配置启动 replacement backend，再走正常关闭以回收持久化进程所有权；这不是恢复 UI 服务。保留 startup error/early exit、并发 quit 和 recovery 清理责任。
+- 普通退出由 `before-quit.ts` 挡住 Electron quit，`backend-shutdown.ts` 通过随 spawn 建立的私有 IPC 发送 shutdown 并等待真实 `exit`，让 backend 清理所有进程 owner。Unix 无 IPC 时可回退 SIGTERM；Windows 不能把 `child.kill(SIGTERM)` 当作可执行 JS 清理的通知。发送失败需重试，普通退出不加固定时间后的 SIGKILL。开发 launcher 复用相同协议。
+- 后端已启动后崩溃，`main.ts` 的 recovery owner 会用同一 data 配置启动 replacement backend，再走正常关闭以回收持久化进程所有权；这不是恢复 UI 服务。每个失败启动保留 child，等待其真实退出后才允许再次 recovery；并发 quit、health timeout 和 child error 不能覆盖仍存活的旧 owner。
 - 持久化桌面日志使用 `log-redaction.ts` 的文本和 metadata 脱敏；路径、可执行名与进程操作兼容 Windows/macOS/Linux。
 
 ## Desktop 组装与验收

@@ -67,6 +67,12 @@ pnpm desktop:package:acceptance
 
 生产桌面包默认不会依赖全局 `agent-tower` 命令。打包产物会从 app resources 中启动后端 runtime，并携带 Claude Code ACP、Codex ACP 和 Pi Coding Agent 所需的 Runtime。
 
+## 退出与后端恢复
+
+退出桌面应用时，应用会等待本地后端清理 Agent、终端、后台服务、隧道及正在运行的 CLI 安装任务。清理遇到暂时失败时会继续等待和重试，因此退出可能需要更长时间。
+
+后端恢复过程中，如果某次启动失败，应用会先清理该实例，再尝试下一次启动，避免反复启动积累后台进程。
+
 ## MCP 配置
 
 桌面端设置页提供 `MCP Config` 入口，用于复制当前桌面后端对应的 MCP JSON。

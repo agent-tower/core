@@ -545,7 +545,7 @@ export async function cleanupPersistedAcpProcessTree(
   }
 }
 
-function createWindowsProcessTreeAdapter(): WindowsProcessTreeAdapter {
+export function createWindowsProcessTreeAdapter(runExecFileSync: typeof execFileSync = execFileSync): WindowsProcessTreeAdapter {
   const listProcesses = (): WindowsProcessIdentity[] => {
     const script = [
       'Get-CimInstance Win32_Process',
@@ -553,23 +553,29 @@ function createWindowsProcessTreeAdapter(): WindowsProcessTreeAdapter {
       'ConvertTo-Json -Compress',
     ].join(' | ');
     try {
-      const output = execFileSync('powershell.exe', [
+      const output = runExecFileSync('powershell.exe', [
         '-NoProfile',
         '-NonInteractive',
         '-Command',
         script,
       ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-      if (!output) return [];
+      if (!output) throw new Error('Windows process enumeration returned empty output');
       const parsed = JSON.parse(output) as Record<string, unknown> | Array<Record<string, unknown>>;
       const rows = Array.isArray(parsed) ? parsed : [parsed];
-      return rows.map((row): WindowsProcessIdentity | null => {
+      // CIM includes the System Idle Process (PID 0) without a creation date.
+      // It cannot be our child and is not a malformed candidate identity.
+      const identities = rows.filter((row) => row.ProcessId !== 0 && row.ProcessId !== '0').map((row): WindowsProcessIdentity | null => {
         const pid = Number(row.ProcessId);
         const parentPid = Number(row.ParentProcessId);
         const birthMarker = typeof row.CreationDate === 'string' ? row.CreationDate : '';
-        return pid > 0 && Number.isFinite(parentPid) && birthMarker
+        return Number.isInteger(pid) && pid > 0 && Number.isInteger(parentPid) && parentPid >= 0 && birthMarker
           ? { pid, parentPid, birthMarker }
           : null;
-      }).filter((row): row is WindowsProcessIdentity => row !== null);
+      });
+      if (identities.length === 0 || identities.some((identity) => identity === null)) {
+        throw new Error('Windows process enumeration returned malformed output');
+      }
+      return identities as WindowsProcessIdentity[];
     } catch (error) {
       throw processEnumerationFailed(error);
     }
@@ -599,7 +605,7 @@ function createWindowsProcessTreeAdapter(): WindowsProcessTreeAdapter {
     },
     async terminateTree(pid) {
       try {
-        execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        runExecFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
       } catch {
         // The identity is rechecked before signalling; a concurrent exit is harmless.
       }

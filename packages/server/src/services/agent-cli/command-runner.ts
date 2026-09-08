@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { runOwnedCommand } from '../../utils/owned-child-process.js';
 import {
   buildWindowsCmdShimCommandLine,
   normalizeCommandLookupOutput,
@@ -23,6 +23,7 @@ export type AgentCliExecFile = (
     shell: false
     windowsHide: true
     encoding: 'utf8'
+    signal?: AbortSignal
   }
 ) => Promise<AgentCliExecFileResult>;
 
@@ -34,15 +35,7 @@ export function defaultExecFile(
   args: string[],
   options: Parameters<AgentCliExecFile>[2]
 ): Promise<AgentCliExecFileResult> {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, options, (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
-    });
-  });
+  return runOwnedCommand(command, args, options);
 }
 
 export function isCommandMissing(error: unknown): boolean {
@@ -106,6 +99,7 @@ export async function runAgentCliCommand(
     execFileImpl?: AgentCliExecFile
     platform?: AgentCliPlatform | null
     env?: NodeJS.ProcessEnv
+    signal?: AbortSignal
   } = {}
 ): Promise<AgentCliExecFileResult> {
   const execFileImpl = options.execFileImpl ?? defaultExecFile;
@@ -136,5 +130,6 @@ export async function runAgentCliCommand(
     shell: false,
     windowsHide: true,
     encoding: 'utf8',
+    signal: options.signal,
   });
 }

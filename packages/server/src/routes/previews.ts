@@ -1,3 +1,4 @@
+import { registerApplicationProcessCleanup } from '../runtime/application-process-cleanup.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import http from 'node:http';
@@ -670,6 +671,11 @@ function registerPreviewWebSocketProxy(app: FastifyInstance, previewService: Pre
 export async function previewRoutes(app: FastifyInstance) {
   const previewService = new PreviewService();
   const previewRuntimeManager = new PreviewRuntimeManager();
+  const cleanupPreview = async () => {
+    await previewRuntimeManager.stopAll();
+    unregisterCleanup();
+  };
+  const unregisterCleanup = registerApplicationProcessCleanup(cleanupPreview);
   registerPreviewWebSocketProxy(app, previewService);
 
   const sessionResponse = async (session: PreviewGatewaySession): Promise<PreviewSession> => {
@@ -683,9 +689,7 @@ export async function previewRoutes(app: FastifyInstance) {
     };
   };
 
-  app.addHook('onClose', async () => {
-    await previewRuntimeManager.stopAll();
-  });
+  app.addHook('onClose', cleanupPreview);
 
   app.get<{ Params: { workspaceId: string } }>(
     '/api/previews/:workspaceId/status',

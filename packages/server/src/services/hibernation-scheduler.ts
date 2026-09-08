@@ -5,6 +5,7 @@ const DEFAULT_IDLE_THRESHOLD_HOURS = 24;
 
 export class HibernationScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private initialScanTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
 
   constructor(
@@ -26,7 +27,8 @@ export class HibernationScheduler {
     }, this.scanIntervalMs);
 
     // Run initial scan after a short delay to let services initialize
-    setTimeout(() => {
+    this.initialScanTimer = setTimeout(() => {
+      this.initialScanTimer = null;
       this.scan().catch((err) => {
         console.error('[HibernationScheduler] Initial scan failed:', err);
       });
@@ -34,6 +36,10 @@ export class HibernationScheduler {
   }
 
   stop(): void {
+    if (this.initialScanTimer) {
+      clearTimeout(this.initialScanTimer);
+      this.initialScanTimer = null;
+    }
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;

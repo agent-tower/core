@@ -71,33 +71,16 @@ export async function initializeSocket(fastify: FastifyInstance): Promise<Server
 export async function closeSocket(): Promise<void> {
   if (io) {
     socketGateway?.destroy()
-    let cleanupError: unknown
-    try {
-      // Kill all active agent session pipelines on shutdown. The application
-      // shutdown coordinator retries this independently when this hook fails.
-      await getSessionManager().destroyAll()
-    } catch (error) {
-      cleanupError = error
-    } finally {
-      // Fastify runs onClose hooks at most once. Always release Socket.IO and
-      // terminal resources here so a failed runtime cleanup cannot leave the
-      // HTTP/socket host open after app.close() has already transitioned.
-      try {
-        const tm = await getTerminalManager()
-        tm.destroyAll()
-      } catch {
-        // TerminalManager may not have been initialized; safe to ignore
-      }
-      await new Promise<void>((resolve) => {
-        io!.close(() => {
-          console.log('[Socket.IO] Closed')
-          resolve()
-        })
+    // Process owners are drained by app.onClose and the host retry coordinator.
+    // Network teardown must finish even when a process owner needs another try.
+    await new Promise<void>((resolve) => {
+      io!.close(() => {
+        console.log('[Socket.IO] Closed')
+        resolve()
       })
-      socketGateway = null
-      io = null
-    }
-    if (cleanupError) throw cleanupError
+    })
+    socketGateway = null
+    io = null
   }
 }
 

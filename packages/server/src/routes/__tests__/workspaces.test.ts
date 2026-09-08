@@ -29,6 +29,7 @@ async function buildTestApp() {
 
 describe('workspace routes', () => {
   beforeAll(async () => {
+    fs.closeSync(fs.openSync(dbPath, 'a'));
     execFileSync(
       'pnpm',
       ['exec', 'prisma', 'db', 'push', '--skip-generate', `--schema=${schemaPath}`],
@@ -55,7 +56,7 @@ describe('workspace routes', () => {
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    await prisma?.$disconnect();
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 

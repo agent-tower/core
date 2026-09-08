@@ -310,15 +310,24 @@ const unixIdentityAdapter = {
 
 function terminateWindowsTree() {
   if (!child || !isWin || child.pid == null) return false;
-  try {
-    const result = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-    return result.status === 0;
-  } catch {
-    return false;
+  captureWindowsTree();
+  let signalled = false;
+  // A root exit does not remove its background descendants. Check the birth
+  // identity of each previously observed member and target those still alive,
+  // instead of repeatedly asking taskkill to traverse a vanished root PID.
+  for (const [pid, birthMarker] of trackedWindowsMembers) {
+    const probe = readWindowsProcessRows();
+    if (probe.status !== 'ALIVE') return signalled;
+    if (!probe.rows.some((row) => row.pid === pid && row.birthMarker === birthMarker)) continue;
+    try {
+      const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      if (result.status === 0) signalled = true;
+    } catch {}
   }
+  return signalled;
 }
 
 function readWindowsProcessRows() {
@@ -336,12 +345,15 @@ function readWindowsProcessRows() {
     if (!result.stdout.trim()) return { status: 'IDENTITY_INCOMPLETE', rows: [] };
     const parsed = JSON.parse(result.stdout);
     const rows = Array.isArray(parsed) ? parsed : [parsed];
-    const normalized = rows.map((row) => ({
+    // The Windows System Idle Process has PID 0 and no creation date. It is
+    // never an owned child and must not invalidate an otherwise complete CIM table.
+    const normalized = rows.filter((row) => row.ProcessId !== 0 && row.ProcessId !== '0').map((row) => ({
       pid: Number(row.ProcessId),
       ppid: Number(row.ParentProcessId),
       birthMarker: String(row.CreationDate || ''),
     }));
-    if (normalized.some((row) => row.pid <= 0 || row.ppid < 0 || !row.birthMarker)) {
+    if (normalized.length === 0 || normalized.some((row) => !Number.isInteger(row.pid)
+      || row.pid <= 0 || !Number.isInteger(row.ppid) || row.ppid < 0 || !row.birthMarker)) {
       return { status: 'IDENTITY_INCOMPLETE', rows: [] };
     }
     return { status: 'ALIVE', rows: normalized };
@@ -355,7 +367,14 @@ function captureWindowsTree() {
   const probe = readWindowsProcessRows();
   if (probe.status !== 'ALIVE') return;
   const rows = probe.rows;
-  const descendants = new Set([child.pid]);
+  const descendants = new Set(rows.filter((row) => (
+    trackedWindowsMembers.get(row.pid) === row.birthMarker
+  )).map((row) => row.pid));
+  const root = rows.find((row) => row.pid === child.pid);
+  // The live ChildProcess handle establishes the first root observation. Once
+  // it exits, neither a stale ParentProcessId nor a reused PID can seed a tree.
+  if (root && !trackedWindowsMembers.has(child.pid)
+    && child.exitCode === null && child.signalCode === null) descendants.add(child.pid);
   let changed = true;
   while (changed) {
     changed = false;

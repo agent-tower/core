@@ -130,6 +130,8 @@ function parseCapabilities(value: string): Partial<TeamMemberCapabilities> {
 
 export class WorkspaceBackgroundService {
   private readonly locks = new Map<string, Promise<void>>();
+  private stopping = false;
+  private shutdownPromise?: Promise<void>;
 
   constructor(
     private readonly processManager = new WorkspaceBackgroundProcessManager(),
@@ -234,6 +236,7 @@ export class WorkspaceBackgroundService {
     name: string,
     rawInput: StartWorkspaceBackgroundServiceInput,
   ): Promise<WorkspaceBackgroundServiceDto> {
+    this.assertAcceptingStarts();
     const input = this.validateStartInput(name, rawInput);
     return this.lifecycleBarrier.withWorkspace(workspaceId, () => (
       this.withLock(`${workspaceId}:${name}`, async () => {
@@ -291,6 +294,7 @@ export class WorkspaceBackgroundService {
   }
 
   async restart(workspaceId: string, name: string): Promise<WorkspaceBackgroundServiceDto> {
+    this.assertAcceptingStarts();
     return this.lifecycleBarrier.withWorkspace(workspaceId, () => (
       this.withLock(`${workspaceId}:${name}`, async () => {
         const workspace = await this.requireWorkspace(workspaceId, true);
@@ -384,6 +388,7 @@ export class WorkspaceBackgroundService {
   }
 
   async reconcile(): Promise<void> {
+    this.assertAcceptingStarts();
     await prisma.workspaceBackgroundService.updateMany({
       where: { runtimeState: { in: ACTIVE_RUNTIME_STATES } },
       data: {
@@ -451,6 +456,16 @@ export class WorkspaceBackgroundService {
   }
 
   async shutdown(): Promise<void> {
+    this.stopping = true;
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.shutdownPromise = this.shutdownOnce().finally(() => { this.shutdownPromise = undefined; });
+    return this.shutdownPromise;
+  }
+
+  private async shutdownOnce(): Promise<void> {
+    // A start already inside an async command/cwd probe retains its lock until
+    // the spawned process has been handed to the manager or cleaned up.
+    await Promise.allSettled(this.locks.values());
     const records = await prisma.workspaceBackgroundService.findMany({
       where: { runtimeState: { in: ACTIVE_RUNTIME_STATES } },
     });
@@ -473,6 +488,7 @@ export class WorkspaceBackgroundService {
     record: WorkspaceBackgroundServiceRecord,
     cwd: string,
   ): Promise<WorkspaceBackgroundServiceDto> {
+    this.assertAcceptingStarts();
     const args = parseArgs(record.argsJson);
     if (!args) {
       const failed = await prisma.workspaceBackgroundService.update({
@@ -496,6 +512,7 @@ export class WorkspaceBackgroundService {
     });
     let started: WorkspaceBackgroundProcessStartResult | null = null;
     try {
+      this.assertAcceptingStarts();
       started = await this.processManager.start(
         record.id,
         runtimeInstanceId,
@@ -548,6 +565,12 @@ export class WorkspaceBackgroundService {
       }
       if (error instanceof ServiceError) throw error;
       throw new ServiceError(message, 'SERVICE_START_FAILED', 500);
+    }
+  }
+
+  private assertAcceptingStarts(): void {
+    if (this.stopping) {
+      throw new ServiceError('Workspace services are shutting down', 'SERVICE_SHUTTING_DOWN', 409);
     }
   }
 

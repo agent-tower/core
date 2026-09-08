@@ -6,6 +6,8 @@ import { TaskCleanupService } from '../services/task-cleanup.service.js';
 import { AgentCliEnvironmentService } from '../services/agent-cli/environment.service.js';
 import { WorkspaceBackgroundService } from '../services/workspace-background-service.service.js';
 import { prisma } from '../utils/index.js';
+import { TunnelService } from '../services/tunnel.service.js';
+import { assertApplicationProcessStartAllowed, beginApplicationProcessShutdown, cleanupApplicationProcessOwners } from '../runtime/application-process-cleanup.js';
 // TerminalManager is lazy-imported to avoid eager native module (node-pty) loading
 // that could break getEventBus()/getSessionManager() if the import fails.
 import type { TerminalManager } from '../services/terminal-manager.js';
@@ -13,6 +15,7 @@ import type { TerminalManager } from '../services/terminal-manager.js';
 let eventBus: EventBus | null = null;
 let sessionManager: SessionManager | null = null;
 let terminalManager: TerminalManager | null = null;
+let terminalManagerPromise: Promise<TerminalManager> | null = null;
 let commitMessageService: CommitMessageService | null = null;
 let notificationService: NotificationService | null = null;
 let taskCleanupService: TaskCleanupService | null = null;
@@ -28,6 +31,7 @@ export function getEventBus(): EventBus {
 
 export function getSessionManager(): SessionManager {
   if (!sessionManager) {
+    assertApplicationProcessStartAllowed();
     sessionManager = new SessionManager(getEventBus());
   }
   return sessionManager;
@@ -49,21 +53,43 @@ export function getTaskCleanupService(): TaskCleanupService {
 
 export function getWorkspaceBackgroundService(): WorkspaceBackgroundService {
   if (!workspaceBackgroundService) {
+    assertApplicationProcessStartAllowed();
     workspaceBackgroundService = new WorkspaceBackgroundService();
   }
   return workspaceBackgroundService;
 }
 
 export async function getTerminalManager(): Promise<TerminalManager> {
-  if (!terminalManager) {
-    const { TerminalManager: TM } = await import('../services/terminal-manager.js');
-    terminalManager = new TM(getEventBus());
+  if (terminalManager) return terminalManager;
+  if (!terminalManagerPromise) {
+    assertApplicationProcessStartAllowed();
+    terminalManagerPromise = import('../services/terminal-manager.js').then(({ TerminalManager: TM }) => {
+      assertApplicationProcessStartAllowed();
+      terminalManager = new TM(getEventBus());
+      return terminalManager;
+    }).finally(() => { terminalManagerPromise = null; });
   }
-  return terminalManager;
+  return terminalManagerPromise;
+}
+
+/** Every process owner participates in each retry, independently of HTTP hooks. */
+export async function destroyApplicationProcesses(): Promise<void> {
+  beginApplicationProcessShutdown();
+  await cleanupApplicationProcessOwners([
+    () => sessionManager?.destroyAll(),
+    () => workspaceBackgroundService?.shutdown(),
+    () => agentCliEnvironmentService?.shutdown(),
+    () => TunnelService.stop(),
+    async () => {
+      const manager = terminalManager ?? await terminalManagerPromise?.catch(() => null);
+      await manager?.destroyAll();
+    },
+  ]);
 }
 
 export function getAgentCliEnvironmentService(): AgentCliEnvironmentService {
   if (!agentCliEnvironmentService) {
+    assertApplicationProcessStartAllowed();
     agentCliEnvironmentService = new AgentCliEnvironmentService();
   }
   return agentCliEnvironmentService;

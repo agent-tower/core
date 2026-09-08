@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentCliCommandSpec,
@@ -13,11 +13,15 @@ import {
 } from './security.js';
 import { type AgentCliStoredPreview, removePreviewFile } from './downloader.js';
 import { runAgentCliCommand } from './command-runner.js';
+import { OwnedChildProcess, spawnOwnedProcess, type ChildProcessOwner } from '../../utils/owned-child-process.js';
+import { PROCESS_IDENTITY_ENV } from '../../utils/unix-process-identity.js';
 
 export interface AgentCliRunnerProcess {
+  owner?: ChildProcessOwner
+  commandResult?: { code: number | null; signal: NodeJS.Signals | null }
   pid?: number
-  stdout?: NodeJS.ReadableStream
-  stderr?: NodeJS.ReadableStream
+  stdout?: NodeJS.ReadableStream | null
+  stderr?: NodeJS.ReadableStream | null
   kill(signal?: NodeJS.Signals | number): boolean
   once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this
   once(event: 'error', listener: (error: Error) => void): this
@@ -34,7 +38,7 @@ export type AgentCliRunner = (
   }
 ) => AgentCliRunnerProcess;
 
-export type AgentCliVerifier = (spec: AgentCliCommandSpec) => Promise<void>;
+export type AgentCliVerifier = (spec: AgentCliCommandSpec, signal?: AbortSignal) => Promise<void>;
 
 const FINAL_STATUSES = new Set<AgentCliInstallTask['status']>([
   'succeeded',
@@ -48,12 +52,12 @@ function defaultRunner(
   command: string,
   args: string[],
   options: Parameters<AgentCliRunner>[2]
-): ChildProcessWithoutNullStreams {
-  return spawn(command, args, options);
+): AgentCliRunnerProcess {
+  return spawnOwnedProcess(command, args, { env: options.env });
 }
 
-async function defaultVerifier(spec: AgentCliCommandSpec): Promise<void> {
-  await runAgentCliCommand(spec, { platform: process.platform === 'win32' ? 'win32' : null });
+async function defaultVerifier(spec: AgentCliCommandSpec, signal?: AbortSignal): Promise<void> {
+  await runAgentCliCommand(spec, { platform: process.platform === 'win32' ? 'win32' : null, signal });
 }
 
 function publicTask(task: AgentCliInstallTask): AgentCliInstallTask {
@@ -63,8 +67,11 @@ function publicTask(task: AgentCliInstallTask): AgentCliInstallTask {
 export class AgentCliInstallTaskManager {
   private tasks = new Map<string, AgentCliInstallTask>();
   private buffers = new Map<string, AgentCliLogRingBuffer>();
-  private processes = new Map<string, AgentCliRunnerProcess>();
   private previewCleanup = new Map<string, string>();
+  private owners = new Map<string, ChildProcessOwner>();
+  private completions = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+  private verifiers = new Map<string, AbortController>();
+  private shuttingDown = false;
 
   constructor(
     private readonly runner: AgentCliRunner = defaultRunner,
@@ -73,6 +80,7 @@ export class AgentCliInstallTaskManager {
   ) {}
 
   createTask(preview: AgentCliStoredPreview): { reused: boolean; task: AgentCliInstallTask } {
+    if (this.shuttingDown) throw new ServiceError('Agent CLI installer is shutting down', 'SERVICE_STOPPING', 503);
     const running = this.getRunningTask();
     if (running) {
       void removePreviewFile(preview.tempFilePath);
@@ -102,21 +110,33 @@ export class AgentCliInstallTaskManager {
     this.tasks.set(id, task);
     this.buffers.set(id, buffer);
     this.previewCleanup.set(id, preview.tempFilePath);
+    let resolveCompletion!: () => void;
+    const promise = new Promise<void>((resolve) => { resolveCompletion = resolve; });
+    this.completions.set(id, { promise, resolve: resolveCompletion });
     buffer.push('system', `Starting ${preview.toolId} installer`);
 
     const command = preview.interpreter.command;
     const args = [...preview.interpreter.args, preview.tempFilePath, ...preview.fixedArgs];
-    const child = this.runner(command, args, {
-      env: {
-        ...buildCleanAgentCliEnv(undefined, preview.platform),
-        ...(preview.env ?? {}),
-      },
-      detached: process.platform !== 'win32',
-      stdio: 'pipe',
-      windowsHide: true,
-    });
+    const token = randomUUID();
+    let child: AgentCliRunnerProcess;
+    try {
+      child = this.runner(command, args, {
+        env: {
+          ...buildCleanAgentCliEnv(undefined, preview.platform),
+          ...(preview.env ?? {}),
+          [PROCESS_IDENTITY_ENV]: token,
+        },
+        detached: process.platform !== 'win32',
+        stdio: 'pipe',
+        windowsHide: true,
+      });
+    } catch (error) {
+      this.finishTask(id, 1, null, 'failed', 'PROCESS_ERROR', 'Installer process failed');
+      throw error;
+    }
 
-    this.processes.set(id, child);
+    const owner = child.owner ?? new OwnedChildProcess(child as ChildProcess, token, { graceMs: this.forceKillTimeoutMs });
+    this.owners.set(id, owner);
     const stdoutRedactor = new AgentCliStreamingLogRedactor();
     const stderrRedactor = new AgentCliStreamingLogRedactor();
     child.stdout?.on('data', (data) => {
@@ -131,7 +151,7 @@ export class AgentCliInstallTaskManager {
     });
     child.once('error', (error) => {
       buffer.push('system', `Installer process failed: ${error.message}`);
-      this.finishTask(id, 1, null, 'failed', 'PROCESS_ERROR', 'Installer process failed');
+      void owner.stop().then(() => this.finishTask(id, 1, null, 'failed', 'PROCESS_ERROR', 'Installer process failed'));
     });
     child.once('exit', (code, signal) => {
       for (const chunk of stdoutRedactor.flush()) {
@@ -141,7 +161,8 @@ export class AgentCliInstallTaskManager {
         buffer.pushRedacted('stderr', chunk);
       }
 
-      void this.handleInstallerExit(id, preview.verifyCommand, code, signal);
+      const result = child.commandResult;
+      void this.handleInstallerExit(id, preview.verifyCommand, result ? result.code : code, result ? result.signal : signal);
     });
 
     return { reused: false, task: publicTask(task) };
@@ -172,18 +193,18 @@ export class AgentCliInstallTaskManager {
 
     task.status = 'cancelling';
     this.buffers.get(taskId)?.push('system', 'Cancelling installer task');
-    const child = this.processes.get(taskId);
-    if (child) {
-      this.killProcessGroup(child, 'SIGTERM');
-      this.killProcessGroup(child, 'SIGHUP');
-      setTimeout(() => {
-        if (this.processes.has(taskId)) {
-          this.killProcessGroup(child, 'SIGKILL');
-        }
-      }, this.forceKillTimeoutMs).unref?.();
-    }
+    this.verifiers.get(taskId)?.abort();
+    void this.owners.get(taskId)?.stop();
 
     return publicTask(task);
+  }
+
+  async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    for (const task of this.tasks.values()) {
+      if (!FINAL_STATUSES.has(task.status)) this.cancel(task.id);
+    }
+    await Promise.all([...this.completions.values()].map(({ promise }) => promise));
   }
 
   private getRunningTask(): AgentCliInstallTask | null {
@@ -191,19 +212,6 @@ export class AgentCliInstallTaskManager {
       if (!FINAL_STATUSES.has(task.status)) return task;
     }
     return null;
-  }
-
-  private killProcessGroup(child: AgentCliRunnerProcess, signal: NodeJS.Signals): void {
-    if (!child.pid || process.platform === 'win32') {
-      child.kill(signal);
-      return;
-    }
-
-    try {
-      process.kill(-child.pid, signal);
-    } catch {
-      child.kill(signal);
-    }
   }
 
   private finishTask(
@@ -227,7 +235,10 @@ export class AgentCliInstallTaskManager {
     task.signal = signal;
     if (errorCode) task.errorCode = errorCode;
     if (errorMessage) task.errorMessage = errorMessage;
-    this.processes.delete(taskId);
+    this.owners.delete(taskId);
+    this.verifiers.delete(taskId);
+    this.completions.get(taskId)?.resolve();
+    this.completions.delete(taskId);
     this.buffers.get(taskId)?.push('system', `Installer task ${status}`);
 
     const tempFilePath = this.previewCleanup.get(taskId);
@@ -243,7 +254,8 @@ export class AgentCliInstallTaskManager {
     code: number | null,
     signal: NodeJS.Signals | null
   ): Promise<void> {
-    this.processes.delete(taskId);
+    await this.owners.get(taskId)?.stop();
+    this.owners.delete(taskId);
     const task = this.tasks.get(taskId);
     if (!task || FINAL_STATUSES.has(task.status)) return;
 
@@ -261,9 +273,11 @@ export class AgentCliInstallTaskManager {
     task.exitCode = code;
     task.signal = signal;
     this.buffers.get(taskId)?.push('system', 'Installer exited successfully; verifying CLI availability');
+    const controller = new AbortController();
+    this.verifiers.set(taskId, controller);
 
     try {
-      await this.verifier(verifyCommand);
+      await this.verifier(verifyCommand, controller.signal);
       if (this.tasks.get(taskId)?.status === 'cancelling') {
         this.finishTask(taskId, code, signal, 'cancelled');
         return;

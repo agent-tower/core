@@ -39,6 +39,12 @@ Session 表示一个可包含多轮 turn 的业务会话。常规任务 session 
 
 ACP Runtime 会持久化 Agent 返回的 external session ID。内存连接仍存在时直接复用；服务重启后仅在 Agent 声明支持 `session/load` 时恢复。
 
+## 停止与删除
+
+一轮回复完成后，ACP 会话可能保留连接以便继续对话。显式停止 Session 会等待相关进程退出；删除独立对话或清理所属 workspace 时，也会停止这些空闲连接。
+
+如果进程清理失败或尚未确认完成，删除操作会保留对话目录与记录，供再次尝试。清理进行期间不能新建或续发该资源的 Session。
+
 ## 权限请求
 
 ACP Agent 可以在 turn 中请求工具权限。`ASK` 模式下，Session 仍保持 `RUNNING`，Runtime 的细粒度状态变为 `AWAITING_PERMISSION`。前端重连后会重新请求 `/sessions/:id/runtime`，不会依赖已经错过的 Socket 事件还原待处理权限。

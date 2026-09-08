@@ -10,18 +10,19 @@ import { initializeSocket, closeSocket } from './socket/index.js';
 import { WorkspaceService } from './services/workspace.service.js';
 import { HibernationScheduler } from './services/hibernation-scheduler.js';
 import { MemberHeartbeatScheduler } from './services/member-heartbeat-scheduler.js';
-import { TunnelService } from './services/tunnel.service.js';
 import {
   getEventBus,
   getSessionManager,
   getTaskCleanupService,
   getWorkspaceBackgroundService,
+  destroyApplicationProcesses,
 } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 import { accessAuthHook } from './middleware/access-auth.js';
 import { writeErrorLog } from './utils/error-log.js';
 import { initializeDatabaseRuntime } from './utils/index.js';
 import { runStartupDataMigrations } from './services/database-maintenance.service.js';
+import { trackUpgradedConnections } from './runtime/server-network-shutdown.js';
 
 let hibernationScheduler: HibernationScheduler | null = null;
 let memberHeartbeatScheduler: MemberHeartbeatScheduler | null = null;
@@ -38,6 +39,8 @@ export async function buildApp() {
     },
     bodyLimit: 10 * 1024 * 1024,
   });
+  const closeUpgradedConnections = trackUpgradedConnections(app.server);
+  let processCleanup: Promise<void> | undefined;
 
   app.addHook('onError', async (request, _reply, error) => {
     writeErrorLog({
@@ -141,18 +144,20 @@ export async function buildApp() {
     app.log.info(`[startup:onReady] complete elapsed=${elapsed()}`);
   });
 
-  // 服务器关闭时清理 Socket.IO、Tunnel 和后台调度器
-  app.addHook('onClose', async () => {
+  // Fastify waits for HTTP/upgrade clients before onClose. Revoke producers
+  // and close streaming connections first so they cannot block process cleanup.
+  app.addHook('preClose', async () => {
     getSessionManager().stopConversationQueue();
     hibernationScheduler?.stop();
     memberHeartbeatScheduler?.stop();
     getTaskCleanupService().stop();
-    TunnelService.stop();
-    try {
-      await getWorkspaceBackgroundService().shutdown();
-    } finally {
-      await closeSocket();
-    }
+    processCleanup = destroyApplicationProcesses();
+    void processCleanup.catch(() => undefined);
+    closeUpgradedConnections();
+    await closeSocket();
+  });
+  app.addHook('onClose', async () => {
+    await processCleanup;
   });
 
   return app;

@@ -4,6 +4,7 @@ import type { SessionManager } from './session-manager.js';
 import { isWorktreeWorkspace } from './workspace-kind.js';
 import type { WorkspaceBackgroundService } from './workspace-background-service.service.js';
 import { defaultWorkspaceLifecycleBarrier } from './workspace-lifecycle-barrier.js';
+import { stopSessionForResourceCleanup } from './session-resource-cleanup.js';
 
 export const TaskCleanupJobStatus = {
   PENDING: 'PENDING',
@@ -208,17 +209,19 @@ export class TaskCleanupService {
       await this.backgroundService?.stopAllForWorkspace(workspace.id);
     }
 
-    for (const workspace of snapshot.workspaces) {
-      for (const session of workspace.sessions) {
-        try {
-          await this.sessionManager.stop(session.id, { skipTeamRunReconcile: true });
-        } catch (error) {
-          console.warn(
-            `[TaskCleanupService] failed to stop session ${session.id}:`,
-            toErrorMessage(error),
-          );
-        }
-      }
+    // Older queued snapshots included only PENDING/RUNNING sessions. Refresh
+    // the surviving task's sessions before removing resources so idle ACP
+    // transports and launches that settled since enqueue are also reclaimed.
+    const currentSessions = await prisma.session.findMany({
+      where: { workspace: { taskId: snapshot.taskId } },
+      select: { id: true },
+    });
+    const sessionIds = new Set([
+      ...snapshot.workspaces.flatMap((workspace) => workspace.sessions.map((session) => session.id)),
+      ...currentSessions.map((session) => session.id),
+    ]);
+    for (const sessionId of sessionIds) {
+      await stopSessionForResourceCleanup(this.sessionManager, sessionId, { skipTeamRunReconcile: true });
     }
 
     for (const workspace of snapshot.workspaces) {

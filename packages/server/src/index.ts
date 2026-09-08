@@ -9,14 +9,15 @@ import { getBundledPrismaCommand } from './utils/process-launch.js';
 import { preparePrismaCliEnv } from './utils/prisma-cli-env.js';
 import { installProcessErrorLogging, registerProcessShutdownHandler, writeErrorLog } from './utils/error-log.js';
 import { getOrCreateInternalApiToken, INTERNAL_API_TOKEN_ENV } from './utils/internal-api-token.js';
-import { getSessionManager } from './core/container.js';
-import { createServerEntryShutdownCoordinator } from './runtime/server-entry-shutdown.js';
+import { destroyApplicationProcesses } from './core/container.js';
+import { createServerEntryShutdownCoordinator, finishFailedServerEntry, installServerEntryShutdownRequests } from './runtime/server-entry-shutdown.js';
 import type { ReferencedShutdownCoordinator } from './runtime/shutdown-coordinator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = path.resolve(__dirname, '../../..');
 const PORT = getDevPort(monorepoRoot);
 let shutdownCoordinator: ReferencedShutdownCoordinator | undefined;
+const shutdownRequests = installServerEntryShutdownRequests();
 
 // Dev 数据目录：与生产环境 (~/.agent-tower) 隔离
 const dataDir = path.join(homedir(), '.agent-tower-dev');
@@ -53,19 +54,20 @@ try {
       schemaPath,
     },
   }, { dataDir });
-  process.exitCode = 1;
-  throw err;
+  // No application owner has been created before this synchronous bootstrap.
+  // An IPC parent would keep exitCode-only failures alive indefinitely.
+  process.exit(1);
 }
 
 async function main() {
-  const app = await buildApp();
+  let app: Awaited<ReturnType<typeof buildApp>> | undefined;
 
   // 优雅关闭处理。Fastify 的 onClose hook 失败后不会再次执行，因此在
   // 应用级 coordinator 中重复 runtime cleanup，并用 referenced retry 保持
   // 进程存活直到所有 owner 真正确认退出。
   const shutdown = createServerEntryShutdownCoordinator({
-    closeApp: () => app.close(),
-    destroyRuntime: () => getSessionManager().destroyAll(),
+    closeApp: () => app?.close() ?? Promise.resolve(),
+    destroyRuntime: destroyApplicationProcesses,
     onAppCloseError: (error) => {
       console.warn('Fastify close reported an error after runtime cleanup; continuing shutdown', error);
     },
@@ -83,6 +85,7 @@ async function main() {
   );
   shutdownCoordinator = shutdown;
   registerProcessShutdownHandler(() => shutdown.request());
+  app = await buildApp();
 
   const requestShutdown = (signal: string) => {
     console.log(`\n${signal} received, shutting down gracefully...`);
@@ -92,8 +95,8 @@ async function main() {
     });
   };
 
-  process.on('SIGTERM', () => requestShutdown('SIGTERM'));
-  process.on('SIGINT', () => requestShutdown('SIGINT'));
+  shutdownRequests.setHandler(requestShutdown);
+  if (shutdownRequests.requested) return;
 
   try {
     await app.listen({ port: PORT, host: '0.0.0.0' });
@@ -120,9 +123,5 @@ main().catch(async (err) => {
     message: 'Fatal dev server error',
     error: err,
   }, { dataDir });
-  const shutdown = shutdownCoordinator;
-  if (shutdown) {
-    await shutdown.request();
-  }
-  process.exitCode = 1;
+  await finishFailedServerEntry(shutdownCoordinator);
 });

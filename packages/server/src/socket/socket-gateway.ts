@@ -95,8 +95,12 @@ export class SocketGateway {
     });
 
     // --- Socket disconnect: clean up owned terminals ---
-    socket.on('disconnect', () => {
-      this.terminalManager.cleanupBySocket(socket.id);
+    socket.on('disconnect', async () => {
+      try {
+        await this.terminalManager.cleanupBySocket(socket.id);
+      } catch (error) {
+        console.error(`[SocketGateway] Terminal cleanup pending for socket ${socket.id}:`, error);
+      }
     });
   }
 

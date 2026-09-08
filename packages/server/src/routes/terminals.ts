@@ -21,7 +21,7 @@ export async function terminalRoutes(app: FastifyInstance) {
     const terminalManager = await getTerminalManager();
 
     try {
-      const info = terminalManager.create(body.socketId, {
+      const info = await terminalManager.create(body.socketId, {
         cwd: body.cwd,
         cols: body.cols,
         rows: body.rows,
@@ -56,7 +56,7 @@ export async function terminalRoutes(app: FastifyInstance) {
         return { error: 'Terminal not found' };
       }
 
-      terminalManager.destroy(terminalId);
+      await terminalManager.destroy(terminalId);
       return { success: true };
     }
   );

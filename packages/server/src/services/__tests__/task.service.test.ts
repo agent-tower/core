@@ -64,6 +64,7 @@ function hasLoneSurrogate(value: string): boolean {
 
 describe('TaskService', () => {
   beforeAll(async () => {
+    fs.closeSync(fs.openSync(dbPath, 'a'));
     execFileSync(
       'pnpm',
       ['exec', 'prisma', 'db', 'push', '--skip-generate', `--schema=${schemaPath}`],
@@ -525,7 +526,7 @@ describe('TaskService', () => {
     eventBus.on('task:deleted', (payload) => deletedEvents.push(payload));
     const service = new TaskService(
       eventBus,
-      { stop: stopSessionMock } as unknown as SessionManager,
+      { stop: stopSessionMock, isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager,
       { trigger: cleanupTriggerMock },
       { stopAllForWorkspace: stopBackgroundServicesMock },
     );
@@ -568,10 +569,11 @@ describe('TaskService', () => {
         status: 'RUNNING',
       },
     });
-    await prisma.session.create({
+    const completedSession = await prisma.session.create({
       data: {
         workspaceId: memberWorkspace.id,
         agentType: 'CODEX',
+        runtimeType: 'ACP',
         prompt: 'done',
         status: 'COMPLETED',
       },
@@ -696,6 +698,7 @@ describe('TaskService', () => {
           id: memberWorkspace.id,
           branchName: memberWorkspace.branchName,
           worktreePath: memberWorkspace.worktreePath,
+          sessions: [{ id: completedSession.id }],
         },
       ],
     });
@@ -704,7 +707,7 @@ describe('TaskService', () => {
   it('marks deleted before reading the cleanup snapshot so new resource creation is rejected', async () => {
     const service = new TaskService(
       new EventBus(),
-      { stop: vi.fn() } as unknown as SessionManager,
+      { stop: vi.fn(), isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager,
       { trigger: vi.fn() },
     );
     const project = await prisma.project.create({
@@ -791,7 +794,7 @@ describe('TaskService', () => {
   });
 
   it('filters deleted tasks from lists and stats', async () => {
-    const service = new TaskService(new EventBus(), { stop: vi.fn() } as unknown as SessionManager);
+    const service = new TaskService(new EventBus(), { stop: vi.fn(), isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager);
     const project = await prisma.project.create({
       data: {
         name: 'Task list project',
@@ -827,7 +830,7 @@ describe('TaskService', () => {
     const stopSessionMock = vi.fn();
     const service = new TaskService(
       new EventBus(),
-      { stop: stopSessionMock } as unknown as SessionManager,
+      { stop: stopSessionMock, isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager,
     );
     const project = await prisma.project.create({
       data: {
@@ -884,12 +887,53 @@ describe('TaskService', () => {
     });
   });
 
+  it.each(['stop-fails', 'cleanup-unconfirmed'] as const)(
+    'retains resources omitted from a legacy cleanup snapshot for retry when %s', async (failure) => {
+      const project = await prisma.project.create({ data: { name: 'pending owner', repoPath: testDir } });
+      const task = await prisma.task.create({ data: { title: 'pending owner', projectId: project.id, deletedAt: new Date() } });
+      const workspace = await prisma.workspace.create({ data: {
+        taskId: task.id, branchName: 'pending-owner', worktreePath: path.join(testDir, '.worktrees', 'pending-owner'),
+        sessions: { create: {
+          agentType: 'CODEX', runtimeType: 'ACP', prompt: 'audit', status: 'COMPLETED',
+          processes: { create: { pid: 999999, cleanupState: 'FAILED' } },
+        } },
+      }, include: { sessions: true } });
+      const session = workspace.sessions[0]!;
+      const stop = vi.fn(async () => {
+        if (failure === 'stop-fails') throw new Error('owner still alive');
+        return session;
+      });
+      const isRuntimeCleanupConfirmed = vi.fn(async () => false);
+      const worker = new TaskCleanupService({ stop, isRuntimeCleanupConfirmed } as unknown as SessionManager);
+      const job = await prisma.taskCleanupJob.create({ data: {
+        taskId: task.id, projectId: project.id,
+        payload: JSON.stringify({
+          taskId: task.id, projectId: project.id,
+          project: { repoPath: project.repoPath, mainBranch: project.mainBranch },
+          workspaces: [{ ...workspace, sessions: [] }],
+        }),
+      } });
+      await worker.processDueJobs();
+      expect(stop).toHaveBeenCalledWith(session.id, { skipTeamRunReconcile: true });
+      expect(removeWorktreeMock).not.toHaveBeenCalled();
+      expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(1);
+      expect(await prisma.task.findUnique({ where: { id: task.id } })).not.toBeNull();
+      expect(await prisma.taskCleanupJob.findUnique({ where: { id: job.id } })).toMatchObject({ status: 'FAILED' });
+      stop.mockImplementation(async () => session);
+      isRuntimeCleanupConfirmed.mockResolvedValue(true);
+      await prisma.taskCleanupJob.update({ where: { id: job.id }, data: { nextRetryAt: null } });
+      await worker.processDueJobs();
+      expect(await prisma.task.findUnique({ where: { id: task.id } })).toBeNull();
+      expect(await prisma.taskCleanupJob.findUnique({ where: { id: job.id } })).toMatchObject({ status: 'COMPLETED' });
+    },
+  );
+
   it('processes a cleanup job and hard-deletes task records after resources are cleaned', async () => {
     const stopSessionMock = vi.fn();
     const stopBackgroundServicesMock = vi.fn(async () => {});
     const releaseBackgroundLogsMock = vi.fn(async () => {});
     const cleanupService = new TaskCleanupService(
-      { stop: stopSessionMock } as unknown as SessionManager,
+      { stop: stopSessionMock, isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager,
       {
         stopAllForWorkspace: stopBackgroundServicesMock,
         releaseLogsForWorkspace: releaseBackgroundLogsMock,
@@ -974,7 +1018,7 @@ describe('TaskService', () => {
 
   it('processes main-directory cleanup jobs without deleting worktrees or branches', async () => {
     const stopSessionMock = vi.fn();
-    const cleanupService = new TaskCleanupService({ stop: stopSessionMock } as unknown as SessionManager);
+    const cleanupService = new TaskCleanupService({ stop: stopSessionMock, isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager);
     const project = await prisma.project.create({
       data: {
         name: 'Main directory cleanup project',
@@ -1036,7 +1080,7 @@ describe('TaskService', () => {
   });
 
   it('records cleanup failures and schedules retry', async () => {
-    const cleanupService = new TaskCleanupService({ stop: vi.fn() } as unknown as SessionManager);
+    const cleanupService = new TaskCleanupService({ stop: vi.fn(), isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager);
     const project = await prisma.project.create({
       data: {
         name: 'Task cleanup failure project',

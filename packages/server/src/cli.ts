@@ -20,7 +20,7 @@ import { resolveDataDir } from './utils/data-dir.js';
 import { preparePrismaCliEnv } from './utils/prisma-cli-env.js';
 import { installProcessErrorLogging, registerProcessShutdownHandler, writeErrorLog } from './utils/error-log.js';
 import { getOrCreateInternalApiToken, INTERNAL_API_TOKEN_ENV } from './utils/internal-api-token.js';
-import { createServerEntryShutdownCoordinator } from './runtime/server-entry-shutdown.js';
+import { createServerEntryShutdownCoordinator, finishFailedServerEntry, installServerEntryShutdownRequests } from './runtime/server-entry-shutdown.js';
 import type { ReferencedShutdownCoordinator } from './runtime/shutdown-coordinator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,6 +30,7 @@ const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_WEB_DIR = 'web';
 let currentDataDir: string | undefined;
 let shutdownCoordinator: ReferencedShutdownCoordinator | undefined;
+const shutdownRequests = installServerEntryShutdownRequests();
 
 function parseArgs(): { port: number; host: string; dataDir: string; webDir: string; disableAccessPassword: boolean } {
   const args = process.argv.slice(2);
@@ -203,15 +204,15 @@ async function main() {
     await AccessAuthService.disableForRecovery();
     console.log('Access password disabled.');
   }
-  const app = await buildApp();
+  let app: Awaited<ReturnType<typeof buildApp>> | undefined;
 
   const shutdown = createServerEntryShutdownCoordinator({
-    closeApp: () => app.close(),
+    closeApp: () => app?.close() ?? Promise.resolve(),
     destroyRuntime: async () => {
       // This owns the process lifetime independently of Fastify's hook state;
       // repeated attempts retry runtime owners without replaying Fastify hooks.
-      const { getSessionManager } = await import('./core/container.js');
-      await getSessionManager().destroyAll();
+      const { destroyApplicationProcesses } = await import('./core/container.js');
+      await destroyApplicationProcesses();
     },
     onAppCloseError: (error) => {
       console.warn('Fastify close reported an error after runtime cleanup; continuing shutdown', error);
@@ -223,6 +224,7 @@ async function main() {
   );
   shutdownCoordinator = shutdown;
   registerProcessShutdownHandler(() => shutdown.request());
+  app = await buildApp();
 
   const requestShutdown = (signal: string) => {
     console.log(`\n${signal} received, shutting down...`);
@@ -234,8 +236,8 @@ async function main() {
     });
   };
 
-  process.on('SIGTERM', () => requestShutdown('SIGTERM'));
-  process.on('SIGINT', () => requestShutdown('SIGINT'));
+  shutdownRequests.setHandler(requestShutdown);
+  if (shutdownRequests.requested) return;
 
   await app.listen({ port, host });
 
@@ -260,14 +262,5 @@ main().catch((err) => {
     message: 'Fatal server startup error',
     error: err,
   }, { dataDir: currentDataDir });
-  const shutdown = shutdownCoordinator;
-  if (shutdown) {
-    void shutdown.request().then(() => {
-      process.exitCode = 1;
-    });
-  } else {
-    // No runtime owner exists before app construction; setting the exit code
-    // lets Node drain ordinary handles without bypassing the coordinator.
-    process.exitCode = 1;
-  }
+  void finishFailedServerEntry(shutdownCoordinator);
 });

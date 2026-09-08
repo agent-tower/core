@@ -39,6 +39,7 @@ import {
 } from './workspace-kind.js';
 import type { WorkspaceBackgroundService } from './workspace-background-service.service.js';
 import { defaultWorkspaceLifecycleBarrier } from './workspace-lifecycle-barrier.js';
+import { stopSessionForResourceCleanup, withSessionResourceCleanup } from './session-resource-cleanup.js';
 
 const DEFAULT_IDLE_THRESHOLD_HOURS = 24;
 const WORKSPACE_READY_RETRY_COUNT = 20;
@@ -1815,7 +1816,9 @@ export class WorkspaceService {
    * - worktree 清理失败时仍然删除数据库记录（记录警告日志）
    */
   async delete(id: string) {
-    return defaultWorkspaceLifecycleBarrier.withWorkspace(id, () => this.deleteWithLifecycle(id));
+    return withSessionResourceCleanup({ workspaceId: id }, () => (
+      defaultWorkspaceLifecycleBarrier.withWorkspace(id, () => this.deleteWithLifecycle(id))
+    ));
   }
 
   private async deleteWithLifecycle(id: string) {
@@ -1832,16 +1835,9 @@ export class WorkspaceService {
     }
     ensureProjectIsMutable(workspace.task.project, 'delete workspaces');
 
-    // 停止所有活跃的 Session（RUNNING 和 PENDING 状态）
-    const activeSessions = workspace.sessions.filter(
-      (s) => s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING
-    );
-    for (const session of activeSessions) {
-      try {
-        await this.sessionService.stop(session.id);
-      } catch {
-        // 忽略停止失败
-      }
+    // A completed ACP turn may still own a reusable adapter process.
+    for (const session of workspace.sessions) {
+      await stopSessionForResourceCleanup(this.sessionService, session.id);
     }
 
     await this.backgroundService.stopAllForWorkspace(id);
@@ -2406,7 +2402,9 @@ export class WorkspaceService {
    * 归档 Workspace（标记状态为 ABANDONED）
    */
   async archive(id: string) {
-    return defaultWorkspaceLifecycleBarrier.withWorkspace(id, () => this.archiveWithLifecycle(id));
+    return withSessionResourceCleanup({ workspaceId: id }, () => (
+      defaultWorkspaceLifecycleBarrier.withWorkspace(id, () => this.archiveWithLifecycle(id))
+    ));
   }
 
   private async archiveWithLifecycle(id: string) {
@@ -2428,16 +2426,8 @@ export class WorkspaceService {
       );
     }
 
-    // 停止所有活跃的 Session
-    const activeSessions = workspace.sessions.filter(
-      (s) => s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING
-    );
-    for (const session of activeSessions) {
-      try {
-        await this.sessionService.stop(session.id);
-      } catch {
-        // 忽略停止失败
-      }
+    for (const session of workspace.sessions) {
+      await stopSessionForResourceCleanup(this.sessionService, session.id);
     }
 
     await this.backgroundService.stopAllForWorkspace(id);
@@ -2457,7 +2447,9 @@ export class WorkspaceService {
    * Branch 保留，可随时通过 reactivate() 恢复。
    */
   async hibernate(id: string): Promise<void> {
-    return defaultWorkspaceLifecycleBarrier.withWorkspace(id, () => this.hibernateWithLifecycle(id));
+    return withSessionResourceCleanup({ workspaceId: id }, () => (
+      defaultWorkspaceLifecycleBarrier.withWorkspace(id, () => this.hibernateWithLifecycle(id))
+    ));
   }
 
   private async hibernateWithLifecycle(id: string): Promise<void> {
@@ -2491,6 +2483,10 @@ export class WorkspaceService {
         'WORKSPACE_HAS_ACTIVE_SESSIONS',
         409,
       );
+    }
+
+    for (const session of workspace.sessions) {
+      await stopSessionForResourceCleanup(this.sessionService, session.id);
     }
 
     // Hibernation removes the worktree. Long-running services must stop first
@@ -2714,48 +2710,54 @@ export class WorkspaceService {
 
     for (const workspace of workspaces) {
       try {
-        await defaultWorkspaceLifecycleBarrier.withWorkspace(workspace.id, async () => {
-          await this.backgroundService.stopAllForWorkspace(workspace.id);
-          if (isMainDirectoryWorkspace(workspace)) {
+        await withSessionResourceCleanup({ workspaceId: workspace.id }, () => (
+          defaultWorkspaceLifecycleBarrier.withWorkspace(workspace.id, async () => {
+            const sessions = await prisma.session.findMany({ where: { workspaceId: workspace.id }, select: { id: true } });
+            for (const session of sessions) {
+              await stopSessionForResourceCleanup(this.sessionService, session.id);
+            }
+            await this.backgroundService.stopAllForWorkspace(workspace.id);
+            if (isMainDirectoryWorkspace(workspace)) {
+              await this.backgroundService.releaseLogsForWorkspace?.(workspace.id);
+              await prisma.workspace.delete({ where: { id: workspace.id } });
+              cleaned++;
+              return;
+            }
+
+            const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
+
+            // 清理残留 worktree（如果还存在）
+            if (workspace.worktreePath) {
+              const removeResult = await worktreeManager.remove(workspace.worktreePath);
+              if (removeResult.status === 'unregistered') {
+                console.warn(
+                  `[WorkspaceService] cleanup: workspace ${workspace.id} path is unregistered or unsafe to remove: ${removeResult.path}`,
+                );
+                return;
+              }
+            }
+
+            // Task 已 DONE，branch 不再需要，删除。安全 helper 会跳过 base/main/master/current/missing。
+            const branchDeleteResult = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
+              protectedBranches: [workspace.task.project.mainBranch, workspace.baseBranch],
+            });
+            if (branchDeleteResult.status === 'failed') {
+              console.warn(
+                `[WorkspaceService] cleanup: failed to delete branch ${branchDeleteResult.branchName} for workspace ${workspace.id}: ${branchDeleteResult.reason}`,
+              );
+            } else if (branchDeleteResult.status === 'checked_out') {
+              console.warn(
+                `[WorkspaceService] cleanup: skipped checked-out branch ${branchDeleteResult.branchName} for workspace ${workspace.id}: ${branchDeleteResult.reason}`,
+              );
+            }
+
             await this.backgroundService.releaseLogsForWorkspace?.(workspace.id);
             await prisma.workspace.delete({ where: { id: workspace.id } });
             cleaned++;
-            return;
-          }
-
-          const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-
-          // 清理残留 worktree（如果还存在）
-          if (workspace.worktreePath) {
-            const removeResult = await worktreeManager.remove(workspace.worktreePath);
-            if (removeResult.status === 'unregistered') {
-              console.warn(
-                `[WorkspaceService] cleanup: workspace ${workspace.id} path is unregistered or unsafe to remove: ${removeResult.path}`,
-              );
-              return;
-            }
-          }
-
-          // Task 已 DONE，branch 不再需要，删除。安全 helper 会跳过 base/main/master/current/missing。
-          const branchDeleteResult = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
-            protectedBranches: [workspace.task.project.mainBranch, workspace.baseBranch],
-          });
-          if (branchDeleteResult.status === 'failed') {
-            console.warn(
-              `[WorkspaceService] cleanup: failed to delete branch ${branchDeleteResult.branchName} for workspace ${workspace.id}: ${branchDeleteResult.reason}`,
-            );
-          } else if (branchDeleteResult.status === 'checked_out') {
-            console.warn(
-              `[WorkspaceService] cleanup: skipped checked-out branch ${branchDeleteResult.branchName} for workspace ${workspace.id}: ${branchDeleteResult.reason}`,
-            );
-          }
-
-          await this.backgroundService.releaseLogsForWorkspace?.(workspace.id);
-          await prisma.workspace.delete({ where: { id: workspace.id } });
-          cleaned++;
-        });
+          })
+        ));
       } catch (err) {
-        // worktree 删除失败时保留 DB 记录，下次 scan 重试
+        // Keep process evidence and directory resources for a later retry.
         console.warn(
           `[WorkspaceService] cleanup: failed for workspace ${workspace.id}: ${err instanceof Error ? err.message : err}`
         );

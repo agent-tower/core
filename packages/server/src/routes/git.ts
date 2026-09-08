@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z, ZodError } from 'zod';
-import { execFile } from 'node:child_process';
+import { runOwnedCommand } from '../utils/owned-child-process.js';
 import * as path from 'node:path';
 import { prisma } from '../utils/index.js';
 
@@ -33,24 +33,14 @@ function handleError(error: unknown, reply: any) {
 
 /** execFile promisified with timeout */
 function execGit(cwd: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('git', args, {
+  return runOwnedCommand('git', args, {
       cwd,
       timeout: 10_000,
       maxBuffer: 10 * 1024 * 1024,
-      encoding: 'utf-8',
-    }, (err, stdout) => {
-      if (err) {
-        if (stdout !== undefined && stdout !== '') {
-          resolve(stdout);
-          return;
-        }
-        reject(err);
-        return;
-      }
-      resolve(stdout);
+    }).then(({ stdout }) => stdout, (error) => {
+      if (error.stdout) return String(error.stdout);
+      throw error;
     });
-  });
 }
 
 type ChangeEntry = { status: string; path: string; additions?: number; deletions?: number };

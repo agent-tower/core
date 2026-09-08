@@ -8,6 +8,8 @@
 - `WORKTREE` 使用独立分支和目录；`MAIN_DIRECTORY` 直接使用项目目录并支持非 Git Solo。Agent、文件、终端和 preview 使用 DTO 的 `workingDir`，操作前判断 Git capability 与 workspace kind。不能把回收 worktree 的删除逻辑套到项目主目录。
 - 一个 Task 可有主 workspace、成员 workspace 和目标提交执行 workspace；hibernate/reactivate 与 merge/archive/delete 是不同操作。修改路径、清理或主 workspace 选择时检查子 workspace、watcher、session 和后台服务，沿既有生命周期入口处理。
 - `services/workspace-lifecycle-barrier.ts` 的 app 级 barrier 协调同一 workspace 的 start/restart、merge、hibernate、archive/delete 和 task/project cleanup。停止资源、文件系统操作和终态写入需在相同 barrier 内；多 workspace 通过 `withWorkspaces()` 排序获取，避免锁顺序不一致。
+- 删除、归档、休眠及周期清理通过 `session-resource-cleanup.ts` 对所有关联 Session 执行 stop 和 cleanup gate，包括已完成的 ACP 会话；未确认清理时保留目录与数据库身份。Task cleanup 快照也包含所有 Session，执行旧快照时合并当前关联 Session，不能按业务状态筛掉 runtime owner。
+- 独立终端 `destroy()` / `destroyAll()` / `cleanupBySocket()` 均可等待；整树退出确认后才删除 owner，失败保持可重试。HTTP、Socket 断开、TTL 和应用关闭调用方必须等待或显式处理失败。
 
 ## Workspace 后台服务
 
@@ -16,10 +18,11 @@
 - 定义属于 workspace，独立 PTY 属于 app-owned process manager，生命周期不随 Agent turn、Session 自然完成或 Socket 断开结束。跨 turn 运行的开发 server/watch/worker 使用 workspace-context service MCP；普通 Agent 子进程仍按 runtime 规则清理。
 - 命令以 `command + args[]`、workspace 内相对 cwd 表达，不新增任意 env 或 shell 字符串输入。自然退出记录 EXITED/FAILED，不自动 crash restart。
 - 显式 stop、workspace hibernate/archive/delete 和 task/project cleanup 将 desired state 置为 STOPPED 并清理进程树；reactivate 不自动恢复。应用优雅关闭只停止 runtime、保留 desired state，启动 `reconcile()` 重建仍有效的 desired RUNNING 服务。
+- 后台服务 `shutdown()` 先关闭启动入口，等待已进入的启动交接，然后清理；失败可重试。关闭后的同一实例不能通过 `reconcile()` 重新接收启动，服务重启使用新实例。
 - 完全停止指 desired/runtime 均为 STOPPED 且无 runtime identity。定义保留供同名同配置重启，但不显示在列表、不占服务配额；新建和重启完全停止的定义都要在 lifecycle barrier 内检查可用槽位。不要只按记录总数计算配额。
 - merge 默认阻止源 workspace 的活跃后台服务。已有 `stopActiveServices` 请求语义表示调用方明确选择先停止；完成 merge gate 后清理、重验再合并，不能在检查失败前先杀进程。
 - 日志是有界内存数据，实体删除需释放；seq 仅在同一 `runtimeInstanceId` 内有效。增量请求携带上一 generation，响应分别表达 `reset`、`truncated`、`hasMore`；换代替换缓存，正常分页不等于丢日志。
-- Unix 的 poll/signal 复用 `utils/unix-process-identity.ts` adapter，发信号前校验 PID/PGID、birth identity 和每次 launch 的 ownership token；不回退到未校验的 kill。Linux `/proc` start ticks 与 macOS 秒级 marker 能力不同，macOS 必须结合 token。Windows 沿 `taskkill /T /F` 树清理实现。
+- Unix 的 poll/signal 复用 `utils/unix-process-identity.ts` adapter，发信号前校验 PID/PGID、birth identity 及 token 或已验证的父子关系；不回退到未校验的 kill。Linux `/proc` start ticks 与 macOS 秒级 marker 能力不同，单靠 birth marker 不足以证明归属。Windows 重新核验 birth identity 后执行树清理，根先退出时仍需处理已记录后代。
 
 ## HTTP、Socket 与 Agent 身份
 
@@ -38,6 +41,7 @@
 入口为 `services/preview.service.ts`、`preview-runtime-manager.ts`、`routes/previews.ts` 和 `packages/web/src/hooks/use-previews.ts`。新 UI 通过 `/api/previews/:workspaceId/sessions` 获取独立根路径 gateway；`/view/:workspaceId` 是旧客户端兼容路径。
 
 - target 只允许 loopback。本地用 gateway 独立端口，远程按 workspace 复用独立 Quick Tunnel；会话续租与空闲回收交给 manager，target 变更和 server shutdown 立即失效并清理。
+- 首次并发 acquire 共享整个 runtime 创建 promise；invalidate/stopAll 撤销启动，并等待尚未交接的 gateway/tunnel。主 tunnel 同样串行交接 start/stop/regenerate，关键 await 后复核启动归属。cloudflared 停止通过可等待的 `cloudflared-process.ts`，必要时升级信号，退出未确认时保留 owner。
 - bootstrap 用 workspace preview token 换独立 HttpOnly Cookie；AccessAuth secret 轮换同步使 gateway secret 失效。外层 access/tunnel/gateway Cookie 不传给目标。
 - 若目标自身是 Agent Tower，其同名认证 Cookie 按 workspace 改名隔离，转发前恢复目标名。远程 iframe Cookie 使用 `Secure; SameSite=None; Partitioned`；剥离 Cloudflare 客户端标识头，避免目标误判为自身 tunnel 请求。
 - 保留目标根路径、HTTP/WebSocket 与流式响应；仅做 frame header、同 target 绝对 redirect、Cookie domain/basePath 和可选 bridge 注入。不恢复通用 HTML/CSS/JS 路径重写。

@@ -13,6 +13,7 @@ import type { SessionManager } from './session-manager.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { RuntimeType } from '@agent-tower/shared';
 import { getProviderRuntimeType } from '../executors/providers.js';
+import { stopSessionForResourceCleanup, withSessionResourceCleanup } from './session-resource-cleanup.js';
 
 const CONVERSATIONS_DIR = 'conversations';
 const TITLE_MAX_LENGTH = 80;
@@ -307,6 +308,10 @@ export class ConversationService {
   }
 
   async delete(id: string) {
+    return withSessionResourceCleanup({ conversationId: id }, () => this.deleteWithCleanup(id));
+  }
+
+  private async deleteWithCleanup(id: string) {
     const conversation = await prisma.conversation.findFirst({
       where: { id, deletedAt: null },
       include: { session: true },
@@ -316,7 +321,7 @@ export class ConversationService {
     }
 
     if (conversation.session) {
-      await this.sessionManager.stop(conversation.session.id).catch(() => {});
+      await stopSessionForResourceCleanup(this.sessionManager, conversation.session.id);
     }
 
     const safePath = assertPathInsideConversationRoot(conversation.workingDir);

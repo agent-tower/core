@@ -27,7 +27,8 @@ vi.mock('./services/workspace.service.js', () => ({
 
 vi.mock('./core/container.js', () => ({
   getEventBus: vi.fn(() => ({ on: vi.fn(), emit: vi.fn(), off: vi.fn() })),
-  getSessionManager: vi.fn(() => ({})),
+  getSessionManager: vi.fn(() => ({ startConversationQueue: vi.fn(async () => {}), stopConversationQueue: vi.fn() })),
+  destroyApplicationProcesses: vi.fn(async () => backgroundShutdownMock()),
   getTaskCleanupService: vi.fn(() => ({
     start: taskCleanupStartMock,
     stop: taskCleanupStopMock,

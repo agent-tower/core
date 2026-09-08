@@ -1,6 +1,8 @@
 import { Tunnel } from 'cloudflared';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { ensureCloudflaredBinary } from './cloudflared-runtime.js';
+import { stopCloudflaredTunnel, trackCloudflaredTunnel, waitForTunnelBinary } from './cloudflared-process.js';
+import { assertApplicationProcessStartAllowed } from '../runtime/application-process-cleanup.js';
 
 export type TunnelHealthStatus =
   | 'stopped'
@@ -100,6 +102,11 @@ const state: TunnelState = {
   lastError: null,
   lastProcessOutput: null,
 };
+
+let activeStart: { controller: AbortController; promise: Promise<{ url: string; token: string }> } | null = null;
+let activeStop: Promise<void> | null = null;
+let activeRegeneration: Promise<{ url: string; token: string }> | null = null;
+let lifecycleGeneration = 0;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -241,11 +248,13 @@ async function runHealthCheck(): Promise<void> {
   state.healthCheckPromise = (async () => {
     try {
       const generation = state.generation;
+      const tunnel = state.tunnel;
       const targetOrigin = state.targetOrigin;
       const secret = state.healthSecret;
       if (!targetOrigin || !secret) return;
 
       const local = await checkLocalTarget(targetOrigin, secret, generation);
+      if (state.tunnel !== tunnel || state.generation !== generation) return;
       const checkedAt = nowIso();
       state.lastCheckedAt = checkedAt;
       state.lastLocalError = local.error;
@@ -298,7 +307,8 @@ function attachTunnelDiagnostics(tunnel: Tunnel): void {
   });
 }
 
-async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promise<{ url: string; token: string }> {
+async function runTunnelStart(port: number, nextStatus: TunnelHealthStatus, signal: AbortSignal): Promise<{ url: string; token: string }> {
+  signal.throwIfAborted();
   if (state.tunnel && state.url && state.token) {
     return { url: state.url, token: state.token };
   }
@@ -315,11 +325,14 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
 
   let tunnel: Tunnel;
   try {
-    await ensureCloudflaredBinary();
+    await waitForTunnelBinary(ensureCloudflaredBinary(), signal);
     tunnel = Tunnel.quick(targetOrigin, TUNNEL_QUICK_OPTIONS);
+    trackCloudflaredTunnel(tunnel);
   } catch (err) {
-    resetRuntimeState('error');
-    state.lastError = sanitizeError(err);
+    if (!signal.aborted) {
+      resetRuntimeState('error');
+      state.lastError = sanitizeError(err);
+    }
     throw err;
   }
   state.tunnel = tunnel;
@@ -331,8 +344,6 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
       let settled = false;
       const timeout = setTimeout(() => {
         settle(reject, new Error('Tunnel startup timed out (30s)'));
-        state.tunnel = null;
-        tunnel.stop();
       }, TUNNEL_STARTUP_TIMEOUT_MS);
 
       const cleanup = () => {
@@ -340,6 +351,7 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
         tunnel.off('url', onUrl);
         tunnel.off('error', onError);
         tunnel.off('exit', onExit);
+        signal.removeEventListener('abort', onAbort);
       };
 
       const settle = <T>(done: (value: T) => void, value: T) => {
@@ -349,31 +361,34 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
         done(value);
       };
 
+      const onAbort = () => settle(reject, signal.reason);
       const onUrl = (nextUrl: string) => settle(resolve, nextUrl);
       const onError = (err: Error) => settle(reject, err);
       const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
         settle(reject, new Error(buildExitErrorMessage(code, signal)));
       };
 
+      signal.addEventListener('abort', onAbort, { once: true });
       tunnel.once('url', onUrl);
       tunnel.once('error', onError);
       tunnel.once('exit', onExit);
     });
   } catch (err) {
-    state.tunnel = null;
-    tunnel.stop();
+    await stopCloudflaredTunnel(tunnel);
+    if (state.tunnel === tunnel) state.tunnel = null;
     clearHealthTimer();
-    state.status = 'error';
+    state.status = signal.aborted ? 'stopped' : 'error';
     state.url = null;
     state.startedAt = null;
     state.token = null;
     state.healthSecret = null;
     state.targetPort = null;
     state.targetOrigin = null;
-    state.lastError = sanitizeError(err);
+    state.lastError = signal.aborted ? null : sanitizeError(err);
     throw err;
   }
 
+  signal.throwIfAborted();
   state.url = url;
   state.status = nextStatus;
   state.tunnel = tunnel;
@@ -392,28 +407,78 @@ async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promis
   return { url, token: state.token };
 }
 
+async function startTunnel(port: number, nextStatus: TunnelHealthStatus): Promise<{ url: string; token: string }> {
+  assertApplicationProcessStartAllowed();
+  if (activeStop) await activeStop;
+  assertApplicationProcessStartAllowed();
+  if (activeStart) return activeStart.promise;
+  if (state.tunnel && state.url && state.token) return { url: state.url, token: state.token };
+  if (state.tunnel) throw new Error('Previous tunnel process cleanup must finish before starting');
+  const controller = new AbortController();
+  const promise = Promise.resolve().then(() => runTunnelStart(port, nextStatus, controller.signal));
+  const launch = { controller, promise };
+  activeStart = launch;
+  try {
+    return await promise;
+  } finally {
+    if (activeStart === launch) activeStart = null;
+  }
+}
+
 export const TunnelService = {
   async start(port: number): Promise<{ url: string; token: string }> {
     return startTunnel(port, 'checking');
   },
 
   async regenerate(port: number): Promise<{ url: string; token: string }> {
+    if (activeRegeneration) return activeRegeneration;
     const nextPort = state.targetPort ?? port;
-    this.stop();
-    const result = await startTunnel(nextPort, 'linkReplaced');
-    const timer = setTimeout(() => {
-      if (state.status === 'linkReplaced') {
-        state.status = 'checking';
-      }
-    }, LINK_REPLACED_STATUS_TTL_MS);
-    timer.unref?.();
-    return result;
+    const stopped = this.stop();
+    const generation = lifecycleGeneration;
+    const regeneration = (async () => {
+      await stopped;
+      if (generation !== lifecycleGeneration) throw new Error('Tunnel regeneration cancelled');
+      const result = await startTunnel(nextPort, 'linkReplaced');
+      const timer = setTimeout(() => {
+        if (state.status === 'linkReplaced') state.status = 'checking';
+      }, LINK_REPLACED_STATUS_TTL_MS);
+      timer.unref?.();
+      return result;
+    })();
+    activeRegeneration = regeneration;
+    try {
+      return await regeneration;
+    } finally {
+      if (activeRegeneration === regeneration) activeRegeneration = null;
+    }
   },
 
-  stop(): void {
-    const tunnel = state.tunnel;
-    resetRuntimeState('stopped');
-    if (tunnel) tunnel.stop();
+  async stop(): Promise<void> {
+    lifecycleGeneration += 1;
+    const launch = activeStart;
+    launch?.controller.abort(new Error('Tunnel startup cancelled'));
+    clearHealthTimer();
+    // Revoke access immediately, retaining the process owner until exit.
+    state.url = null;
+    state.token = null;
+    state.healthSecret = null;
+    state.status = 'stopped';
+    if (activeStop) return activeStop;
+    const stopping = (async () => {
+      await launch?.promise.catch(() => undefined);
+      if (state.tunnel) await stopCloudflaredTunnel(state.tunnel);
+      resetRuntimeState('stopped');
+    })();
+    activeStop = stopping;
+    try {
+      await stopping;
+    } catch (error) {
+      state.status = 'error';
+      state.lastError = sanitizeError(error);
+      throw error;
+    } finally {
+      if (activeStop === stopping) activeStop = null;
+    }
   },
 
   getStatus(): TunnelStatus {
@@ -478,7 +543,8 @@ export const TunnelService = {
     await runHealthCheck();
   },
 
-  __resetForTests(): void {
+  async __resetForTests(): Promise<void> {
+    await this.stop();
     resetRuntimeState('stopped');
     state.generation = 0;
     state.lastExitAt = null;

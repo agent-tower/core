@@ -101,6 +101,7 @@ async function createWorkspace(label: string) {
 
 describe('WorkspaceBackgroundService', () => {
   beforeAll(async () => {
+    fs.closeSync(fs.openSync(dbPath, 'a'));
     execFileSync('pnpm', ['exec', 'prisma', 'db', 'push', '--skip-generate', `--schema=${schemaPath}`], {
       cwd: serverRoot,
       env: { ...process.env, AGENT_TOWER_DATABASE_URL: `file:${dbPath}` },
@@ -361,6 +362,47 @@ describe('WorkspaceBackgroundService', () => {
       .rejects.toMatchObject({ code: 'WORKSPACE_SERVICE_BROWSER_UNAVAILABLE' });
   });
 
+  it('drains an in-flight start before shutdown succeeds and rejects new starts', async () => {
+    const manager = new FakeProcessManager();
+    const service = new WorkspaceBackgroundService(manager as any);
+    const { workspace } = await createWorkspace('shutdown-during-start');
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    manager.afterStart = async () => { entered(); await gate; };
+    const starting = service.start(workspace.id, 'web', { command: 'node' });
+    await started;
+    let stopped = false;
+    const shutdown = service.shutdown().then(() => { stopped = true; });
+    try {
+      await expect(service.start(workspace.id, 'late', { command: 'node' }))
+        .rejects.toMatchObject({ code: 'SERVICE_SHUTTING_DOWN' });
+      expect(stopped).toBe(false);
+    } finally {
+      release();
+      await starting;
+      await shutdown;
+    }
+    expect(manager.startCalls).toHaveBeenCalledTimes(1);
+    expect(await service.list(workspace.id)).toEqual([
+      expect.objectContaining({ desiredState: 'RUNNING', runtimeState: 'STOPPED' }),
+    ]);
+  });
+
+  it('retains a failed shutdown owner and retries it on the next attempt', async () => {
+    const manager = new FakeProcessManager();
+    const service = new WorkspaceBackgroundService(manager as any);
+    const { workspace } = await createWorkspace('shutdown-retry');
+    const running = await service.start(workspace.id, 'web', { command: 'node' });
+    manager.beforeStop = async () => { throw new Error('process still alive'); };
+    await expect(service.shutdown()).rejects.toThrow('process still alive');
+    expect(manager.has(running.id)).toBe(true);
+    manager.beforeStop = undefined;
+    await service.shutdown();
+    expect(manager.has(running.id)).toBe(false);
+  });
+
   it('stops runtime on app shutdown while preserving desired state for startup recovery', async () => {
     const manager = new FakeProcessManager();
     const service = new WorkspaceBackgroundService(manager as any);
@@ -372,8 +414,10 @@ describe('WorkspaceBackgroundService', () => {
       expect.objectContaining({ desiredState: 'RUNNING', runtimeState: 'STOPPED' }),
     ]);
 
-    await service.reconcile();
-    await expect(service.list(workspace.id)).resolves.toEqual([
+    await expect(service.reconcile()).rejects.toMatchObject({ code: 'SERVICE_SHUTTING_DOWN' });
+    const recoveredService = new WorkspaceBackgroundService(manager as any);
+    await recoveredService.reconcile();
+    await expect(recoveredService.list(workspace.id)).resolves.toEqual([
       expect.objectContaining({ desiredState: 'RUNNING', runtimeState: 'RUNNING' }),
     ]);
     expect(manager.startCalls).toHaveBeenCalledTimes(2);

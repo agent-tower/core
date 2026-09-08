@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Tunnel, type Tunnel as CloudflaredTunnel } from 'cloudflared';
+import * as cloudflaredRuntime from '../cloudflared-runtime.js';
 
 class FakeTunnel extends EventEmitter {
   stopped = false;
@@ -45,14 +46,14 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe('TunnelService health state', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     fakeTunnels.length = 0;
     nextUrl = 'https://first.trycloudflare.com';
-    TunnelService.__resetForTests();
+    await TunnelService.__resetForTests();
   });
 
-  afterEach(() => {
-    TunnelService.__resetForTests();
+  afterEach(async () => {
+    await TunnelService.__resetForTests();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -235,6 +236,63 @@ describe('TunnelService health state', () => {
     expect(Tunnel.quick).not.toHaveBeenCalledWith('http://localhost:443');
     expect(fakeTunnels).toHaveLength(2);
     expect(fakeTunnels[0]?.stopped).toBe(true);
+  });
+
+  it('shares the process across concurrent starts and stops the only owner', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})));
+    const [first, second] = await Promise.all([TunnelService.start(18080), TunnelService.start(18080)]);
+    expect(second).toEqual(first);
+    expect(fakeTunnels).toHaveLength(1);
+    await TunnelService.stop();
+    expect(fakeTunnels[0].stopped).toBe(true);
+    expect(TunnelService.isRunning()).toBe(false);
+  });
+
+  it('cancels a start while binary setup is pending without launching after stop', async () => {
+    let finishSetup!: () => void;
+    const setup = new Promise<void>((resolve) => { finishSetup = resolve; });
+    vi.spyOn(cloudflaredRuntime, 'ensureCloudflaredBinary').mockReturnValueOnce(setup);
+    const starting = TunnelService.start(18080);
+    const rejected = expect(starting).rejects.toThrow('cancelled');
+    await vi.waitFor(() => expect(cloudflaredRuntime.ensureCloudflaredBinary).toHaveBeenCalled());
+    await TunnelService.stop();
+    finishSetup();
+    await rejected;
+    expect(fakeTunnels).toHaveLength(0);
+    expect(TunnelService.getStatus().status).toBe('stopped');
+  });
+
+  it('cancels a start before URL readiness and ignores the late URL', async () => {
+    vi.mocked(Tunnel.quick).mockImplementationOnce(() => {
+      const tunnel = new FakeTunnel();
+      fakeTunnels.push(tunnel);
+      return tunnel as unknown as CloudflaredTunnel;
+    });
+    const starting = TunnelService.start(18080);
+    const rejected = expect(starting).rejects.toThrow('cancelled');
+    await vi.waitFor(() => expect(fakeTunnels).toHaveLength(1));
+    await TunnelService.stop();
+    fakeTunnels[0].emit('url', 'https://late.trycloudflare.com');
+    await rejected;
+    expect(fakeTunnels[0].stopped).toBe(true);
+    expect(TunnelService.getStatus().url).toBeNull();
+  });
+
+  it('keeps a failed stop owned until a retry confirms process exit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})));
+    await TunnelService.start(18080);
+    const tunnel = fakeTunnels[0];
+    const stop = vi.spyOn(tunnel, 'stop').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    const stopping = TunnelService.stop();
+    const rejected = expect(stopping).rejects.toThrow('did not exit');
+    await vi.advanceTimersByTimeAsync(3000);
+    await rejected;
+    expect(TunnelService.getStatus()).toMatchObject({ running: true, status: 'error' });
+    await expect(TunnelService.start(18080)).rejects.toThrow('cleanup must finish');
+    stop.mockRestore();
+    await TunnelService.stop();
+    expect(TunnelService.isRunning()).toBe(false);
   });
 
   it('keeps startup failures visible as an error status', async () => {

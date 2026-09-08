@@ -939,9 +939,8 @@ export class TaskService {
           workspaceKind: workspace.workspaceKind,
           branchName: workspace.branchName,
           baseBranch: workspace.baseBranch,
-          sessions: workspace.sessions
-            .filter((session) => session.status === SessionStatus.PENDING || session.status === SessionStatus.RUNNING)
-            .map((session) => ({ id: session.id })),
+          // Logical completion does not close a reusable ACP adapter.
+          sessions: workspace.sessions.map((session) => ({ id: session.id })),
         })),
       };
       const teamRunId = taskForCleanup.teamRun?.id;

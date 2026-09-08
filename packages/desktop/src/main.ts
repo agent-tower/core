@@ -9,7 +9,7 @@ import net from 'node:net';
 import { promisify } from 'node:util';
 import { resolveDesktopDataMode } from './data-mode.js';
 import { redactDesktopLogText, sanitizeDesktopLogValue } from './log-redaction.js';
-import { stopChildProcessAndWait } from './backend-shutdown.js';
+import { stopChildProcessAndWait, waitForBackendStartup } from './backend-shutdown.js';
 import { createBeforeQuitHandler } from './before-quit.js';
 
 const execFileAsync = promisify(execFile);
@@ -301,7 +301,7 @@ async function startBackend(): Promise<string> {
   const child = spawn(getBackendNodeCommand(runtimePaths), args, {
     cwd: runtimePaths.serverCwd,
     env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
   });
   backendProcess = child;
@@ -325,7 +325,7 @@ async function startBackend(): Promise<string> {
         message: error.message,
         stack: error.stack,
       }, dataDir);
-      if (backendProcess === child) {
+      if (backendProcess === child && (!child.pid || child.exitCode !== null || child.signalCode !== null)) {
         backendProcess = null;
       }
       reject(error);
@@ -351,10 +351,10 @@ async function startBackend(): Promise<string> {
   });
 
   child.on('error', (error) => {
-    if (backendProcess === child) {
+    if (backendProcess === child && (!child.pid || child.exitCode !== null || child.signalCode !== null)) {
       backendProcess = null;
     }
-    if (backendReady && !quitting && !backendStopPromise) {
+    if (backendReady && !quitting && !backendStopPromise && (!child.pid || child.exitCode !== null || child.signalCode !== null)) {
       backendRecoveryRequired = true;
       writeDesktopLog('error', 'desktop.backend.error', 'Backend process error after startup', {
         message: error.message,
@@ -394,22 +394,24 @@ async function startBackend(): Promise<string> {
   });
 
   const baseUrl = `http://${HOST}:${port}`;
-  await Promise.race([waitForHealth(baseUrl), startupError, backendExit]);
-  backendReady = true;
-  log(`Backend health check passed: ${baseUrl}/api/health`);
-  writeDesktopLog('info', 'desktop.backend.ready', 'Backend health check passed', {
-    baseUrl,
-  }, dataDir);
+  return waitForBackendStartup(child, (async () => {
+    await Promise.race([waitForHealth(baseUrl), startupError, backendExit]);
+    log(`Backend health check passed: ${baseUrl}/api/health`);
+    writeDesktopLog('info', 'desktop.backend.ready', 'Backend health check passed', {
+      baseUrl,
+    }, dataDir);
 
-  if (process.env.AGENT_TOWER_DESKTOP_VERIFY_SOCKET === '1') {
-    await verifySocketConnection(baseUrl);
-  }
+    if (process.env.AGENT_TOWER_DESKTOP_VERIFY_SOCKET === '1') {
+      await verifySocketConnection(baseUrl);
+    }
 
-  if (process.env.AGENT_TOWER_DESKTOP_VERIFY_TERMINAL === '1') {
-    await verifyTerminalCreate(baseUrl);
-  }
+    if (process.env.AGENT_TOWER_DESKTOP_VERIFY_TERMINAL === '1') {
+      await verifyTerminalCreate(baseUrl);
+    }
 
-  return baseUrl;
+    backendReady = true;
+    return baseUrl;
+  })());
 }
 
 async function verifyTerminalCreate(baseUrl: string): Promise<void> {

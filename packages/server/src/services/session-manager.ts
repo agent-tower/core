@@ -52,6 +52,7 @@ import {
   type RuntimeTurnEventEnvelope,
 } from '../runtime/index.js';
 import { buildWorkspaceRuntimePrompt } from '../prompts/workspace-background-service-policy.js';
+import { assertSessionResourceAvailable } from './session-resource-cleanup.js';
 import {
   cleanupPersistedAcpProcessTree,
   type PersistedAcpProcessIdentity,
@@ -566,6 +567,7 @@ export class SessionManager {
       throw new NotFoundError('Workspace', workspaceId);
     }
     ensureTaskNotDeleted(workspace.task);
+    assertSessionResourceAvailable({ workspaceId });
 
     const provider = providerId ? getProviderById(providerId) : null;
     if (providerId && !provider) {
@@ -1204,7 +1206,7 @@ export class SessionManager {
       await this.runtimeCoordinator.withStartAdmission(session.id, async (admission) => {
         admissionEntered = true;
         try {
-          this.assertPreChildAdmission(admission);
+          this.assertPreChildAdmission(admission, session);
           // A rejected follow-up must not supersede the completed generation
           // until it owns the same disposal boundary as credential/claim setup.
           if (advanceGeneration) this.invalidateSessionGeneration(session.id);
@@ -1219,10 +1221,10 @@ export class SessionManager {
           }
           if (!this.isConversationSession(session)) {
             await this.injectTeamRunInvocationEnv(session.id, env);
-            this.assertPreChildAdmission(admission);
+            this.assertPreChildAdmission(admission, session);
           }
           this.injectAgentTowerMcpServiceEnv(session.id, env);
-          this.assertPreChildAdmission(admission);
+          this.assertPreChildAdmission(admission, session);
 
           const isNewStore = !sessionMsgStoreManager.has(session.id);
           const msgStore = sessionMsgStoreManager.getOrCreate(session.id);
@@ -1238,13 +1240,13 @@ export class SessionManager {
           // The lease remains held until runTurn has either failed before spawn or
           // handed the child/transport to its DriverSession owner.
           launchClaimNumber = await this.claimRuntimeLaunch(session.id, initialStart);
-          this.assertPreChildAdmission(admission);
+          this.assertPreChildAdmission(admission, session);
           try {
             await this.assertTeamRunDispatchAdmitted(session.id, expectedTeamRunInvocationId);
           } catch (error) {
             throw markPreChildProcessFailure(error);
           }
-          this.assertPreChildAdmission(admission);
+          this.assertPreChildAdmission(admission, session);
           const runtimePrompt = buildWorkspaceRuntimePrompt(session, prompt);
           handle = await this.runtimeCoordinator.startTurn({
             towerSessionId: session.id,
@@ -1335,9 +1337,10 @@ export class SessionManager {
     }
   }
 
-  private assertPreChildAdmission(admission: RuntimeStartAdmission): void {
+  private assertPreChildAdmission(admission: RuntimeStartAdmission, session: SessionExecutionRecord): void {
     try {
       admission.throwIfCancelled();
+      assertSessionResourceAvailable(session);
     } catch (error) {
       throw markPreChildProcessFailure(error);
     }
@@ -1604,7 +1607,8 @@ export class SessionManager {
           include: { workspace: { include: { task: true } }, conversation: true },
         });
         if (!session) throw new NotFoundError('Session', event.towerSessionId);
-        this.ensureExecutionRecordIsLive(session);
+        // A child already exists. Removal/admission barriers must not prevent
+        // recording its ownership, even if the task was just soft-deleted.
         const launchClaimNumber = Number.isInteger(event.launchClaimNumber)
           && event.launchClaimNumber > 0
           ? event.launchClaimNumber
@@ -2362,6 +2366,7 @@ export class SessionManager {
   }
 
   private ensureExecutionRecordIsLive(session: SessionExecutionRecord): void {
+    assertSessionResourceAvailable(session);
     if (this.isConversationSession(session)) {
       if (!session.conversation || session.conversation.deletedAt) {
         throw new NotFoundError('Conversation', session.conversationId ?? session.id);

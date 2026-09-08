@@ -294,6 +294,7 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
   let service: InstanceType<typeof WorkspaceService>;
 
   beforeAll(async () => {
+    fs.closeSync(fs.openSync(dbPath, 'a'));
     execFileSync(
       'pnpm',
       ['exec', 'prisma', 'db', 'push', '--skip-generate', `--schema=${schemaPath}`],
@@ -372,6 +373,45 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     await prisma.$disconnect();
     fs.rmSync(testDir, { recursive: true, force: true });
   });
+
+  it.each(['delete', 'archive', 'hibernate'] as const)(
+    '%s stops completed runtime owners before removing workspace resources', async (operation) => {
+      const { task } = await createTask('idle ACP cleanup');
+      const workspace = await prisma.workspace.create({ data: {
+        taskId: task.id, branchName: 'idle-acp', worktreePath: '',
+        sessions: { create: { agentType: 'CODEX', runtimeType: 'ACP', prompt: 'audit', status: 'COMPLETED' } },
+      }, include: { sessions: true } });
+      const sessionId = workspace.sessions[0]!.id;
+      const stop = vi.fn(async () => workspace.sessions[0]);
+      const isRuntimeCleanupConfirmed = vi.fn(async () => true);
+      Object.assign(service, { sessionService: { stop, isRuntimeCleanupConfirmed } });
+      await service[operation](workspace.id);
+      expect(stop).toHaveBeenCalledWith(sessionId);
+      expect(isRuntimeCleanupConfirmed).toHaveBeenCalledWith(sessionId);
+    },
+  );
+
+  it.each(['stop-fails', 'cleanup-unconfirmed'] as const)(
+    'keeps workspace and process evidence when %s', async (failure) => {
+      const { task } = await createTask('retained cleanup evidence');
+      const workspace = await prisma.workspace.create({ data: {
+        taskId: task.id, branchName: 'pending-cleanup', worktreePath: '/unremoved-worktree',
+        sessions: { create: {
+          agentType: 'CODEX', runtimeType: 'ACP', prompt: 'audit', status: 'RUNNING',
+          processes: { create: { pid: 999999, cleanupState: 'FAILED' } },
+        } },
+      }, include: { sessions: true } });
+      const stop = vi.fn(async () => {
+        if (failure === 'stop-fails') throw new Error('process still alive');
+        return workspace.sessions[0];
+      });
+      Object.assign(service, { sessionService: { stop, isRuntimeCleanupConfirmed: vi.fn(async () => false) } });
+      await expect(service.delete(workspace.id)).rejects.toThrow();
+      expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).not.toBeNull();
+      expect(await prisma.executionProcess.count({ where: { sessionId: workspace.sessions[0]!.id } })).toBe(1);
+      expect(removeWorktreeMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('creates a main-directory workspace without creating a git worktree', async () => {
     const { project, task } = await createTask('main directory workspace task');
@@ -2405,6 +2445,32 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
       protectedBranches: [project.mainBranch, workspace.baseBranch],
     });
     await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toBeNull();
+  });
+
+  it('retries periodic cleanup only after completed session trees are confirmed stopped', async () => {
+    const { task } = await createTask('periodic idle ACP cleanup');
+    await prisma.task.update({ where: { id: task.id }, data: { status: 'DONE' } });
+    const workspace = await prisma.workspace.create({ data: {
+      taskId: task.id, branchName: 'periodic-idle-acp', worktreePath: path.join(testDir, 'periodic-idle-acp'),
+      status: 'MERGED',
+      sessions: { create: {
+        agentType: 'CODEX', runtimeType: 'ACP', prompt: 'audit', status: 'COMPLETED',
+        processes: { create: { pid: 999999, cleanupState: 'FAILED' } },
+      } },
+    }, include: { sessions: true } });
+    const stop = vi.fn(async () => workspace.sessions[0]);
+    const isRuntimeCleanupConfirmed = vi.fn(async () => false);
+    Object.assign(service, { sessionService: { stop, isRuntimeCleanupConfirmed } });
+
+    await expect(service.cleanup()).resolves.toBe(0);
+    expect(stop).toHaveBeenCalledWith(workspace.sessions[0]!.id);
+    expect(removeWorktreeMock).not.toHaveBeenCalled();
+    expect(await prisma.executionProcess.count({ where: { sessionId: workspace.sessions[0]!.id } })).toBe(1);
+
+    isRuntimeCleanupConfirmed.mockResolvedValue(true);
+    await expect(service.cleanup()).resolves.toBe(1);
+    expect(removeWorktreeMock).toHaveBeenCalledWith(workspace.worktreePath);
+    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).toBeNull();
   });
 
   it('stops background services before cleanup removes a workspace directory', async () => {

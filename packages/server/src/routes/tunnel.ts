@@ -58,7 +58,7 @@ export async function tunnelRoutes(app: FastifyInstance) {
 
   // 停止隧道
   app.post('/tunnel/stop', async () => {
-    TunnelService.stop();
+    await TunnelService.stop();
     return { ok: true };
   });
 }

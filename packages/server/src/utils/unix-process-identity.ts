@@ -10,6 +10,8 @@ interface UnixProcessRow {
   pgid: number;
   birthMarker: string;
   ownershipToken?: string | null;
+  ownershipError?: unknown;
+  state?: string;
 }
 
 export interface UnixProcessIdentity {
@@ -26,10 +28,21 @@ export interface UnixProcessGroupIdentity {
 
 export interface UnixProcessIdentityAdapter {
   captureProcess(pid: number, ownershipToken: string): Promise<UnixProcessIdentity | null>;
+  /**
+   * Establish identity from a direct child owned by this process, including
+   * native executables whose environment is hidden by macOS. The caller must
+   * retain the actual child/PTY handle and supply its launch-liveness check.
+   * The check is repeated after asynchronous probes, before caching ownership.
+   */
+  captureChildProcess?(pid: number, ownershipToken: string, isCurrent: () => boolean): Promise<UnixProcessIdentity | null>;
+  /** Discard observed ownership only after the complete tree is confirmed gone. */
+  releaseOwnership?(ownershipToken: string): void;
   captureDescendantGroups(root: UnixProcessIdentity): Promise<UnixProcessGroupIdentity[]>;
   /**
    * Capture all processes carrying an ownership token, including descendants
-   * that were re-parented after the launch root exited.
+   * that were re-parented after the launch root exited. The default adapter
+   * also tracks markerless descendants observed through verified ancestry or
+   * process-group membership; retain the same adapter for later verification.
    */
   captureOwnedGroups?(
     ownershipToken: string,
@@ -70,6 +83,13 @@ export function createUnixProcessIdentityAdapter(
 }
 
 class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
+  // An inherited environment marker is a discovery aid, not a requirement on
+  // every executable in an owned tree. Keep ancestry established from a live,
+  // verified root so launchers that sanitize env remain owned after root exit.
+  private readonly ancestry = new Map<string, Map<number, UnixProcessIdentity>>();
+  private readonly directChildren = new Map<number, UnixProcessIdentity>();
+  private readonly launchStartTicks = new Map<string, bigint>();
+
   constructor(
     private readonly platform: NodeJS.Platform,
     private readonly dependencies: Required<UnixProcessIdentityAdapterDependencies>,
@@ -78,41 +98,77 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
   async captureProcess(pid: number, ownershipToken: string): Promise<UnixProcessIdentity | null> {
     const row = (await this.listProcesses()).find((candidate) => candidate.pid === pid);
     if (!row) return null;
+    if (row.state === 'Z' || row.state === 'X') return null;
+    const observed = this.ancestry.get(ownershipToken)?.get(pid);
+    if (observed?.birthIdentity === `${row.birthMarker}:${ownershipToken}`) {
+      return { ...observed, pgid: row.pgid };
+    }
     const currentToken = await this.readOwnershipToken(pid);
     if (currentToken !== ownershipToken) return null;
-    return {
+    const identity = {
       pid: row.pid,
       pgid: row.pgid,
       birthIdentity: `${row.birthMarker}:${ownershipToken}`,
       ownershipToken,
     };
+    this.rememberIdentity(row, identity);
+    return identity;
+  }
+
+  async captureChildProcess(pid: number, ownershipToken: string, isCurrent: () => boolean): Promise<UnixProcessIdentity | null> {
+    if (!isCurrent()) return null;
+    const row = (await this.listProcesses()).find((candidate) => candidate.pid === pid);
+    if (!isCurrent() || !row || row.ppid !== process.pid || isExitedRow(row)) return null;
+    const identity = {
+      pid,
+      pgid: row.pgid,
+      birthIdentity: `${row.birthMarker}:${ownershipToken}`,
+      ownershipToken,
+    };
+    const previous = this.directChildren.get(pid);
+    // A retry may re-observe the same launch, but cannot bind an existing
+    // owner to a new child that happens to reuse the PID.
+    if (previous && !unixProcessIdentityMatches(previous, identity)) return null;
+    this.directChildren.set(pid, identity);
+    this.rememberIdentity(row, identity);
+    return identity;
+  }
+
+  private rememberIdentity(row: UnixProcessRow, identity: UnixProcessIdentity): void {
+    const observed = this.ancestry.get(identity.ownershipToken) ?? new Map<number, UnixProcessIdentity>();
+    observed.set(row.pid, identity);
+    this.ancestry.set(identity.ownershipToken, observed);
+    this.rememberLaunchStart(row, identity.ownershipToken);
+  }
+
+  private rememberLaunchStart(row: UnixProcessRow, ownershipToken: string): void {
+    // Only an actual server child establishes a launch lower bound. An owned
+    // grandchild discovered after root exit can be younger than an escaped
+    // sibling, so its birth must never exclude that sibling from recovery.
+    const ticks = linuxStartTicks(row);
+    if (row.ppid !== process.pid || ticks === undefined) return;
+    const current = this.launchStartTicks.get(ownershipToken);
+    if (current === undefined || ticks < current) this.launchStartTicks.set(ownershipToken, ticks);
+  }
+
+  releaseOwnership(ownershipToken: string): void {
+    this.ancestry.delete(ownershipToken);
+    this.launchStartTicks.delete(ownershipToken);
+    for (const [pid, identity] of this.directChildren) {
+      if (identity.ownershipToken === ownershipToken) this.directChildren.delete(pid);
+    }
   }
 
   async captureDescendantGroups(root: UnixProcessIdentity): Promise<UnixProcessGroupIdentity[]> {
     if (!await this.isProcessAlive(root)) return [];
     const rows = await this.listProcesses();
-    const descendants = new Set<number>([root.pid]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const row of rows) {
-        if (descendants.has(row.pid) || !descendants.has(row.ppid)) continue;
-        descendants.add(row.pid);
-        changed = true;
-      }
-    }
-
-    const candidates = rows.filter((row) => row.pid !== root.pid && descendants.has(row.pid));
-    const identities = (await Promise.all(candidates.map((row) => (
-      this.captureProcess(row.pid, root.ownershipToken)
-    )))).filter((identity): identity is UnixProcessIdentity => identity !== null);
-    const groups = new Map<number, UnixProcessIdentity[]>();
-    for (const identity of identities) {
-      const members = groups.get(identity.pgid) ?? [];
-      members.push(identity);
-      groups.set(identity.pgid, members);
-    }
-    return [...groups].map(([pgid, members]) => ({ pgid, members }));
+    const currentRoot = rows.find((row) => row.pid === root.pid
+      && row.pgid === root.pgid
+      && `${row.birthMarker}:${root.ownershipToken}` === root.birthIdentity);
+    if (!currentRoot) return [];
+    return this.captureRelatedGroups(rows, [currentRoot], root.ownershipToken)
+      .map((group) => ({ ...group, members: group.members.filter((member) => member.pid !== root.pid) }))
+      .filter((group) => group.members.length > 0);
   }
 
   async captureOwnedGroups(
@@ -120,17 +176,59 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
     processGroupId?: number,
   ): Promise<UnixProcessGroupIdentity[]> {
     const rows = await this.listProcessesWithOwnership();
-    const owned = rows
-      .filter((row) => (processGroupId === undefined || row.pgid === processGroupId)
-        && row.ownershipToken === ownershipToken)
-      .map((row): UnixProcessIdentity => ({
+    const observed = this.ancestry.get(ownershipToken);
+    const seeds = rows.filter((row) => (processGroupId === undefined || row.pgid === processGroupId)
+      && (row.ownershipToken === ownershipToken
+        || observed?.get(row.pid)?.birthIdentity === `${row.birthMarker}:${ownershipToken}`));
+    for (const row of seeds) {
+      if (row.ownershipToken === ownershipToken) this.rememberLaunchStart(row, ownershipToken);
+    }
+    this.assertOwnershipProbes(rows, seeds, ownershipToken);
+    return this.captureRelatedGroups(rows, seeds, ownershipToken);
+  }
+
+  private assertOwnershipProbes(rows: UnixProcessRow[], seeds: UnixProcessRow[], ownershipToken: string): void {
+    const related = collectRelatedPids(rows, seeds);
+    const startTicks = this.launchStartTicks.get(ownershipToken);
+    for (const row of rows) {
+      if (!row.ownershipError) continue;
+      const code = processErrorCode(row.ownershipError);
+      const ticks = linuxStartTicks(row);
+      // Permission denial is harmless only for a process proven to predate
+      // this launch and unrelated to every verified member. Unknown peers
+      // born at/after launch may be escaped children and remain unresolved.
+      if ((code === 'EACCES' || code === 'EPERM') && !related.has(row.pid)
+        && startTicks !== undefined && ticks !== undefined && ticks < startTicks) continue;
+      throw row.ownershipError;
+    }
+  }
+
+  private captureRelatedGroups(
+    rows: UnixProcessRow[],
+    seeds: UnixProcessRow[],
+    ownershipToken: string,
+  ): UnixProcessGroupIdentity[] {
+    const ownedPids = collectRelatedPids(rows, seeds);
+    const observed = this.ancestry.get(ownershipToken) ?? new Map<number, UnixProcessIdentity>();
+    this.ancestry.set(ownershipToken, observed);
+    for (const [pid, identity] of observed) {
+      if (!rows.some((row) => row.pid === pid && `${row.birthMarker}:${ownershipToken}` === identity.birthIdentity)) {
+        observed.delete(pid);
+      }
+    }
+    const owned = rows.filter((row) => ownedPids.has(row.pid)).map((row): UnixProcessIdentity => {
+      const identity = {
         pid: row.pid,
         pgid: row.pgid,
         birthIdentity: `${row.birthMarker}:${ownershipToken}`,
         ownershipToken,
-      }));
+      };
+      observed.set(row.pid, identity);
+      return identity;
+    });
     const groups = new Map<number, UnixProcessIdentity[]>();
     for (const identity of owned) {
+      if (isExitedRow(rows.find((row) => row.pid === identity.pid)!)) continue;
       const members = groups.get(identity.pgid) ?? [];
       members.push(identity);
       groups.set(identity.pgid, members);
@@ -180,10 +278,17 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
   private async listProcessesWithOwnership(): Promise<UnixProcessRow[]> {
     if (this.platform === 'linux') {
       const rows = await this.listLinuxProcesses();
-      const withOwnership = await Promise.all(rows.map(async (row) => ({
-        ...row,
-        ownershipToken: await this.readOwnershipToken(row.pid),
-      })));
+      const withOwnership = await Promise.all(rows.map(async (row) => {
+        // Keep the row for verified ancestry expansion, but zombies/dead
+        // tasks have no live execution or readable environ to discover.
+        if (isExitedRow(row)) return { ...row, ownershipToken: null };
+        if (!await this.isLinuxOwnershipCandidate(row.pid)) return { ...row, ownershipToken: null };
+        try {
+          return { ...row, ownershipToken: await this.readOwnershipToken(row.pid) };
+        } catch (error) {
+          return { ...row, ownershipToken: null, ownershipError: error };
+        }
+      }));
       return withOwnership;
     }
 
@@ -218,6 +323,21 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
     return rows as UnixProcessRow[];
   }
 
+  private async isLinuxOwnershipCandidate(pid: number): Promise<boolean> {
+    const uid = process.getuid?.();
+    if (uid === undefined) return true;
+    let status: string;
+    try {
+      status = await this.dependencies.readFile(`/proc/${pid}/status`, 'utf8');
+    } catch (error) {
+      if (isProcessDisappearanceError(error)) return false;
+      throw new Error(`Unix process owner probe failed for pid ${pid}`, { cause: error });
+    }
+    const match = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m.exec(status);
+    if (!match) throw new Error(`Unix process owner probe returned malformed output for pid ${pid}`);
+    return match.slice(1).some((value) => Number(value) === uid);
+  }
+
   private async listLinuxProcesses(): Promise<UnixProcessRow[]> {
     let entries;
     try {
@@ -242,11 +362,12 @@ class DefaultUnixProcessIdentityAdapter implements UnixProcessIdentityAdapter {
         const closeParen = stat.lastIndexOf(')');
         if (closeParen < 0) return null;
         const fields = stat.slice(closeParen + 1).trim().split(/\s+/);
+        const state = fields[0];
         const ppid = Number(fields[1]);
         const pgid = Number(fields[2]);
         const startTicks = fields[19];
         return Number.isFinite(ppid) && pgid > 0 && startTicks
-          ? { pid, ppid, pgid, birthMarker: `linux:${startTicks}` }
+          ? { pid, ppid, pgid, state, birthMarker: `linux:${startTicks}` }
           : null;
       }));
     const validRows = rows.filter((row): row is UnixProcessRow => row !== null);
@@ -319,6 +440,31 @@ function extractOwnershipToken(value: string): string | null {
   return null;
 }
 
+function isExitedRow(row: UnixProcessRow): boolean {
+  return row.state === 'Z' || row.state === 'X';
+}
+
+function linuxStartTicks(row: UnixProcessRow): bigint | undefined {
+  const match = /^linux:(\d+)$/.exec(row.birthMarker);
+  return match ? BigInt(match[1]!) : undefined;
+}
+
+function collectRelatedPids(rows: UnixProcessRow[], seeds: UnixProcessRow[]): Set<number> {
+  const pids = new Set(seeds.map((row) => row.pid));
+  const groups = new Set(seeds.map((row) => row.pgid));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (pids.has(row.pid) || (!pids.has(row.ppid) && !groups.has(row.pgid))) continue;
+      pids.add(row.pid);
+      groups.add(row.pgid);
+      changed = true;
+    }
+  }
+  return pids;
+}
+
 function execFileText(
   runExecFile: typeof execFile,
   command: string,
@@ -345,4 +491,13 @@ function execFileText(
 function isProcessDisappearanceError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   return code === 'ENOENT' || code === 'ESRCH';
+}
+
+function processErrorCode(error: unknown): string | undefined {
+  let current: any = error;
+  for (let i = 0; i < 3 && current; i += 1) {
+    if (typeof current.code === 'string') return current.code;
+    current = current.cause;
+  }
+  return undefined;
 }

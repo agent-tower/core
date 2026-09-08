@@ -238,6 +238,7 @@ async function createWorkspace(workspaceId: string, previewTarget: string) {
 
 describe('previewRoutes access auth integration', () => {
   beforeAll(async () => {
+    fs.closeSync(fs.openSync(dbPath, 'a'));
     execFileSync(
       'pnpm',
       ['exec', 'prisma', 'db', 'push', '--skip-generate', `--schema=${schemaPath}`],

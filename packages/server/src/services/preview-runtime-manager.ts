@@ -11,6 +11,8 @@ import {
 import type { NormalizedPreviewTarget } from './preview.service.js';
 import { TUNNEL_SESSION_COOKIE_NAME } from '../utils/tunnel-cookie.js';
 import { ensureCloudflaredBinary } from './cloudflared-runtime.js';
+import { stopCloudflaredTunnel, trackCloudflaredTunnel, waitForTunnelBinary, type ManagedCloudflaredTunnel } from './cloudflared-process.js';
+import { writeErrorLog } from '../utils/error-log.js';
 
 export const PREVIEW_GATEWAY_TOKEN_PARAM = '__agent_tower_preview_token';
 export const PREVIEW_BRIDGE_PATH = '/__agent_tower_preview_bridge.js';
@@ -26,7 +28,7 @@ const QUICK_TUNNEL_OPTIONS = { '--no-autoupdate': true } as const;
 type ProxyRequestOptions = http.RequestOptions & { rejectUnauthorized?: boolean };
 type PreviewMode = 'local' | 'remote';
 
-interface PreviewTunnel {
+interface PreviewTunnel extends ManagedCloudflaredTunnel {
   stop(): boolean;
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
@@ -50,6 +52,7 @@ interface PreviewRuntime {
   target: NormalizedPreviewTarget;
   server: http.Server;
   port: number;
+  ready: Promise<number>;
   cookieName: string;
   accessSecret: string;
   accessGeneration: number;
@@ -62,6 +65,7 @@ interface PreviewRuntime {
   tunnel: PreviewTunnel | null;
   tunnelUrl: string | null;
   tunnelStartPromise: Promise<string> | null;
+  tunnelStartController: AbortController | null;
   stopped: boolean;
 }
 
@@ -456,8 +460,9 @@ function listen(server: http.Server, host: string): Promise<number> {
   });
 }
 
-function closeServer(runtime: PreviewRuntime): Promise<void> {
+async function closeServer(runtime: PreviewRuntime): Promise<void> {
   runtime.stopped = true;
+  await runtime.ready.catch(() => undefined);
   for (const socket of runtime.sockets) socket.destroy();
   runtime.sockets.clear();
   return new Promise((resolve) => {
@@ -483,6 +488,7 @@ export function addPreviewAccessToken(viewBaseUrl: string, token: string, suffix
 
 export class PreviewRuntimeManager {
   private readonly runtimes = new Map<string, PreviewRuntime>();
+  private stopped = false;
   private readonly idleTtlMs: number;
   private readonly leaseTtlMs: number;
   private readonly listenHost: string;
@@ -501,7 +507,9 @@ export class PreviewRuntimeManager {
     this.ensureTunnelBinary = options.ensureTunnelBinary
       ?? (options.createTunnel ? async () => {} : ensureCloudflaredBinary);
     this.sweepTimer = setInterval(() => {
-      void this.sweep();
+      void this.sweep().catch((error) => {
+        writeErrorLog({ level: 'error', source: 'preview.cleanup', message: 'Failed to reclaim preview runtime', error });
+      });
     }, options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
     this.sweepTimer.unref?.();
   }
@@ -513,6 +521,7 @@ export class PreviewRuntimeManager {
     localHostname: string,
   ): Promise<PreviewGatewaySession> {
     const runtime = await this.ensureRuntime(workspaceId, target);
+    this.assertRuntimeActive(runtime);
     const now = this.now();
     const lease: PreviewLease = {
       id: randomBytes(16).toString('base64url'),
@@ -527,6 +536,7 @@ export class PreviewRuntimeManager {
     const viewBaseUrl = mode === 'remote'
       ? await this.ensureTunnel(runtime)
       : `http://${formatHostname(localHostname)}:${runtime.port}`;
+    this.assertRuntimeActive(runtime);
     return this.toSession(runtime, lease, viewBaseUrl);
   }
 
@@ -542,6 +552,7 @@ export class PreviewRuntimeManager {
     const viewBaseUrl = lease.mode === 'remote'
       ? await this.ensureTunnel(runtime)
       : `http://${formatHostname(lease.localHostname)}:${runtime.port}`;
+    this.assertRuntimeActive(runtime);
     return this.toSession(runtime, lease, viewBaseUrl);
   }
 
@@ -552,15 +563,16 @@ export class PreviewRuntimeManager {
   async invalidate(workspaceId: string): Promise<void> {
     const runtime = this.runtimes.get(workspaceId);
     if (!runtime) return;
-    this.runtimes.delete(workspaceId);
     await this.stopRuntime(runtime);
+    if (this.runtimes.get(workspaceId) === runtime) this.runtimes.delete(workspaceId);
   }
 
   async stopAll(): Promise<void> {
+    this.stopped = true;
     clearInterval(this.sweepTimer);
-    const runtimes = [...this.runtimes.values()];
-    this.runtimes.clear();
-    await Promise.all(runtimes.map((runtime) => this.stopRuntime(runtime)));
+    const results = await Promise.allSettled([...this.runtimes.keys()].map((workspaceId) => this.invalidate(workspaceId)));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) throw failure.reason;
   }
 
   private toSession(
@@ -582,9 +594,17 @@ export class PreviewRuntimeManager {
     workspaceId: string,
     target: NormalizedPreviewTarget,
   ): Promise<PreviewRuntime> {
+    if (this.stopped) throw new Error('Preview runtime manager is stopped');
     const existing = this.runtimes.get(workspaceId);
-    if (existing && existing.target.target === target.target && !existing.stopped) return existing;
-    if (existing) await this.invalidate(workspaceId);
+    if (existing && existing.target.target === target.target && !existing.stopped) {
+      await existing.ready;
+      this.assertRuntimeActive(existing);
+      return existing;
+    }
+    if (existing) {
+      await this.invalidate(workspaceId);
+      return this.ensureRuntime(workspaceId, target);
+    }
 
     const runtime = {} as PreviewRuntime;
     const server = http.createServer((request, response) => {
@@ -598,6 +618,7 @@ export class PreviewRuntimeManager {
       target,
       server,
       port: 0,
+      ready: Promise.resolve(0),
       cookieName: cookieNameForWorkspace(workspaceId),
       accessSecret: newSecret(),
       accessGeneration: AccessAuthService.getSessionSecretGeneration(),
@@ -610,6 +631,7 @@ export class PreviewRuntimeManager {
       tunnel: null,
       tunnelUrl: null,
       tunnelStartPromise: null,
+      tunnelStartController: null,
       stopped: false,
     } satisfies PreviewRuntime);
 
@@ -622,9 +644,19 @@ export class PreviewRuntimeManager {
         writeUpgradeError(socket, 500, 'Preview Gateway Error');
       });
     });
-    runtime.port = await listen(server, this.listenHost);
+    // Publish ownership before listen yields so concurrent opens share creation,
+    // and invalidation can wait for and close even an unfinished listener.
     this.runtimes.set(workspaceId, runtime);
-    return runtime;
+    runtime.ready = listen(server, this.listenHost);
+    try {
+      runtime.port = await runtime.ready;
+      this.assertRuntimeActive(runtime);
+      return runtime;
+    } catch (error) {
+      await this.stopRuntime(runtime);
+      if (this.runtimes.get(workspaceId) === runtime) this.runtimes.delete(workspaceId);
+      throw error;
+    }
   }
 
   private rotateAccessSecretIfNeeded(runtime: PreviewRuntime): void {
@@ -852,14 +884,28 @@ export class PreviewRuntimeManager {
     proxyRequest.end();
   }
 
+  private assertRuntimeActive(runtime: PreviewRuntime): void {
+    if (this.stopped || runtime.stopped || this.runtimes.get(runtime.workspaceId) !== runtime) {
+      throw new Error('Preview runtime was invalidated');
+    }
+  }
+
   private async ensureTunnel(runtime: PreviewRuntime): Promise<string> {
+    this.assertRuntimeActive(runtime);
     if (runtime.tunnel && runtime.tunnelUrl) return runtime.tunnelUrl;
     if (runtime.tunnelStartPromise) return runtime.tunnelStartPromise;
 
+    if (runtime.tunnel) throw new Error('Previous preview tunnel cleanup must finish before starting');
+    const controller = new AbortController();
+    runtime.tunnelStartController = controller;
+    let startedTunnel: PreviewTunnel | null = null;
     const startPromise = (async () => {
-      await this.ensureTunnelBinary();
+      await waitForTunnelBinary(this.ensureTunnelBinary(), controller.signal);
+      this.assertRuntimeActive(runtime);
       return new Promise<string>((resolve, reject) => {
         const tunnel = this.createTunnel(`http://127.0.0.1:${runtime.port}`);
+        startedTunnel = tunnel;
+        trackCloudflaredTunnel(tunnel);
         runtime.tunnel = tunnel;
         let settled = false;
         const timer = setTimeout(() => settle(reject, new Error('Preview tunnel startup timed out')), TUNNEL_STARTUP_TIMEOUT_MS);
@@ -869,6 +915,7 @@ export class PreviewRuntimeManager {
           tunnel.off('url', onUrl);
           tunnel.off('error', onError);
           tunnel.off('exit', onExitBeforeReady);
+          controller.signal.removeEventListener('abort', onAbort);
         };
         const settle = <T>(done: (value: T) => void, value: T) => {
           if (settled) return;
@@ -876,6 +923,7 @@ export class PreviewRuntimeManager {
           cleanup();
           done(value);
         };
+        const onAbort = () => settle(reject, controller.signal.reason);
         const onUrl = (url: string) => {
           runtime.tunnelUrl = url.replace(/\/$/, '');
           settle(resolve, runtime.tunnelUrl);
@@ -885,6 +933,7 @@ export class PreviewRuntimeManager {
           settle(reject, new Error(`Preview tunnel exited before ready (${code ?? signal ?? 'unknown'})`));
         };
 
+        controller.signal.addEventListener('abort', onAbort, { once: true });
         tunnel.once('url', onUrl);
         tunnel.once('error', onError);
         tunnel.once('exit', onExitBeforeReady);
@@ -901,15 +950,22 @@ export class PreviewRuntimeManager {
     runtime.tunnelStartPromise = startPromise;
 
     try {
-      return await startPromise;
+      const url = await startPromise;
+      controller.signal.throwIfAborted();
+      this.assertRuntimeActive(runtime);
+      return url;
     } catch (error) {
-      const tunnel = runtime.tunnel;
-      runtime.tunnel = null;
+      if (startedTunnel) {
+        await stopCloudflaredTunnel(startedTunnel);
+        if (runtime.tunnel === startedTunnel) runtime.tunnel = null;
+      }
       runtime.tunnelUrl = null;
-      tunnel?.stop();
       throw error;
     } finally {
-      if (runtime.tunnelStartPromise === startPromise) runtime.tunnelStartPromise = null;
+      if (runtime.tunnelStartPromise === startPromise) {
+        runtime.tunnelStartPromise = null;
+        runtime.tunnelStartController = null;
+      }
     }
   }
 
@@ -927,7 +983,7 @@ export class PreviewRuntimeManager {
         && runtime.activeRemoteConnections === 0
         && now - runtime.tunnelLastActivityAtMs >= this.idleTtlMs
       ) {
-        this.stopTunnel(runtime);
+        await this.stopTunnel(runtime);
       }
       if (
         runtime.leases.size === 0
@@ -940,22 +996,25 @@ export class PreviewRuntimeManager {
 
     await Promise.all(expired.map(async (runtime) => {
       if (this.runtimes.get(runtime.workspaceId) !== runtime) return;
-      this.runtimes.delete(runtime.workspaceId);
-      await this.stopRuntime(runtime);
+      await this.invalidate(runtime.workspaceId);
     }));
   }
 
   private async stopRuntime(runtime: PreviewRuntime): Promise<void> {
     runtime.stopped = true;
-    this.stopTunnel(runtime);
-    await closeServer(runtime);
+    const results = await Promise.allSettled([this.stopTunnel(runtime), closeServer(runtime)]);
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) throw failure.reason;
   }
 
-  private stopTunnel(runtime: PreviewRuntime): void {
-    const tunnel = runtime.tunnel;
-    runtime.tunnel = null;
+  private async stopTunnel(runtime: PreviewRuntime): Promise<void> {
+    runtime.tunnelStartController?.abort(new Error('Preview tunnel startup cancelled'));
     runtime.tunnelUrl = null;
-    runtime.tunnelStartPromise = null;
-    tunnel?.stop();
+    await runtime.tunnelStartPromise?.catch(() => undefined);
+    const tunnel = runtime.tunnel;
+    if (tunnel) {
+      await stopCloudflaredTunnel(tunnel);
+      if (runtime.tunnel === tunnel) runtime.tunnel = null;
+    }
   }
 }

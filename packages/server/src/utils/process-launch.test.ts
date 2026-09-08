@@ -1,6 +1,8 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { EventEmitter } from 'node:events'
+import { runInNewContext } from 'node:vm'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -302,12 +304,49 @@ describe('process-launch', () => {
     expect(directChildSignals).toHaveLength(1)
   })
 
-  it('should use the Windows descendant-tree kill contract', () => {
-    const invocation = buildPtyCommand('C:\\Tools\\codex.cmd', ['--print'])
-    const wrapperScript = invocation.args[1] ?? ''
+  it.each([false, true])('cleans Windows descendants after root exit without signaling reused PIDs (reused=%s)', (reused) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 100, exitCode: null as number | null, signalCode: null, killed: false, kill: () => false,
+    })
+    let rows = [
+      { ProcessId: 0, ParentProcessId: 0, CreationDate: '' },
+      { ProcessId: 50, ParentProcessId: 1, CreationDate: 'wrapper-birth' },
+      { ProcessId: 100, ParentProcessId: 50, CreationDate: 'root-birth' },
+      { ProcessId: 101, ParentProcessId: 100, CreationDate: 'child-birth' },
+    ]
+    const targets: number[] = []
+    const exits: number[] = []
+    const wrapperProcess = Object.assign(new EventEmitter(), {
+      argv: ['node', 'spawn', 'fake.exe'], platform: 'win32', pid: 50,
+      env: { AGENT_TOWER_PROCESS_IDENTITY: 'test-owner' }, exit: (code: number) => exits.push(code),
+    })
+    runInNewContext(buildPtyCommand('fake.exe', []).args[1], {
+      process: wrapperProcess, console,
+      require: (name: string) => name === 'node:child_process' ? {
+        spawn: () => child,
+        spawnSync: (command: string, args: string[]) => {
+          if (command === 'powershell.exe') return { status: 0, stdout: JSON.stringify(rows) }
+          if (command !== 'taskkill') throw new Error(`Unexpected command: ${command}`)
+          const pid = Number(args[1])
+          targets.push(pid)
+          if (!rows.some((row) => row.ProcessId === pid)) return { status: 128 }
+          rows = rows.filter((row) => row.ProcessId !== pid && row.ParentProcessId !== pid)
+          // A real Windows system always has other processes in its CIM table.
+          if (rows.length === 0) rows.push({ ProcessId: 50, ParentProcessId: 1, CreationDate: 'wrapper-birth' })
+          return { status: 0 }
+        },
+      } : { unlinkSync: () => undefined },
+      setTimeout: () => ({ unref: () => undefined }), clearTimeout: () => undefined,
+    })
+    rows = reused
+      ? rows.map((row) => ({ ...row, CreationDate: 'reused-birth' }))
+      : rows.filter((row) => row.ProcessId !== 100)
+    child.exitCode = 0
+    child.emit('exit', 0, null)
 
-    expect(wrapperScript).toContain("spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F']")
-    expect(wrapperScript).toContain('terminateWindowsTree()')
+    expect(targets).toEqual(reused ? [] : [101])
+    expect(exits).toContain(0)
+    if (reused) expect(rows.filter((row) => row.ProcessId >= 100).map((row) => row.ProcessId)).toEqual([100, 101])
   })
 
   it('should fail closed for unavailable process probes with bounded backoff', () => {

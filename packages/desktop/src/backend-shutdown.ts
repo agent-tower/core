@@ -40,7 +40,16 @@ export function stopChildProcessAndWait(child: ChildProcess, signal: NodeJS.Sign
         return;
       }
       try {
-        if (!child.kill(signal)) scheduleRetry();
+        if (child.connected && child.send) {
+          // Windows kill('SIGTERM') forcibly terminates Node without running
+          // its signal handlers. The private parent IPC channel works on all
+          // platforms and lets the backend confirm tree cleanup before exit.
+          child.send({ type: 'agent-tower:shutdown' }, (error) => {
+            if (error) scheduleRetry();
+          });
+        } else if (process.platform === 'win32') {
+          scheduleRetry();
+        } else if (!child.kill(signal)) scheduleRetry();
       } catch {
         scheduleRetry();
       }
@@ -49,4 +58,14 @@ export function stopChildProcessAndWait(child: ChildProcess, signal: NodeJS.Sign
     child.on('error', onError);
     attempt();
   });
+}
+
+/** A failed startup keeps its child owner until cleanup has really finished. */
+export async function waitForBackendStartup<T>(child: ChildProcess, startup: Promise<T>): Promise<T> {
+  try {
+    return await startup;
+  } catch (error) {
+    if (child.pid) await stopChildProcessAndWait(child);
+    throw error;
+  }
 }

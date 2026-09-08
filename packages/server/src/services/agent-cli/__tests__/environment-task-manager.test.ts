@@ -43,6 +43,7 @@ function makeStoredPreview(overrides: Partial<AgentCliStoredPreview> = {}): Agen
 }
 
 class FakeProcess extends EventEmitter implements AgentCliRunnerProcess {
+  owner = { stop: vi.fn<() => Promise<void>>(async () => undefined) };
   pid = 12345;
   stdout = new Readable({ read() {} });
   stderr = new Readable({ read() {} });
@@ -142,28 +143,24 @@ describe('Agent CLI preview lifecycle and task manager', () => {
     expect(text).not.toContain(`Bearer ${token}`);
   });
 
-  it('cancels by signalling the process group and only marks cancelled after exit', async () => {
-    vi.useFakeTimers();
+  it('does not release cancellation ownership when the installer exits before its descendants', async () => {
     const preview = makeStoredPreview();
     const process = new FakeProcess();
-    const processKill = vi.spyOn(process, 'kill');
-    const groupKill = vi.spyOn(globalThis.process, 'kill').mockImplementation(() => true);
+    let finishCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
+    process.owner.stop.mockImplementation(() => cleanup);
     const manager = new AgentCliInstallTaskManager(() => process, 100, vi.fn(async () => {}));
     const { task } = manager.createTask(preview);
 
-    try {
       const cancelling = manager.cancel(task.id);
       expect(cancelling.status).toBe('cancelling');
       expect(manager.getTask(task.id).status).toBe('cancelling');
-      expect(groupKill).toHaveBeenCalledWith(-process.pid, 'SIGTERM');
-      expect(groupKill).toHaveBeenCalledWith(-process.pid, 'SIGHUP');
-      expect(processKill).not.toHaveBeenCalled();
-
-      vi.advanceTimersByTime(100);
-      expect(groupKill).toHaveBeenCalledWith(-process.pid, 'SIGKILL');
-
       process.emit('exit', null, 'SIGTERM');
-
+      await Promise.resolve();
+      expect(manager.getTask(task.id).status).toBe('cancelling');
+      expect(process.owner.stop).toHaveBeenCalled();
+      finishCleanup();
+      await vi.waitFor(() => expect(manager.getTask(task.id).status).toBe('cancelled'));
       expect(manager.getTask(task.id)).toMatchObject({
         status: 'cancelled',
         signal: 'SIGTERM',
@@ -171,10 +168,6 @@ describe('Agent CLI preview lifecycle and task manager', () => {
       await vi.waitFor(() => {
         expect(fs.existsSync(preview.tempFilePath)).toBe(false);
       });
-    } finally {
-      groupKill.mockRestore();
-      processKill.mockRestore();
-    }
   });
 
   it('executes fixed interpreter, temp script path and fixed args only', () => {
@@ -237,7 +230,7 @@ describe('Agent CLI preview lifecycle and task manager', () => {
     await vi.waitFor(() => {
       expect(manager.getTask(task.id).status).toBe('verifying');
     });
-    expect(verifier).toHaveBeenCalledWith(preview.verifyCommand);
+    expect(verifier).toHaveBeenCalledWith(preview.verifyCommand, expect.any(AbortSignal));
 
     resolveVerify();
 
@@ -298,5 +291,22 @@ describe('Agent CLI preview lifecycle and task manager', () => {
     await vi.waitFor(() => {
       expect(manager.getTask(task.id).status).toBe('cancelled');
     });
+  });
+
+  it('shutdown aborts an in-flight verifier and waits for its completion', async () => {
+    const preview = makeStoredPreview();
+    const process = new FakeProcess();
+    let verificationSignal: AbortSignal | undefined;
+    const verifier = vi.fn((_spec, signal?: AbortSignal) => new Promise<void>((_resolve, reject) => {
+      verificationSignal = signal;
+      signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    }));
+    const manager = new AgentCliInstallTaskManager(() => process, undefined, verifier);
+    const { task } = manager.createTask(preview);
+    process.emit('exit', 0, null);
+    await vi.waitFor(() => expect(manager.getTask(task.id).status).toBe('verifying'));
+    await manager.shutdown();
+    expect(verificationSignal?.aborted).toBe(true);
+    expect(manager.getTask(task.id).status).toBe('cancelled');
   });
 });

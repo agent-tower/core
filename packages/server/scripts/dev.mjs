@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, watch } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stopBackendAndWait } from './backend-process-shutdown.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, '..');
@@ -139,7 +140,7 @@ function startServer() {
 
   const childProcess = spawn(process.execPath, ['--import', 'tsx', entryFile], {
     cwd: packageRoot,
-    stdio: 'inherit',
+    stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
     env: process.env,
   });
 
@@ -188,13 +189,7 @@ function restartServer(changedPath) {
 
   const childToRestart = child;
   restartAfterExit = true;
-  childToRestart.kill('SIGTERM');
-
-  setTimeout(() => {
-    if (child === childToRestart && childToRestart.exitCode === null) {
-      childToRestart.kill('SIGKILL');
-    }
-  }, 5000);
+  void stopBackendAndWait(childToRestart);
 }
 
 function shutdown(signal) {
@@ -221,15 +216,7 @@ function shutdown(signal) {
   }
 
   const childToStop = child;
-  childToStop.once('exit', () => process.exit(0));
-  childToStop.kill(signal);
-
-  setTimeout(() => {
-    if (child === childToStop && childToStop.exitCode === null) {
-      childToStop.kill('SIGKILL');
-    }
-    process.exit(1);
-  }, 5000);
+  void stopBackendAndWait(childToStop).then(() => process.exit(0));
 }
 
 syncWatchers();

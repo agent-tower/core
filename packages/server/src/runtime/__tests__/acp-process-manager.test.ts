@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import type { execFileSync } from 'node:child_process';
 import {
   AcpProcessManager,
   cleanupPersistedAcpProcessTree,
+  createWindowsProcessTreeAdapter,
   type AcpProcessExit,
   type WindowsProcessTreeAdapter,
 } from '../acp/process-manager.js';
@@ -40,6 +45,18 @@ function waitForExit(manager: AcpProcessManager): Promise<AcpProcessExit> {
 }
 
 describe('AcpProcessManager', () => {
+  it('accepts the Windows idle pseudo-process while rejecting incomplete real process identities', async () => {
+    let rows: Array<Record<string, unknown>> = [
+      { ProcessId: 0, ParentProcessId: 0, CreationDate: null },
+      { ProcessId: 123, ParentProcessId: 1, CreationDate: '2026-09-08T12:00:00.000Z' },
+    ];
+    const adapter = createWindowsProcessTreeAdapter((() => JSON.stringify(rows)) as unknown as typeof execFileSync);
+    await expect(adapter.captureProcess(123)).resolves.toMatchObject({ pid: 123 });
+    await expect(adapter.captureDescendants(123)).resolves.toEqual([]);
+    rows = [...rows, { ProcessId: 124, ParentProcessId: 123, CreationDate: null }];
+    await expect(adapter.captureDescendants(123)).rejects.toMatchObject({ code: 'process_identity_mismatch' });
+  });
+
   it('forwards valid NDJSON and bounds/redacts stderr diagnostics', async () => {
     const manager = managerFor([
       "process.stderr.write('authorization: token-secretvalue123\\n')",
@@ -194,6 +211,37 @@ describe('AcpProcessManager', () => {
 
     await expect(manager.stop()).resolves.toMatchObject({ exitCode: 0 });
   });
+
+  it.skipIf(process.platform === 'win32')('kills markerless children that ignore SIGTERM after their parent exits', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'tower-acp-markerless-'));
+    const pidFile = path.join(directory, 'child.pid');
+    const childSource = `process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000)`;
+    const manager = managerFor([
+      `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(childSource)}],{env:{PATH:process.env.PATH},stdio:'ignore'})`,
+      'setInterval(()=>{},1000)',
+    ].join(';'));
+    let descendantPid: number | undefined;
+    let streams: Awaited<ReturnType<AcpProcessManager['start']>> | undefined;
+    try {
+      streams = await manager.start();
+      const deadline = Date.now() + 5_000;
+      while (!descendantPid && Date.now() < deadline) {
+        try { descendantPid = Number(await readFile(pidFile, 'utf8')); } catch { /* wait for child readiness */ }
+        if (!descendantPid) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(descendantPid).toBeGreaterThan(0);
+      await expect(manager.stop()).resolves.toBeDefined();
+      expect(() => process.kill(descendantPid!, 0)).toThrow();
+    } finally {
+      // These PIDs come exclusively from this test's live spawn and child
+      // readiness file. Cleanup must also run if the regression fails.
+      for (const pid of [descendantPid, streams?.pid]) {
+        if (pid) try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
+      }
+      await manager.stop().catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('keeps discovering marker-owned groups after the root exits', async () => {
     const captureOwnedGroups = vi.fn(async (_token: string, processGroupId?: number) => ([{

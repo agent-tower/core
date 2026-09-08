@@ -1,8 +1,5 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { ConflictOp } from '@agent-tower/shared';
-
-const execFileAsync = promisify(execFile);
+import { runOwnedCommand } from '../utils/owned-child-process.js';
 
 // ─── Custom Error Types ───────────────────────────────────────────────────────
 
@@ -144,11 +141,10 @@ export async function execGit(
   options?: ExecGitOptions
 ): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('git', args, {
+    const { stdout } = await runOwnedCommand('git', args, {
       cwd: repoPath,
       maxBuffer: 10 * 1024 * 1024, // 10 MB
       timeout: options?.timeout ?? 30_000,
-      encoding: 'utf-8',
       env: options?.optionalLocks === false
         ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
         : undefined,
@@ -169,9 +165,7 @@ export async function execGit(
  */
 export async function ensureGitAvailable(): Promise<void> {
   try {
-    await execFileAsync('git', ['--version'], {
-      encoding: 'utf-8',
-    });
+    await runOwnedCommand('git', ['--version'], { timeout: 5_000 });
   } catch {
     throw new GitError(
       'git is not installed or not found on PATH',

@@ -99,6 +99,7 @@ export class AgentCliEnvironmentService {
   private readonly previews = new Map<string, AgentCliStoredPreview>();
   private readonly platform;
   private readonly now;
+  private shuttingDown = false;
 
   constructor(options: AgentCliEnvironmentServiceOptions = {}) {
     this.platform = getServerAgentCliPlatform(options.platform ?? process.platform);
@@ -122,6 +123,7 @@ export class AgentCliEnvironmentService {
   }
 
   async createPreview(toolId: AgentCliToolId): Promise<AgentCliInstallPreview> {
+    if (this.shuttingDown) throw new ServiceError('Agent CLI installer is shutting down', 'SERVICE_STOPPING', 503);
     await this.cleanupExpiredPreviews();
     const item = getAgentCliManifestItem(toolId);
     if (!item) throw new NotFoundError('Agent CLI manifest item', toolId);
@@ -137,6 +139,10 @@ export class AgentCliEnvironmentService {
     }
 
     const preview = await this.downloader.createPreview(item.id, this.platform, install);
+    if (this.shuttingDown) {
+      await removePreviewFile(preview.tempFilePath);
+      throw new ServiceError('Agent CLI installer is shutting down', 'SERVICE_STOPPING', 503);
+    }
     this.previews.set(preview.id, preview);
     return toPublicPreview(preview);
   }
@@ -174,6 +180,13 @@ export class AgentCliEnvironmentService {
 
   cancelTask(taskId: string): AgentCliInstallTask {
     return this.taskManager.cancel(taskId);
+  }
+
+  async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    await this.taskManager.shutdown();
+    await Promise.all([...this.previews.values()].map((preview) => removePreviewFile(preview.tempFilePath)));
+    this.previews.clear();
   }
 
   async cleanupExpiredPreviews(): Promise<void> {

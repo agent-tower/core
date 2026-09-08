@@ -173,7 +173,10 @@ function setup() {
     runtimeType: RuntimeType.ACP,
     variant: 'DEFAULT',
     workingDir: process.cwd(),
-    env: ExecutionEnv.default(process.cwd()).set('CODEX_PATH', process.execPath),
+    env: ExecutionEnv.default(process.cwd())
+      .set('CODEX_PATH', process.execPath)
+      .set('AGENT_TOWER_URL', 'http://127.0.0.1:1')
+      .set('AGENT_TOWER_AGENT_CREDENTIAL', 'lifecycle-test-credential'),
     externalSessionId: 'external-1',
   };
   return { sink, input };

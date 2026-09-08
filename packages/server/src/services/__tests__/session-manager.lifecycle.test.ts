@@ -308,6 +308,7 @@ async function getPersistedCleanupInput(sessionId: string, runtimeInstanceId: st
 
 describe('SessionManager session status vs real process state', () => {
   beforeAll(async () => {
+    fs.closeSync(fs.openSync(dbPath, 'a'));
     execFileSync(
       'pnpm',
       ['exec', 'prisma', 'db', 'push', '--skip-generate', `--schema=${schemaPath}`],
@@ -379,6 +380,38 @@ describe('SessionManager session status vs real process state', () => {
       providerId: 'qwen-acp-provider',
     });
   });
+
+  it.each(['resource-cleanup', 'task-soft-deleted'] as const)(
+    'records an already spawned process owner during %s', async (boundary) => {
+      const { withSessionResourceCleanup } = await import('../session-resource-cleanup.js');
+      const { workspace, session } = await createSessionFixture();
+      await prisma.session.update({ where: { id: session.id }, data: {
+        status: 'RUNNING', runtimeLaunchState: 'CLAIMED', runtimeLaunchClaimCount: 1,
+      } });
+      if (boundary === 'task-soft-deleted') {
+        await prisma.task.update({ where: { id: workspace.taskId }, data: { deletedAt: new Date() } });
+      }
+      const manager = new SessionManager(new EventBus());
+      try {
+        await withSessionResourceCleanup({ workspaceId: workspace.id }, async () => {
+          await (manager as any).handleRuntimeProcessEvent({
+            type: 'started', towerSessionId: session.id, runtimeInstanceId: 'late-start-owner',
+            launchClaimNumber: 1, pid: 999999, processGroupId: '999999',
+            birthMarker: 'late-start-birth', ownershipToken: 'late-start-token',
+          });
+          expect(await prisma.executionProcess.findFirst({ where: { sessionId: session.id } }))
+            .toMatchObject({ cleanupState: 'ACTIVE', runtimeInstanceId: 'late-start-owner' });
+          await (manager as any).handleRuntimeProcessEvent({
+            type: 'tree_cleanup_completed', towerSessionId: session.id,
+            runtimeInstanceId: 'late-start-owner', launchClaimNumber: 1,
+          });
+          expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(true);
+        });
+      } finally {
+        await manager.destroyAll();
+      }
+    },
+  );
 
   it('resolves the latest Provider transport snapshot for every new or retried spawn', async () => {
     const first = await createSessionFixture({ providerId: 'provider-snapshot' });

@@ -6,8 +6,9 @@
 
 - `cli.ts` 是发布 CLI；`index.ts` 是源码开发/直接服务入口。二者先设置 data dir、数据库 URL、端口等环境，再加载应用。`utils/index.ts` 在模块加载时创建 Prisma 单例，不能把环境初始化移到它之后。
 - `app.ts:buildApp()` 是组合根：先配置 SQLite 并执行启动数据迁移，再注册插件、认证 hook、routes；`onReady` 启动 Socket、后台服务恢复、休眠/心跳/任务清理和独立对话队列。
-- 为新 timer、watcher、worker 或 listener 添加成对的启动和关闭路径。`onClose`、`socket/index.ts:closeSocket()` 与 `runtime/server-entry-shutdown.ts` / `shutdown-coordinator.ts` 共同参与关闭，不能假设关闭 HTTP listener 就已清理所有进程。
-- `core/container.ts` 持有共享生命周期服务；普通 CRUD Service 通常由 Route 实例化。`getTerminalManager()` 延迟加载原生 node-pty，保留 async，避免原生依赖故障拖垮不相关 API。
+- 为新 timer、watcher、worker 或 listener 添加成对的启动和关闭路径，包括延迟首次执行的 timer。`app.ts` 的 `preClose` 停止调度、启动进程清理并关闭升级的 WebSocket/Socket.IO 连接；否则 Fastify 可能在进入 `onClose` 前等待连接而挂住。`onClose` 等待进程清理结果，`socket/index.ts:closeSocket()` 只负责网络与 gateway。
+- `core/container.ts:destroyApplicationProcesses()` 关闭启动入口并尝试所有进程 owner，失败由 `server-entry-shutdown.ts` 重试；网络 close 只发起一次，并行清理进程，避免 HTTP/onReady 等待子进程导致死锁。route 局部 preview 与通用 child 通过 `application-process-cleanup.ts` 注册，成功后才注销。CLI/index 在启动早期保存 SIGINT/SIGTERM、私有 IPC shutdown 和 parent disconnect 请求；启动失败确认清理后显式退出，不能仅设 exitCode 而被 IPC listener 留住。
+- `core/container.ts` 持有共享生命周期服务；普通 CRUD Service 通常由 Route 实例化。`getTerminalManager()` 延迟加载原生 node-pty，并发请求共享初始化 promise；关闭需处理尚未完成的初始化，关闭后不得创建新 manager。
 
 ## Route 与 Service
 

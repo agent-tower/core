@@ -52,6 +52,8 @@ describe('Conversation service safety', () => {
   }
 
   beforeAll(async () => {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.closeSync(fs.openSync(dbPath, 'a'));
     execFileSync(
       'pnpm',
       ['exec', 'prisma', 'db', 'push', '--skip-generate', `--schema=${schemaPath}`],
@@ -100,6 +102,66 @@ describe('Conversation service safety', () => {
     vi.restoreAllMocks();
     await prisma.$disconnect();
     fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it.each(['stop-fails', 'cleanup-unconfirmed'] as const)(
+    'preserves conversation directory and process evidence when %s', async (failure) => {
+      const workingDir = path.join(dataDir, 'conversations', 'retained-owner');
+      fs.mkdirSync(workingDir, { recursive: true });
+      const conversation = await prisma.conversation.create({ data: {
+        title: 'Cleanup pending', directoryName: 'retained-owner', workingDir,
+        session: { create: {
+          context: SessionContext.CONVERSATION, agentType: 'CODEX', runtimeType: 'ACP',
+          prompt: 'audit', status: 'RUNNING',
+          processes: { create: { pid: 999999, cleanupState: 'FAILED' } },
+        } },
+      }, include: { session: true } });
+      const stop = vi.fn(async () => {
+        if (failure === 'stop-fails') throw new Error('process still alive');
+        return conversation.session;
+      });
+      const isRuntimeCleanupConfirmed = vi.fn(async () => false);
+      const service = new ConversationService({ stop, isRuntimeCleanupConfirmed } as unknown as InstanceType<typeof SessionManager>);
+      await expect(service.delete(conversation.id)).rejects.toThrow();
+      expect(fs.existsSync(workingDir)).toBe(true);
+      expect(await prisma.conversation.findUnique({ where: { id: conversation.id } })).not.toBeNull();
+      expect(await prisma.executionProcess.count({ where: { sessionId: conversation.session!.id } })).toBe(1);
+      stop.mockImplementation(async () => conversation.session);
+      isRuntimeCleanupConfirmed.mockResolvedValue(true);
+      await expect(service.delete(conversation.id)).resolves.toBe(true);
+      expect(fs.existsSync(workingDir)).toBe(false);
+      expect(await prisma.executionProcess.count({ where: { sessionId: conversation.session!.id } })).toBe(0);
+    },
+  );
+
+  it('rejects follow-ups and queued messages while conversation deletion is awaiting cleanup', async () => {
+    const workingDir = path.join(dataDir, 'conversations', 'delete-admission');
+    fs.mkdirSync(workingDir, { recursive: true });
+    const conversation = await prisma.conversation.create({ data: {
+      title: 'Deleting', directoryName: 'delete-admission', workingDir,
+      session: { create: { context: SessionContext.CONVERSATION, agentType: 'CODEX', prompt: 'audit', status: 'COMPLETED' } },
+    }, include: { session: true } });
+    const stopEntered = deferred<void>();
+    const releaseStop = deferred<void>();
+    const service = new ConversationService({
+      stop: async () => { stopEntered.resolve(); await releaseStop.promise; return conversation.session; },
+      isRuntimeCleanupConfirmed: async () => true,
+    } as unknown as InstanceType<typeof SessionManager>);
+    const manager = new SessionManager(new EventBus());
+    const deleting = service.delete(conversation.id);
+    try {
+      await stopEntered.promise;
+      await expect(manager.sendMessage(conversation.session!.id, 'late follow-up'))
+        .rejects.toMatchObject({ code: 'SESSION_NOT_ADMITTED' });
+      await expect(manager.enqueueConversationMessage(conversation.session!.id, 'late queued turn'))
+        .rejects.toMatchObject({ code: 'SESSION_NOT_ADMITTED' });
+      expect(await prisma.conversationTurn.count()).toBe(0);
+      expect(await prisma.executionProcess.count()).toBe(0);
+    } finally {
+      releaseStop.resolve();
+      await deleting;
+      await manager.destroyAll();
+    }
   });
 
   it('rejects deletion paths outside the conversations root', () => {
