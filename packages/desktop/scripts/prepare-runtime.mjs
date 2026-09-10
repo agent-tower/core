@@ -93,7 +93,7 @@ requirePath(path.join(serverRuntimeDir, 'node_modules/pi-mcp-adapter/package.jso
 const piPackagePath = path.join(serverRuntimeDir, 'node_modules/@earendil-works/pi-coding-agent/package.json');
 requirePath(piPackagePath, 'Pi runtime');
 const piPackage = JSON.parse(readFileSync(piPackagePath, 'utf-8'));
-if (piPackage.version !== '0.82.1') {
+if (piPackage.version !== '0.85.1') {
   throw new Error(`Unexpected Pi version ${piPackage.version}`);
 }
 requirePath(
@@ -141,7 +141,7 @@ const runtimeCheck = spawnSync(nodeRuntimePath, [
     "require.resolve('@agentclientprotocol/codex-acp')",
     "require.resolve('@agentclientprotocol/claude-agent-acp/dist/index.js')",
     "require.resolve('pi-acp')",
-    "require.resolve('pi-mcp-adapter/package.json')",
+    "require.resolve('pi-mcp-adapter')",
     "const [major, minor] = process.versions.node.split('.').map(Number); if (major < 22 || (major === 22 && minor < 19)) throw new Error(`Bundled Node ${process.versions.node} is older than 22.19.0`)",
     "await import('@earendil-works/pi-coding-agent')",
     "const bundledExecutables = await import('./dist/runtime/acp/agents/executable-resolution.js')",

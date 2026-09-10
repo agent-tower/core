@@ -16,6 +16,8 @@ export interface AcpAgentProfile {
   model?: string;
   effort?: string;
   fastMode?: boolean;
+  /** Declares the selected model accepts image input (Pi `input: ["text","image"]`). */
+  supportsImages?: boolean;
   settings?: Record<string, unknown>;
 }
 

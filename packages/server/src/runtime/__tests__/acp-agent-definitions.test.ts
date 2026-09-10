@@ -593,6 +593,7 @@ describe('ACP Agent definitions', () => {
       baseUrl: 'https://pi.example/v1',
       apiKey: '$OPENAI_API_KEY',
     });
+    expect(models.providers['agent-tower'].models[0].input).toBeUndefined();
     expect(mcp.settings).toEqual({ toolPrefix: 'none' });
     expect(mcp.mcpServers['agent-tower'].env.AGENT_TOWER_INTERNAL_TOKEN).toBe('internal-test-token');
     if (process.platform !== 'win32') {
@@ -602,6 +603,35 @@ describe('ACP Agent definitions', () => {
     await launch.cleanup?.();
     await launch.cleanup?.();
     await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('declares image input for the Pi model when the provider enables vision', async () => {
+    const definition = getAcpAgentDefinition(AgentType.PI_CODING_AGENT);
+    const profile = definition.projectProvider(provider(AgentType.PI_CODING_AGENT, {
+      env: {
+        PI_PATH: process.execPath,
+        AGENT_TOWER_INTERNAL_TOKEN: 'pi-vision-token',
+        AGENT_TOWER_URL: 'http://127.0.0.1:42232',
+        AGENT_TOWER_PORT: '42232',
+        OPENAI_API_KEY: 'pi-provider-key',
+        OPENAI_BASE_URL: 'https://pi.example/v1',
+      },
+      config: { model: 'pi-vision-model', supportsImages: true },
+    }), {});
+    const launch = await definition.resolveLaunch({
+      towerSessionId: 'tower-pi-vision',
+      agentType: AgentType.PI_CODING_AGENT,
+      runtimeType: RuntimeType.ACP,
+      variant: 'DEFAULT',
+      workingDir: process.cwd(),
+      env: ExecutionEnv.default(process.cwd()),
+    }, profile);
+    const directory = launch.env.PI_CODING_AGENT_DIR!;
+    const models = JSON.parse(await readFile(path.join(directory, 'models.json'), 'utf-8'));
+    expect(models.providers['agent-tower'].models).toEqual([
+      expect.objectContaining({ id: 'pi-vision-model', input: ['text', 'image'] }),
+    ]);
+    await launch.cleanup?.();
   });
 
   it('uses the bundled Pi executable without a global pi command', async () => {

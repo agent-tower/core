@@ -42,7 +42,7 @@ const tarballName = 'agent-tower-1.2.3-beta.4.tgz';
 const generatedTarball = path.join(tempRoot, 'pack', tarballName);
 const externalTarball = path.resolve('release artifacts', tarballName);
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const piVersion = '0.82.1';
+const piVersion = '0.85.1';
 const originalArgv = process.argv;
 let existingFiles: Set<string>;
 let packageMetadata: Map<string, object>;

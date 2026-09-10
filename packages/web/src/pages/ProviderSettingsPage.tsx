@@ -120,6 +120,7 @@ const AGENT_CONFIG_FIELDS: Record<string, ConfigFieldMeta[]> = {
   ],
   [AgentType.PI_CODING_AGENT]: [
     { key: 'autoApprove', label: '自动批准操作', type: 'switch' },
+    { key: 'supportsImages', label: '模型支持图片输入', type: 'switch' },
     APPEND_PROMPT_FIELD,
   ],
   [AgentType.GROK_BUILD]: [

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
@@ -29,6 +30,7 @@ export const piCodingAgentAcpAgentDefinition: AcpAgentDefinition = {
     const permissionMode = configuredMode === undefined
       ? provider?.config.autoApprove === true ? 'UNRESTRICTED' : 'ASK'
       : normalizeRuntimePermissionMode(configuredMode);
+    const supportsImages = provider?.config.supportsImages === true;
     return {
       agentType: AgentType.PI_CODING_AGENT,
       environment,
@@ -36,6 +38,7 @@ export const piCodingAgentAcpAgentDefinition: AcpAgentDefinition = {
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
       ...(appendPrompt ? { appendPrompt } : {}),
+      ...(supportsImages ? { supportsImages } : {}),
       settings: parseSettings(provider?.settings),
     };
   },
@@ -51,7 +54,7 @@ export const piCodingAgentAcpAgentDefinition: AcpAgentDefinition = {
     let mcpAdapterRoot: string;
     try {
       adapterPath = require.resolve('pi-acp');
-      mcpAdapterRoot = path.dirname(require.resolve('pi-mcp-adapter/package.json'));
+      mcpAdapterRoot = resolvePiMcpAdapterRoot();
     } catch (error) {
       throw new AgentRuntimeError(
         'missing_adapter',
@@ -82,7 +85,7 @@ export const piCodingAgentAcpAgentDefinition: AcpAgentDefinition = {
     try {
       assertSupportedNodeVersion();
       require.resolve('pi-acp');
-      require.resolve('pi-mcp-adapter/package.json');
+      require.resolve('pi-mcp-adapter');
     } catch (error) {
       return { type: 'NOT_FOUND', error: error instanceof Error ? error.message : 'Pi ACP dependencies are unavailable' };
     }
@@ -147,13 +150,38 @@ function buildPiConfigFiles(
             ? 'openai-responses'
             : 'openai-completions',
           apiKey: profile.environment.OPENAI_API_KEY ? '$OPENAI_API_KEY' : 'agent-tower',
-          models: [{ id: model, name: model, reasoning: true }],
+          models: [{
+            id: model,
+            name: model,
+            reasoning: true,
+            // Pi gates image attachments on `model.input.includes('image')`; without
+            // this declaration the read tool replaces images with a "model does not
+            // support images" note even when the backend is vision-capable.
+            ...(profile.supportsImages ? { input: ['text', 'image'] } : {}),
+          }],
         },
       },
     });
   }
   files['settings.json'] = formattedJson(settings);
   return files;
+}
+
+/**
+ * Resolves the installed `pi-mcp-adapter` package root.
+ *
+ * Recent versions restrict their `exports` map and no longer expose
+ * `pi-mcp-adapter/package.json`, so resolve the package entry instead and walk
+ * up to the directory that owns the manifest.
+ */
+function resolvePiMcpAdapterRoot(): string {
+  const entry = require.resolve('pi-mcp-adapter');
+  let dir = path.dirname(entry);
+  while (dir !== path.dirname(dir)) {
+    if (existsSync(path.join(dir, 'package.json'))) return dir;
+    dir = path.dirname(dir);
+  }
+  return path.dirname(entry);
 }
 
 async function resolvePiPath(environment: NodeJS.ProcessEnv): Promise<string | null> {
