@@ -4,6 +4,7 @@ import path from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
 import { AgentType, RuntimeType } from '@agent-tower/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { deepseekHermesMaxStdoutFrameBytes } from '../acp/agents/deepseek-hermes.js';
 import { getAcpAgentDefinition } from '../acp/agents/registry.js';
 import type { AcpAgentProfile } from '../acp/agents/types.js';
 import type { RuntimeOpenInput } from '../contracts.js';
@@ -148,6 +149,17 @@ describe('DeepSeek Harness ACP definition', () => {
       acp.methods.agent.session.setConfigOption,
       { sessionId: 'session-1', configId: 'reasoning_effort', value: 'low' },
     );
+  });
+
+  it('raises the stdout frame budget so inline base64 images survive', () => {
+    const definition = getAcpAgentDefinition(AgentType.DEEPSEEK_HERMES);
+    // The shared default (1 MiB) rejects any image above ~768 KiB because
+    // base64 inflates the payload by roughly a third.
+    const oneMiB = 1024 * 1024;
+    expect(definition.maxStdoutFrameBytes).toBe(deepseekHermesMaxStdoutFrameBytes);
+    expect(definition.maxStdoutFrameBytes!).toBeGreaterThan(8 * oneMiB);
+    // A 4 MiB file read back as base64 must fit.
+    expect(definition.maxStdoutFrameBytes!).toBeGreaterThan(4 * oneMiB * 4 / 3);
   });
 
   it('maps permission modes onto the harness sandbox presets instead of an ACP mode', async () => {

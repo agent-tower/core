@@ -23,6 +23,11 @@ interface NativeAgentOptions {
   arguments: string[] | NativeArguments;
   homeRelativeCandidates?: string[][];
   initializeTimeoutMs?: number;
+  /**
+   * Raise when the adapter reports large tool results inline (for example
+   * base64 image reads); the shared default rejects anything above 1 MiB.
+   */
+  maxStdoutFrameBytes?: number;
   permissionConfigKeys?: string[];
   configureSessionModel?: boolean;
   sessionModelValue?: (profile: AcpAgentProfile) => string | undefined;
@@ -69,6 +74,7 @@ export function createNativeAcpAgentDefinition(options: NativeAgentOptions): Acp
     agentType: options.agentType,
     displayName: options.displayName,
     ...(options.initializeTimeoutMs ? { initializeTimeoutMs: options.initializeTimeoutMs } : {}),
+    ...(options.maxStdoutFrameBytes ? { maxStdoutFrameBytes: options.maxStdoutFrameBytes } : {}),
     projectProvider,
 
     async resolveLaunch(input, profile) {

@@ -74,6 +74,7 @@ DeepSeek Harness（`dsh`）通过官方 automation profile 启动：`dsh --profi
   也就是说，「询问」不是对每条命令都提问，而是「默认限制在工作区，越权时按需申请」。
 - **数据目录**：Agent Tower 会把 `DSH_HOME` 指向 `~/.agent-tower/deepseek-harness/<providerId>/`（受 `AGENT_TOWER_DATA_DIR` 影响），因此 Harness 的会话、storage 与 profile 按 Provider 隔离并跨启动保留，同时不会改动你自己的 `~/.dsh`。该目录是持久状态，停止 Session 时不会被删除。
 - **首次启动**：Agent Tower 会预先写好 `acp` profile 骨架，避免每次启动重新引导；如果 Harness 需要补齐依赖，首次启动会明显变慢，ACP 初始化超时因此放宽到 3 分钟。
+- **大图与视觉**：Harness 会把工具结果内联回传，读取图片时是 base64，体积会膨胀约三分之一。因此该 Agent 的单帧上限提高（与 Codex 相同），否则任何大于约 768 KB 的图片都会因超过默认 1 MiB 上限而中断会话。
 - **不支持 Agent 预设（模式）**：DSH Web 界面里的「标准 / PTC / 极简 / 创造」四种模式来自 `dsh-agent-presets` 插件，它只被 Web 组合加载。ACP 接入既没有可选的预设入口，`acp` 组合也不消费预设配置，因此这四种模式在 ACP 下不可用。实测当前 `acp` 组合已包含标准模式的绝大部分工具（仅缺少面向交互界面的提问与呈现工具），所以这不等同于能力缺失。如果将来需要真正的工具集差异，需要先由上游为 ACP 提供预设入口。
 
 ### Codex Fast 模式

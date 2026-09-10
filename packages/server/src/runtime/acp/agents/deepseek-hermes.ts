@@ -16,6 +16,17 @@ const DEFAULT_PROVIDER_ROUTE = 'deepseek-official';
 const INITIALIZE_TIMEOUT_MS = 180_000;
 
 /**
+ * The harness reports tool results inline, and its image-capable models send
+ * file reads back as base64 — which inflates payloads by roughly a third. A
+ * frame budget of the shared 1 MiB default rejects any image above ~768 KiB
+ * with "ACP stdout line exceeded the size limit", so the harness needs the same
+ * generous raw-frame budget Codex already uses rather than the default.
+ */
+const MAX_RAW_FRAME_BYTES = 64 * 1024 * 1024;
+
+export const deepseekHermesMaxStdoutFrameBytes = MAX_RAW_FRAME_BYTES;
+
+/**
  * `dsh` exposes the model selector as an opaque *string* that carries a JSON
  * tuple of `[providerRoute, modelId]` — verified against `@deepseek-ai/dsh`
  * 0.1.5-rc.1, which rejects both a bare model id and a raw JSON array.
@@ -121,6 +132,7 @@ const nativeAgent = createNativeAcpAgentDefinition({
   // `dsh --profile acp` is the published automation entry point.
   arguments: ['--profile', 'acp'],
   initializeTimeoutMs: INITIALIZE_TIMEOUT_MS,
+  maxStdoutFrameBytes: deepseekHermesMaxStdoutFrameBytes,
   // `dsh` exposes no permission-bypass flag and no ACP mode selector; the
   // sandbox scope and approval policy are selected together through the
   // `DSH_PERMISSION_MODE` launch variable instead.
