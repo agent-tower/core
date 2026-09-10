@@ -56,6 +56,11 @@ export const AGENT_META_BY_TYPE: Record<AgentType, AgentMeta> = {
     agentType: AgentType.MINION_CODE,
     label: 'Minion Code',
   },
+  [AgentType.DEEPSEEK_HERMES]: {
+    agentType: AgentType.DEEPSEEK_HERMES,
+    label: 'DeepSeek Harness',
+    logoSrc: '/agent-icons/deepseek-hermes.svg',
+  },
 }
 
 export function getAgentMeta(agentType?: AgentType | string | null): AgentMeta | null {

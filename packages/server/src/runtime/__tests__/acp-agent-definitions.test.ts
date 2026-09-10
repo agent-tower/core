@@ -40,6 +40,7 @@ describe('ACP Agent definitions', () => {
       AgentType.PI_CODING_AGENT,
       AgentType.GROK_BUILD,
       AgentType.MINION_CODE,
+      AgentType.DEEPSEEK_HERMES,
     ]) {
       expect(getAcpAgentDefinition(agentType).agentType).toBe(agentType);
     }

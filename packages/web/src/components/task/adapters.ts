@@ -83,6 +83,8 @@ export function formatAgentType(agentType: AgentType): string {
       return 'Grok Build'
     case AgentType.MINION_CODE:
       return 'Minion Code'
+    case AgentType.DEEPSEEK_HERMES:
+      return 'DeepSeek Harness'
   }
 }
 

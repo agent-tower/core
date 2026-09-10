@@ -10,6 +10,7 @@ import { openCodeAcpAgentDefinition } from './opencode.js';
 import { piCodingAgentAcpAgentDefinition } from './pi-coding-agent.js';
 import { grokBuildAcpAgentDefinition } from './grok-build.js';
 import { minionCodeAcpAgentDefinition } from './minion-code.js';
+import { deepseekHermesAcpAgentDefinition } from './deepseek-hermes.js';
 import type { AcpAgentDefinition } from './types.js';
 
 const definitions = new Map<AgentType, AcpAgentDefinition>([
@@ -23,6 +24,7 @@ const definitions = new Map<AgentType, AcpAgentDefinition>([
   [piCodingAgentAcpAgentDefinition.agentType, piCodingAgentAcpAgentDefinition],
   [grokBuildAcpAgentDefinition.agentType, grokBuildAcpAgentDefinition],
   [minionCodeAcpAgentDefinition.agentType, minionCodeAcpAgentDefinition],
+  [deepseekHermesAcpAgentDefinition.agentType, deepseekHermesAcpAgentDefinition],
 ]);
 
 export function getAcpAgentDefinition(agentType: AgentType): AcpAgentDefinition {

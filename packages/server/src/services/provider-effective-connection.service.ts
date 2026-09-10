@@ -12,6 +12,7 @@ import { isAgentSubprocessProtectedEnvKey } from '../executors/execution-env.js'
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 export const DEFAULT_XAI_BASE_URL = 'https://api.x.ai/v1';
+export const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 export const CODEX_OPENAI_COMPATIBLE_PROVIDER_ID = 'agent-tower-openai-compatible';
 export const CODEX_OPENAI_COMPATIBLE_PROVIDER_NAME = 'Agent Tower OpenAI Compatible';
 export const CODEX_OPENAI_COMPATIBLE_ENV_KEY = 'AGENT_TOWER_CODEX_PROVIDER_KEY';
@@ -275,6 +276,26 @@ export function resolveEffectiveProviderConnection(
       baseUrl,
       envKey: 'OPENAI_API_KEY',
       credentialEnvKey: 'OPENAI_API_KEY',
+      secret,
+      source: 'provider-env',
+      legacyBaseUrl: false,
+      diagnostics: validateHttpBaseUrl(baseUrl),
+    };
+  }
+
+  if (provider.agentType === AgentType.DEEPSEEK_HERMES) {
+    // DeepSeek Harness reads its own credential variables; the launch
+    // environment outranks the harness credential store.
+    const secret = provider.env.DEEPSEEK_API_KEY;
+    const baseUrl = provider.env.DEEPSEEK_BASE_URL?.trim()
+      || (secret ? DEFAULT_DEEPSEEK_BASE_URL : undefined);
+    return {
+      agentType: provider.agentType,
+      protocol: baseUrl ? 'openai-compatible' : null,
+      providerKind: 'direct',
+      baseUrl,
+      envKey: 'DEEPSEEK_API_KEY',
+      credentialEnvKey: 'DEEPSEEK_API_KEY',
       secret,
       source: 'provider-env',
       legacyBaseUrl: false,

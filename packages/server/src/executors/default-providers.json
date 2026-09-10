@@ -149,6 +149,16 @@
       "config": { "permissionMode": "ASK" },
       "isDefault": true,
       "builtIn": true
+    },
+    {
+      "id": "deepseek-hermes-acp-default",
+      "name": "DeepSeek Harness (ACP)",
+      "agentType": "DEEPSEEK_HERMES",
+      "runtimeType": "ACP",
+      "env": {},
+      "config": { "permissionMode": "ASK", "model": "deepseek-v4-pro" },
+      "isDefault": true,
+      "builtIn": true
     }
   ]
 }

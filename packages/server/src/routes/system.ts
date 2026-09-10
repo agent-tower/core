@@ -55,6 +55,7 @@ export async function systemRoutes(app: FastifyInstance) {
         { type: AgentType.OPENCODE, name: 'OpenCode', available: false },
         { type: AgentType.PI_CODING_AGENT, name: 'Pi Coding Agent', available: false },
         { type: AgentType.GROK_BUILD, name: 'Grok Build', available: false },
+        { type: AgentType.DEEPSEEK_HERMES, name: 'DeepSeek Harness', available: false },
       ],
     };
   });

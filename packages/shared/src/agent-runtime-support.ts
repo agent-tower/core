@@ -17,6 +17,7 @@ export const AGENT_RUNTIME_SUPPORT: AgentRuntimeSupportMatrix = {
   [AgentType.PI_CODING_AGENT]: [RuntimeType.ACP],
   [AgentType.GROK_BUILD]: [RuntimeType.ACP],
   [AgentType.MINION_CODE]: [RuntimeType.ACP],
+  [AgentType.DEEPSEEK_HERMES]: [RuntimeType.ACP],
 }
 
 export const USER_VISIBLE_AGENT_TYPES: readonly AgentType[] = Object.freeze(

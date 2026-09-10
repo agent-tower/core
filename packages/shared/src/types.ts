@@ -42,6 +42,7 @@ export enum AgentType {
   PI_CODING_AGENT = 'PI_CODING_AGENT',
   GROK_BUILD = 'GROK_BUILD',
   MINION_CODE = 'MINION_CODE',
+  DEEPSEEK_HERMES = 'DEEPSEEK_HERMES',
 }
 
 /** Agent 执行协议。AgentType 表示身份，RuntimeType 表示运行方式。 */

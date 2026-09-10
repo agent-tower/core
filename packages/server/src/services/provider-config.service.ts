@@ -416,12 +416,14 @@ export function validateProviderMappedFields(
   if (!capability) return [];
 
   const diagnostics: ProviderConfigDiagnostic[] = [];
-  const permissionValue = provider.config[capability.executionPermission.path];
-  if (permissionValue !== undefined && typeof permissionValue !== 'boolean') {
+  // Agents with no permission-bypass surface declare no path and no toggle.
+  const permissionPath = capability.executionPermission.path;
+  const permissionValue = permissionPath ? provider.config[permissionPath] : undefined;
+  if (permissionPath && permissionValue !== undefined && typeof permissionValue !== 'boolean') {
     diagnostics.push({
       field: 'executionPermission',
       code: 'INVALID_TYPE',
-      message: `${capability.executionPermission.path} must be true or false`,
+      message: `${permissionPath} must be true or false`,
     });
   }
 

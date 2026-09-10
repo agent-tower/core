@@ -20,12 +20,15 @@ describe('Agent Runtime support catalog', () => {
       [AgentType.PI_CODING_AGENT]: [RuntimeType.ACP],
       [AgentType.GROK_BUILD]: [RuntimeType.ACP],
       [AgentType.MINION_CODE]: [RuntimeType.ACP],
+      [AgentType.DEEPSEEK_HERMES]: [RuntimeType.ACP],
     })
     expect(supportsAgentRuntime(AgentType.QWEN_CODE, RuntimeType.ACP)).toBe(true)
     expect(supportsAgentRuntime(AgentType.QWEN_CODE, RuntimeType.CLI)).toBe(false)
     expect(supportsAgentRuntime(AgentType.GEMINI_CLI, RuntimeType.ACP)).toBe(true)
     expect(supportsAgentRuntime(AgentType.CURSOR_AGENT, RuntimeType.ACP)).toBe(true)
     expect(supportsAgentRuntime(AgentType.PI_CODING_AGENT, RuntimeType.CLI)).toBe(false)
+    expect(supportsAgentRuntime(AgentType.DEEPSEEK_HERMES, RuntimeType.ACP)).toBe(true)
+    expect(supportsAgentRuntime(AgentType.DEEPSEEK_HERMES, RuntimeType.CLI)).toBe(false)
   })
 
   it('keeps compatibility-only Agents out of user-facing choices', () => {

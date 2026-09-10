@@ -15,8 +15,17 @@ export type ProviderExecutionPermissionRiskKind =
   | 'force-execution'
   | 'bypass-approvals-and-sandbox'
 
-export interface ProviderExecutionPermissionCapability extends ProviderMappedFieldCapability {
+/**
+ * Execution-permission toggle for a Provider.
+ *
+ * `path` is optional: an agent that never offers a permission-bypass surface
+ * (for example an ACP agent that only advertises interactive approval) omits it,
+ * and consumers must not render or validate a toggle in that case.
+ */
+export interface ProviderExecutionPermissionCapability
+  extends Omit<ProviderMappedFieldCapability, 'path'> {
   kind: 'config'
+  path?: string
   riskKind: ProviderExecutionPermissionRiskKind
 }
 
@@ -168,6 +177,29 @@ export const PROVIDER_CAPABILITIES: ProviderCapabilityMatrix = {
       path: 'dangerouslySkipPermissions',
       riskKind: 'skip-permissions',
     },
+  },
+  /**
+   * DeepSeek Harness (`dsh --profile acp`). Credentials are read from the launch
+   * environment, which outranks the harness credential store, so the Provider
+   * owns them without writing any harness config file.
+   */
+  [AgentType.DEEPSEEK_HERMES]: {
+    agentType: AgentType.DEEPSEEK_HERMES,
+    apiBaseUrl: {
+      kind: 'env',
+      path: 'DEEPSEEK_BASE_URL',
+      placeholder: 'https://api.deepseek.com',
+    },
+    apiKey: { kind: 'env', path: 'DEEPSEEK_API_KEY' },
+    model: { kind: 'config', path: 'model', placeholder: 'deepseek-v4-pro' },
+    reasoningEffort: {
+      kind: 'config',
+      path: 'effort',
+      options: ['off', 'low', 'high', 'max'],
+    },
+    // `dsh` advertises no ACP mode selector and no permission-bypass flag: every
+    // tool call routes through interactive `session/request_permission`.
+    executionPermission: { kind: 'config', riskKind: 'auto-approve' },
   },
 }
 

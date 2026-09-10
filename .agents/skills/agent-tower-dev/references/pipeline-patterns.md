@@ -95,6 +95,9 @@ Agent 专属配置使用结构化解析：Codex TOML、Claude JSON 及现有标�
 - Codex ACP 启动与可用性检测共用系统优先的解析规则：自动查找系统 `codex`，仅在未找到时使用内置 Runtime；查找时排除项目 `node_modules/.bin` 与相对 PATH 目录，不改变 Agent 工具执行时的原始 PATH。`CODEX_PATH` 是 Tower 根据检测结果写入或清除的 adapter 参数，不再作为用户选择 Runtime 的入口；系统 Codex 启动失败不自动重试内置版本。
 - 托管 MCP 命令由 `services/mcp-config.service.ts` 统一解析开发源码、编译 CLI 和桌面入口，并注入当前服务 URL。存在 session credential 时传递该凭据，否则才使用 internal token；缺入口或实例信息时显式失败，不猜默认端口。
 - Definition 创建的敏感临时配置使用 `managed-directory.ts` 的隔离目录和受限权限，并将幂等 cleanup 交给 Driver；启动失败、transport reset 和 close 都须回收。Pi 的隔离配置/adapter 与历史 Minion bridge 属于对应 Definition。
+- 与上述临时目录相对，Agent 自身的持久数据目录属于长期状态，不能注册 cleanup：DeepSeek Harness 把 `DSH_HOME` 指向 `resolveDataDir()/deepseek-harness/<providerId>`，由 Definition 预置 profile 骨架并保留会话与 storage。区分二者时以「停止后是否还需要这份数据」为准。
+- Provider 能力位按 Agent 真实暴露的接口声明：`executionPermission.path` 可省略，表示该 Agent 没有布尔式权限开关，此时不得渲染开关、不得校验对应 config 键；`reasoningEffort.options` 按 Agent 自己的档位枚举，不要套用其它 Agent 的梯子。
+- ACP 权限的 `ASK`/`UNRESTRICTED` 不一定对应 Agent 的 ACP mode：DeepSeek Harness 没有 mode 选择器，Definition 把它映射为启动变量 `DSH_PERMISSION_MODE`（`workspace-write` / `danger-full-access`），由 `dsh-base` 同时决定沙箱范围与审批策略。映射前先确认上游的语义：这里的 `ASK` 是「限制在工作区、越权时按需申请提权」，不是「每条命令都询问」。
 
 新增 Agent 时按受影响功能检查 shared `AgentType`/支持矩阵/Provider capabilities/default providers、CLI factory/parser 或 ACP registry、前端 `lib/agent-meta.ts`/Provider 选择器/图标，以及 slash command/skill/MCP 接入。只有提供本机安装能力时才扩展 `packages/server/src/services/agent-cli/manifest.ts`。`USER_VISIBLE_AGENT_TYPES` 是公开可见性入口；Minion Code 保留历史 ID 解析，不重新加入创建选项或公开列表。不要为 ACP adapter 另造 Agent 身份。
 

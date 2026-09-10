@@ -126,4 +126,18 @@ describe('provider capability matrix', () => {
       })
     }
   })
+
+  it('declares the DeepSeek Harness connection, effort scale and missing bypass surface', () => {
+    expect(getProviderCapability(AgentType.DEEPSEEK_HERMES)).toMatchObject({
+      agentType: AgentType.DEEPSEEK_HERMES,
+      apiBaseUrl: { kind: 'env', path: 'DEEPSEEK_BASE_URL' },
+      apiKey: { kind: 'env', path: 'DEEPSEEK_API_KEY' },
+      model: { kind: 'config', path: 'model' },
+      // The harness owns its own effort scale; it does not reuse the
+      // Claude/Kiro `low|medium|high|xhigh|max` ladder.
+      reasoningEffort: { kind: 'config', path: 'effort', options: ['off', 'low', 'high', 'max'] },
+    })
+    // `dsh` exposes no permission-bypass flag, so no toggle may be rendered.
+    expect(getProviderCapability(AgentType.DEEPSEEK_HERMES)?.executionPermission.path).toBeUndefined()
+  })
 })

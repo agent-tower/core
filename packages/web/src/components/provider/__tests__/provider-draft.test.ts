@@ -202,6 +202,15 @@ describe('provider draft helpers', () => {
     const capability = PROVIDER_CAPABILITIES[agentType]
     const path = capability.executionPermission.path
     const draft = { config: { unknown: { keep: true } } }
+
+    // An agent that exposes no permission-bypass surface has no path and must
+    // keep reporting "not enabled" without inventing a config key.
+    if (!path) {
+      expect(getExecutionPermissionState(draft.config, capability)).toEqual({ enabled: false, error: null })
+      expect(updateExecutionPermission(draft, capability, true).config).toEqual({ unknown: { keep: true } })
+      return
+    }
+
     expect(getExecutionPermissionState(draft.config, capability)).toEqual({ enabled: false, error: null })
 
     const enabled = updateExecutionPermission(draft, capability, true)

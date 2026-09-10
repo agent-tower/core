@@ -20,6 +20,7 @@ Provider 是 agent 的具体配置实例。它决定某个任务使用哪种 Age
 - OpenCode（ACP）
 - Pi Coding Agent（ACP）
 - Grok Build（ACP）
+- DeepSeek Harness（ACP）
 
 ## Runtime
 
@@ -28,7 +29,7 @@ Provider 的 `runtimeType` 有两种选择：
 | Runtime | 行为 | 当前 Agent 支持 |
 | --- | --- | --- |
 | `CLI` | 启动本机 CLI，通过 PTY、Parser 和 MsgStore 处理输出 | Claude Code、Gemini CLI、Cursor Agent、Codex |
-| `ACP` | 通过 Agent Client Protocol 双向通信，支持能力协商、session 恢复和权限请求 | Claude Code、Gemini CLI、Cursor Agent、Codex、Qwen Code、Kiro CLI、OpenCode、Pi Coding Agent、Grok Build |
+| `ACP` | 通过 Agent Client Protocol 双向通信，支持能力协商、session 恢复和权限请求 | Claude Code、Gemini CLI、Cursor Agent、Codex、Qwen Code、Kiro CLI、OpenCode、Pi Coding Agent、Grok Build、DeepSeek Harness |
 
 旧 Provider 和旧备份没有 `runtimeType` 时按 `CLI` 读取，因此升级不会改变已有配置。同一 Agent 的 CLI 与 ACP 是两个独立默认项；设置其中一个不会取消另一个的默认状态。
 
@@ -54,10 +55,26 @@ ACP Provider 沿用对应 Agent 的认证与模型配置，而不是使用一套
 | OpenCode (ACP) | OpenCode 登录状态，或 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和模型 |
 | Pi Coding Agent (ACP) | 内置 Pi Runtime；配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、模型和思考强度，或 Pi 支持的环境变量认证 |
 | Grok Build (ACP) | `OPENAI_API_KEY` 会映射为 `XAI_API_KEY`，并支持 API 地址、模型和权限策略 |
+| DeepSeek Harness (ACP) | 需要本机可执行的 `dsh`；配置 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、模型和思考强度，权限固定为 `ASK` |
 
 启动时，通用 ACP Driver 会按 Agent Definition 将 Provider 配置投影为对应 adapter 或原生 ACP CLI 的启动参数、环境变量和 Session 配置。
 
 Codex (ACP) 配置了官方 API Key 或简单 OpenAI-compatible 网关时，会在创建 Session 前显式选择该 Provider 的认证方式，不依赖机器上已有的 Codex 登录缓存。未配置上述认证方式时仍沿用 Codex 自身的 ChatGPT/API Key 登录状态。
+
+### DeepSeek Harness
+
+DeepSeek Harness（`dsh`）通过官方 automation profile 启动：`dsh --profile acp`。Provider 配置项与其它 ACP Agent 略有不同：
+
+- **凭据**：`DEEPSEEK_API_KEY` 与可选的 `DEEPSEEK_BASE_URL`（默认 `https://api.deepseek.com`）。Harness 的凭据解析顺序是「启动环境变量 > 自身凭据文件 > 项目 `.env` > `$DSH_HOME/.env`」，所以 Provider 注入的密钥必定生效；反过来，如果你在 shell 里已经 `export DEEPSEEK_API_KEY`，它会优先于 Provider 配置。
+- **模型**：填模型 id，例如 `deepseek-v4-pro`。Harness 的 ACP 模型选项实际是 `[providerRoute, modelId]` 元组，Agent Tower 会按 `deepseek-official` 路由自动编码；如需指向第三方 DeepSeek 兼容网关，可额外设置 `DSH_PROVIDER_ROUTE`。
+- **思考强度**：使用 Harness 自己的 `off`、`low`、`high`、`max` 档位，与 Claude/Kiro 的档位不同，不要混用。
+- **权限**：Harness 不暴露权限绕过开关，也不提供 ACP mode 选择器，因此权限策略通过启动变量 `DSH_PERMISSION_MODE` 映射到 Harness 自己的权限预设：
+  - `ASK` → `workspace-write`：命令被限制在工作区内，工作区外的文件操作会被沙箱直接拒绝；模型可以在同一次失败后用更宽权限重试一次，该重试会以权限请求的形式弹给你确认，同意后才执行。
+  - `UNRESTRICTED` → `danger-full-access`：不再限制工作区，也不再询问。
+  也就是说，「询问」不是对每条命令都提问，而是「默认限制在工作区，越权时按需申请」。
+- **数据目录**：Agent Tower 会把 `DSH_HOME` 指向 `~/.agent-tower/deepseek-harness/<providerId>/`（受 `AGENT_TOWER_DATA_DIR` 影响），因此 Harness 的会话、storage 与 profile 按 Provider 隔离并跨启动保留，同时不会改动你自己的 `~/.dsh`。该目录是持久状态，停止 Session 时不会被删除。
+- **首次启动**：Agent Tower 会预先写好 `acp` profile 骨架，避免每次启动重新引导；如果 Harness 需要补齐依赖，首次启动会明显变慢，ACP 初始化超时因此放宽到 3 分钟。
+- **不支持 Agent 预设（模式）**：DSH Web 界面里的「标准 / PTC / 极简 / 创造」四种模式来自 `dsh-agent-presets` 插件，它只被 Web 组合加载。ACP 接入既没有可选的预设入口，`acp` 组合也不消费预设配置，因此这四种模式在 ACP 下不可用。实测当前 `acp` 组合已包含标准模式的绝大部分工具（仅缺少面向交互界面的提问与呈现工具），所以这不等同于能力缺失。如果将来需要真正的工具集差异，需要先由上游为 ACP 提供预设入口。
 
 ### Codex Fast 模式
 
@@ -119,7 +136,7 @@ Provider 页面支持：
 - 从备份导入
 - 重新加载配置
 
-Agent 环境页面支持检测和引导安装部分本机 Agent CLI。安装前会展示官方来源、下载摘要、风险提示和校验信息。Claude Code 与 Codex 的安装入口面向本机 CLI；它们的 ACP Runtime 已内置，其中 Codex ACP 会优先使用检测到的系统安装。Qwen Code、Kiro CLI、OpenCode 和 Grok Build 当前不在安装清单中，需要用户自行安装对应 CLI；Pi Coding Agent 已内置，Provider 可用性会直接检测随 Agent Tower 发布的 Runtime。
+Agent 环境页面支持检测和引导安装部分本机 Agent CLI。安装前会展示官方来源、下载摘要、风险提示和校验信息。Claude Code 与 Codex 的安装入口面向本机 CLI；它们的 ACP Runtime 已内置，其中 Codex ACP 会优先使用检测到的系统安装。Qwen Code、Kiro CLI、OpenCode、Grok Build 和 DeepSeek Harness 当前不在安装清单中，需要用户自行安装对应 CLI；Pi Coding Agent 已内置，Provider 可用性会直接检测随 Agent Tower 发布的 Runtime。
 
 当前环境引导支持：
 

@@ -410,7 +410,10 @@ export function getExecutionPermissionState(
   config: Record<string, unknown>,
   capability: ProviderCapability,
 ): ProviderExecutionPermissionState {
-  return getProviderBooleanConfigState(config, capability.executionPermission)
+  const permission = capability.executionPermission
+  // An agent without a permission-bypass surface has no path and no toggle.
+  if (!permission.path) return { enabled: false, error: null }
+  return getProviderBooleanConfigState(config, permission as ProviderBooleanConfigCapability)
 }
 
 export function getProviderBooleanConfigState(
@@ -428,7 +431,9 @@ export function updateExecutionPermission<T extends { config: Record<string, unk
   capability: ProviderCapability,
   enabled: boolean,
 ): Omit<T, 'config'> & { config: Record<string, unknown> } {
-  return updateProviderBooleanConfig(draft, capability.executionPermission, enabled)
+  const permission = capability.executionPermission
+  if (!permission.path) return draft
+  return updateProviderBooleanConfig(draft, permission as ProviderBooleanConfigCapability, enabled)
 }
 
 export function updateProviderBooleanConfig<T extends { config: Record<string, unknown> }>(
