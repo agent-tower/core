@@ -16,6 +16,7 @@ import { AgentType, TaskStatus } from '../../types/index.js';
 import { ServiceError } from '../../errors.js';
 import { TEAM_ROOM_SYSTEM_SHARED_PROTOCOL } from '../../prompts/team-room-system-shared-protocol.js';
 import { TeamLockService } from '../team-lock.service.js';
+import { acquireTeamMemberAdmission } from '../team-member-admission-barrier.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-team-scheduler-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -28,6 +29,7 @@ const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let TeamSchedulerService: typeof import('../team-scheduler.service.js').TeamSchedulerService;
 let TeamRunService: typeof import('../team-run.service.js').TeamRunService;
+let TeamReconcilerService: typeof import('../team-reconciler.service.js').TeamReconcilerService;
 let prisma: PrismaClient;
 let CommandBuildError: typeof import('../../executors/command-builder.js').CommandBuildError;
 let ExecutorNotFoundError: typeof import('../../executors/start-error.js').ExecutorNotFoundError;
@@ -297,11 +299,13 @@ describe('TeamSchedulerService', () => {
 
     const serviceModule = await import('../team-scheduler.service.js');
     const teamRunServiceModule = await import('../team-run.service.js');
+    const reconcilerModule = await import('../team-reconciler.service.js');
     const utilsModule = await import('../../utils/index.js');
     const commandBuilderModule = await import('../../executors/command-builder.js');
     const startErrorModule = await import('../../executors/start-error.js');
     TeamSchedulerService = serviceModule.TeamSchedulerService;
     TeamRunService = teamRunServiceModule.TeamRunService;
+    TeamReconcilerService = reconcilerModule.TeamReconcilerService;
     prisma = utilsModule.prisma;
     CommandBuildError = commandBuilderModule.CommandBuildError;
     ExecutorNotFoundError = startErrorModule.ExecutorNotFoundError;
@@ -3482,5 +3486,94 @@ describe('TeamSchedulerService', () => {
     await expect(prisma.workRequest.findUnique({
       where: { id: requests.get(last.teamRun.id)!.id },
     })).resolves.toMatchObject({ status: 'STARTED' });
+  });
+
+  it('answers stop with MEMBER_ADMISSION_BUSY when the member barrier never frees up', async () => {
+    const { teamRun, members } = await createTeamRunFixture();
+    const releaseStuckOwner = await acquireTeamMemberAdmission(teamRun.id, members[0]!.id, {
+      holder: 'stuck-owner',
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+      memberAdmissionTimeoutMs: 25,
+    });
+
+    const startedAt = Date.now();
+    await expect(service.stopMemberWork(teamRun.id, members[0]!.id)).rejects.toMatchObject({
+      name: 'MemberAdmissionBusyError',
+      code: 'MEMBER_ADMISSION_BUSY',
+      statusCode: 409,
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+
+    releaseStuckOwner();
+  });
+
+  it('answers stop after a dead session is reclaimed mid-invocation', async () => {
+    const { workspace, teamRun, members } = await createTeamRunFixture();
+    const request = await createWorkRequest({
+      teamRunId: teamRun.id,
+      targetMemberId: members[0]!.id,
+      status: 'STARTED',
+    });
+    const session = await prisma.session.create({
+      data: {
+        workspaceId: workspace!.id,
+        agentType: AgentType.CODEX,
+        providerId: members[0]!.providerId,
+        prompt: 'In-flight work',
+        status: 'FAILED',
+      },
+    });
+    const invocation = await prisma.agentInvocation.create({
+      data: {
+        teamRunId: teamRun.id,
+        workRequestId: request.id,
+        memberId: members[0]!.id,
+        workspaceId: workspace!.id,
+        sessionId: session.id,
+        status: 'WAITING_ROOM_REPLY',
+        roomReplyReminderCount: 1,
+        nextRoomReplyReminderAt: new Date(0),
+      },
+    });
+    const reconciler = new TeamReconcilerService({
+      scheduler: {
+        releaseInvocationLocks: (invocationId) => lockService.releaseByOwner(invocationId),
+        startNextSessions: vi.fn(async () => []),
+      },
+      sessionMessenger: { sendMessage: vi.fn(async () => null) },
+      now: () => new Date(),
+      scheduleReminders: false,
+    });
+    service = new TeamSchedulerService(lockService, {
+      workspaceService: createWorkspaceServiceMock(),
+      sessionManager: createSessionManagerMock(),
+      getProviderById: createProviderLookup(),
+      memberAdmissionTimeoutMs: 500,
+    });
+
+    const reclaimed = await Promise.race([
+      reconciler.reconcileDueRoomReplyReminders(),
+      new Promise<'TIMEOUT'>((resolve) => setTimeout(() => resolve('TIMEOUT'), 2_000)),
+    ]);
+    expect(reclaimed).not.toBe('TIMEOUT');
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+    });
+    await expect(prisma.workRequest.findUniqueOrThrow({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+    });
+
+    const startedAt = Date.now();
+    const stopped = await Promise.race([
+      service.stopMemberWork(teamRun.id, members[0]!.id),
+      new Promise<'TIMEOUT'>((resolve) => setTimeout(() => resolve('TIMEOUT'), 2_000)),
+    ]);
+    expect(stopped).not.toBe('TIMEOUT');
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+    expect(stopped).toMatchObject({ stoppedSessionIds: [], cancelledInvocationIds: [] });
   });
 });

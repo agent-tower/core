@@ -39,6 +39,7 @@ Task -> TeamRun -> TeamMember
 - `CONFIRM` 创建 `PENDING_APPROVAL`，批准后变为 `QUEUED`；`AUTO` 直接入 `QUEUED`。HTTP 在消息持久化后后台调用 `startNextSessions`，不要让普通发消息响应等待 Agent 整轮执行。
 - RoomMessage 保存全文，列表返回 preview；详情通过相同可见性规则获取全文。WorkRequest 的 `instruction` 可能只是摘要，构造 Session prompt 时复用 `buildSessionPrompt` 从 Task、触发消息全文及 attachmentIds 恢复上下文。
 - 只有与 invocation 绑定的 PUBLIC agent 消息是完成汇报。RUNNING 时发公开消息刷新真实进展，不立即终止；WAITING_ROOM_REPLY 时收到公开汇报会 reconcile 完成。私聊、user/system 消息不替代公开汇报。
+- `FAILED`/`CANCELLED` 的 Session 不会再有汇报：`isSessionRuntimeDead()` 在无 active turn 且 cleanup gate 确认时立即把 invocation 置 `FAILED`。正常完成一轮的 `COMPLETED` Session 同样是"无 active turn + cleanup 已确认"，必须继续走补催/续跑，不能按 gate 结果单独判死。
 
 ## 调度与恢复
 
@@ -49,13 +50,14 @@ WorkRequest 的主链是 `PENDING_APPROVAL -> QUEUED -> STARTED -> COMPLETED/FAI
 - `ifBusy = cancel_current_and_start` 目前由 `planNext` 标记 `requiresStopCurrent`，执行入口仍跳过 busy 成员；它不是已完成的自动抢占链路。实际停止复用 `stopMemberWork`。WorkRequest 的 `cancelQueued` 在成功 claim 时只取消同成员其余 `QUEUED` 请求；成员 stop 的同名选项同时覆盖 `PENDING_APPROVAL`，两者都不表示全团队取消。
 - 启动失败区分确定性错误和临时错误：配置/Provider/不支持的 target 等确定性错误终止请求；可重试错误记录 `startAttemptCount`、`lastStartError`、`nextStartRetryAt` 后重新排队。失败 invocation 保留诊断；一个 WorkRequest 重试时可能有多个历史 invocation。
 - `resume_last` 每次仍创建新的 Tower Session 与 invocation，只选择同成员、同 execution workspace、同 target SHA 的历史原生上下文。ACP 优先 context-only `session/resume`，回退 `session/load` 的历史回放不能进入新 invocation 日志或算作新进展。
-- watchdog 复用 reconciler；各阶段错误隔离，先恢复持久 cleanup，再处理 orphan、半终态、静默成员、到期 room reply 与队列。queue pump 同时恢复 AUTO 和已批准的 CONFIRM 请求，不启动 `PENDING_APPROVAL`。
+- watchdog 复用 reconciler；各阶段有错误隔离与超时隔离（`stageTimeoutMs`，超时阶段被放弃并继续后续），先恢复持久 cleanup，再处理 orphan、半终态、静默成员、到期 room reply 与队列。启动首扫按"runtime 已脱管"回收 `RUNNING` 与 `WAITING_ROOM_REPLY`（仍要求 cleanup gate 确认），且只在首次成功后置 `orphanScanDone`；超时视为未完成、下个 tick 重试。queue pump 同时恢复 AUTO 和已批准的 CONFIRM 请求，不启动 `PENDING_APPROVAL`。
 - 心跳只认真实 Agent 进展；本地 user_message patch、历史回放和发出的 nudge 本身不能续命。权限等待由用户控制，不触发静默补催。room reply 与静默唤醒共用计数/退避/绝对预算，避免额外建立一套计时状态机。
 - 自动 review 由 `maybeAdvanceTeamRunToReview` 负责：未删除且 `IN_PROGRESS` 的 Task，在无活跃 invocation、无待批/排队请求时进入 `IN_REVIEW`，写 `TEAM_QUIESCENT`。这是团队静止状态，不代表所有请求成功或 workspace 已满足合并要求。
 
 ## 停止与 Runtime 所有权
 
-- 成员 stop、通用 TeamRun Session stop、调度及 direct follow-up 共用 per-member admission barrier。stop 先在事务写 `dispatchRevokedAt` 并按请求处理队列，再等待 OS cleanup；不要在持有 barrier 时递归启动下一项。
+- 成员 stop、通用 TeamRun Session stop、调度及 direct follow-up 共用 per-member admission barrier。stop 先在事务写 `dispatchRevokedAt` 并按请求处理队列，再等待 OS cleanup；不要在持有 barrier 时递归启动下一项。任何会在持锁期间再次申请同一把锁的动作（补催、nudge、follow-up send）都必须移到 `release()` 之后执行。
+- barrier 是进程内 Promise 链：`acquireTeamMemberAdmission(..., { holder, timeoutMs })` 可加持有者标签与等待上限。超时抛 `MemberAdmissionBusyError`（`MEMBER_ADMISSION_BUSY`，409）并只放弃**等待位**，绝不释放持有者；用户可见的 stop 路径必须带超时，否则请求会永不返回、前端无限 pending。持有超过阈值只告警，不做强制释放。
 - `dispatchRevokedAt` 在 cleanup 等待/失败/恢复期间保持。terminal/revoked sender 的消息仍可落库，但不能派生 WorkRequest、触发 reconcile 或补催；数据库条件更新负责拦截 stop 之后的迟到消息。
 - REST `sessions/:id/message`、MCP `sessions.send_message` 与 `SessionManager.sendMessage` 的 TeamRun follow-up 需要当前未撤销 invocation，并在 barrier 内复查 Session 与 ACTIVE member。普通 conversation Session 的终态 follow-up 语义不同。
 - 初次启动和 `resume_last` 都需经 Session `PENDING -> RUNNING` CAS 与新鲜的 invocation admission 检查。Session 已创建而 invocation 尚未创建的窗口仍可能发生直接 stop，之后不能 spawn。

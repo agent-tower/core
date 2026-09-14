@@ -1772,6 +1772,143 @@ describe('TeamReconcilerService', () => {
     expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalled();
   });
 
+  it('sends the room reply reminder only after releasing member admission', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+    });
+    // The production messenger is SessionManager, whose sendMessage acquires the
+    // same per-member barrier. A mock that skips the barrier keeps this path
+    // green while the real wiring self-deadlocks.
+    const sendMessage = vi.fn(async () => {
+      const release = await acquireTeamMemberAdmission(teamRun.id, members[0]!.id);
+      release();
+      return null;
+    });
+    const lockedService = new TeamReconcilerService({
+      scheduler,
+      sessionMessenger: { sendMessage },
+      eventBus,
+      now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, 0)),
+      scheduleReminders: false,
+    });
+
+    const outcome = await Promise.race([
+      lockedService.handleSessionExit(invocation.sessionId!),
+      new Promise<'TIMEOUT'>((resolve) => setTimeout(() => resolve('TIMEOUT'), 1_000)),
+    ]);
+
+    expect(outcome).toBe(true);
+    expect(sendMessage).toHaveBeenCalledWith(
+      invocation.sessionId,
+      TEAM_ROOM_REPLY_REMINDER,
+      undefined,
+      invocation.id,
+    );
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+  });
+
+  it('keeps reminding a waiting invocation whose session completed its turn normally', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { nextRoomReplyReminderAt: new Date(0) },
+    });
+
+    await service.reconcileDueRoomReplyReminders();
+
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 2,
+    });
+    expect(messenger.sendMessage).toHaveBeenCalledWith(
+      invocation.sessionId,
+      TEAM_ROOM_REPLY_REMINDER,
+      undefined,
+      invocation.id,
+    );
+  });
+
+  it('fails a waiting invocation immediately when its session died abnormally', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    await prisma.session.update({ where: { id: invocation.sessionId! }, data: { status: 'FAILED' } });
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { nextRoomReplyReminderAt: new Date(0) },
+    });
+    expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
+
+    await service.reconcileDueRoomReplyReminders();
+
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+      roomReplyReminderCount: 0,
+      nextRoomReplyReminderAt: null,
+    });
+    await expect(prisma.workRequest.findUniqueOrThrow({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'FAILED',
+    });
+    expect(scheduler.releaseInvocationLocks).toHaveBeenCalledWith(invocation.id);
+    expect(messenger.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('leaves a healthy WAITING_ROOM_REPLY invocation alone on the startup scan', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id,
+      workRequestId: request.id,
+      memberId: members[0]!.id,
+      workspaceId: workspace.id,
+      status: 'WAITING_ROOM_REPLY',
+      roomReplyReminderCount: 1,
+    });
+    // The fixture session finished normally (COMPLETED) and its cleanup is
+    // confirmed, which is also true of a crashed one; only the status list can
+    // keep the orphan scan from failing this legal follow-up state.
+    await prisma.agentInvocation.update({
+      where: { id: invocation.id },
+      data: { nextRoomReplyReminderAt: new Date(Date.UTC(2030, 0, 1)) },
+    });
+    expect(lockService.acquire(invocation.id, ['workspace:task:write'])).toBe(true);
+
+    await service.reconcileOrphanInvocations();
+
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
+      status: 'WAITING_ROOM_REPLY',
+      nextRoomReplyReminderAt: new Date(Date.UTC(2030, 0, 1)),
+    });
+    await expect(prisma.workRequest.findUniqueOrThrow({ where: { id: request.id } })).resolves.toMatchObject({
+      status: 'STARTED',
+    });
+    expect(scheduler.releaseInvocationLocks).not.toHaveBeenCalledWith(invocation.id);
+  });
+
   it('ignores forged non-agent RoomMessages with senderInvocationId during reconcile', async () => {
     const { workspace, teamRun, members } = await createFixture();
     const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });

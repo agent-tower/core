@@ -162,6 +162,22 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Earlier log output is unavailable.': '较早的日志内容已不可用。',
     'No logs yet': '暂无日志',
     'Retry': '重试',
+    'Something went wrong': '出了点问题',
+    'Only rendering errors are caught here. Errors from event handlers, async callbacks or observers are not.':
+      '此处只兜住渲染阶段抛出的错误；事件处理器、异步回调或 observer 中抛出的错误不会进入兜底。',
+    'This section hit a rendering error and was replaced by this message.':
+      '这一区域渲染出错，已由本条提示替代。',
+    'Failed to display logs': '日志显示失败',
+    'The log view hit a rendering error. Retry renders the same data again, so it will fail again while the bad data is still there.':
+      '日志视图渲染出错。重试只是重新渲染同一份数据，坏数据仍在时会再次出错。',
+    'This page could not be displayed. Go back to the task board and try again.':
+      '这个页面无法显示。请返回任务看板后重试。',
+    'The interface hit a rendering error. Reload the page to continue.':
+      '界面渲染出错，请重新加载页面后继续。',
+    'The interface could not be displayed. Reload the page to try again.':
+      '界面无法显示，请重新加载页面后再试。',
+    'Reload page': '重新加载页面',
+    'Back to home': '返回首页',
     'Command': '命令',
     'Working directory': '工作目录',
     'Started': '启动时间',

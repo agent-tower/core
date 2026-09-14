@@ -1,4 +1,6 @@
-import { useState, useMemo, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
+import { useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { shouldAdjustScrollPositionOnItemSizeChange } from './scrollAnchoring'
 import { type LogEntry, LogType, type ToolStatus } from '@agent-tower/shared/log-adapter'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { Streamdown } from 'streamdown'
@@ -28,8 +30,11 @@ interface LogStreamProps {
   onOpenPreviewUrl?: OpenPreviewUrlHandler
   onOpenVisualization?: OpenVisualizationHandler
   downloadSessionId?: string
-  /** 外部滚动容器 ref，用于滚动到底部（可选，仅 legacy 用法需要） */
-  scrollElementRef?: React.RefObject<HTMLDivElement | null>
+  /**
+   * 外部滚动容器 ref。虚拟化需要知道视口，因此所有调用方都应传入
+   * `useStickToBottom().scrollRef`。未传入时会向上查找最近的可滚动祖先。
+   */
+  scrollElementRef?: React.RefObject<HTMLElement | null>
 }
 
 export interface LogStreamHandle {
@@ -199,7 +204,12 @@ function formatDuration(startedAt?: number, endedAt?: number | null): string | n
   return `${seconds}s`
 }
 
-function getTurnDuration(turn: ConversationTurn, completedAt?: number | null): string | null {
+interface TurnTiming {
+  startedAt?: number
+  latestLogAt?: number
+}
+
+function getTurnTiming(turn: ConversationTurn): TurnTiming {
   const persistedProcessingStartedAt = turn.agentLogs.reduce<number | undefined>((latest, log) => (
     Number.isFinite(log.cursorActivity?.processingStartedAt)
       ? log.cursorActivity?.processingStartedAt
@@ -213,7 +223,182 @@ function getTurnDuration(turn: ConversationTurn, completedAt?: number | null): s
     return latest === undefined ? log.timestamp : Math.max(latest, log.timestamp as number)
   }, undefined)
 
-  return formatDuration(startedAt, completedAt ?? latestLogAt)
+  return { startedAt, latestLogAt }
+}
+
+// ============ Virtual row model ============
+
+/**
+ * Displayed duration for a "已处理" summary. `end === null` means the turn is
+ * still producing output, so the caller substitutes a live clock value.
+ */
+interface DurationRange {
+  start?: number
+  end: number | null
+}
+
+interface TurnModel {
+  key: string
+  user: LogEntry | null
+  running: boolean
+  duration: DurationRange
+  showSummary: boolean
+  summaryCollapsible: boolean
+  /** Rendered while the turn is still running (cannot be collapsed). */
+  inlineItems: RenderItem[]
+  /** Rendered only while the completed turn's detail group is expanded. */
+  processedItems: RenderItem[]
+  /** Always rendered after the summary. */
+  finalItems: RenderItem[]
+}
+
+type VirtualRow =
+  | { kind: 'user'; key: string; log: LogEntry }
+  | {
+      kind: 'summary'
+      key: string
+      turnKey: string
+      duration: DurationRange
+      collapsible: boolean
+    }
+  | { kind: 'item'; key: string; item: RenderItem; processed: boolean }
+
+function buildTurnModel(
+  turn: ConversationTurn,
+  isLast: boolean,
+  isOutputActive: boolean | undefined,
+  lastExitAt: number | null | undefined,
+): TurnModel {
+  const running = isLast && isOutputActive === true
+  const timing = getTurnTiming(turn)
+  const end = running
+    ? null
+    : (isLast ? (lastExitAt ?? timing.latestLogAt ?? null) : (timing.latestLogAt ?? null))
+  const duration: DurationRange = { start: timing.startedAt, end }
+
+  if (running) {
+    return {
+      key: turn.key,
+      user: turn.user ?? null,
+      running: true,
+      duration,
+      showSummary: true,
+      summaryCollapsible: false,
+      inlineItems: groupExecutionDetails(turn.agentLogs),
+      processedItems: [],
+      finalItems: [],
+    }
+  }
+
+  if (turn.agentLogs.length === 0) {
+    return {
+      key: turn.key,
+      user: turn.user ?? null,
+      running: false,
+      duration,
+      showSummary: false,
+      summaryCollapsible: false,
+      inlineItems: [],
+      processedItems: [],
+      finalItems: [],
+    }
+  }
+
+  const finalResponseIndex = findFinalResponseIndex(turn.agentLogs)
+  const processedLogs = finalResponseIndex >= 0
+    ? turn.agentLogs.slice(0, finalResponseIndex)
+    : turn.agentLogs
+  const finalLogs = finalResponseIndex >= 0
+    ? turn.agentLogs.slice(finalResponseIndex)
+    : []
+  const collapsible = processedLogs.some((log) => !shouldSkipProjectedLog(log))
+
+  return {
+    key: turn.key,
+    user: turn.user ?? null,
+    running: false,
+    duration,
+    showSummary: true,
+    summaryCollapsible: collapsible,
+    inlineItems: [],
+    // Collapsed content is never mounted: that is what keeps long sessions at
+    // O(viewport) instead of O(entries).
+    processedItems: collapsible ? groupExecutionDetails(processedLogs) : [],
+    finalItems: groupExecutionDetails(finalLogs),
+  }
+}
+
+/**
+ * Identity of an item row, stable across the `active → complete` transition.
+ *
+ * The same log is rendered as an inline row while its turn runs and as a final
+ * (or expanded processed) row once the turn completes. Keeping the phase out of
+ * the key means React reconciles the same DOM node and the virtualizer keeps the
+ * measured height instead of treating the row as new — a phase-prefixed key
+ * remounted the subtree (dropping local expand state) and reset its size to the
+ * estimate, which shifted everything below it. `kind: 'item'` rows never
+ * coexist for the same log: a turn renders either its inline items or its
+ * processed/final items, and those two slices are disjoint.
+ */
+function itemRowKey(item: RenderItem): string {
+  return `item:${item.key}`
+}
+
+function buildRows(models: TurnModel[], expandedTurns: ReadonlySet<string>): VirtualRow[] {
+  const rows: VirtualRow[] = []
+  for (const model of models) {
+    if (model.user) {
+      rows.push({ kind: 'user', key: `user:${model.user.id}`, log: model.user })
+    }
+    if (model.showSummary) {
+      rows.push({
+        kind: 'summary',
+        key: `summary:${model.key}`,
+        turnKey: model.key,
+        duration: model.duration,
+        collapsible: model.summaryCollapsible,
+      })
+    }
+    if (model.running) {
+      for (const item of model.inlineItems) {
+        rows.push({ kind: 'item', key: itemRowKey(item), item, processed: false })
+      }
+      continue
+    }
+    if (expandedTurns.has(model.key)) {
+      for (const item of model.processedItems) {
+        rows.push({ kind: 'item', key: itemRowKey(item), item, processed: true })
+      }
+    }
+    for (const item of model.finalItems) {
+      rows.push({ kind: 'item', key: itemRowKey(item), item, processed: false })
+    }
+  }
+  return rows
+}
+
+/** Estimated height for rows that have not been measured yet. */
+function estimateRowHeight(row: VirtualRow | undefined): number {
+  if (!row) return 40
+  switch (row.kind) {
+    case 'user':
+      return 72
+    case 'summary':
+      return 44
+    default:
+      return 32
+  }
+}
+
+/** Finds the nearest scrollable ancestor, used when no ref is supplied. */
+function findScrollableAncestor(from: HTMLElement | null): HTMLElement | null {
+  let node = from?.parentElement ?? null
+  while (node) {
+    const overflowY = window.getComputedStyle(node).overflowY
+    if (overflowY === 'auto' || overflowY === 'scroll') return node
+    node = node.parentElement
+  }
+  return null
 }
 
 // ============ Components ============
@@ -526,90 +711,6 @@ const WarningMessage = memo(({ content }: { content: string }) => (
 ))
 WarningMessage.displayName = 'WarningMessage'
 
-const ProcessedGroup = memo(({
-  logs,
-  duration,
-  collapsible,
-  onBeforeToggle,
-  workingDir,
-  onOpenWorkspaceFile,
-  onOpenPreviewUrl,
-  onOpenVisualization,
-  downloadSessionId,
-}: {
-  logs: LogEntry[]
-  duration: string | null
-  collapsible: boolean
-  onBeforeToggle?: () => void
-  workingDir?: string
-  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void
-  onOpenPreviewUrl?: OpenPreviewUrlHandler
-  onOpenVisualization?: OpenVisualizationHandler
-  downloadSessionId?: string
-}) => {
-  const { t } = useI18n()
-  const [isOpen, setIsOpen] = useState(false)
-  const label = duration
-    ? t('已处理 {duration}', { duration })
-    : t('已处理')
-  const summaryContent = (
-    <>
-      <span>{label}</span>
-      {collapsible && (
-        <span
-          className="flex size-4 shrink-0 items-center justify-center transition-transform duration-200 motion-reduce:transition-none"
-          style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
-        >
-          <ChevronRight size={14} strokeWidth={2} />
-        </span>
-      )}
-    </>
-  )
-
-  return (
-    <div className="mb-3 mt-1">
-      {collapsible ? (
-        <button
-          type="button"
-          aria-expanded={isOpen}
-          onClick={() => {
-            onBeforeToggle?.()
-            setIsOpen((open) => !open)
-          }}
-          className="group flex w-full items-center gap-1.5 border-b border-neutral-100 py-2 text-left text-sm leading-6 text-neutral-500 transition-colors hover:text-neutral-700"
-        >
-          {summaryContent}
-        </button>
-      ) : (
-        <div
-          role="status"
-          className="flex w-full items-center gap-1.5 border-b border-neutral-100 py-2 text-sm leading-6 text-neutral-500"
-        >
-          {summaryContent}
-        </div>
-      )}
-
-      {collapsible && (
-        <div
-          data-processed-content
-          aria-hidden={!isOpen}
-          inert={!isOpen}
-          className={`grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${
-            isOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
-          }`}
-        >
-          <div className="min-h-0 overflow-hidden">
-            <div className="pb-1 pt-2">
-              {renderLogItems(logs, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId)}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-})
-ProcessedGroup.displayName = 'ProcessedGroup'
-
 type Translate = (source: string, values?: Record<string, string | number | boolean | null | undefined>) => string
 
 function formatActivityDuration(durationMs: number, t: Translate): string {
@@ -678,6 +779,72 @@ const ThinkingIndicator = memo(({ activity }: { activity?: LogEntry['cursorActiv
 })
 ThinkingIndicator.displayName = 'ThinkingIndicator'
 
+// 7. Turn summary — "已处理 {duration}"，可折叠历史详情
+const ProcessedGroupSummary = memo(({
+  turnKey,
+  duration,
+  collapsible,
+  isOpen,
+  onToggle,
+  onBeforeToggle,
+}: {
+  turnKey: string
+  duration: string | null
+  collapsible: boolean
+  isOpen: boolean
+  onToggle: (turnKey: string) => void
+  onBeforeToggle?: () => void
+}) => {
+  const { t } = useI18n()
+  const label = duration
+    ? t('已处理 {duration}', { duration })
+    : t('已处理')
+  const summaryContent = (
+    <>
+      <span>{label}</span>
+      {collapsible && (
+        <span
+          className="flex size-4 shrink-0 items-center justify-center transition-transform duration-200 motion-reduce:transition-none"
+          style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+        >
+          <ChevronRight size={14} strokeWidth={2} />
+        </span>
+      )}
+    </>
+  )
+
+  if (!collapsible) {
+    return (
+      <div className="mb-3 mt-1">
+        <div
+          role="status"
+          className="flex w-full items-center gap-1.5 border-b border-neutral-100 py-2 text-sm leading-6 text-neutral-500"
+        >
+          {summaryContent}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mb-3 mt-1">
+      <button
+        type="button"
+        data-at-group-header={turnKey}
+        aria-expanded={isOpen}
+        onClick={() => {
+          onBeforeToggle?.()
+          onToggle(turnKey)
+        }}
+        className="group flex w-full items-center gap-1.5 border-b border-neutral-100 py-2 text-left text-sm leading-6 text-neutral-500 transition-colors hover:text-neutral-700"
+      >
+        {summaryContent}
+      </button>
+    </div>
+  )
+})
+ProcessedGroupSummary.displayName = 'ProcessedGroupSummary'
+
 // ============ RenderItem renderer ============
 
 function renderItem(
@@ -739,86 +906,16 @@ function renderItem(
   }
 }
 
-function renderLogItems(
-  logs: LogEntry[],
-  workingDir?: string,
-  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void,
-  onOpenPreviewUrl?: OpenPreviewUrlHandler,
-  onOpenVisualization?: OpenVisualizationHandler,
-  downloadSessionId?: string,
-): React.ReactNode {
-  return groupExecutionDetails(logs).map((item) => {
-    const node = renderItem(item, false, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId)
-    return node ? <div key={item.key}>{node}</div> : null
-  })
-}
-
-function renderConversationTurn(
-  turn: ConversationTurn,
-  isCompleted: boolean,
-  completedAt: number | null | undefined,
-  onUserToggleDetails?: () => void,
-  workingDir?: string,
-  onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void,
-  onOpenPreviewUrl?: OpenPreviewUrlHandler,
-  onOpenVisualization?: OpenVisualizationHandler,
-  downloadSessionId?: string,
-): React.ReactNode {
-  const userNode = turn.user
-    ? renderLogItems([turn.user], workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId)
-    : null
-
-  if (!isCompleted) {
-    return (
-      <>
-        {userNode}
-        <ProcessedGroup
-          logs={[]}
-          duration={getTurnDuration(turn, completedAt)}
-          collapsible={false}
-        />
-        {renderLogItems(turn.agentLogs, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId)}
-      </>
-    )
-  }
-
-  if (turn.agentLogs.length === 0) return userNode
-
-  const finalResponseIndex = findFinalResponseIndex(turn.agentLogs)
-  const processedLogs = finalResponseIndex >= 0
-    ? turn.agentLogs.slice(0, finalResponseIndex)
-    : turn.agentLogs
-  const finalLogs = finalResponseIndex >= 0
-    ? turn.agentLogs.slice(finalResponseIndex)
-    : []
-  const hasProcessedContent = processedLogs.some((log) => !shouldSkipProjectedLog(log))
-
-  return (
-    <>
-      {userNode}
-      <ProcessedGroup
-        logs={processedLogs}
-        duration={getTurnDuration(turn, completedAt)}
-        collapsible={hasProcessedContent}
-        onBeforeToggle={onUserToggleDetails}
-        workingDir={workingDir}
-        onOpenWorkspaceFile={onOpenWorkspaceFile}
-        onOpenPreviewUrl={onOpenPreviewUrl}
-        onOpenVisualization={onOpenVisualization}
-        downloadSessionId={downloadSessionId}
-      />
-      {renderLogItems(finalLogs, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId)}
-    </>
-  )
-}
-
 // ============ Main Component ============
+
+const OVERSCAN_ROWS = 8
 
 export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
   function LogStream({ logs, isOutputActive, lastExitAt, onUserToggleDetails, scrollElementRef, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }, ref) {
-    const turns = useMemo(() => (
-      isOutputActive === undefined ? null : splitConversationTurns(logs)
-    ), [isOutputActive, logs])
+    const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null)
+    const [scrollResolved, setScrollResolved] = useState(false)
+    const [viewportHeight, setViewportHeight] = useState(0)
+    const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(() => new Set<string>())
     const [liveNow, setLiveNow] = useState(() => Date.now())
 
     useEffect(() => {
@@ -832,38 +929,223 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
       }
     }, [isOutputActive])
 
+    /**
+     * The scroll container is owned by the parent (AgentSessionPanel) and its
+     * ref is attached after this component's effects, so resolve it from the
+     * prop first and fall back to the nearest scrollable ancestor through our
+     * own ref callback. Ref callbacks run in the commit phase, i.e. before the
+     * browser paints, so the first painted pass is already virtualized instead
+     * of rendering every row once.
+     */
+    const attachRoot = useCallback((node: HTMLDivElement | null) => {
+      if (!node) return
+      const resolved = scrollElementRef?.current ?? findScrollableAncestor(node)
+      setScrollElement((previous) => (previous === resolved ? previous : resolved))
+      // Ref callbacks run in the commit phase, so seeding the viewport height
+      // here keeps the first painted pass virtualized when the panel is visible.
+      setViewportHeight(resolved?.clientHeight ?? 0)
+      setScrollResolved(true)
+    }, [scrollElementRef])
+
+    /**
+     * `clientHeight === 0` means the viewport cannot be measured (hidden panel,
+     * happy-dom). Re-measure when the scroll container changes size so the
+     * un-virtualized fallback stays temporary: a panel hidden through CSS keeps
+     * this component mounted, so without an observation there is no state update
+     * that could bring it back to the virtualized path once it is visible again.
+     */
+    useEffect(() => {
+      if (!scrollElement) return
+      const update = () => setViewportHeight(scrollElement.clientHeight)
+      update()
+      if (typeof ResizeObserver === 'undefined') return
+      const observer = new ResizeObserver(update)
+      observer.observe(scrollElement)
+      return () => observer.disconnect()
+    }, [scrollElement])
+
+    const toggleTurn = useCallback((turnKey: string) => {
+      setExpandedTurns((previous) => {
+        const next = new Set(previous)
+        if (next.has(turnKey)) next.delete(turnKey)
+        else next.add(turnKey)
+        return next
+      })
+    }, [])
+
+    const turnModels = useMemo(() => {
+      if (isOutputActive === undefined) return null
+      const turns = splitConversationTurns(logs)
+      const lastIndex = turns.length - 1
+      return turns.map((turn, index) => (
+        buildTurnModel(turn, index === lastIndex, isOutputActive, lastExitAt)
+      ))
+    }, [logs, isOutputActive, lastExitAt])
+
+    // Legacy callers that omit `isOutputActive` keep the flat, ungrouped view.
+    const legacyItems = useMemo(
+      () => (isOutputActive === undefined ? groupExecutionDetails(logs) : null),
+      [isOutputActive, logs],
+    )
+
+    const rows = useMemo(() => {
+      if (legacyItems) {
+        return legacyItems.map((item): VirtualRow => (
+          { kind: 'item', key: `legacy:${item.key}`, item, processed: false }
+        ))
+      }
+      return buildRows(turnModels ?? [], expandedTurns)
+    }, [expandedTurns, legacyItems, turnModels])
+
+    const virtualizer = useVirtualizer({
+      count: rows.length,
+      getScrollElement: () => scrollElement,
+      estimateSize: (index) => estimateRowHeight(rows[index]),
+      getItemKey: (index) => rows[index]?.key ?? index,
+      overscan: OVERSCAN_ROWS,
+      // Fractional heights keep the scroll anchor stable; the default uses
+      // integer `offsetHeight`, which drifts over hundreds of rows.
+      measureElement: (element) => element.getBoundingClientRect().height,
+    })
+    // Instance hook, not an option: the policy lives in ./scrollAnchoring.
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = shouldAdjustScrollPositionOnItemSizeChange
+
+    // `clientHeight === 0` means the viewport cannot be measured (hidden panel,
+    // happy-dom). Fall back to the un-virtualized rendering instead of an empty
+    // list; real browsers with a visible panel always take the fast path.
+    const canVirtualize = scrollElement !== null && viewportHeight > 0
+
     // 暴露 scrollToBottom 给父组件（仅在传入 scrollElementRef 时有效）
     useImperativeHandle(ref, () => ({
       scrollToBottom: (behavior: 'instant' | 'smooth' = 'instant') => {
-        if (!scrollElementRef?.current) return
-        scrollElementRef.current.scrollTo({
-          top: scrollElementRef.current.scrollHeight,
+        const element = scrollElementRef?.current
+        if (!element) return
+        if (canVirtualize && rows.length > 0) {
+          virtualizer.scrollToIndex(rows.length - 1, { align: 'end' })
+        }
+        element.scrollTo({
+          top: element.scrollHeight,
           behavior: behavior as ScrollBehavior,
         })
+        if (behavior !== 'instant') return
+        // Rows below the fold may still be on their estimated size when
+        // `scrollHeight` is read, so re-pin over the next few frames.
+        let frames = 0
+        const correct = () => {
+          const node = scrollElementRef?.current
+          if (!node) return
+          if (node.scrollHeight - node.scrollTop - node.clientHeight <= 1) return
+          node.scrollTop = node.scrollHeight
+          if (++frames < 5) requestAnimationFrame(correct)
+        }
+        requestAnimationFrame(correct)
       },
-    }), [scrollElementRef])
+    }), [canVirtualize, rows.length, scrollElementRef, virtualizer])
+
+    const durationFor = useCallback((duration: DurationRange): string | null => {
+      const end = duration.end === null ? liveNow : duration.end
+      return formatDuration(duration.start, end)
+    }, [liveNow])
+
+    const renderRow = useCallback((row: VirtualRow): React.ReactNode => {
+      switch (row.kind) {
+        case 'user':
+          return (
+            <UserMessage
+              content={row.log.content}
+              workingDir={workingDir}
+              onOpenWorkspaceFile={onOpenWorkspaceFile}
+              onOpenPreviewUrl={onOpenPreviewUrl}
+            />
+          )
+        case 'summary':
+          return (
+            <ProcessedGroupSummary
+              turnKey={row.turnKey}
+              duration={durationFor(row.duration)}
+              collapsible={row.collapsible}
+              isOpen={expandedTurns.has(row.turnKey)}
+              onToggle={toggleTurn}
+              onBeforeToggle={onUserToggleDetails}
+            />
+          )
+        case 'item':
+          return renderItem(row.item, false, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId)
+        default:
+          return null
+      }
+    }, [
+      downloadSessionId,
+      durationFor,
+      expandedTurns,
+      onOpenPreviewUrl,
+      onOpenVisualization,
+      onOpenWorkspaceFile,
+      onUserToggleDetails,
+      toggleTurn,
+      workingDir,
+    ])
+
+    const virtualItems = virtualizer.getVirtualItems()
+
+    if (!scrollResolved) {
+      // `attachRoot` resolves the scroll container during the commit phase,
+      // before the browser paints, so this pass is never visible; it only
+      // avoids rendering every row once on first mount.
+      return <div ref={attachRoot} className="w-full mx-auto pb-4 min-w-0" style={{ overflowWrap: 'anywhere' }} />
+    }
 
     return (
-      <div className="w-full mx-auto pb-4 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-        {turns
-          ? turns.map((turn, index) => (
-              <div key={turn.key}>
-                {renderConversationTurn(
-                  turn,
-                  index < turns.length - 1 || !isOutputActive,
-                  index === turns.length - 1
-                    ? (isOutputActive ? liveNow : lastExitAt)
-                    : undefined,
-                  onUserToggleDetails,
-                  workingDir,
-                  onOpenWorkspaceFile,
-                  onOpenPreviewUrl,
-                  onOpenVisualization,
-                  downloadSessionId,
-                )}
+      <div ref={attachRoot} className="w-full mx-auto pb-4 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+        {/*
+          The two branches render the same `row.key`s, so `key` here is
+          load-bearing: without it React reconciles the virtual rows into the
+          fallback rows and reuses the same DOM nodes. Those nodes keep their
+          per-row ResizeObserver inside react-virtual but lose `data-index`, so
+          the observer's callback warns ("Missing attribute name
+          'data-index={index}' on measured element.") and returns early,
+          dropping the measurement. Distinct branch keys force a teardown
+          instead; the row keys themselves stay untouched, so the virtualizer's
+          item size cache (keyed by row key) still survives the switch.
+        */}
+        {canVirtualize ? (
+          <div key="virtualized" style={{ height: virtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
+            {virtualItems.map((virtualItem) => {
+              const row = rows[virtualItem.index]
+              if (!row) return null
+              return (
+                <div
+                  key={row.key}
+                  data-index={virtualItem.index}
+                  data-at-row={row.key}
+                  {...(row.kind === 'item' && row.processed ? { 'data-processed-content': '' } : {})}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualItem.start}px)`,
+                  }}
+                >
+                  {renderRow(row)}
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div key="static">
+            {rows.map((row) => (
+              <div
+                key={row.key}
+                data-at-row={row.key}
+                {...(row.kind === 'item' && row.processed ? { 'data-processed-content': '' } : {})}
+              >
+                {renderRow(row)}
               </div>
-            ))
-          : renderLogItems(logs, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId)}
+            ))}
+          </div>
+        )}
       </div>
     )
   },

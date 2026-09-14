@@ -38,6 +38,25 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/**
+ * Detects a UTF-16 code unit kept without its surrogate-pair counterpart.
+ * Bounded failure text used to be sliced straight at the cut point, which
+ * persisted half an emoji (rendered as U+FFFD) into the queued turn row.
+ */
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 describe('Conversation service safety', () => {
   async function waitForCondition(
     condition: () => boolean | Promise<boolean>,
@@ -160,6 +179,124 @@ describe('Conversation service safety', () => {
     } finally {
       releaseStop.resolve();
       await deleting;
+      await manager.destroyAll();
+    }
+  });
+
+  it('keeps the root cause line whether it sits at the head or the tail of an oversized failure', async () => {
+    const workingDir = path.join(dataDir, 'conversations', 'queue-failure-tail');
+    fs.mkdirSync(workingDir, { recursive: true });
+    const conversation = await prisma.conversation.create({
+      data: {
+        title: 'Queue failure',
+        directoryName: 'queue-failure-tail',
+        workingDir,
+        session: {
+          create: {
+            context: SessionContext.CONVERSATION,
+            agentType: 'CODEX',
+            runtimeType: 'ACP',
+            prompt: 'audit',
+            status: SessionStatus.RUNNING,
+          },
+        },
+      },
+      include: { session: true },
+    });
+    const manager = new SessionManager(new EventBus());
+    // Mirrors the real failure shape: a generic transport prefix, a long adapter
+    // diagnostic, and the root cause on either the first or the final line.
+    const tailRootCause = 'Fatal: ACP adapter rejected the prompt because the workspace credential expired';
+    const headRootCause = 'Fatal: ACP adapter could not load the workspace manifest';
+    const stderrNoise = Array.from(
+      { length: 60 },
+      () => 'adapter stderr line that is not the root cause',
+    ).join('; ');
+    vi.spyOn(manager, 'sendMessage')
+      .mockRejectedValueOnce(
+        new Error(`ACP connection closed; ACP adapter exited with code 1: ${stderrNoise}; ${tailRootCause}`),
+      )
+      .mockRejectedValueOnce(new Error(`${headRootCause}; ${stderrNoise}`));
+
+    try {
+      await manager.enqueueConversationMessage(conversation.session!.id, 'failure with the root cause last');
+      await manager.enqueueConversationMessage(conversation.session!.id, 'failure with the root cause first');
+      await waitForCondition(async () => await prisma.conversationTurn.count({
+        where: { sessionId: conversation.session!.id, status: 'FAILED' },
+      }) === 2);
+
+      const tailTurn = await prisma.conversationTurn.findFirstOrThrow({
+        where: { sessionId: conversation.session!.id, message: 'failure with the root cause last' },
+      });
+      expect(tailTurn.lastError).toContain(tailRootCause);
+      expect(tailTurn.lastError).toContain('chars omitted');
+      expect(tailTurn.lastError!.length).toBeLessThanOrEqual(2_000);
+
+      const headTurn = await prisma.conversationTurn.findFirstOrThrow({
+        where: { sessionId: conversation.session!.id, message: 'failure with the root cause first' },
+      });
+      expect(headTurn.lastError).toContain(headRootCause);
+      expect(headTurn.lastError).toContain('chars omitted');
+      expect(headTurn.lastError!.length).toBeLessThanOrEqual(2_000);
+    } finally {
+      await manager.destroyAll();
+    }
+  });
+
+  it('keeps surrogate pairs whole when bounding a queued turn failure (2_000 code units)', async () => {
+    const workingDir = path.join(dataDir, 'conversations', 'queue-failure-surrogate');
+    fs.mkdirSync(workingDir, { recursive: true });
+    const conversation = await prisma.conversation.create({
+      data: {
+        title: 'Queue failure with emoji',
+        directoryName: 'queue-failure-surrogate',
+        workingDir,
+        session: {
+          create: {
+            context: SessionContext.CONVERSATION,
+            agentType: 'CODEX',
+            runtimeType: 'ACP',
+            prompt: 'audit',
+            status: SessionStatus.RUNNING,
+          },
+        },
+      },
+      include: { session: true },
+    });
+    const manager = new SessionManager(new EventBus());
+    // The 2_000-unit queue bound cuts the head at index 666 and starts the tail
+    // 1_286 units before the end. Each failure puts an emoji on one of the cuts,
+    // so a straight UTF-16 slice would store half of it in `lastError`.
+    const headSplitFailure = `${'a'.repeat(665)}😀${'b'.repeat(2_000)}`;
+    const tailSplitFailure = `${'b'.repeat(800)}😀${'c'.repeat(1_285)}`;
+    expect(hasUnpairedSurrogate(headSplitFailure.slice(0, 666))).toBe(true);
+    expect(hasUnpairedSurrogate(tailSplitFailure.slice(tailSplitFailure.length - 1_286))).toBe(true);
+    vi.spyOn(manager, 'sendMessage')
+      .mockRejectedValueOnce(new Error(headSplitFailure))
+      .mockRejectedValueOnce(new Error(tailSplitFailure));
+
+    try {
+      await manager.enqueueConversationMessage(conversation.session!.id, 'failure with a split head emoji');
+      await manager.enqueueConversationMessage(conversation.session!.id, 'failure with a split tail emoji');
+      const turnsOf = async () => await prisma.conversationTurn.findMany({
+        where: { sessionId: conversation.session!.id },
+        orderBy: { createdAt: 'asc' },
+      });
+      await waitForCondition(
+        async () => (await turnsOf()).filter((turn) => turn.status === 'FAILED').length === 2,
+      ).catch(() => undefined);
+
+      // A lone surrogate is rejected by Prisma before it reaches SQLite, so a
+      // code-unit-sliced bound never gets persisted at all; the status assertion
+      // reports that as a plain mismatch instead of a bare wait timeout.
+      const turns = await turnsOf();
+      expect(turns.map((turn) => turn.status)).toEqual(['FAILED', 'FAILED']);
+      for (const turn of turns) {
+        expect(turn.lastError).toContain('chars omitted');
+        expect(turn.lastError!.length).toBeLessThanOrEqual(2_000);
+        expect(hasUnpairedSurrogate(turn.lastError!)).toBe(false);
+      }
+    } finally {
       await manager.destroyAll();
     }
   });

@@ -453,4 +453,139 @@ describe('useNormalizedLogs reconnect recovery', () => {
     expect(latest.isAttached).toBe(true)
     consoleError.mockRestore()
   })
+
+  it('reloads the authoritative snapshot when a patch op is unsupported', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const initial: NormalizedConversation = { entries: [message('one', 'before')], seq: 1 }
+    const recovered: NormalizedConversation = {
+      entries: [message('one', 'before'), message('two', 'authoritative')],
+      seq: 3,
+    }
+    apiGet.mockResolvedValueOnce(initial).mockResolvedValueOnce(recovered)
+
+    await act(async () => { root.render(<Harness />) })
+    await act(async () => { await latest.attach() })
+    expect(latest.entries.map((entry) => entry.content)).toEqual(['before'])
+
+    await act(async () => {
+      socket.dispatch('session:patch', {
+        sessionId: 'session-1',
+        seq: 2,
+        patch: [{ op: 'remove', path: '/entries/0' }],
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(consoleWarn).toHaveBeenCalledWith(
+      '[sessionLogStore] unsupported conversation patch op/path',
+      { op: 'remove', path: '/entries/0' },
+    )
+    // The rejected batch is not applied partially: the hook refetches instead.
+    expect(apiGet).toHaveBeenCalledTimes(2)
+    expect(latest.entries.map((entry) => entry.content)).toEqual(['before', 'authoritative'])
+    expect(latest.isAttached).toBe(true)
+    consoleWarn.mockRestore()
+  })
+
+  it('buffers patches during a degradation reload and replays them by seq', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const reload = deferred<NormalizedConversation>()
+    const initial: NormalizedConversation = { entries: [message('one', 'before')], seq: 1 }
+    const snapshot: NormalizedConversation = {
+      entries: [message('one', 'before'), message('two', 'reloaded')],
+      seq: 2,
+    }
+    apiGet.mockResolvedValueOnce(initial).mockImplementationOnce(() => reload.promise)
+
+    await act(async () => { root.render(<Harness />) })
+    await act(async () => { await latest.attach() })
+
+    await act(async () => {
+      socket.dispatch('session:patch', {
+        sessionId: 'session-1',
+        seq: 2,
+        patch: [{ op: 'add', path: '/entries/-', value: message('x', 'unsupported append') }],
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(apiGet).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      socket.dispatch('session:patch', {
+        sessionId: 'session-1',
+        seq: 3,
+        patch: [{ op: 'add', path: '/entries/2', value: message('three', 'buffered') }],
+      })
+      reload.resolve(snapshot)
+      await reload.promise
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latest.entries.map((entry) => entry.content)).toEqual([
+      'before',
+      'reloaded',
+      'buffered',
+    ])
+    expect(useSessionLogStore.getState().getConversation('session-1')?.seq).toBe(3)
+    expect(latest.isAttached).toBe(true)
+    consoleWarn.mockRestore()
+  })
+
+  it('refetches when a buffered patch is rejected by the conversation patch module', async () => {
+    vi.useFakeTimers()
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const staleRequest = deferred<NormalizedConversation>()
+    const initial: NormalizedConversation = { entries: [message('one', 'before')], seq: 1 }
+    const recovered: NormalizedConversation = {
+      entries: [message('one', 'before'), message('two', 'authoritative')],
+      seq: 3,
+    }
+    apiGet
+      .mockResolvedValueOnce(initial)
+      .mockImplementationOnce(() => staleRequest.promise)
+      .mockResolvedValueOnce(recovered)
+
+    await act(async () => { root.render(<Harness />) })
+    await act(async () => { await latest.attach() })
+
+    await act(async () => {
+      socket.connected = false
+      socket.dispatch('disconnect')
+      socket.connected = true
+      socket.dispatch('connect')
+      // `remove` is not supported by the client patch module: the buffered
+      // replay must reject the batch and fall back to a fresh snapshot instead
+      // of applying a removal the live path would have refused.
+      socket.dispatch('session:patch', {
+        sessionId: 'session-1',
+        seq: 2,
+        patch: [{ op: 'remove', path: '/entries/0' }],
+      })
+      staleRequest.resolve(initial)
+      await staleRequest.promise
+      await Promise.resolve()
+    })
+
+    expect(consoleWarn).toHaveBeenCalledWith(
+      '[sessionLogStore] unsupported conversation patch op/path',
+      { op: 'remove', path: '/entries/0' },
+    )
+    expect(latest.isAttached).toBe(false)
+    expect(apiGet).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SNAPSHOT_RETRY_DELAY_MS)
+    })
+
+    expect(apiGet).toHaveBeenCalledTimes(3)
+    expect(latest.entries.map((entry) => entry.content)).toEqual(['before', 'authoritative'])
+    expect(latest.isAttached).toBe(true)
+    consoleWarn.mockRestore()
+    consoleError.mockRestore()
+  })
 })

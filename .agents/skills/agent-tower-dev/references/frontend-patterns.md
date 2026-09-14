@@ -6,7 +6,8 @@
 
 - `App.tsx` 先挂载 Query provider 和 `components/access/AccessGate.tsx`，访问认证通过后才挂载 Socket、全局同步和路由。新入口不要绕过此顺序。
 - `lib/api-client.ts` 统一处理 API base URL、same-origin credentials、204 和携带后端 details 的 `ApiError`。`lib/api-base-url.ts` 在开发环境把 loopback API/Socket 配置转回同源代理；`packages/web/vite.config.ts` 代理 `/api`、`/socket.io`、`/view` 并重写 HTTP/WS Origin。开发端口来自 shared `getDevPort(repoRoot)`，不能假设后端恒为 12580。
-- 活跃路由在 `routes/index.tsx`：首页是 `ProjectKanbanPage`，另有 conversations 和演示页。Settings 是 `SettingsDialog` 加 `ui-store`，旧 `/settings/:tab` 只负责打开 dialog 后跳回首页；新增 tab 同步类型、dialog 与 redirect mapping。不要仅因存在 `HomePage`/`SettingsLayout` 文件就将其视为当前入口。
+- 活跃路由表在 `routes/app-routes.tsx`：首页是 `ProjectKanbanPage`，另有 conversations 和演示页。`routes/index.tsx` 只负责 `createBrowserRouter(appRoutes)` 并导出 `AppRouter`；路由表单独成模块，测试才能用 `createMemoryRouter(appRoutes, ...)` 挂载生产层级。Settings 是 `SettingsDialog` 加 `ui-store`，旧 `/settings/:tab` 由 `routes/SettingsRedirect.tsx` 打开 dialog 后跳回首页；新增 tab 同步类型、dialog 与 redirect mapping。不要仅因存在 `HomePage`/`SettingsLayout` 文件就将其视为当前入口。
+- 渲染兜底按层级分工，改动时不要破坏依赖方向：路由 `errorElement` 用 `components/errors/RouteErrorPage.tsx`（pathless 分组保留 `RootLayout` 外壳，根路由兜 `RootLayout` 自身）；`AppRootBoundary` 兜路由外渲染错误（回退 UI 用 `useI18n`，必须在 `I18nProvider` 之内）；`AppShellBoundary` 高于全部 provider，回退 UI 只能用 `translate()` 等模块级能力，不能依赖 i18n/query/auth context。`ErrorBoundary` 只覆盖渲染阶段错误，事件处理器、异步回调与 observer 错误不会进入任何兜底。
 - 桌面导航沿用 `lib/desktop-titlebar.tsx` 的 provider、`useDesktopNavigate` 和 search 保留逻辑；macOS traffic lights、Windows window controls overlay 与普通浏览器的 header 留白不同。
 
 ## 状态与缓存
@@ -48,11 +49,18 @@ App 管理单例 `lib/socket/manager.ts` 的连接生命周期；hook 可调用 
 
 沿用 `@/` alias、邻近无分号格式、`components/ui`、lucide-react 和领域组件。用户文案使用 `useI18n().t()`/`translate` 并维护 `lib/i18n/messages.ts`。桌面和移动端 detail 目前分别实现；共享交互优先复用现有组件（如 `EditableTaskTitle`），并检查两端调用。终端、Monaco、日志视图复用 virtualize/auto-fit/scroll helper，保持稳定容器尺寸。
 
+会话日志（`components/agent/LogStream.tsx`）使用**单层扁平虚拟化**：turn、`已处理` 摘要、明细行被摊平成一维 row 列表，只挂载视口 + overscan 行，折叠的历史明细**根本不挂载**（不是隐藏）。因此：
+
+- 调用方（`AgentSessionPanel`、`TaskDetail`、`MobileTaskDetail`）必须把 `useStickToBottom().scrollRef` 作为 `scrollElementRef` 传入；缺失时回退为向上查找可滚动祖先。
+- `clientHeight === 0`（隐藏面板、happy-dom）会退化为非虚拟化全量渲染，避免空白，但真实浏览器的可见面板始终走虚拟化路径。
+- 行高由 `measureElement` 动态测量，展开/折叠与流式 markdown 增长都会触发重测；滚动锚点行为只能在真实 Chrome 里验证，happy-dom 测不到。
+
 DOM 测试按邻近文件使用 happy-dom；测试配置和构建顺序见 [SKILL.md](../SKILL.md)。按改动选择最窄测试：
 
 ```bash
 pnpm exec vitest run packages/web/src/hooks/__tests__/use-tasks-cache.test.ts
 pnpm exec vitest run packages/web/src/hooks/__tests__/use-runtime-state.test.tsx
+pnpm exec vitest run packages/web/src/components/agent/__tests__/LogStream.test.tsx
 pnpm exec vitest run packages/web/src/lib/socket/__tests__/useNormalizedLogs.reconnect.test.tsx
 pnpm exec vitest run packages/web/src/hooks/__tests__/use-workspace-services.test.tsx
 pnpm --filter web build

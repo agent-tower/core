@@ -32,7 +32,7 @@ import { WorkspaceService } from './workspace.service.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
-import { acquireTeamMemberAdmission } from './team-member-admission-barrier.js';
+import { acquireTeamMemberAdmission, DEFAULT_MEMBER_ADMISSION_ACQUIRE_TIMEOUT_MS } from './team-member-admission-barrier.js';
 import { ensureTaskNotDeleted, isTaskDeleted } from './deleted-task-guard.js';
 import { TEAM_ROOM_SYSTEM_SHARED_PROTOCOL } from '../prompts/team-room-system-shared-protocol.js';
 import { evaluateSessionRuntimeCleanup } from './session-runtime-cleanup-gate.js';
@@ -151,6 +151,12 @@ interface TeamSchedulerDependencies {
   getProviderById?: (providerId: string) => Provider | null;
   teamRunReviewAdvancer?: TeamRunReviewAdvancer;
   now?: () => Date;
+  /**
+   * Ceiling for the member admission wait on stop paths. A stuck holder must
+   * surface as a bounded `MEMBER_ADMISSION_BUSY` error instead of letting the
+   * UI spin on an HTTP request that never returns.
+   */
+  memberAdmissionTimeoutMs?: number;
 }
 
 const ACTIVE_INVOCATION_STATUSES: AgentInvocationStatus[] = [
@@ -349,6 +355,7 @@ export class TeamSchedulerService {
   private readonly providerLookup: (providerId: string) => Provider | null;
   private readonly teamRunReviewAdvancer: TeamRunReviewAdvancer;
   private readonly now: () => Date;
+  private readonly memberAdmissionTimeoutMs: number;
 
   constructor(
     private readonly lockService = defaultTeamLockService,
@@ -358,6 +365,8 @@ export class TeamSchedulerService {
     this.sessionManager = dependencies.sessionManager ?? getSessionManager();
     this.providerLookup = dependencies.getProviderById ?? getProviderById;
     this.now = dependencies.now ?? (() => new Date());
+    this.memberAdmissionTimeoutMs = dependencies.memberAdmissionTimeoutMs
+      ?? DEFAULT_MEMBER_ADMISSION_ACQUIRE_TIMEOUT_MS;
     this.teamRunReviewAdvancer = dependencies.teamRunReviewAdvancer ?? new TeamReconcilerService({
       eventBus: getEventBus(),
       sessionMessenger: this.sessionManager as unknown as import('./team-reconciler.service.js').TeamReconcilerSessionMessenger,
@@ -484,7 +493,9 @@ export class TeamSchedulerService {
         continue;
       }
 
-      const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(teamRunId, member.id);
+      const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(teamRunId, member.id, {
+        holder: 'startNext',
+      });
 
       let invocationId: string | null = null;
       try {
@@ -560,7 +571,9 @@ export class TeamSchedulerService {
         continue;
       }
 
-      const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(teamRunId, member.id);
+      const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(teamRunId, member.id, {
+        holder: 'startNextSessions',
+      });
 
       let invocationId: string | null = null;
       try {
@@ -941,7 +954,10 @@ export class TeamSchedulerService {
     };
     let shouldStartNextForQueuedOnly = false;
     let hadActiveInvocations = false;
-    const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(teamRunId, memberId);
+    const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(teamRunId, memberId, {
+      holder: 'stopMemberWork',
+      timeoutMs: this.memberAdmissionTimeoutMs,
+    });
     try {
       // Re-read all admission state after acquiring the same barrier used by
       // startNextSessions. A DB cancellation observed before this point must
@@ -1036,6 +1052,7 @@ export class TeamSchedulerService {
     const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(
       invocation.teamRunId,
       invocation.memberId,
+      { holder: 'stopSession', timeoutMs: this.memberAdmissionTimeoutMs },
     );
     let stopped: unknown = null;
     let shouldReconcileStop = false;

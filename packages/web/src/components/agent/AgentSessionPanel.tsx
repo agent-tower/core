@@ -6,6 +6,7 @@ import { LogStream } from './LogStream'
 import { TodoPanel } from './TodoPanel'
 import { TokenUsageIndicator } from './TokenUsageBar'
 import { RuntimePermissionPrompt } from './RuntimePermissionPrompt'
+import { LogViewBoundary } from '@/components/errors'
 import { ProviderSelector } from '@/components/task/ProviderSelector'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { useAttachments } from '@/hooks/use-attachments'
@@ -253,13 +254,16 @@ export function AgentSessionPanel({
                 {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
               </div>
             ) : (
-              <LogStream
-                logs={logs}
-                downloadSessionId={sessionId}
-                isOutputActive={isOutputActive}
-                lastExitAt={lastExitAt}
-                onUserToggleDetails={stopScroll}
-              />
+              <LogViewBoundary>
+                <LogStream
+                  logs={logs}
+                  downloadSessionId={sessionId}
+                  isOutputActive={isOutputActive}
+                  lastExitAt={lastExitAt}
+                  onUserToggleDetails={stopScroll}
+                  scrollElementRef={scrollRef}
+                />
+              </LogViewBoundary>
             )}
           </div>
         </div>

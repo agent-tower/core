@@ -10,6 +10,7 @@ import { getProviderById, getProviderRuntimeType } from '../../executors/provide
 import { markPreChildProcessFailure } from '../../executors/start-error.js';
 import { MsgStore, setSessionId, type JsonPatch } from '../../output/index.js';
 import { buildMcpConfigResponse } from '../../services/mcp-config.service.js';
+import { writeErrorLog } from '../../utils/error-log.js';
 import type {
   DriverSession,
   DriverTurn,
@@ -19,7 +20,7 @@ import type {
   RuntimeRunTurnInput,
 } from '../contracts.js';
 import { AgentRuntimeError } from '../errors.js';
-import { AcpProcessManager } from './process-manager.js';
+import { AcpProcessManager, type AcpProcessExit } from './process-manager.js';
 import { acpLaunchCleanupRegistry } from './launch-cleanup-registry.js';
 import { getAcpAgentDefinition } from './agents/registry.js';
 import type { AcpAgentDefinition, AcpAgentProfile } from './agents/types.js';
@@ -28,6 +29,25 @@ import { AcpProjector } from './projector.js';
 
 const CONNECT_TIMEOUT_MS = 15_000;
 const MAX_SESSION_BOOTSTRAP_UPDATES = 1_000;
+/**
+ * Adapter stderr is unbounded third-party output that can echo whole
+ * environment blocks, private paths and user data. A crash only needs its
+ * fatal line, so persist a controlled tail summary instead of the raw excerpt.
+ */
+const EXIT_DIAGNOSTIC_MAX_LINES = 12;
+const EXIT_DIAGNOSTIC_MAX_LINE_CHARS = 300;
+const EXIT_DIAGNOSTIC_MAX_CHARS = 1_200;
+const TURN_FAILURE_MAX_CHARS = 4_096;
+/** Reserved room for the "...[N chars omitted]..." marker inside a bound. */
+const OMISSION_MARKER_BUDGET = 48;
+
+/**
+ * Debug-only instrumentation for the session/load ↔ reconcile path.
+ * Off by default; only logs, never changes behaviour.
+ * Enable with DEBUG_ACP_RECONCILE=true to measure how often `session/load`
+ * replay produces a whole-array `replace /entries` frame and how large it is.
+ */
+const DEBUG_ACP_RECONCILE = process.env.DEBUG_ACP_RECONCILE === 'true';
 
 interface PendingPermission {
   optionIds: Set<string>;
@@ -67,6 +87,7 @@ class AcpDriverSession implements DriverSession {
   private transportGeneration = 0;
   private readonly processCleanupEvidence = new WeakMap<AcpProcessManager, ProcessCleanupEvidence>();
   private readonly pendingProcessManagers = new Set<AcpProcessManager>();
+  private lastProcessExit?: { generation: number; exit: AcpProcessExit };
   private negotiatedCapabilities: RuntimeCapabilities = {
     loadSession: false,
     terminalInput: false,
@@ -189,7 +210,7 @@ class AcpDriverSession implements DriverSession {
         if (this.cancelledTurnIds.has(turn.turnId)) {
           return { stopReason: 'cancelled' };
         }
-        const normalized = normalizeAcpError(error, 'prompt');
+        const normalized = this.explainTurnFailure(normalizeAcpError(error, 'prompt'), generation);
         if (shouldResetAcpTransport(normalized)) {
           await this.resetTransport(connection).catch(() => undefined);
         }
@@ -311,6 +332,11 @@ class AcpDriverSession implements DriverSession {
       });
       this.assertStartupCurrent(generation, admissionSignal, 'initialize', false);
       manager.onExit((exit) => {
+        // Record before anything awaits: the SDK tears the connection down by
+        // itself when the adapter's stdout closes and its close() is
+        // first-come-first-served, so the generic "ACP connection closed" error
+        // otherwise reaches the turn and the adapter's own fatal reason is lost.
+        this.recordProcessExit(generation, runtimeInstanceId, exit);
         void (async () => {
           await sink.process({
             type: 'exited',
@@ -325,7 +351,7 @@ class AcpDriverSession implements DriverSession {
               new AgentRuntimeError(
                 'process_exit',
                 'runtime',
-                exit.stderrExcerpt || `ACP adapter exited with code ${exit.exitCode ?? 'unknown'}`,
+                describeAcpProcessExit(exit),
                 true,
               ),
             );
@@ -485,6 +511,60 @@ class AcpDriverSession implements DriverSession {
     if (this.closed || this.connection !== connection) return;
     this.invalidatePermissions(this.currentSink);
     void this.resetTransport(connection).catch(() => undefined);
+  }
+
+  /**
+   * The adapter can end its own process. `AcpProcessManager` already captures
+   * its stderr, but the transport's generic "ACP connection closed" failure
+   * reaches the turn first, so keep the exit facts here (before any await) and
+   * persist them for the next reproduction. A signal-terminated stop reports no
+   * exit code, so intentional teardown stays out of the log.
+   *
+   * One adapter process belongs to one generation, and the first fact observed
+   * for it is the one closest to the failure: a duplicate settle (or a late
+   * close) must neither overwrite the recorded reason nor add a second log
+   * line. A retired generation can also settle after its replacement started,
+   * so only a newer generation may replace the recorded evidence.
+   */
+  private recordProcessExit(generation: number, runtimeInstanceId: string, exit: AcpProcessExit): void {
+    const recorded = this.lastProcessExit;
+    if (!recorded || generation > recorded.generation) {
+      this.lastProcessExit = { generation, exit };
+    }
+    if (recorded?.generation === generation) return;
+    if (typeof exit.exitCode !== 'number' || exit.exitCode === 0) return;
+    const diagnostic = buildAcpExitDiagnostic(exit);
+    writeErrorLog({
+      level: 'error',
+      source: 'session.acp.processExit',
+      message: describeAcpProcessExit(exit, diagnostic),
+      metadata: {
+        towerSessionId: this.input.towerSessionId,
+        runtimeInstanceId,
+        exitCode: exit.exitCode,
+        signal: exit.signal,
+        stderrChars: exit.stderrExcerpt.length,
+        stderrSummary: diagnostic.stderrSummary,
+      },
+    });
+  }
+
+  private explainTurnFailure(error: AgentRuntimeError, generation: number): AgentRuntimeError {
+    const evidence = this.lastProcessExit;
+    if (!evidence || evidence.generation !== generation) return error;
+    // The generic transport error sits at the head and the adapter's fatal line
+    // at the tail, so bound both ends instead of dropping the tail.
+    const message = boundDiagnosticText(
+      `${redactDiagnosticText(error.message)}; ${describeAcpProcessExit(evidence.exit)}`,
+      TURN_FAILURE_MAX_CHARS,
+    );
+    return new AgentRuntimeError(
+      'process_exit',
+      error.stage,
+      message,
+      true,
+      { cause: error },
+    );
   }
 
   private async resetTransport(
@@ -668,17 +748,38 @@ class AcpDriverSession implements DriverSession {
     });
     for (const update of updates) replayProjector.project(update);
 
+    const sessionRef = this.currentExternalSessionId ?? 'unknown';
+    // Hoisted so the debug branch never adds an extra getSnapshot() replay.
+    const localEntries = turn.msgStore.getSnapshot().entries;
+    const replayedEntries = replayStore.getSnapshot().entries;
+    const localEntryCount = localEntries.length;
+    const replayedEntryCount = replayedEntries.length;
     const mergedEntries = reconcileAcpHistoryEntries(
-      turn.msgStore.getSnapshot().entries,
-      replayStore.getSnapshot().entries,
+      localEntries,
+      replayedEntries,
       { historyBoundaryEntryId: turn.historyBoundaryEntryId },
     );
-    if (!mergedEntries) return;
+    if (!mergedEntries) {
+      if (DEBUG_ACP_RECONCILE) {
+        console.log(
+          `[AcpRuntimeDriver:reconcile] externalSessionId=${sessionRef} resumeMode=load action=skip(no-change) `
+          + `replayUpdates=${updates.length} localEntries=${localEntryCount} replayedEntries=${replayedEntryCount}`,
+        );
+      }
+      return;
+    }
 
     const patch: JsonPatch = [{ op: 'replace', path: '/entries', value: mergedEntries }];
     turn.msgStore.entryIndex.startFrom(mergedEntries.length);
     const seq = turn.msgStore.pushPatch(patch);
     sink.stream({ type: 'conversation_patch', patch, seq });
+    if (DEBUG_ACP_RECONCILE) {
+      console.log(
+        `[AcpRuntimeDriver:reconcile] externalSessionId=${sessionRef} resumeMode=load action=replace-all-entries `
+        + `replayUpdates=${updates.length} localEntries=${localEntryCount} replayedEntries=${replayedEntryCount} `
+        + `mergedEntries=${mergedEntries.length} frameBytes=${JSON.stringify(patch).length} seq=${seq}`,
+      );
+    }
   }
 
   private handlePermission(
@@ -795,6 +896,107 @@ function normalizeAcpError(error: unknown, stage: string): AgentRuntimeError {
   });
 }
 
+interface AcpExitDiagnostic {
+  /** Always present: "ACP adapter exited with code 1 (signal SIGKILL)". */
+  headline: string;
+  /** Redacted, tail-bounded stderr; empty when the adapter wrote nothing. */
+  stderrSummary: string;
+}
+
+/**
+ * Keep only what a crash diagnosis needs: the last few non-empty stderr lines
+ * (a CLI reports its fatal reason last), redacted and bounded. The raw excerpt
+ * is never persisted as-is.
+ */
+function buildAcpExitDiagnostic(exit: AcpProcessExit): AcpExitDiagnostic {
+  const headline = `ACP adapter exited with code ${exit.exitCode ?? 'unknown'}`
+    + (exit.signal ? ` (signal ${exit.signal})` : '');
+  const tailLines = exit.stderrExcerpt
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(-EXIT_DIAGNOSTIC_MAX_LINES)
+    .map((line) => boundDiagnosticText(redactDiagnosticText(line), EXIT_DIAGNOSTIC_MAX_LINE_CHARS));
+  return {
+    headline,
+    stderrSummary: boundDiagnosticText(tailLines.join('\n'), EXIT_DIAGNOSTIC_MAX_CHARS),
+  };
+}
+
+function describeAcpProcessExit(exit: AcpProcessExit, diagnostic = buildAcpExitDiagnostic(exit)): string {
+  return diagnostic.stderrSummary ? `${diagnostic.headline}: ${diagnostic.stderrSummary}` : diagnostic.headline;
+}
+
+/**
+ * Explicit redaction for diagnostic excerpts. `error-log` already handles known
+ * credential formats, but a failing adapter can echo whole environment blocks,
+ * account names and user identities that no generic pattern covers. Redaction
+ * keeps the root-cause wording intact (paths collapse to `~`, not disappear).
+ */
+function redactDiagnosticText(value: string): string {
+  return value
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/(authorization\s*[:=]\s*)([^\s,;]+)/gi, '$1[REDACTED]')
+    .replace(/\b(?:sk|key|token|secret|ghp|gho|ghs|ghr|xox[baprs])[-_][A-Za-z0-9._-]{8,}\b/gi, '[REDACTED]')
+    // Credential-shaped assignment names (OPENAI_API_KEY=..., auth_token: ...).
+    .replace(
+      /(^|[\s"'(])((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|key|token|secret|password|passwd|credential|cookie|auth)(?:[_-][A-Za-z0-9]+)*)(\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gi,
+      '$1$2$3[REDACTED]',
+    )
+    // Environment-variable style assignments (HOME=..., export PATH=...).
+    .replace(
+      /(^|[\s"'(])([A-Z][A-Z0-9_]{2,})(\s*=\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/g,
+      '$1$2$3[REDACTED]',
+    )
+    // Account names in home directories and e-mail addresses.
+    .replace(/(?:\/Users|\/home)\/[^/\s'"]+/g, '~')
+    .replace(/[A-Za-z]:\\Users\\[^\\\s'"]+/gi, '~')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[EMAIL]');
+}
+
+/**
+ * Bound a diagnostic while keeping both ends: the head carries the generic
+ * failure context and the tail carries the adapter's own fatal line. The
+ * result never exceeds `maxChars` code units.
+ *
+ * The two cut points are pulled inward when they would land inside a surrogate
+ * pair. A straight UTF-16 slice used to persist an orphaned half of an emoji,
+ * which shows up as a replacement character and can mangle the root-cause line.
+ * Pulling inward only shortens the slice, so the bound itself still holds.
+ */
+function boundDiagnosticText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const headEnd = codePointSafeHeadEnd(value, Math.floor(maxChars / 3));
+  const tailChars = Math.max(0, maxChars - headEnd - OMISSION_MARKER_BUDGET);
+  const tailStart = codePointSafeTailStart(value, value.length - tailChars);
+  const omitted = tailStart - headEnd;
+  return `${value.slice(0, headEnd)}\n...[${omitted} chars omitted]...\n${value.slice(tailStart)}`;
+}
+
+/** Cut a head slice before, never inside, a surrogate pair. */
+function codePointSafeHeadEnd(value: string, end: number): number {
+  if (end <= 0) return 0;
+  if (end >= value.length) return value.length;
+  const keepsPair = isHighSurrogate(value.charCodeAt(end - 1)) && isLowSurrogate(value.charCodeAt(end));
+  return keepsPair ? end - 1 : end;
+}
+
+/** Start a tail slice after, never inside, a surrogate pair. */
+function codePointSafeTailStart(value: string, start: number): number {
+  if (start <= 0) return 0;
+  if (start >= value.length) return value.length;
+  const splitsPair = isLowSurrogate(value.charCodeAt(start)) && isHighSurrogate(value.charCodeAt(start - 1));
+  return splitsPair ? start + 1 : start;
+}
+
+function isHighSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
 function shouldResetAcpTransport(error: AgentRuntimeError): boolean {
   return error.code === 'protocol_violation'
     || error.code === 'connection_closed'
@@ -819,7 +1021,7 @@ function sanitize(value: string, maxLength: number): string {
   const redacted = value
     .replace(/\b(?:sk|key|token|secret)-[A-Za-z0-9._-]{8,}\b/gi, '[REDACTED]')
     .replace(/(authorization\s*[:=]\s*)([^\s]+)/gi, '$1[REDACTED]');
-  return redacted.length > maxLength ? `${redacted.slice(0, maxLength)} [TRUNCATED]` : redacted;
+  return boundDiagnosticText(redacted, maxLength);
 }
 
 function normalizePermissionKind(value: string): RuntimePermissionOption['kind'] {

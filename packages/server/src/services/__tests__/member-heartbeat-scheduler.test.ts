@@ -91,4 +91,36 @@ describe('MemberHeartbeatScheduler queue pump', () => {
     expect(queuePump.reconcileQueuedWork).toHaveBeenCalledTimes(2);
     scheduler.stop();
   });
+
+  it('continues the remaining stages when one stage hangs past its timeout', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const reconciler = {
+      reconcilePendingRuntimeCleanup: vi.fn(() => new Promise<never>(() => undefined)),
+      reconcileOrphanInvocations: vi.fn(async () => undefined),
+      reconcileIncompleteTerminalInvocations: vi.fn(async () => undefined),
+      reconcileStalledInvocations: vi.fn(async () => undefined),
+      reconcileDueRoomReplyReminders: vi.fn(async () => 0),
+    } as unknown as TeamReconcilerService;
+    const queuePump = {
+      reconcileQueuedWork: vi.fn(async () => 0),
+    };
+    const scheduler = new MemberHeartbeatScheduler({
+      eventBus: {} as EventBus,
+      sessionManager: {} as SessionManager,
+      reconciler,
+      queuePump,
+      tickIntervalMs: 30_000,
+      stageTimeoutMs: 5_000,
+    });
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(reconciler.reconcileOrphanInvocations).toHaveBeenCalledTimes(1);
+    expect(reconciler.reconcileIncompleteTerminalInvocations).toHaveBeenCalledTimes(1);
+    expect(reconciler.reconcileStalledInvocations).toHaveBeenCalledTimes(1);
+    expect(reconciler.reconcileDueRoomReplyReminders).toHaveBeenCalledTimes(1);
+    expect(queuePump.reconcileQueuedWork).toHaveBeenCalledTimes(1);
+    scheduler.stop();
+  });
 });

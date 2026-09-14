@@ -35,6 +35,10 @@ export const teamRunQueryKeys = {
 }
 
 const TEAM_RUN_REFRESH_INTERVAL_MS = 5000
+// The server bounds its member-admission wait and answers 409 beyond it; this
+// client-side ceiling keeps the button from spinning forever if the request is
+// lost or the server never responds at all.
+const STOP_MEMBER_WORK_REQUEST_TIMEOUT_MS = 45_000
 
 export type PostRoomMessageInput = {
   content: string
@@ -512,10 +516,20 @@ export function useStopMemberWork(teamRunId: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ memberId, cancelQueued }: StopMemberWorkInput) =>
-      apiClient.post<StopMemberWorkResponse>(`/team-runs/${teamRunId}/members/${memberId}/stop`, {
-        cancelQueued,
-      }),
+    mutationFn: async ({ memberId, cancelQueued }: StopMemberWorkInput) => {
+      try {
+        return await apiClient.post<StopMemberWorkResponse>(
+          `/team-runs/${teamRunId}/members/${memberId}/stop`,
+          { cancelQueued },
+          { signal: AbortSignal.timeout(STOP_MEMBER_WORK_REQUEST_TIMEOUT_MS) },
+        )
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'TimeoutError') {
+          throw new Error('Stop request timed out before the server answered. Refresh the team status and retry.')
+        }
+        throw error
+      }
+    },
     onSuccess: () => {
       invalidateTeamRunActionQueries(queryClient, teamRunId)
     },

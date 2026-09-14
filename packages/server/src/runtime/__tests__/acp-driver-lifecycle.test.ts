@@ -19,6 +19,25 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/**
+ * Detects a UTF-16 code unit kept without its surrogate-pair counterpart.
+ * Bounded diagnostics used to be sliced straight at the cut point, which
+ * persisted half an emoji (rendered as U+FFFD) instead of a whole character.
+ */
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const acpState = vi.hoisted(() => ({
   authMethods: [{ id: 'api-key', name: 'API Key' }] as Array<{ id: string; name: string }>,
   loadUpdates: [] as Array<{ sessionId: string; update: Record<string, unknown> }>,
@@ -47,6 +66,11 @@ const acpState = vi.hoisted(() => ({
   processStops: 0,
   processStopErrors: [] as unknown[],
   processStopGate: undefined as undefined | Promise<void>,
+  processExitListeners: [] as Array<(exit: {
+    exitCode: number | null;
+    signal: string | null;
+    stderrExcerpt: string;
+  }) => void>,
   initializeError: undefined as unknown,
 }));
 
@@ -150,7 +174,13 @@ vi.mock('../acp/process-manager.js', () => ({
       acpState.processStarts += 1;
       return { pid: 123, input: {}, output: {} };
     }
-    onExit() {}
+    onExit(listener: (exit: {
+      exitCode: number | null;
+      signal: string | null;
+      stderrExcerpt: string;
+    }) => void) {
+      acpState.processExitListeners.push(listener);
+    }
     async stop() {
       acpState.processStops += 1;
       await acpState.processStopGate;
@@ -160,7 +190,13 @@ vi.mock('../acp/process-manager.js', () => ({
   },
 }));
 
+vi.mock('../../utils/error-log.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../utils/error-log.js')>(),
+  writeErrorLog: vi.fn(),
+}));
+
 import { AcpRuntimeDriver } from '../acp/acp-driver.js';
+import { writeErrorLog } from '../../utils/error-log.js';
 
 function setup() {
   const sink: RuntimeDriverEventSink = {
@@ -198,6 +234,7 @@ beforeEach(() => {
   acpState.processStops = 0;
   acpState.processStopErrors = [];
   acpState.processStopGate = undefined;
+  acpState.processExitListeners.length = 0;
   acpState.initializeError = undefined;
   providerState.provider = null;
 });
@@ -893,5 +930,329 @@ describe('AcpRuntimeDriver lifecycle', () => {
     expect(methods.filter((method) => method === 'session/load')).toHaveLength(2);
     await session.close();
     expect(acpState.processStops).toBe(2);
+  });
+
+  it('surfaces the adapter exit reason when the ACP process dies mid-turn', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const msgStore = new MsgStore();
+    const turn = await session.runTurn({
+      turnId: 'turn-process-exit',
+      prompt: 'run the heavy test suite',
+      msgStore,
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+
+    // The adapter dies on its own; the SDK then closes the transport first, so
+    // without the recorded exit facts the turn only reports the generic error.
+    acpState.processExitListeners.at(-1)?.({
+      exitCode: 1,
+      signal: null,
+      stderrExcerpt: 'Fatal: unhandled rejection in the adapter',
+    });
+    acpState.prompt?.reject(new Error('ACP connection closed'));
+
+    await expect(turn.completion).rejects.toMatchObject({
+      code: 'process_exit',
+      retryable: true,
+      message: expect.stringContaining('Fatal: unhandled rejection in the adapter'),
+    });
+    expect(msgStore.getSnapshot().entries.map((entry) => entry.content))
+      .toEqual([expect.stringContaining('Fatal: unhandled rejection in the adapter')]);
+    expect(vi.mocked(writeErrorLog)).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'error',
+      source: 'session.acp.processExit',
+      metadata: expect.objectContaining({
+        towerSessionId: 'tower-1',
+        exitCode: 1,
+        signal: null,
+        stderrChars: 'Fatal: unhandled rejection in the adapter'.length,
+        stderrSummary: 'Fatal: unhandled rejection in the adapter',
+      }),
+    }));
+
+    await session.close();
+  });
+
+  it('persists a bounded, redacted stderr summary instead of the raw adapter output', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const turn = await session.runTurn({
+      turnId: 'turn-stderr-summary',
+      prompt: 'run the heavy test suite',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+
+    const secret = 'sk-live-abcdefghijklmnopqrstuvwxyz';
+    // Long enough that both the per-excerpt bound and the line-count tail slice
+    // have to drop content. The sensitive dump and the root cause sit in the
+    // kept tail, so the assertions below exercise redaction, not just slicing.
+    const noise = Array.from(
+      { length: 40 },
+      (_, index) => `debug line ${index} without the root cause ${'x'.repeat(160)}`,
+    ).join('\n');
+    acpState.processExitListeners.at(-1)?.({
+      exitCode: 1,
+      signal: null,
+      stderrExcerpt: [
+        noise,
+        'Environment dump:',
+        'HOME=/Users/jane.doe',
+        `OPENAI_API_KEY=${secret}`,
+        'CONTACT=jane.doe@example.com',
+        'Operator: jane.doe@example.com',
+        'Fatal: adapter crashed while writing /Users/jane.doe/private/session.json',
+      ].join('\n'),
+    });
+    acpState.prompt?.reject(new Error('ACP connection closed'));
+
+    const entry = vi.mocked(writeErrorLog).mock.calls.at(-1)?.[0];
+    const serialized = JSON.stringify(entry);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain('jane.doe');
+    expect(serialized).not.toContain('debug line 0 without the root cause');
+    expect(serialized).toContain('HOME=[REDACTED]');
+    expect(serialized).toContain('OPENAI_API_KEY=[REDACTED]');
+    expect(serialized).toContain('Operator: [EMAIL]');
+    expect(serialized).toContain('Fatal: adapter crashed while writing ~/private/session.json');
+
+    const metadata = entry?.metadata as { stderrChars: number; stderrSummary: string };
+    expect(metadata.stderrChars).toBeGreaterThan(6_000);
+    expect(metadata.stderrSummary).toContain('Fatal: adapter crashed');
+    expect(metadata.stderrSummary).toContain('chars omitted');
+    expect(metadata.stderrSummary.length).toBeLessThanOrEqual(1_200);
+
+    await expect(turn.completion).rejects.toMatchObject({
+      code: 'process_exit',
+      message: expect.stringContaining('Fatal: adapter crashed while writing ~/private/session.json'),
+    });
+
+    await session.close();
+  });
+
+  it('keeps surrogate pairs whole when bounding a stderr line (300 code units)', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const turn = await session.runTurn({
+      turnId: 'turn-surrogate-line',
+      prompt: 'run the heavy test suite',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+
+    // The per-line bound is 300 code units: the head cut ends at index 100 and
+    // the tail cut starts 152 units before the end. Each line puts an emoji on
+    // one of those cuts, so a straight UTF-16 slice keeps half of it.
+    const headSplitLine = `${'a'.repeat(99)}😀${'b'.repeat(400)}`;
+    const tailSplitLine = `${'b'.repeat(348)}😀${'c'.repeat(151)}`;
+    expect(hasUnpairedSurrogate(headSplitLine.slice(0, 100))).toBe(true);
+    expect(hasUnpairedSurrogate(tailSplitLine.slice(349))).toBe(true);
+
+    acpState.processExitListeners.at(-1)?.({
+      exitCode: 1,
+      signal: null,
+      stderrExcerpt: [headSplitLine, tailSplitLine].join('\n'),
+    });
+    acpState.prompt?.reject(new Error('ACP connection closed'));
+
+    const metadata = vi.mocked(writeErrorLog).mock.calls.at(-1)?.[0]?.metadata as
+      | { stderrSummary: string }
+      | undefined;
+    const summary = metadata?.stderrSummary ?? '';
+    expect(summary).toContain('chars omitted');
+    expect(summary.length).toBeLessThanOrEqual(1_200);
+    expect(hasUnpairedSurrogate(summary)).toBe(false);
+
+    await expect(turn.completion).rejects.toMatchObject({ code: 'process_exit' });
+    await session.close();
+  });
+
+  it('keeps surrogate pairs whole when the stderr summary bound kicks in (1_200 code units)', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const turn = await session.runTurn({
+      turnId: 'turn-surrogate-summary',
+      prompt: 'run the heavy test suite',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+
+    // Seven 200-unit lines stay under the per-line bound, so only the 1_200-unit
+    // summary bound runs: its head cut ends at index 400 and its tail cut starts
+    // 752 units before the end, inside an emoji on both ends.
+    const line = `xy${'😀'.repeat(99)}`;
+    const excerpt = Array.from({ length: 7 }, () => line).join('\n');
+    expect(excerpt.length).toBe(1_406);
+    expect(hasUnpairedSurrogate(excerpt.slice(0, 400))).toBe(true);
+    expect(hasUnpairedSurrogate(excerpt.slice(excerpt.length - 752))).toBe(true);
+
+    acpState.processExitListeners.at(-1)?.({ exitCode: 1, signal: null, stderrExcerpt: excerpt });
+    acpState.prompt?.reject(new Error('ACP connection closed'));
+
+    const metadata = vi.mocked(writeErrorLog).mock.calls.at(-1)?.[0]?.metadata as
+      | { stderrSummary: string }
+      | undefined;
+    const summary = metadata?.stderrSummary ?? '';
+    expect(summary).toContain('chars omitted');
+    expect(summary.length).toBeLessThanOrEqual(1_200);
+    expect(hasUnpairedSurrogate(summary)).toBe(false);
+
+    await expect(turn.completion).rejects.toMatchObject({ code: 'process_exit' });
+    await session.close();
+  });
+
+  it('keeps surrogate pairs whole when bounding the session failure message (4_096 code units)', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const msgStore = new MsgStore();
+    const turn = await session.runTurn({
+      turnId: 'turn-surrogate-failure',
+      prompt: 'run the heavy test suite',
+      msgStore,
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+
+    // The 4_096-unit bound cuts the head at index 1_365 and starts the tail
+    // 2_683 units before the end; emoji sit exactly on both cuts. Raising an
+    // AgentRuntimeError keeps `normalizeAcpError` from bounding the message a
+    // second time, so this pins this one bound instead of a bound of a bound.
+    const rawFailure = `${'a'.repeat(1_364)}😀${'b'.repeat(300)}😀${'c'.repeat(2_650)}`;
+    const headline = 'ACP adapter exited with code 1';
+    expect(hasUnpairedSurrogate(rawFailure.slice(0, 1_365))).toBe(true);
+    expect(hasUnpairedSurrogate(`${rawFailure}; ${headline}`.slice(1_667))).toBe(true);
+
+    acpState.processExitListeners.at(-1)?.({ exitCode: 1, signal: null, stderrExcerpt: '' });
+    acpState.prompt?.reject(new AgentRuntimeError('acp_request_failed', 'prompt', rawFailure, true));
+
+    const failure = await turn.completion.then(
+      () => null,
+      (error: Error & { code?: string }) => error,
+    );
+    expect(failure).toMatchObject({ code: 'process_exit' });
+    expect(failure?.message).toContain('chars omitted');
+    expect(failure?.message.length).toBeLessThanOrEqual(4_096);
+    expect(hasUnpairedSurrogate(failure?.message ?? '')).toBe(false);
+    const projected = msgStore.getSnapshot().entries.map((entry) => entry.content).join('\n');
+    expect(projected).toContain('chars omitted');
+    expect(hasUnpairedSurrogate(projected)).toBe(false);
+
+    await session.close();
+  });
+
+  it('never writes the process-exit log for a signal-terminated adapter', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const turn = await session.runTurn({
+      turnId: 'turn-silent-exit',
+      prompt: 'run the heavy test suite',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+
+    acpState.processExitListeners.at(-1)?.({
+      exitCode: null,
+      signal: 'SIGTERM',
+      stderrExcerpt: 'terminated by the operator',
+    });
+    expect(vi.mocked(writeErrorLog)).not.toHaveBeenCalled();
+
+    acpState.prompt?.reject(new Error('ACP connection closed'));
+    await expect(turn.completion).rejects.toMatchObject({
+      code: 'process_exit',
+      message: expect.stringContaining('signal SIGTERM'),
+    });
+
+    await session.close();
+  });
+
+  it('keeps the first exit fact and a single log line for a repeated same-generation exit', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const turn = await session.runTurn({
+      turnId: 'turn-repeated-exit',
+      prompt: 'run the heavy test suite',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+
+    const listener = acpState.processExitListeners.at(-1);
+    listener?.({ exitCode: 1, signal: null, stderrExcerpt: 'Fatal: first reported root cause' });
+    listener?.({ exitCode: 1, signal: null, stderrExcerpt: 'late report without the root cause' });
+
+    expect(vi.mocked(writeErrorLog)).toHaveBeenCalledTimes(1);
+    acpState.prompt?.reject(new Error('ACP connection closed'));
+    const failure = await turn.completion.then(
+      () => null,
+      (error: Error & { code?: string }) => error,
+    );
+    expect(failure).toMatchObject({ code: 'process_exit' });
+    expect(failure?.message).toContain('Fatal: first reported root cause');
+    expect(failure?.message).not.toContain('late report');
+
+    await session.close();
+  });
+
+  it('does not let a retired generation exit rewrite the current turn failure', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const first = await session.runTurn({
+      turnId: 'turn-retired-generation',
+      prompt: 'poison the transport',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+    const retiredExitListener = acpState.processExitListeners.at(-1);
+
+    acpState.prompt?.reject(new AgentRuntimeError('protocol_violation', 'protocol', 'bad frame', false));
+    await expect(first.completion).rejects.toMatchObject({ code: 'protocol_violation' });
+    expect(acpState.processStarts).toBe(1);
+
+    acpState.prompt = deferred<{ stopReason?: string }>();
+    const second = await session.runTurn({
+      turnId: 'turn-current-generation',
+      prompt: 'continue',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+    expect(acpState.processStarts).toBe(2);
+
+    // The retired adapter settles after its replacement is already live.
+    retiredExitListener?.({ exitCode: 1, signal: null, stderrExcerpt: 'Fatal: retired adapter root cause' });
+    expect(vi.mocked(writeErrorLog)).toHaveBeenCalledTimes(1);
+    acpState.prompt?.reject(new Error('ACP connection closed'));
+
+    const failure = await second.completion.then(
+      () => null,
+      (error: Error & { code?: string }) => error,
+    );
+    expect(failure).toMatchObject({
+      code: 'acp_request_failed',
+      message: 'ACP connection closed',
+    });
+    expect(failure?.message).not.toContain('retired adapter root cause');
+
+    await session.close();
+  });
+
+  it('keeps the transport failure reason when no adapter process exited', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const turn = await session.runTurn({
+      turnId: 'turn-no-process-exit',
+      prompt: 'fail without a process exit',
+      msgStore: new MsgStore(),
+      resumeExternalSessionId: 'external-1',
+    }, sink);
+
+    acpState.prompt?.reject(new Error('ACP connection closed'));
+
+    await expect(turn.completion).rejects.toMatchObject({
+      code: 'acp_request_failed',
+      message: 'ACP connection closed',
+    });
+    expect(vi.mocked(writeErrorLog)).not.toHaveBeenCalled();
+
+    await session.close();
   });
 });

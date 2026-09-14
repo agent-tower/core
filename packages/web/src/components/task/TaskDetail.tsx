@@ -12,6 +12,7 @@ import {
   type WorkspaceHibernatedPayload,
 } from '@agent-tower/shared/socket'
 import { LogStream } from '@/components/agent'
+import { LogViewBoundary } from '@/components/errors'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { RuntimePermissionPrompt } from '@/components/agent'
@@ -1175,17 +1176,20 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
                       ) : (
-                        <LogStream
-                          logs={logs}
-                          downloadSessionId={displayedSessionId}
-                          isOutputActive={isOutputActive}
-                          lastExitAt={lastExitAt}
-                          onUserToggleDetails={stopScroll}
-                          workingDir={workingDir}
-                          onOpenWorkspaceFile={handleOpenWorkspaceFile}
-                          onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
-                          onOpenVisualization={handleOpenDisplayedSessionVisualization}
-                        />
+                        <LogViewBoundary>
+                          <LogStream
+                            logs={logs}
+                            downloadSessionId={displayedSessionId}
+                            isOutputActive={isOutputActive}
+                            lastExitAt={lastExitAt}
+                            onUserToggleDetails={stopScroll}
+                            workingDir={workingDir}
+                            scrollElementRef={scrollRef}
+                            onOpenWorkspaceFile={handleOpenWorkspaceFile}
+                            onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
+                            onOpenVisualization={handleOpenDisplayedSessionVisualization}
+                          />
+                        </LogViewBoundary>
                       )}
                     </div>
                   </div>
@@ -1302,17 +1306,20 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                   </div>
                 ) : (
-                  <LogStream
-                    logs={logs}
-                    downloadSessionId={displayedSessionId}
-                    isOutputActive={isOutputActive}
-                    lastExitAt={lastExitAt}
-                    onUserToggleDetails={stopScroll}
-                    workingDir={workingDir}
-                    onOpenWorkspaceFile={handleOpenWorkspaceFile}
-                    onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
-                    onOpenVisualization={handleOpenDisplayedSessionVisualization}
-                  />
+                  <LogViewBoundary>
+                    <LogStream
+                      logs={logs}
+                      downloadSessionId={displayedSessionId}
+                      isOutputActive={isOutputActive}
+                      lastExitAt={lastExitAt}
+                      onUserToggleDetails={stopScroll}
+                      workingDir={workingDir}
+                      scrollElementRef={scrollRef}
+                      onOpenWorkspaceFile={handleOpenWorkspaceFile}
+                      onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
+                      onOpenVisualization={handleOpenDisplayedSessionVisualization}
+                    />
+                  </LogViewBoundary>
                 )
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 text-center">

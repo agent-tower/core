@@ -1,15 +1,13 @@
 import { create } from 'zustand'
-import { applyPatch, type Operation } from 'fast-json-patch'
-import type { NormalizedEntry } from '@agent-tower/shared/log-adapter'
+import type { Operation } from 'fast-json-patch'
+import {
+  applyConversationPatch,
+  freezeConversationInDev,
+  freezeConversationWrapperInDev,
+  type NormalizedConversation,
+} from './conversation-patch.js'
 
-export interface NormalizedConversation {
-  sessionId?: string
-  entries: NormalizedEntry[]
-  /** Last applied patch seq. Used to dedupe out-of-window patches. */
-  seq?: number
-  /** True when this cache only contains a suffix of the server snapshot. */
-  isTruncated?: boolean
-}
+export type { NormalizedConversation } from './conversation-patch.js'
 
 const EMPTY_CONVERSATION: NormalizedConversation = { entries: [], isTruncated: false }
 
@@ -113,10 +111,10 @@ export const useSessionLogStore = create<SessionLogState>((set, get) => ({
       newOrder.push(sessionId)
       const newConversations = {
         ...state.conversations,
-        [sessionId]: {
-          ...data,
+        [sessionId]: freezeConversationWrapperInDev({
+          ...freezeConversationInDev(data),
           isTruncated: data.isTruncated ?? false,
-        },
+        }),
       }
       return evictLRU(newConversations, newOrder)
     })
@@ -131,21 +129,27 @@ export const useSessionLogStore = create<SessionLogState>((set, get) => ({
     if (typeof seq === 'number' && typeof current.seq === 'number' && seq <= current.seq) {
       return true
     }
-    try {
-      const result = applyPatch(current, patch, true, false)
-      const next: NormalizedConversation = {
-        ...result.newDocument,
-        seq: typeof seq === 'number' ? seq : current.seq,
-        isTruncated: current.isTruncated ?? false,
+    // Structural sharing (P0-2): the patch module returns a document that keeps
+    // every untouched entry reference; it never half-applies a batch.
+    const result = applyConversationPatch(current, patch)
+    if (!result.ok) {
+      // Patch apply failed — store drifted from server. Caller resets snapshot
+      // state and refetches the authoritative state. `unsupported` already
+      // emitted its own structured warning; `failed` keeps today's error log.
+      if (result.kind === 'failed') {
+        console.error('[sessionLogStore] applyPatch failed:', result.reason)
       }
-      set((state) => ({
-        conversations: { ...state.conversations, [sessionId]: next },
-      }))
-      return true
-    } catch (error) {
-      console.error('[sessionLogStore] applyPatch failed:', error)
       return false
     }
+    const next: NormalizedConversation = freezeConversationWrapperInDev({
+      ...result.conversation,
+      seq: typeof seq === 'number' ? seq : current.seq,
+      isTruncated: current.isTruncated ?? false,
+    })
+    set((state) => ({
+      conversations: { ...state.conversations, [sessionId]: next },
+    }))
+    return true
   },
 
   touchAccess: (sessionId) => {
@@ -166,11 +170,11 @@ export const useSessionLogStore = create<SessionLogState>((set, get) => ({
       return {
         conversations: {
           ...state.conversations,
-          [sessionId]: {
+          [sessionId]: freezeConversationWrapperInDev({
             ...conv,
             entries: conv.entries.slice(-TRUNCATE_ENTRIES),
             isTruncated: true,
-          },
+          }),
         },
       }
     })

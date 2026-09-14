@@ -71,6 +71,56 @@ const CONVERSATION_TURN_QUEUED = 'QUEUED';
 const CONVERSATION_TURN_RUNNING = 'RUNNING';
 const CONVERSATION_TURN_COMPLETED = 'COMPLETED';
 const CONVERSATION_TURN_FAILED = 'FAILED';
+/** Hard upper bound (characters) for the failure reason persisted with a turn. */
+const MAX_CONVERSATION_TURN_ERROR_CHARS = 2_000;
+/** Reserved room for the "...[N chars omitted]..." marker inside the bound. */
+const ERROR_OMISSION_MARKER_BUDGET = 48;
+
+/**
+ * A queued turn's failure reason combines a generic transport prefix at the
+ * head with the adapter's own diagnostic appended at the tail. A head-only
+ * slice silently dropped the root cause whenever that diagnostic was long, so
+ * keep both ends within one explicit, non-growing bound.
+ *
+ * The cut points are pulled inward when they would land inside a surrogate
+ * pair, so a bound never persists an orphaned half of an emoji in the UI. The
+ * bound itself is unchanged: adjusting inward only shortens the kept slice.
+ */
+function boundConversationTurnError(
+  value: string,
+  maxChars = MAX_CONVERSATION_TURN_ERROR_CHARS,
+): string {
+  if (value.length <= maxChars) return value;
+  const headEnd = codePointSafeHeadEnd(value, Math.floor(maxChars / 3));
+  const tailChars = Math.max(0, maxChars - headEnd - ERROR_OMISSION_MARKER_BUDGET);
+  const tailStart = codePointSafeTailStart(value, value.length - tailChars);
+  const omitted = tailStart - headEnd;
+  return `${value.slice(0, headEnd)}\n...[${omitted} chars omitted]...\n${value.slice(tailStart)}`;
+}
+
+/** Cut a head slice before, never inside, a surrogate pair. */
+function codePointSafeHeadEnd(value: string, end: number): number {
+  if (end <= 0) return 0;
+  if (end >= value.length) return value.length;
+  const keepsPair = isHighSurrogate(value.charCodeAt(end - 1)) && isLowSurrogate(value.charCodeAt(end));
+  return keepsPair ? end - 1 : end;
+}
+
+/** Start a tail slice after, never inside, a surrogate pair. */
+function codePointSafeTailStart(value: string, start: number): number {
+  if (start <= 0) return 0;
+  if (start >= value.length) return value.length;
+  const splitsPair = isLowSurrogate(value.charCodeAt(start)) && isHighSurrogate(value.charCodeAt(start - 1));
+  return splitsPair ? start + 1 : start;
+}
+
+function isHighSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
 
 function eventKey(sessionId: string, runtimeInstanceId: string, launchClaimNumber: number): string {
   return `${sessionId}:${runtimeInstanceId}:${launchClaimNumber}`;
@@ -732,6 +782,7 @@ export class SessionManager {
         releaseTeamRunAdmission = await acquireTeamMemberAdmission(
           teamRunInvocation.teamRunId,
           teamRunInvocation.memberId,
+          { holder: 'sessionManager.sendMessage' },
         );
         await this.assertTeamRunDispatchAdmitted(id, expectedTeamRunInvocationId);
       } else if (expectedTeamRunInvocationId) {
@@ -1142,7 +1193,7 @@ export class SessionManager {
           where: { id: queued.id, status: CONVERSATION_TURN_RUNNING },
           data: {
             status: CONVERSATION_TURN_FAILED,
-            lastError: lastError.slice(0, 2_000),
+            lastError: boundConversationTurnError(lastError),
             completedAt: new Date(),
           },
         });

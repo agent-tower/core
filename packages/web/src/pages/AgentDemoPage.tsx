@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { LogStream, IconRunning, IconDone, IconPending, TodoPanel } from '@/components/agent'
+import { LogViewBoundary } from '@/components/errors'
 import type { LogStreamHandle } from '@/components/agent'
 import { Button } from '@/components/ui/button'
 import { useAgentVariants } from '@/hooks/use-profiles'
@@ -386,13 +387,15 @@ export function AgentDemoPage() {
             {logs.length === 0 ? (
               <div className="text-neutral-400 text-center py-8">{t('等待 Agent 响应...')}</div>
             ) : (
-              <LogStream
-                ref={logStreamRef}
-                logs={logs}
-                isOutputActive={isOutputActive}
-                lastExitAt={lastExitAt}
-                scrollElementRef={scrollContainerRef}
-              />
+              <LogViewBoundary>
+                <LogStream
+                  ref={logStreamRef}
+                  logs={logs}
+                  isOutputActive={isOutputActive}
+                  lastExitAt={lastExitAt}
+                  scrollElementRef={scrollContainerRef}
+                />
+              </LogViewBoundary>
             )}
           </div>
         )}

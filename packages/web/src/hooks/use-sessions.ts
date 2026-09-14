@@ -134,12 +134,31 @@ export function useStartSession() {
 }
 
 /** 停止 session */
+const STOP_SESSION_REQUEST_TIMEOUT_MS = 45_000
+
 export function useStopSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.post<Session>(`/sessions/${id}/stop`),
+    mutationFn: async (id: string) => {
+      // The server bounds its member-admission wait and answers 409 beyond it,
+      // but once inside the critical section it waits for process-tree cleanup
+      // (`SessionManager.stop` → `pendingFinalization`) which is deliberately
+      // unbounded. This client-side ceiling keeps the stop button from staying
+      // disabled/"Stopping…" forever when the server never answers.
+      try {
+        return await apiClient.post<Session>(
+          `/sessions/${id}/stop`,
+          undefined,
+          { signal: AbortSignal.timeout(STOP_SESSION_REQUEST_TIMEOUT_MS) },
+        )
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'TimeoutError') {
+          throw new Error('Stop request timed out before the server answered. The session may still be stopping; refresh the status and retry.')
+        }
+        throw error
+      }
+    },
     onError: (error) => {
       toast.error(
         translate('Failed to stop session. Refreshing status; check it and try again.'),

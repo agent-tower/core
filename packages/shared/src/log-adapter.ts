@@ -174,9 +174,9 @@ function getToolTitle(entry: NormalizedEntry): string {
 }
 
 /**
- * 将单个 NormalizedEntry 转换为 LogEntry
+ * 将单个 NormalizedEntry 转换为 LogEntry（纯函数，供引用缓存调用）
  */
-export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | null {
+function convertNormalizedEntry(entry: NormalizedEntry): LogEntry | null {
   switch (entry.entryType) {
     case 'user_message':
     case 'user_feedback':
@@ -292,12 +292,44 @@ export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | nu
 }
 
 /**
+ * NormalizedEntry → LogEntry 的引用缓存（P0-2 契约 §6②）。
+ *
+ * 结构化共享（`applyConversationPatch`）保证"未受影响的条目在文档版本之间保持
+ * 同一引用"，但如果每次渲染都把整份 entries 重新映射成新的 LogEntry，
+ * `LogStream` 里的每个 `memo()` 边界仍会整体失效。按条目对象缓存转换结果，
+ * 让同一个 NormalizedEntry 始终产出同一个 LogEntry 对象。
+ *
+ * - key 是条目对象本身，因此快照整体替换后旧条目可被 GC；
+ * - 前提是条目对象不被原地修改（P0-2 §3 的不可变约束；dev/test 由冻结兜底）；
+ * - 畸形 patch 可能塞入非对象值，这类值不做缓存（WeakMap 只接受对象 key）。
+ */
+const logEntryByNormalizedEntry = new WeakMap<object, LogEntry | null>()
+
+/**
+ * 将单个 NormalizedEntry 转换为 LogEntry（结果按引用缓存，见上）
+ */
+export function normalizedEntryToLogEntry(entry: NormalizedEntry): LogEntry | null {
+  if (typeof entry !== 'object' || entry === null) return convertNormalizedEntry(entry)
+  const cached = logEntryByNormalizedEntry.get(entry)
+  if (cached !== undefined) return cached
+  const converted = convertNormalizedEntry(entry)
+  logEntryByNormalizedEntry.set(entry, converted)
+  return converted
+}
+
+/**
  * 批量转换 NormalizedEntry 数组为 LogEntry 数组
+ *
+ * 注意：**每次调用都返回新数组**（调用方 `useNormalizedLogs` 会往结果里 push
+ * 一个 cursor 条目），但数组元素在条目引用不变时保持同一对象。
  */
 export function normalizedEntriesToLogEntries(entries: NormalizedEntry[]): LogEntry[] {
-  return entries
-    .map(normalizedEntryToLogEntry)
-    .filter((entry): entry is LogEntry => entry !== null)
+  const result: LogEntry[] = []
+  for (const entry of entries) {
+    const converted = normalizedEntryToLogEntry(entry)
+    if (converted !== null) result.push(converted)
+  }
+  return result
 }
 
 /**

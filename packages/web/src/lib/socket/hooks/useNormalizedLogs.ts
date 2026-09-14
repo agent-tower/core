@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from 'react'
-import { applyPatch, type Operation } from 'fast-json-patch'
+import type { Operation } from 'fast-json-patch'
 import { socketManager } from '../manager.js'
 import {
   ClientEvents,
@@ -17,6 +17,7 @@ import {
   createCursorEntry,
 } from '@agent-tower/shared/log-adapter'
 import { apiClient } from '../../api-client.js'
+import { applyConversationPatch } from '@/stores/conversation-patch.js'
 import {
   useSessionLogStore,
   EMPTY_CONVERSATION,
@@ -499,13 +500,17 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
                 )
               }
             }
-            const patched = applyPatch(
-              state,
-              p.patch as Operation[],
-              true,
-              false,
-            )
-            state = patched.newDocument
+            // Replay through the same structural-sharing implementation the
+            // live path uses, so a buffered batch can never produce a state the
+            // live path would have rejected. A rejected batch throws into the
+            // retry/reload branch below, like the sequence-gap case.
+            const applied = applyConversationPatch(state, p.patch as Operation[])
+            if (!applied.ok) {
+              throw new Error(
+                `Buffered conversation patch rejected (${applied.kind}): ${applied.reason}`,
+              )
+            }
+            state = applied.conversation
             if (typeof p.seq === 'number' && p.seq > highestSeq) highestSeq = p.seq
           }
 

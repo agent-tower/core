@@ -6,11 +6,15 @@ import { TeamSchedulerService } from './team-scheduler.service.js';
 const DEFAULT_TICK_INTERVAL_MS = 30_000;
 // 首扫延迟：让其它服务先完成初始化，再回收 server 重启遗留的 orphan invocation。
 const INITIAL_SCAN_DELAY_MS = 10_000;
+// 单阶段上限：任一阶段卡住（例如等待一把永不释放的 admission barrier）时，
+// 只放弃该阶段并继续后续阶段，避免 6 个阶段整体停摆。
+const DEFAULT_STAGE_TIMEOUT_MS = 5 * 60_000;
 
 export interface MemberHeartbeatSchedulerDeps {
   eventBus: EventBus;
   sessionManager: SessionManager;
   tickIntervalMs?: number;
+  stageTimeoutMs?: number;
   reconciler?: TeamReconcilerService;
   queuePump?: Pick<TeamSchedulerService, 'reconcileQueuedWork'>;
 }
@@ -35,11 +39,13 @@ export class MemberHeartbeatScheduler {
   private running = false;
   private orphanScanDone = false;
   private readonly tickIntervalMs: number;
+  private readonly stageTimeoutMs: number;
   private readonly reconciler: TeamReconcilerService;
   private readonly queuePump: Pick<TeamSchedulerService, 'reconcileQueuedWork'>;
 
   constructor(deps: MemberHeartbeatSchedulerDeps) {
     this.tickIntervalMs = deps.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
+    this.stageTimeoutMs = deps.stageTimeoutMs ?? DEFAULT_STAGE_TIMEOUT_MS;
     // watchdog 用轮询驱动续催/唤醒，因此 reconciler 关闭内部 setTimeout，避免与轮询重复触发。
     this.reconciler = deps.reconciler ?? new TeamReconcilerService({
       eventBus: deps.eventBus,
@@ -125,8 +131,7 @@ export class MemberHeartbeatScheduler {
 
   private async runStage(name: string, operation: () => Promise<unknown>): Promise<boolean> {
     try {
-      await operation();
-      return true;
+      return await this.withStageTimeout(name, operation());
     } catch (error) {
       console.warn(
         `[MemberHeartbeatScheduler] Failed ${name}:`,
@@ -134,5 +139,32 @@ export class MemberHeartbeatScheduler {
       );
       return false;
     }
+  }
+
+  /**
+   * A hung stage must not stop the remaining stages: `tick()` holds the
+   * `running` re-entry gate, so one await that never settles would silently
+   * disable cleanup, orphan recovery, nudges and the queue pump together.
+   * The abandoned stage keeps running in the background; the barrier still
+   * serializes whatever it does per member. Returns false on timeout so a
+   * one-shot stage (the startup orphan scan) can be retried on the next tick.
+   */
+  private async withStageTimeout(name: string, operation: Promise<unknown>): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = await Promise.race([
+      operation.then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), this.stageTimeoutMs);
+        (timer as { unref?: () => void }).unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (timedOut) {
+      console.error(
+        `[MemberHeartbeatScheduler] Stage "${name}" exceeded ${this.stageTimeoutMs}ms; continuing with the remaining stages`,
+      );
+      return false;
+    }
+    return true;
   }
 }

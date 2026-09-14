@@ -3,6 +3,7 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 import { useQueryClient } from '@tanstack/react-query'
 import { SessionStatus, WorkspaceStatus, type ConflictOp, type Session, type TaskBody } from '@agent-tower/shared'
 import { LogStream, RuntimePermissionPrompt, TodoPanel, TokenUsageIndicator } from '@/components/agent'
+import { LogViewBoundary } from '@/components/errors'
 import {
   ArrowLeft, ArrowUp, ArrowDown, Paperclip, Play, Square,
   MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History, Users,
@@ -862,15 +863,18 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
                       ) : (
-                        <LogStream
-                          logs={logs}
-                          downloadSessionId={displayedSessionId}
-                          isOutputActive={isOutputActive}
-                          lastExitAt={lastExitAt}
-                          onUserToggleDetails={stopScroll}
-                          onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
-                          onOpenVisualization={handleOpenDisplayedSessionVisualization}
-                        />
+                        <LogViewBoundary>
+                          <LogStream
+                            logs={logs}
+                            downloadSessionId={displayedSessionId}
+                            isOutputActive={isOutputActive}
+                            lastExitAt={lastExitAt}
+                            onUserToggleDetails={stopScroll}
+                            scrollElementRef={scrollRef}
+                            onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
+                            onOpenVisualization={handleOpenDisplayedSessionVisualization}
+                          />
+                        </LogViewBoundary>
                       )}
                     </div>
                   </div>
@@ -948,15 +952,18 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                   {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded.'}
                 </div>
               ) : (
-                <LogStream
-                  logs={logs}
-                  downloadSessionId={displayedSessionId}
-                  isOutputActive={isOutputActive}
-                  lastExitAt={lastExitAt}
-                  onUserToggleDetails={stopScroll}
-                  onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
-                  onOpenVisualization={handleOpenDisplayedSessionVisualization}
-                />
+                <LogViewBoundary>
+                  <LogStream
+                    logs={logs}
+                    downloadSessionId={displayedSessionId}
+                    isOutputActive={isOutputActive}
+                    lastExitAt={lastExitAt}
+                    onUserToggleDetails={stopScroll}
+                    scrollElementRef={scrollRef}
+                    onOpenPreviewUrl={handleOpenDisplayedSessionPreviewUrl}
+                    onOpenVisualization={handleOpenDisplayedSessionVisualization}
+                  />
+                </LogViewBoundary>
               )
             ) : (
               /* No session — show start agent CTA */

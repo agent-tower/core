@@ -159,7 +159,11 @@ describe('useRuntimeState reconnect behavior', () => {
 
     await act(async () => {
       container.querySelector('button')?.click();
-      await vi.waitFor(() => expect(postMock).toHaveBeenCalledWith('/sessions/session-1/stop'));
+      await vi.waitFor(() => expect(postMock).toHaveBeenCalledWith(
+        '/sessions/session-1/stop',
+        undefined,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ));
     });
 
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions', 'detail', 'session-1'] });
@@ -219,6 +223,42 @@ describe('useRuntimeState reconnect behavior', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['workspaces'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['tasks'] });
     expect(getMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces a client-side timeout instead of leaving the stop button spinning', async () => {
+    const settled = deferred<void>();
+    onStopSettled = () => settled.resolve();
+    postMock.mockRejectedValueOnce(
+      new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+    );
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <StopProbe />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await act(async () => {
+      container.querySelector('button')?.click();
+      await settled.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The hook must translate the abort into an explicit failure so the button
+    // is re-enabled and the user sees why (server-side cleanup can outlive the
+    // client budget).
+    expect(container.querySelector('button')?.hasAttribute('disabled')).toBe(false);
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      'Failed to stop session. Refreshing status; check it and try again.',
+      {
+        description:
+          'Stop request timed out before the server answered. The session may still be stopping; refresh the status and retry.',
+      },
+    );
   });
 });
 
