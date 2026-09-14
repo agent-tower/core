@@ -1,6 +1,8 @@
 export { TaskList } from './TaskList'
 export { TaskGroup } from './TaskGroup'
 export { TaskDetail } from './TaskDetail'
+export { TaskStartProgress } from './TaskStartProgress'
+export type { TaskStartProgressState } from './TaskStartProgress'
 export { EditableTaskTitle } from './EditableTaskTitle'
 export type { UITask, UIProject, UITaskDetailData, UITaskStatus } from './types'
 export { UITaskStatus as UITaskStatusEnum } from './types'

@@ -26,6 +26,7 @@ import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { StartAgentDialog } from '@/components/task/StartAgentDialog'
+import { TaskStartProgress } from '@/components/task/TaskStartProgress'
 import { getSessionTokenUsage, SessionReadonlyMeta } from '@/components/task/SessionReadonlyMeta'
 import { ProviderSelector } from '@/components/task/ProviderSelector'
 import { SlashCommandPopover } from '@/components/task/SlashCommandPopover'
@@ -114,50 +115,6 @@ const TEAM_RUN_TAB_CONFIG: { key: MobileTab; label: string; icon: typeof Message
   { key: 'changes', label: 'Changes', icon: GitGraph },
   { key: 'workspace', label: 'Workspace', icon: FolderOpen },
 ]
-
-function MobileAutoStartStatus({
-  state,
-  onRetry,
-}: {
-  state: NonNullable<MobileTaskDetailProps['autoStartState']>
-  onRetry?: () => void
-}) {
-  const { t } = useI18n()
-  const label = state.status === 'creating-workspace'
-    ? t('Creating Workspace...')
-    : state.status === 'creating-session'
-      ? t('Creating Session...')
-      : state.status === 'starting-session'
-        ? t('Starting Agent...')
-        : t('启动 Agent 失败')
-
-  if (state.status === 'failed') {
-    return (
-      <div className="mb-5 w-full max-w-[280px] rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-left">
-        <p className="text-xs font-medium text-red-600">{label}</p>
-        {state.error ? (
-          <p className="mt-1 text-[11px] text-red-500 break-words">{state.error}</p>
-        ) : null}
-        {onRetry ? (
-          <Button size="sm" variant="outline" className="mt-3" onClick={onRetry}>
-            <Play size={14} className="mr-1.5" />
-            {t('重试启动 Agent')}
-          </Button>
-        ) : null}
-      </div>
-    )
-  }
-
-  return (
-    <div className="mb-5 flex items-center gap-2 rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-500">
-      <svg className="h-3.5 w-3.5 animate-spin shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-      </svg>
-      <span>{label}</span>
-    </div>
-  )
-}
 
 // ============ Main Component ============
 
@@ -933,11 +890,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
               )}
             </div>
 
-            {!isProjectReadOnly && autoStartState && (isLoadingWorkspaces || sessionId) ? (
+            {!isProjectReadOnly && autoStartState && sessionId ? (
               <div className="flex justify-center py-2">
-                <MobileAutoStartStatus
+                <TaskStartProgress
                   state={autoStartState}
                   onRetry={autoStartState.status === 'failed' ? async () => { await ensureTaskBody(); setIsStartDialogOpen(true) } : undefined}
+                  compact
                 />
               </div>
             ) : null}
@@ -968,6 +926,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
             ) : (
               /* No session — show start agent CTA */
               <div className="flex flex-col items-center justify-center py-12 text-center">
+                {(!autoStartState || isProjectReadOnly) && <>
                 <div className="w-12 h-12 bg-neutral-50 rounded-xl border border-neutral-100 flex items-center justify-center mb-4">
                   <Play size={20} className="text-neutral-400 ml-0.5" />
                 </div>
@@ -975,10 +934,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                 <p className="text-xs text-neutral-500 mb-5 max-w-[240px]">
                   {isProjectReadOnly ? projectReadOnlyMessage : t('选择一个 Agent 来执行此任务')}
                 </p>
+                </>}
                 {!isProjectReadOnly && autoStartState ? (
-                  <MobileAutoStartStatus state={autoStartState} />
+                  <TaskStartProgress state={autoStartState} compact />
                 ) : null}
-                {!isProjectReadOnly && (
+                {!isProjectReadOnly && (!autoStartState || autoStartState.status === 'failed') && (
                   <Button
                     onClick={async () => { await ensureTaskBody(); setIsStartDialogOpen(true) }}
                     disabled={Boolean(autoStartState && autoStartState.status !== 'failed')}
