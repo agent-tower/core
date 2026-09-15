@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,6 +40,13 @@ export function buildPtyWrapperEnv(
   cleanupChannel?: Record<string, string>,
 ): Record<string, string> {
   const wrapperEnv = { ...agentEnv };
+  // Process identity is launch ownership metadata. Never let a wrapper adopt
+  // the marker of the process that happened to launch it (for example an ACP
+  // Agent running a test suite). A missing token gets a fresh one so the
+  // wrapper still owns and can clean up its descendants safely.
+  delete wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY;
+  delete wrapperEnv.AGENT_TOWER_PTY_IDENTITY_SEED;
+  const launchOwnershipToken = ownershipToken?.trim() || randomUUID();
   const runtimeCommand = parentEnv.AGENT_TOWER_NODE_RUNTIME || process.execPath;
   const preserveElectronNodeMode = !isStandaloneNodeRuntime(runtimeCommand);
   if (!preserveElectronNodeMode) {
@@ -57,10 +65,8 @@ export function buildPtyWrapperEnv(
       wrapperEnv[key] = value;
     }
   }
-  if (ownershipToken) {
-    wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY = ownershipToken;
-    wrapperEnv.AGENT_TOWER_PTY_IDENTITY_SEED = ownershipToken;
-  }
+  wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY = launchOwnershipToken;
+  wrapperEnv.AGENT_TOWER_PTY_IDENTITY_SEED = launchOwnershipToken;
   // Completion is parent-owned and intentionally has no environment
   // representation. Keep this argument for API compatibility, but never copy
   // endpoint/secret material into a wrapper or Agent environment.
@@ -78,8 +84,16 @@ const isCmdBat = isWin && /\.(cmd|bat)$/i.test(programPath);
 const internalEnvKeys = ${JSON.stringify(PTY_WRAPPER_ENV_KEYS)};
 const processIdentityEnvKey = 'AGENT_TOWER_PROCESS_IDENTITY';
 const processIdentitySeedEnvKey = 'AGENT_TOWER_PTY_IDENTITY_SEED';
+// A wrapper can be invoked directly by a test, shell, or third-party caller
+// without going through buildPtyWrapperEnv. In that case the parent may carry
+// its own identity marker (for example an ACP Agent). Treat that marker as
+// inherited metadata, never as this launch's ownership. The explicit seed is
+// the only marker accepted from the caller; otherwise create one here before
+// any process-table probe runs.
 const processIdentityToken = process.env[processIdentitySeedEnvKey]
-  || process.env[processIdentityEnvKey];
+  || require('node:crypto').randomUUID();
+process.env[processIdentityEnvKey] = processIdentityToken;
+process.env[processIdentitySeedEnvKey] = processIdentityToken;
 
 let child;
 let cleanupTarget = null;

@@ -69,7 +69,7 @@ CLI spawn 与 Pipeline attach 之间保留 `collectEarlyPtyEvents()` / `takeEarl
 - Linux 环境扫描跳过明确属于其他 UID 的进程；同 UID 权限拒绝仅在能够证明进程早于本次 launch 且与已验证树无关时忽略。无法排除归属的候选继续报告探测失败，不能以空列表当作退出证据。Z/X 视为已退出，但保留已验证拓扑以发现其他存活后代。
 - workspace 删除、归档、休眠、周期清理和 conversation 删除通过 `session-resource-cleanup.ts` 停止所有状态的 Session 并核验 cleanup gate。资源清理期间阻止创建/续发，失败保留目录与持久进程证据。已经 spawn 的 `started` 事件必须继续写入所有权，不能被新启动的 admission guard 拦掉。
 - `close()`/dispose 必须可等待、并发复用且失败后可重试。CLI 保留 active 与 pending cleanup 的真实退出 owner；ACP 保留各 transport 的 ProcessManager 和临时配置 cleanup owner。超时、DB 写失败或禁用新轮都不等于清理成功。
-- CLI wrapper 的整树完成证据由父进程持有的能力确认；子进程继承的 ownership marker 仅用于归属发现。沿用 `utils/process-launch.ts`、`tree-cleanup-channel.ts` 和平台进程身份工具，不通过直接杀 wrapper 绕过整树回收。
+- CLI wrapper 的整树完成证据由父进程持有的能力确认；子进程继承的 ownership marker 仅用于归属发现。wrapper 必须使用本次 launch 的唯一 marker：`buildPtyWrapperEnv()` 会清除父进程 marker 并生成缺省 token，脚本被直接调用且缺少显式 seed 时也会先生成并覆盖继承 marker，避免测试或嵌套 Agent 将祖先进程误认成自己的进程树。沿用 `utils/process-launch.ts`、`tree-cleanup-channel.ts` 和平台进程身份工具，不通过直接杀 wrapper 绕过整树回收。
 - 恢复可处理没有当前内存 owner 的旧进程，不能清理仍由当前 runtime 持有的进程。TeamRun 下一项 admission、锁释放与 review 使用统一 cleanup gate，具体业务规则见 TeamRun reference。
 - 应用关闭经 `runtime/shutdown-coordinator.ts`、`server-entry-shutdown.ts` 与桌面 shutdown 入口等待并重试清理。未确认 owner 必须保留可重试状态并报告失败，不能静默丢弃或提前 `process.exit`。
 - Git、CLI 检测与安装器使用 `utils/owned-child-process.ts` 持有整树 owner；timeout、abort、输出超限和自然根退出都先等清理再返回。通用 child 与 route 局部 manager 注册到 `runtime/application-process-cleanup.ts`，应用关闭后禁止新 spawn；Windows wrapper 在确认后代清理前保持存活，根已退出时按重新核验的后代身份继续清理。

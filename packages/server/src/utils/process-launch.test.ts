@@ -118,13 +118,38 @@ describe('process-launch', () => {
     })
   })
 
-  it('should leave npm CLI wrapper env unchanged when packaged env is absent', () => {
+  it('should assign a fresh ownership marker when packaged env is absent', () => {
     const agentEnv = {
       PATH: '/usr/bin',
       AGENT_TOWER_URL: 'http://127.0.0.1:42232',
     }
 
-    expect(buildPtyWrapperEnv(agentEnv, {})).toEqual(agentEnv)
+    const wrapperEnv = buildPtyWrapperEnv(agentEnv, {})
+
+    expect(wrapperEnv).toMatchObject(agentEnv)
+    expect(wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY).toBeTruthy()
+    expect(wrapperEnv.AGENT_TOWER_PTY_IDENTITY_SEED)
+      .toBe(wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY)
+  })
+
+  it('must not inherit the parent ACP ownership marker', () => {
+    const parentToken = 'parent-acp-ownership-token'
+    const wrapperEnv = buildPtyWrapperEnv(
+      {
+        PATH: '/usr/bin',
+        AGENT_TOWER_PROCESS_IDENTITY: parentToken,
+        AGENT_TOWER_PTY_IDENTITY_SEED: parentToken,
+      },
+      {
+        AGENT_TOWER_PROCESS_IDENTITY: parentToken,
+        AGENT_TOWER_PTY_IDENTITY_SEED: parentToken,
+      },
+    )
+
+    expect(wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY).toBeTruthy()
+    expect(wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY).not.toBe(parentToken)
+    expect(wrapperEnv.AGENT_TOWER_PTY_IDENTITY_SEED)
+      .toBe(wrapperEnv.AGENT_TOWER_PROCESS_IDENTITY)
   })
 
   it('should keep completion capability out of wrapped child env', () => {
@@ -196,6 +221,24 @@ describe('process-launch', () => {
     })
 
     expect(stdout).toBe(`hello world|quote's test`)
+  })
+
+  it('should isolate a directly invoked wrapper from an inherited ownership marker', () => {
+    const invocation = buildPtyCommand(process.execPath, [
+      '-e',
+      'process.stdout.write(process.env.AGENT_TOWER_PROCESS_IDENTITY ?? "")',
+    ])
+    const parentToken = 'parent-acp-ownership-token'
+    const env: NodeJS.ProcessEnv = { ...process.env, AGENT_TOWER_PROCESS_IDENTITY: parentToken }
+    delete env.AGENT_TOWER_PTY_IDENTITY_SEED
+
+    const childToken = execFileSync(invocation.command, invocation.args, {
+      encoding: 'utf-8',
+      env,
+    })
+
+    expect(childToken).toBeTruthy()
+    expect(childToken).not.toBe(parentToken)
   })
 
   it('should pipe stdin from a temp file and delete it afterwards', () => {
@@ -335,7 +378,8 @@ describe('process-launch', () => {
           if (rows.length === 0) rows.push({ ProcessId: 50, ParentProcessId: 1, CreationDate: 'wrapper-birth' })
           return { status: 0 }
         },
-      } : { unlinkSync: () => undefined },
+      } : name === 'node:crypto' ? { randomUUID: () => 'generated-test-owner' }
+        : { unlinkSync: () => undefined },
       setTimeout: () => ({ unref: () => undefined }), clearTimeout: () => undefined,
     })
     rows = reused
