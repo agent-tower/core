@@ -611,8 +611,61 @@ const ToolBlock = memo(({ title, content, type }: { title: string; content: stri
 })
 ToolBlock.displayName = 'ToolBlock'
 
+/**
+ * 工具调用计数徽标。
+ * 数字像机械计数卡一样从下方拉入：旧卡向上退出、新卡从下方顶入，
+ * 两张卡不透明且严格锁相（间距恒为一格），落位时轻微过冲再回落，最后数字亮一下。
+ * 胶囊底色全程静止，不参与动画。
+ *
+ * 动画只在**数值真的变化**时播放：这个组件会因为父级重新挂载（展开/收起历史详情、
+ * 虚拟列表回收）而重建，挂载时若照样播一遍，就变成"每次展开卡片数字都跳一下"。
+ */
+const ToolCountBadge = memo(({ count }: { count: number }) => {
+  const [roll, setRoll] = useState<{ current: number; previous: number | null }>(() => ({
+    current: count,
+    previous: null,
+  }))
+
+  if (roll.current !== count) {
+    // 渲染期派生状态：旧卡片留在窗口里向上退出，新卡片从下方拉入。
+    setRoll({ current: count, previous: roll.current })
+  }
+
+  return (
+    <span className="agent-tool-count inline-flex items-center justify-center px-1.5 rounded-full bg-neutral-100 text-neutral-400 text-[10px] font-medium leading-none tabular-nums">
+      {/* 用 ch 锁定窗口宽度（tabular-nums 下 1ch 即一位数字），位数变化时平滑加宽而不是瞬跳。 */}
+      <span
+        className="agent-tool-count__window"
+        style={{ width: `${String(count).length}ch` }}
+        aria-hidden="true"
+      >
+        {roll.previous !== null && (
+          <span
+            key={`out-${roll.previous}`}
+            className="agent-tool-count__value agent-tool-count__value--out"
+            onAnimationEnd={() => setRoll((state) => (state.previous === null ? state : { ...state, previous: null }))}
+          >
+            {roll.previous}
+          </span>
+        )}
+        <span
+          key={`in-${roll.current}`}
+          className={cn(
+            'agent-tool-count__value agent-tool-count__value--in',
+            roll.previous !== null && 'agent-tool-count__value--rolling',
+          )}
+        >
+          {roll.current}
+        </span>
+      </span>
+      <span className="sr-only">{count}</span>
+    </span>
+  )
+})
+ToolCountBadge.displayName = 'ToolCountBadge'
+
 // 3b. Tool Calls — 非主线事件折叠组
-const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
+const ExecutionDetailsGroup = memo(({ logs, onBeforeToggle }: { logs: LogEntry[]; onBeforeToggle?: () => void }) => {
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
   const toolLogs = logs.filter(isToolDetailLog)
@@ -623,7 +676,12 @@ const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
     <div className="my-2">
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => {
+          // 展开会改变内容高度；若此时日志正跟随底部，外层 stick-to-bottom 会把视口
+          // 重新钉到底部，等于把刚点开的卡片往上顶一个展开高度。先放弃跟随。
+          onBeforeToggle?.()
+          setIsOpen(!isOpen)
+        }}
         aria-expanded={isOpen}
         className="group flex items-center gap-1.5 py-1 text-xs w-full text-left transition-colors"
       >
@@ -632,12 +690,7 @@ const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
         </span>
         <span className="font-medium text-neutral-500 shrink-0">{t('工具调用')}</span>
         <span className="shrink-0 inline-flex items-center gap-1">
-          <span
-            key={detailCount}
-            className="agent-tool-count inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-neutral-100 text-neutral-400 text-[10px] font-medium leading-none tabular-nums"
-          >
-            {detailCount}
-          </span>
+          <ToolCountBadge count={detailCount} />
         </span>
         {!isOpen && (
           <span className="truncate text-neutral-300 font-mono">
@@ -652,7 +705,7 @@ const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
             if (isThinkingLog(log)) {
               return <ThinkingBlock key={log.id} content={log.content} isOpenDefault={false} />
             }
-            return <ToolGroupItem key={log.id} log={log} title={toolDisplayTitle(log)} />
+            return <ToolGroupItem key={log.id} log={log} title={toolDisplayTitle(log)} onBeforeToggle={onBeforeToggle} />
           })}
         </div>
       )}
@@ -662,7 +715,7 @@ const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
 ExecutionDetailsGroup.displayName = 'ExecutionDetailsGroup'
 
 /** Single item inside a ToolGroup — expandable for full content */
-const ToolGroupItem = memo(({ log, title }: { log: LogEntry; title: string }) => {
+const ToolGroupItem = memo(({ log, title, onBeforeToggle }: { log: LogEntry; title: string; onBeforeToggle?: () => void }) => {
   const [isDetailOpen, setIsDetailOpen] = useState(false)
   const hasDetailContent = Boolean(log.content.trim()) && log.content.trim() !== title.trim()
 
@@ -673,7 +726,12 @@ const ToolGroupItem = memo(({ log, title }: { log: LogEntry; title: string }) =>
     <div>
       <button
         type="button"
-        onClick={() => hasDetailContent && setIsDetailOpen(!isDetailOpen)}
+        onClick={() => {
+          if (!hasDetailContent) return
+          // 同上：先放弃底部跟随，避免展开详情时视口被重新钉到底部。
+          onBeforeToggle?.()
+          setIsDetailOpen(!isDetailOpen)
+        }}
         aria-expanded={hasDetailContent ? isDetailOpen : undefined}
         className={`group flex items-center gap-1.5 py-0.5 text-xs w-full text-left ${
           hasDetailContent ? 'cursor-pointer' : 'cursor-default'
@@ -893,15 +951,16 @@ function renderItem(
   onOpenPreviewUrl?: OpenPreviewUrlHandler,
   onOpenVisualization?: OpenVisualizationHandler,
   downloadSessionId?: string,
+  onBeforeToggle?: () => void,
 ): React.ReactNode {
   if (item.kind === 'execution-group') {
-    return <ExecutionDetailsGroup logs={item.logs} />
+    return <ExecutionDetailsGroup logs={item.logs} onBeforeToggle={onBeforeToggle} />
   }
 
   const log = item.log
 
   if (log.type === LogType.Tool && log.children?.length) {
-    return <ExecutionDetailsGroup logs={log.children} />
+    return <ExecutionDetailsGroup logs={log.children} onBeforeToggle={onBeforeToggle} />
   }
 
   // 跳过空内容的条目，避免空 div 占据间距
@@ -1107,7 +1166,7 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
             />
           )
         case 'item':
-          return renderItem(row.item, false, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId)
+          return renderItem(row.item, false, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId, onUserToggleDetails)
         default:
           return null
       }

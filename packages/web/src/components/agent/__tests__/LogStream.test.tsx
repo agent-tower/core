@@ -258,7 +258,7 @@ describe('LogStream tool grouping', () => {
     expect(groupButtons[0].textContent).toContain('MCP tool call: agent-tower/post_room')
   })
 
-  it('animates the tool count badge when the group grows', async () => {
+  it('rolls the tool count badge like a mechanical card when the group grows', async () => {
     const first = [successTool('tool-1', 'first command')]
     const next = [...first, successTool('tool-2', 'second command')]
 
@@ -266,14 +266,56 @@ describe('LogStream tool grouping', () => {
       root.render(<LogStream logs={first} />)
     })
     const initialBadge = container.querySelector('.agent-tool-count')
-    expect(initialBadge?.textContent).toBe('1')
+    const initialValue = container.querySelector('.agent-tool-count__value--in')
+    expect(initialValue?.textContent).toBe('1')
+    // 首帧挂载不播动画，否则展开历史详情/虚拟列表重建时数字会凭空跳一次。
+    expect(initialValue?.classList.contains('agent-tool-count__value--rolling')).toBe(false)
+    expect(container.querySelector('.agent-tool-count__value--out')).toBeNull()
 
     await act(async () => {
       root.render(<LogStream logs={next} />)
     })
-    const updatedBadge = container.querySelector('.agent-tool-count')
-    expect(updatedBadge?.textContent).toBe('2')
-    expect(updatedBadge).not.toBe(initialBadge)
+    // 胶囊底色保持同一个节点，动画只发生在数字卡片上。
+    expect(container.querySelector('.agent-tool-count')).toBe(initialBadge)
+    const updatedValue = container.querySelector('.agent-tool-count__value--in')
+    expect(updatedValue?.textContent).toBe('2')
+    expect(updatedValue).not.toBe(initialValue)
+    expect(updatedValue?.classList.contains('agent-tool-count__value--rolling')).toBe(true)
+    expect(container.querySelector('.agent-tool-count__value--out')?.textContent).toBe('1')
+  })
+
+  it('keeps the tool count still when a processed turn is collapsed and re-expanded', async () => {
+    // 展开/收起历史详情会重新挂载计数徽标：那是重新挂载，不是计数变化，数字必须静止。
+    const logs = [
+      withTimestamp(userEntry('user-1', 'Request'), 1_000),
+      withTimestamp(commandTool('bash-1', 'git status --short'), 2_000),
+      withTimestamp(assistantEntry('assistant-1', 'Answer'), 3_000),
+    ]
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} isOutputActive={false} lastExitAt={4_000} />)
+    })
+
+    const turnSummary = container.querySelector('button[data-at-group-header]')
+    expect(turnSummary).not.toBeNull()
+    const clickTurnSummary = async () => {
+      await act(async () => {
+        turnSummary?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+    }
+    const expectCountStill = () => {
+      const value = container.querySelector('.agent-tool-count__value--in')
+      expect(value?.textContent).toBe('1')
+      expect(value?.classList.contains('agent-tool-count__value--rolling')).toBe(false)
+      expect(container.querySelector('.agent-tool-count__value--out')).toBeNull()
+    }
+
+    await clickTurnSummary() // 展开
+    expectCountStill()
+    await clickTurnSummary() // 收起：内容整体卸载
+    expect(container.querySelector('.agent-tool-count')).toBeNull()
+    await clickTurnSummary() // 再次展开：徽标重新挂载，数字仍须静止
+    expectCountStill()
   })
 
   it('summarizes generic shell tools with their command instead of repeating bash', async () => {
@@ -319,6 +361,38 @@ describe('LogStream tool grouping', () => {
     expect(container.textContent).toContain('Read agent-browser skill')
     expect(container.textContent).toContain('Open Google News')
     expect(container.textContent).toContain('Identifying browser skill')
+  })
+
+  it('gives up bottom-following before expanding a tool card or a tool detail', async () => {
+    // 展开会改变内容高度：若外层还在贴底跟随，视口会被重新钉到底部，
+    // 刚点开的卡片会被顶上去一个展开高度。两层展开都必须先放弃跟随。
+    const onUserToggleDetails = vi.fn()
+
+    await act(async () => {
+      root.render(
+        <LogStream
+          logs={[commandTool('bash-1', 'git status --short')]}
+          onUserToggleDetails={onUserToggleDetails}
+        />,
+      )
+    })
+
+    const [groupButton] = getToolGroupButtons(container)
+    await act(async () => {
+      groupButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(onUserToggleDetails).toHaveBeenCalledTimes(1)
+    expect(groupButton?.getAttribute('aria-expanded')).toBe('true')
+
+    const [detailButton] = Array.from(container.querySelectorAll('button[aria-expanded]'))
+      .filter((button) => button !== groupButton)
+    expect(detailButton).toBeDefined()
+
+    await act(async () => {
+      detailButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(onUserToggleDetails).toHaveBeenCalledTimes(2)
+    expect(detailButton?.getAttribute('aria-expanded')).toBe('true')
   })
 
   it('renders a single error log as error block, not inside a 工具调用 group', async () => {

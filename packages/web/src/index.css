@@ -221,31 +221,91 @@
     animation: agent-thinking-opacity-sweep 4.2s linear infinite;
   }
 
-  .agent-tool-count {
-    animation: agent-tool-count-update 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* 工具调用计数：数字在裁剪窗口内像机械卡片一样向上拉入，落位后数字亮一下。
+     窗口比字形高（1.4em）以留出可读行程；胶囊用等高的窗口 + 0 垂直内边距，
+     外形与静止态不变。 */
+  .agent-tool-count__window {
+    display: inline-grid;
+    height: 1.4em;
+    overflow: hidden;
+    /* 位数变化（9→10）时窗口平滑加宽，避免动画一开始先跳一下布局。 */
+    transition: width 220ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
-  @keyframes agent-tool-count-update {
-    from {
-      opacity: 0.35;
-      color: rgb(22 163 74);
-      background-color: rgb(220 252 231);
-      box-shadow: 0 0 0 3px rgb(187 247 208 / 0.55);
-      transform: translateY(4px) scale(0.9);
+  .agent-tool-count__value {
+    grid-area: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* 数值变化时的滚动：分段缓动先把 1 格行程摊到 150ms 匀速拉升，再用 1.7px 过冲 +
+     回落做出"咔哒"；两张卡共用同一组关键帧（仅相差一格），因此全程锁相、像一条连续的带。
+     只有数值真的变化才挂 --rolling：首帧挂载（展开历史详情、虚拟列表重建）不播动画。 */
+  .agent-tool-count__value--rolling {
+    animation:
+      agent-tool-count-roll-in 260ms linear backwards,
+      agent-tool-count-flash 320ms linear 180ms backwards;
+  }
+
+  .agent-tool-count__value--out {
+    animation: agent-tool-count-roll-out 260ms linear forwards;
+  }
+
+  @keyframes agent-tool-count-roll-in {
+    0% {
+      transform: translateY(100%);
+      animation-timing-function: cubic-bezier(0.45, 0.05, 0.55, 0.95);
     }
-    68% {
-      opacity: 1;
-      color: rgb(22 163 74);
-      background-color: rgb(220 252 231);
-      box-shadow: 0 0 0 3px rgb(187 247 208 / 0.25);
-      transform: translateY(0) scale(1);
+    58% {
+      transform: translateY(7%);
+      animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1);
     }
-    to {
-      opacity: 1;
-      color: var(--muted-foreground);
-      background-color: var(--muted);
-      box-shadow: 0 0 0 0 rgb(187 247 208 / 0);
-      transform: translateY(0) scale(1);
+    80% {
+      transform: translateY(-12%);
+      animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+    }
+    100% {
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes agent-tool-count-roll-out {
+    0% {
+      transform: translateY(0);
+      animation-timing-function: cubic-bezier(0.45, 0.05, 0.55, 0.95);
+    }
+    58% {
+      transform: translateY(-93%);
+      animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1);
+    }
+    80% {
+      transform: translateY(-112%);
+      animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+    }
+    100% {
+      transform: translateY(-100%);
+    }
+  }
+
+  /* 高光包络：快攻 48ms → 保持 86ms → 缓出收尾，整体 320ms（180ms 起，500ms 收干净）。
+     起亮落在卡片"咔哒"进槽那一刻（~208ms 过冲峰值）之后，峰值与保持段完全在滚动停稳
+     （260ms）之后，避免被运动掩蔽成"一闪而过"的毛刺。
+     只改数字本身的颜色/辉光，首尾隐式回到静息样式。 */
+  @keyframes agent-tool-count-flash {
+    0% {
+      animation-timing-function: cubic-bezier(0.2, 0.9, 0.35, 1);
+    }
+    15% {
+      color: rgb(4 120 87);
+      text-shadow: 0 0 4px rgb(16 185 129 / 0.5);
+      animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+    }
+    42% {
+      color: rgb(4 120 87);
+      text-shadow: 0 0 4px rgb(16 185 129 / 0.5);
     }
   }
 
@@ -285,7 +345,19 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .agent-tool-count { animation: none; }
+    .agent-tool-count__window {
+      transition: none;
+    }
+
+    .agent-tool-count__value--rolling,
+    .agent-tool-count__value--out {
+      animation: none;
+    }
+
+    /* 关闭动画后不需要退场卡片，否则会和当前数字叠在一起。 */
+    .agent-tool-count__value--out {
+      display: none;
+    }
 
     .agent-thinking-char {
       opacity: 0.48;
