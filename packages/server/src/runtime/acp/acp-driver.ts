@@ -509,6 +509,35 @@ class AcpDriverSession implements DriverSession {
 
   private handleUnexpectedConnectionClose(connection: acp.ClientConnection): void {
     if (this.closed || this.connection !== connection) return;
+    const closeReason = readConnectionCloseReason(connection);
+    const processExit = this.lastProcessExit?.exit;
+    const processDiagnostic = processExit ? buildAcpExitDiagnostic(processExit) : undefined;
+    const outputError = typeof this.processManager?.getOutputError === 'function'
+      ? this.processManager.getOutputError()
+      : undefined;
+    const reasonMessage = closeReason instanceof Error ? closeReason.message : String(closeReason);
+    const outputErrorMessage = outputError instanceof Error ? outputError.message : outputError ? String(outputError) : undefined;
+    const processMessage = processExit && processDiagnostic
+      ? describeAcpProcessExit(processExit, processDiagnostic)
+      : 'no process exit observed yet';
+    const outputMessage = outputErrorMessage ? `; ACP output error: ${outputErrorMessage}` : '';
+    const message = `ACP connection closed unexpectedly: ${reasonMessage}${outputMessage}; ${processMessage}`;
+    console.error(`[AcpDriver] ${this.input.towerSessionId} turn=${this.currentTurnId ?? 'none'} ${message}`);
+    writeErrorLog({
+      level: 'error',
+      source: 'session.acp.connectionClose',
+      message,
+      error: closeReason instanceof Error ? closeReason : new Error(String(closeReason)),
+      metadata: {
+        sessionId: this.input.towerSessionId,
+        turnId: this.currentTurnId,
+        runtimeInstanceId: this.currentRuntimeInstanceId,
+        processExitCode: processExit?.exitCode,
+        processSignal: processExit?.signal,
+        processStderrSummary: processDiagnostic?.stderrSummary,
+        outputError: outputErrorMessage,
+      },
+    });
     this.invalidatePermissions(this.currentSink);
     void this.resetTransport(connection).catch(() => undefined);
   }
@@ -894,6 +923,23 @@ function normalizeAcpError(error: unknown, stage: string): AgentRuntimeError {
   return new AgentRuntimeError('acp_request_failed', stage, sanitize(message, 4_096), true, {
     cause: error,
   });
+}
+
+/**
+ * The ACP v1 public interface only exposes a `closed` promise, while the SDK
+ * keeps the abort reason behind its private `closedReason()` helper. Read that
+ * reason when available so protocol/stream errors are preserved in diagnostics;
+ * a plain EOF still reports the SDK's canonical "ACP connection closed" error.
+ */
+function readConnectionCloseReason(connection: acp.ClientConnection): unknown {
+  const candidate = connection as unknown as { closedReason?: () => unknown };
+  try {
+    return typeof candidate.closedReason === 'function'
+      ? candidate.closedReason()
+      : new Error('ACP connection closed');
+  } catch (error) {
+    return error;
+  }
 }
 
 interface AcpExitDiagnostic {

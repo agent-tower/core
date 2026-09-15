@@ -34,13 +34,9 @@ export function TaskStartProgress({ state, onRetry, details, compact = false }: 
     t('Creating session'),
     t('Starting agent'),
   ]
-  const title = isFailed
-    ? t('Agent start failed')
-    : state.status === 'creating-workspace'
-      ? t('Creating worktree')
-      : state.status === 'creating-session'
-        ? t('Creating session')
-        : t('Starting agent')
+  // The active step is already listed below. Keep the card header as a stable
+  // task-level status so the first and last rows do not repeat the same label.
+  const title = isFailed ? t('Agent start failed') : t('Starting task')
 
   return (
     <div

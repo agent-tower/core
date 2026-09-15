@@ -47,6 +47,22 @@ function successTool(id: string, content: string): LogEntry {
   }
 }
 
+function commandTool(id: string, command: string): LogEntry {
+  return {
+    id,
+    type: LogType.Tool,
+    title: 'bash ✓',
+    content: `Input\n${JSON.stringify({ command })}\n\nContent\ncompleted`,
+    tool: {
+      action: 'command_run',
+      name: 'bash',
+      id,
+      kind: 'execute',
+      status: 'success',
+    },
+  }
+}
+
 function approvalTool(id: string): LogEntry {
   return {
     id,
@@ -242,6 +258,41 @@ describe('LogStream tool grouping', () => {
     expect(groupButtons[0].textContent).toContain('MCP tool call: agent-tower/post_room')
   })
 
+  it('animates the tool count badge when the group grows', async () => {
+    const first = [successTool('tool-1', 'first command')]
+    const next = [...first, successTool('tool-2', 'second command')]
+
+    await act(async () => {
+      root.render(<LogStream logs={first} />)
+    })
+    const initialBadge = container.querySelector('.agent-tool-count')
+    expect(initialBadge?.textContent).toBe('1')
+
+    await act(async () => {
+      root.render(<LogStream logs={next} />)
+    })
+    const updatedBadge = container.querySelector('.agent-tool-count')
+    expect(updatedBadge?.textContent).toBe('2')
+    expect(updatedBadge).not.toBe(initialBadge)
+  })
+
+  it('summarizes generic shell tools with their command instead of repeating bash', async () => {
+    await act(async () => {
+      root.render(
+        <LogStream
+          logs={[
+            thinkingEntry('thinking-summary', 'Inspecting the repository structure'),
+            commandTool('bash-1', 'git status --short && git log -5'),
+          ]}
+        />,
+      )
+    })
+
+    const button = getToolGroupButtons(container)[0]
+    expect(button?.textContent).toContain('git status --short')
+    expect(button?.textContent).not.toContain('bash')
+  })
+
   it('keeps interleaved ACP thinking and tools in one generic execution group', async () => {
     const logs: LogEntry[] = [
       thinkingEntry('thinking-1', '**Identifying browser skill**'),
@@ -258,7 +309,7 @@ describe('LogStream tool grouping', () => {
     expect(groupButton).toBeDefined()
     expect(groupButton?.textContent).toContain('工具调用')
     expect(groupButton?.textContent).toContain('2')
-    expect(groupButton?.textContent).not.toContain('Planning network access')
+    expect(groupButton?.textContent).toContain('Planning network access')
     expect(getToolGroupButtons(container)).toHaveLength(1)
 
     await act(async () => {

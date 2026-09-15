@@ -60,6 +60,7 @@ export class AcpProcessManager {
   private settled?: AcpProcessExit;
   private stopPromise?: Promise<AcpProcessExit | undefined>;
   private stderr = '';
+  private outputError?: unknown;
   private readonly platform: NodeJS.Platform;
   private readonly unixProcessAdapter: UnixProcessIdentityAdapter;
   private readonly windowsProcessAdapter: WindowsProcessTreeAdapter;
@@ -160,6 +161,9 @@ export class AcpProcessManager {
         maxInputFrameBytes: this.launch.maxStdoutFrameBytes ?? MAX_STDOUT_LINE_BYTES,
         transformFrame: this.launch.transformStdoutFrame,
       });
+      validatedOutput.once('error', (error) => {
+        this.outputError = error;
+      });
       output = Readable.toWeb(validatedOutput) as ReadableStream<Uint8Array>;
       if (this.platform === 'win32') {
         this.rootWindowsIdentity = await this.captureRootWindowsIdentity(child.pid);
@@ -220,6 +224,10 @@ export class AcpProcessManager {
     this.exitListeners.add(listener);
     if (this.settled) listener(this.settled);
     return () => this.exitListeners.delete(listener);
+  }
+
+  getOutputError(): unknown {
+    return this.outputError;
   }
 
   /** Exposes the retry owner for startup/recovery diagnostics and tests. */

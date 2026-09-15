@@ -221,6 +221,34 @@
     animation: agent-thinking-opacity-sweep 4.2s linear infinite;
   }
 
+  .agent-tool-count {
+    animation: agent-tool-count-update 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes agent-tool-count-update {
+    from {
+      opacity: 0.35;
+      color: rgb(22 163 74);
+      background-color: rgb(220 252 231);
+      box-shadow: 0 0 0 3px rgb(187 247 208 / 0.55);
+      transform: translateY(4px) scale(0.9);
+    }
+    68% {
+      opacity: 1;
+      color: rgb(22 163 74);
+      background-color: rgb(220 252 231);
+      box-shadow: 0 0 0 3px rgb(187 247 208 / 0.25);
+      transform: translateY(0) scale(1);
+    }
+    to {
+      opacity: 1;
+      color: var(--muted-foreground);
+      background-color: var(--muted);
+      box-shadow: 0 0 0 0 rgb(187 247 208 / 0);
+      transform: translateY(0) scale(1);
+    }
+  }
+
   @keyframes agent-thinking-opacity-sweep {
     0%,
     72% {
@@ -257,6 +285,8 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .agent-tool-count { animation: none; }
+
     .agent-thinking-char {
       opacity: 0.48;
       animation: none;

@@ -514,6 +514,41 @@ function toolDisplayTitle(log: LogEntry): string {
   return firstLine(log.content, 140) || log.tool?.name || title || 'Tool'
 }
 
+const GENERIC_TOOL_LABELS = new Set(['bash', 'shell', 'read', 'write', 'edit', 'glob', 'grep'])
+
+function toolActivityLabel(log: LogEntry): string {
+  const title = toolDisplayTitle(log)
+  const toolName = log.tool?.name?.trim().toLowerCase()
+  if (!toolName || !GENERIC_TOOL_LABELS.has(toolName)) return title
+
+  const input = log.content.match(/(?:^|\n)Input\n([\s\S]*?)(?:\n\nContent\n|$)/i)?.[1]?.trim()
+  if (input) {
+    try {
+      const parsed = JSON.parse(input) as Record<string, unknown>
+      if (typeof parsed.command === 'string') {
+        const command = parsed.command.split(/\s*(?:&&|\|\||;)\s*/)[0]?.trim()
+        if (command) return command.length > 72 ? `${command.slice(0, 72)}…` : command
+      }
+      if (typeof parsed.file_path === 'string') return parsed.file_path.split('/').pop() || parsed.file_path
+      if (typeof parsed.pattern === 'string') return parsed.pattern
+    } catch {
+      // Some adapters stream a partial tool input. Keep the generic label then.
+    }
+  }
+  return title
+}
+
+function activitySummary(logs: LogEntry[]): string[] {
+  const labels = logs.flatMap((log) => {
+    if (isThinkingLog(log)) {
+      const preview = firstLine(log.content.replace(/^Thinking:\s*/i, '').trim(), 72)
+      return preview ? [preview] : []
+    }
+    return isToolDetailLog(log) ? [toolActivityLabel(log)] : []
+  })
+  return labels.filter((label, index) => index === 0 || label !== labels[index - 1])
+}
+
 // 3. Tool / Action — 内联文本样式，去除边框噪音
 const ToolBlock = memo(({ title, content, type }: { title: string; content: string; type: LogType }) => {
   const [isOpen, setIsOpen] = useState(false)
@@ -581,7 +616,7 @@ const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
   const toolLogs = logs.filter(isToolDetailLog)
-  const summaries = toolLogs.map((log) => toolDisplayTitle(log))
+  const summaries = activitySummary(logs)
   const detailCount = toolLogs.length
 
   return (
@@ -597,13 +632,16 @@ const ExecutionDetailsGroup = memo(({ logs }: { logs: LogEntry[] }) => {
         </span>
         <span className="font-medium text-neutral-500 shrink-0">{t('工具调用')}</span>
         <span className="shrink-0 inline-flex items-center gap-1">
-          <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-neutral-100 text-neutral-400 text-[10px] font-medium leading-none tabular-nums">
+          <span
+            key={detailCount}
+            className="agent-tool-count inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-neutral-100 text-neutral-400 text-[10px] font-medium leading-none tabular-nums"
+          >
             {detailCount}
           </span>
         </span>
         {!isOpen && (
           <span className="truncate text-neutral-300 font-mono">
-            {summaries.slice(0, 3).join(', ')}{toolLogs.length > 3 ? ' …' : ''}
+            {summaries.slice(-3).join(', ')}{summaries.length > 3 ? ' …' : ''}
           </span>
         )}
       </button>
@@ -917,7 +955,6 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
     const [viewportHeight, setViewportHeight] = useState(0)
     const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(() => new Set<string>())
     const [liveNow, setLiveNow] = useState(() => Date.now())
-
     useEffect(() => {
       if (!isOutputActive) return
       const updateNow = () => setLiveNow(Date.now())
