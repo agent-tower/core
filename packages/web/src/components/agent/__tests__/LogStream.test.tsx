@@ -833,6 +833,21 @@ describe('LogStream virtualization', () => {
     expect(container.textContent).not.toContain('line 199')
   })
 
+  it('positions virtual rows without trapping fixed fullscreen overlays', async () => {
+    const logs = Array.from({ length: 200 }, (_, index) => (
+      withTimestamp(infoEntry(`info-${index}`, `line ${index}`), 1_000 + index)
+    ))
+
+    await act(async () => {
+      root.render(<LogStream logs={logs} isOutputActive scrollElementRef={scrollElementRef} />)
+    })
+
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-index]'))
+    expect(rows.length).toBeGreaterThan(1)
+    expect(rows.every((row) => row.style.transform === '')).toBe(true)
+    expect(rows.slice(1).some((row) => row.style.top !== '0px')).toBe(true)
+  })
+
   it('does not mount collapsed history rows and windows them once expanded', async () => {
     const logs: LogEntry[] = [withTimestamp(userEntry('user-1', 'Request'), 1_000)]
     for (let index = 0; index < 60; index += 1) {
@@ -1232,9 +1247,8 @@ describe('LogStream scroll anchoring on the real virtualizer', () => {
   const rowTrackOffset = (rowKey: string) => {
     const node = container.querySelector<HTMLElement>(`[data-at-row="${rowKey}"]`)
     expect(node).not.toBeNull()
-    const match = /translateY\((-?[\d.]+)px\)/.exec(node?.style.transform ?? '')
-    expect(match).not.toBeNull()
-    return Number(match?.[1])
+    expect(node?.style.transform).toBe('')
+    return Number.parseFloat(node?.style.top ?? '0')
   }
 
   /** Where the row actually sits in the viewport — what the reader sees. */

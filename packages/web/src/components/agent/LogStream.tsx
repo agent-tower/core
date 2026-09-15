@@ -1122,10 +1122,13 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
                   ref={virtualizer.measureElement}
                   style={{
                     position: 'absolute',
-                    top: 0,
+                    // Keep the row out of the containing-block chain for
+                    // Mermaid's fixed fullscreen overlay. A transform here
+                    // would make the virtual row the containing block and
+                    // constrain the overlay to the session output row.
+                    top: virtualItem.start,
                     left: 0,
                     width: '100%',
-                    transform: `translateY(${virtualItem.start}px)`,
                   }}
                 >
                   {renderRow(row)}
