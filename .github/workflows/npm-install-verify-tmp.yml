@@ -1,0 +1,58 @@
+name: TEMP npm install verify
+
+# Temporary verification workflow. Installs the release-candidate tarball on
+# Windows, Linux x64 and macOS and boots the real CLI from it.
+on:
+  push:
+    branches:
+      - verify/npm-0.7.0-tmp
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: install+boot ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: macos-arm64
+            os: macos-latest
+    steps:
+      - name: Checkout verification branch
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+
+      - name: Download candidate tarball from draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p tarball
+          gh release download verify-tmp-0.7.0 \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'agent-tower-*.tgz' \
+            --dir tarball
+          ls -la tarball
+
+      - name: Report platform
+        shell: bash
+        run: |
+          node -v
+          npm -v
+          node -e "console.log(process.platform, process.arch)"
+
+      - name: Install and boot the exact tarball
+        shell: bash
+        run: node scripts/smoke-publish-install.mjs --tarball ./tarball/agent-tower-0.7.0.tgz
