@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z, ZodError } from 'zod';
 import { TaskService } from '../services/task.service.js';
 import { TaskStatus } from '../types/index.js';
+import { TaskPriority } from '@agent-tower/shared';
 import { ServiceError } from '../errors.js';
 import {
   getEventBus,
@@ -13,13 +14,13 @@ import {
 const createTaskSchema = z.object({
   title: z.string().min(1, 'title is required').refine((value) => value.trim().length > 0, 'title is required'),
   description: z.string().optional(),
-  priority: z.number().int().min(0).default(0),
+  priority: z.nativeEnum(TaskPriority).default(TaskPriority.NORMAL),
 });
 
 const updateTaskSchema = z.object({
   title: z.string().min(1, 'title cannot be empty').refine((value) => value.trim().length > 0, 'title cannot be empty').optional(),
   description: z.string().optional(),
-  priority: z.number().int().min(0).optional(),
+  priority: z.nativeEnum(TaskPriority).optional(),
 });
 
 const updateStatusSchema = z.object({

@@ -253,6 +253,39 @@ describe('task routes', () => {
     }
   });
 
+  it('orders in-review tasks by priority before position', async () => {
+    const project = await prisma.project.create({
+      data: { name: 'Priority board project', repoPath: testDir },
+    });
+    const normal = await prisma.task.create({
+      data: { title: 'Normal review', projectId: project.id, status: 'IN_REVIEW', priority: 0, position: 1 },
+    });
+    const urgent = await prisma.task.create({
+      data: { title: 'Urgent review', projectId: project.id, status: 'IN_REVIEW', priority: 2, position: 3 },
+    });
+    const high = await prisma.task.create({
+      data: { title: 'High review', projectId: project.id, status: 'IN_REVIEW', priority: 1, position: 2 },
+    });
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/task-board?projectId=${project.id}`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data.map((task: { id: string }) => task.id)).toEqual([
+        urgent.id,
+        high.id,
+        normal.id,
+      ]);
+      expect(response.json().data.map((task: { priority: number }) => task.priority)).toEqual([2, 1, 0]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('accepts long single-input task content and stores the unconsumed body as description', async () => {
     const project = await prisma.project.create({
       data: {

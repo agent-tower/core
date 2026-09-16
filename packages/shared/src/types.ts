@@ -14,6 +14,14 @@ export enum TaskStatus {
   CANCELLED = 'CANCELLED',
 }
 
+/** 任务优先级。保留 0 作为历史任务的普通优先级。 */
+export enum TaskPriority {
+  LOW = -1,
+  NORMAL = 0,
+  HIGH = 1,
+  URGENT = 2,
+}
+
 /** 工作空间状态 */
 export enum WorkspaceStatus {
   ACTIVE = 'ACTIVE',
@@ -530,6 +538,8 @@ export interface TaskBoardItem {
   projectId: string
   title: string
   status: TaskStatus
+  /** 待审查任务按优先级降序排列。 */
+  priority?: number
   preferredWorkspace?: TaskBoardWorkspaceSummary
   latestAgentType?: AgentType
   hasRunningSession?: true

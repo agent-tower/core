@@ -156,8 +156,8 @@ export class SocketGateway {
     const onRuntimeStateChanged = (payload: SessionRuntimeStateChangedPayload) => {
       emitToCurrentSockets(ServerEvents.SESSION_RUNTIME_STATE_CHANGED, payload);
     };
-    const onTask = ({ taskId, projectId, status }: { taskId: string; projectId: string; status: string }) => {
-      emitToCurrentSockets(ServerEvents.TASK_UPDATED, { taskId, projectId, status });
+    const onTask = ({ taskId, projectId, status, priority }: { taskId: string; projectId: string; status: string; priority?: number }) => {
+      emitToCurrentSockets(ServerEvents.TASK_UPDATED, { taskId, projectId, status, ...(priority === undefined ? {} : { priority }) });
     };
     const onTaskDeleted = ({ taskId, projectId }: { taskId: string; projectId: string }) => {
       emitToCurrentSockets(ServerEvents.TASK_DELETED, { taskId, projectId });

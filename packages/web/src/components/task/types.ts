@@ -49,6 +49,7 @@ export interface UITask {
   projectId: string
   title: string
   status: UITaskStatus
+  priority?: number
   /** 执行该任务的 Agent 名称（来自活跃 Session） */
   agent: string
   /** 当前工作分支（来自活跃 Workspace） */
@@ -75,6 +76,7 @@ export interface UITaskDetailData {
   projectColor: string
   title: string
   status: UITaskStatus
+  priority?: number
   /** 当前工作分支（来自活跃 Workspace） */
   branch: string
   /** Git 操作目标基础分支（优先 workspace.baseBranch） */

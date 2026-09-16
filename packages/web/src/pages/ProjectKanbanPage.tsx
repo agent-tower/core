@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { WorkspaceKind, type Task, type TaskBoardItem } from '@agent-tower/shared'
+import { TaskPriority, WorkspaceKind, type Task, type TaskBoardItem } from '@agent-tower/shared'
 import { TaskList } from '@/components/task'
 import { TaskDetail } from '@/components/task/TaskDetail'
 import type { TaskStartProgressState } from '@/components/task/TaskStartProgress'
@@ -9,7 +9,7 @@ import { UITaskStatus } from '@/components/task/types'
 import { toast } from 'sonner'
 import { adaptProject, adaptTaskBoardItemForDetail, adaptTaskBoardItemForList, mapTaskStatusToUI, mapUIStatusToTask } from '@/components/task/adapters'
 import { useProjects } from '@/hooks/use-projects'
-import { useTaskBoard, useDeleteTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
+import { useTaskBoard, useDeleteTask, useUpdateTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
 import { useStartSession } from '@/hooks/use-sessions'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
@@ -155,6 +155,7 @@ function taskToBoardItem(task: Task): TaskBoardItem {
     projectId: task.projectId,
     title: task.titlePreview ?? task.title,
     status: task.status,
+    priority: task.priority,
     ...(preferredWorkspace ? {
       preferredWorkspace: {
         ...(preferredWorkspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY
@@ -297,6 +298,7 @@ export function ProjectKanbanPage() {
         projectColor: 'text-muted-foreground',
         title: task.title,
         status: mapTaskStatusToUI(task.status),
+        priority: task.priority,
         branch,
         mainBranch: 'main',
         description: '',
@@ -315,6 +317,7 @@ export function ProjectKanbanPage() {
   const createTaskTeamRun = useCreateTaskTeamRun()
   const deleteTask = useDeleteTask()
   const updateTaskStatus = useUpdateTaskStatus()
+  const updateTask = useUpdateTask()
   const startSession = useStartSession()
 
   const revealCreatedTask = useCallback((task: Task) => {
@@ -425,6 +428,17 @@ export function ProjectKanbanPage() {
     )
   }, [updateTaskStatus, t])
 
+  const handleTaskPriorityChange = useCallback((taskId: string, priority: TaskPriority) => {
+    updateTask.mutate(
+      { id: taskId, priority },
+      {
+        onError: () => {
+          toast.error(t('优先级变更失败'))
+        },
+      },
+    )
+  }, [updateTask, t])
+
   // === rerender-defer-reads: 侧边栏宽度只在 resize handler 中读取 ===
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -490,8 +504,10 @@ export function ProjectKanbanPage() {
     teamTemplateId: string | null
     memberPresetIds: string[]
     attachmentLinks: string
+    attachmentIds: string[]
+    priority: number
   }) => {
-    const { title, description, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks } = data
+    const { title, description, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks, priority } = data
     const fullDescription = [description, attachmentLinks].filter(Boolean).join('\n\n')
     let createdTask: Task | null = null
 
@@ -500,6 +516,7 @@ export function ProjectKanbanPage() {
       const created = await apiClient.post<Task>(`/projects/${projectId}/tasks`, {
         title,
         description: fullDescription || undefined,
+        priority,
       })
       createdTask = created
 
@@ -666,6 +683,7 @@ export function ProjectKanbanPage() {
             task={taskDetailData}
             onBack={() => setSelectedTaskId(null)}
             onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
+            onTaskPriorityChange={taskDetailData.projectArchivedAt ? undefined : handleTaskPriorityChange}
             isDeleting={deleteTask.isPending}
             autoStartState={backgroundStarts[taskDetailData.id] ?? null}
             onAutoStartRecovered={handleAutoStartRecovered}
@@ -716,6 +734,7 @@ export function ProjectKanbanPage() {
               onCreateTask={handleMobileCreateTask}
               onCreateProject={handleCreateProject}
               onTaskStatusChange={handleTaskStatusChange}
+              onTaskPriorityChange={handleTaskPriorityChange}
             />
           )}
         </div>
@@ -794,6 +813,7 @@ export function ProjectKanbanPage() {
             isCreateActive={!effectiveSelectedTaskId}
             onTaskStatusChange={handleTaskStatusChange}
             onDeleteTask={handleDeleteTask}
+            onTaskPriorityChange={handleTaskPriorityChange}
           />
         )}
 
@@ -812,6 +832,7 @@ export function ProjectKanbanPage() {
               onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
               isDeleting={deleteTask.isPending}
               onTaskStatusChange={taskDetailData.projectArchivedAt ? undefined : handleTaskStatusChange}
+              onTaskPriorityChange={taskDetailData.projectArchivedAt ? undefined : handleTaskPriorityChange}
               autoStartState={backgroundStarts[taskDetailData.id] ?? null}
               onAutoStartRecovered={handleAutoStartRecovered}
             />

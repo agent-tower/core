@@ -3,6 +3,9 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { STATUS_STYLES, STATUS_ORDER } from './status-styles'
+import { TaskPriority } from '@agent-tower/shared'
+import { TaskPriorityIndicator } from './TaskPrioritySelect'
+import { TASK_PRIORITY_OPTIONS } from './task-priority'
 import { useI18n, translate } from '@/lib/i18n'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
@@ -46,6 +49,8 @@ interface TaskGroupProps {
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   /** 删除任务回调（右键菜单） */
   onDeleteTask?: (taskId: string) => void
+  /** 修改任务优先级回调（右键菜单） */
+  onTaskPriorityChange?: (taskId: string, priority: TaskPriority) => void
   /** 移动端禁用拖拽，改用长按菜单 */
   disableDrag?: boolean
 }
@@ -58,6 +63,7 @@ function DraggableTaskCard({
   onSelectTask,
   onTaskStatusChange,
   onDeleteTask,
+  onTaskPriorityChange,
   disableDrag,
 }: {
   task: UITask
@@ -67,6 +73,7 @@ function DraggableTaskCard({
   onSelectTask: (id: string) => void
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   onDeleteTask?: (taskId: string) => void
+  onTaskPriorityChange?: (taskId: string, priority: TaskPriority) => void
   disableDrag?: boolean
 }) {
   const { t } = useI18n()
@@ -100,10 +107,10 @@ function DraggableTaskCard({
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     if (isTaskReadOnly) return
-    if (!onTaskStatusChange && !onDeleteTask) return
+    if (!onTaskStatusChange && !onDeleteTask && !onTaskPriorityChange) return
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY })
-  }, [isTaskReadOnly, onTaskStatusChange, onDeleteTask])
+  }, [isTaskReadOnly, onTaskStatusChange, onDeleteTask, onTaskPriorityChange])
 
   const clearLongPress = useCallback(() => {
     if (longPressTimer.current) {
@@ -171,6 +178,9 @@ function DraggableTaskCard({
         >
           {task.title}
         </span>
+        {task.priority !== undefined && task.priority !== TaskPriority.NORMAL && (
+          <TaskPriorityIndicator priority={task.priority} />
+        )}
         {task.projectArchivedAt && (
           <span className="inline-flex shrink-0 items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
@@ -213,6 +223,25 @@ function DraggableTaskCard({
                   </button>
                 )
               })}
+            </>
+          )}
+          {onTaskPriorityChange && (
+            <>
+              <div className="my-1 border-t border-border/60" />
+              <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                {t('Priority')}
+              </div>
+              {TASK_PRIORITY_OPTIONS.map(option => (
+                <button
+                  key={option.value}
+                  onClick={() => { onTaskPriorityChange(task.id, option.value); setContextMenu(null) }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-accent/50 transition-colors"
+                >
+                  <TaskPriorityIndicator priority={option.value} />
+                  <span className="text-foreground/80">{option.code} · {t(option.label)}</span>
+                  {task.priority === option.value && <span className="ml-auto text-foreground">✓</span>}
+                </button>
+              ))}
             </>
           )}
           {onDeleteTask && (
@@ -258,6 +287,7 @@ export const TaskGroup = memo(function TaskGroup({
   dragFromStatus,
   onTaskStatusChange,
   onDeleteTask,
+  onTaskPriorityChange,
   disableDrag,
 }: TaskGroupProps) {
   const { t } = useI18n()
@@ -341,6 +371,7 @@ export const TaskGroup = memo(function TaskGroup({
                   onSelectTask={onSelectTask}
                   onTaskStatusChange={task.projectArchivedAt ? undefined : onTaskStatusChange}
                   onDeleteTask={task.projectArchivedAt ? undefined : onDeleteTask}
+                  onTaskPriorityChange={task.projectArchivedAt ? undefined : onTaskPriorityChange}
                   disableDrag={disableDrag}
                 />
               )

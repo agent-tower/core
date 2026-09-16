@@ -38,6 +38,7 @@ export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
         const task = await client.createTask(params.project_id, {
           title: params.title,
           description: params.description,
+          priority: params.priority,
         });
         return { content: [{ type: 'text', text: JSON.stringify(task, null, 2) }] };
       } catch (e: any) {
@@ -62,13 +63,13 @@ export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
 
   server.tool(
     'update_task',
-    "Update a task's title, description, or status. `task_id` is required.",
+    "Update a task's title, description, priority, or status. `task_id` is required.",
     UpdateTaskInput.shape,
     async (params) => {
       try {
         const { task_id, status, ...fields } = params;
-        // 更新字段（title/description）
-        const hasFields = fields.title !== undefined || fields.description !== undefined;
+        // 更新字段（title/description/priority）
+        const hasFields = fields.title !== undefined || fields.description !== undefined || fields.priority !== undefined;
         let result: any;
         if (hasFields) {
           result = await client.updateTask(task_id, fields);

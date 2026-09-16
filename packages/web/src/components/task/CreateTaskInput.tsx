@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users, Info } from 'lucide-react'
-import { WorkspaceKind, type AgentType, type ProjectGitCapability, type TeamRunMode } from '@agent-tower/shared'
+import { TaskPriority, WorkspaceKind, type AgentType, type ProjectGitCapability, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useAttachments } from '@/hooks/use-attachments'
@@ -11,6 +11,7 @@ import { AgentLogo } from '@/components/agent'
 import { Tooltip } from '@/components/ui/tooltip'
 import { SlashCommandPopover } from './SlashCommandPopover'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
+import { TaskPrioritySelect } from './TaskPrioritySelect'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -51,6 +52,7 @@ export interface CreateTaskInputProps {
     memberPresetIds: string[]
     attachmentLinks: string
     attachmentIds: string[]
+    priority: TaskPriority
   }) => Promise<void>
   defaultProjectId?: string
   defaultProviderId?: string
@@ -92,6 +94,7 @@ export function CreateTaskInput({
   const [providerId, setProviderId] = useState(defaultProviderId)
   const [mode, setMode] = useState<CreateTaskMode>('SOLO')
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(WorkspaceKind.WORKTREE)
+  const [priority, setPriority] = useState<TaskPriority>(TaskPriority.NORMAL)
   const [detectedCapabilityByProjectId, setDetectedCapabilityByProjectId] = useState<Record<string, ProjectGitCapability>>({})
   const [teamRunMode, setTeamRunMode] = useState<TeamRunMode>('AUTO')
   const [teamTemplateId, setTeamTemplateId] = useState<string | null>(null)
@@ -233,13 +236,15 @@ export function CreateTaskInput({
         memberPresetIds: isConversationMode || localProjectOnly ? [] : memberPresetIds,
         attachmentLinks,
         attachmentIds,
+        priority,
       })
       setTitle('')
+      setPriority(TaskPriority.NORMAL)
       if (supportsAttachments) clearAttachments()
     } catch {
       // Complete failure — preserve input for retry
     }
-  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, clearAttachments])
+  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, clearAttachments, priority])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashCommandMenu.handleKeyDown(e)) return
@@ -606,6 +611,15 @@ export function CreateTaskInput({
               </div>
             )}
           </div>
+        )}
+
+        {!isConversationMode && (
+          <TaskPrioritySelect
+            value={priority}
+            compact
+            disabled={isSubmitting}
+            onChange={setPriority}
+          />
         )}
 
         {/* Team mode toggle */}

@@ -60,6 +60,7 @@ import { type ConflictDetails } from '@/components/workspace/GitOperationsDialog
 import { TaskStartProgress, type TaskStartProgressState } from './TaskStartProgress'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
+import { TaskPrioritySelect } from './TaskPrioritySelect'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
 import { useSkillMentionMenu } from './useSkillMentionMenu'
 import { EditableTaskTitle } from './EditableTaskTitle'
@@ -92,6 +93,8 @@ interface TaskDetailProps {
   isDeleting?: boolean
   /** 状态变更回调 */
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
+  /** 优先级变更回调 */
+  onTaskPriorityChange?: (taskId: string, priority: number) => void
   /** 自动启动后台状态。创建 task 成功后不阻塞 UI，只在详情区展示后续启动进度。 */
   autoStartState?: TaskStartProgressState | null
   /** 自动启动失败后，用户手动重试成功时通知父级清理后台失败状态。 */
@@ -208,7 +211,7 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
 
 // ============ TaskDetail Component ============
 
-export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange, autoStartState, onAutoStartRecovered }: TaskDetailProps) {
+export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange, onTaskPriorityChange, autoStartState, onAutoStartRecovered }: TaskDetailProps) {
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
@@ -1002,6 +1005,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           <StatusBadge
             status={task.status}
             onChangeStatus={!isProjectReadOnly && onTaskStatusChange ? (newStatus) => onTaskStatusChange(task.id, newStatus) : undefined}
+          />
+          <TaskPrioritySelect
+            value={task.priority}
+            onChange={!isProjectReadOnly && onTaskPriorityChange ? (priority) => onTaskPriorityChange(task.id, priority) : undefined}
           />
 
           <div className="flex items-center gap-1">

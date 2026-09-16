@@ -1,0 +1,318 @@
+<style>
+  #at-priority-proposal {
+    --at-surface: light-dark(#ffffff, #202020);
+    --at-shell: light-dark(#f6f6f5, #171717);
+    --at-text: light-dark(#242422, #ececeb);
+    --at-muted: light-dark(#73736e, #a7a7a1);
+    --at-line: light-dark(#e6e6e2, #373735);
+    --at-hover: light-dark(#eeeeeb, #2c2c29);
+    --at-selected: light-dark(#e8e8e4, #363631);
+    --at-p0: light-dark(#ba3838, #f68e8e);
+    --at-p0-bg: light-dark(#fbecec, #492b2b);
+    --at-p1: light-dark(#a36515, #eeb86e);
+    --at-p1-bg: light-dark(#fbf0df, #433721);
+    --at-p2: light-dark(#74746d, #b1b1a6);
+    --at-p2-bg: light-dark(#ededeb, #34342f);
+    --at-p3: light-dark(#52758f, #9bb9d0);
+    --at-p3-bg: light-dark(#ecf2f6, #2c3841);
+    --at-shadow: light-dark(#00000014, #00000060);
+    color: var(--at-text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    width: 100%;
+    container-type: inline-size;
+  }
+  #at-priority-proposal * { box-sizing: border-box; }
+  #at-priority-proposal button, #at-priority-proposal input, #at-priority-proposal textarea, #at-priority-proposal select { font: inherit; color: inherit; }
+  #at-priority-proposal button { cursor: pointer; }
+  #at-priority-proposal [hidden] { display: none !important; }
+  #at-priority-proposal .at-window { background: var(--at-shell); border: 1px solid var(--at-line); border-radius: 12px; }
+  #at-priority-proposal .at-chrome { min-height: 44px; padding: 10px 17px; display: flex; gap: 9px; align-items: center; font-weight: 500; }
+  #at-priority-proposal .at-chrome i, #at-priority-proposal .at-chrome svg { width: 17px; height: 17px; }
+  #at-priority-proposal .at-workspace { display: grid; grid-template-columns: 320px minmax(0, 1fr); align-items: stretch; }
+  #at-priority-proposal .at-sidebar { min-width: 0; padding: 0 8px 14px; }
+  #at-priority-proposal .at-new { border: 0; background: transparent; display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px; border-radius: 6px; text-align: left; }
+  #at-priority-proposal .at-new:hover { background: var(--at-hover); }
+  #at-priority-proposal .at-new svg { width: 16px; height: 16px; }
+  #at-priority-proposal .at-project { display: flex; align-items: center; gap: 7px; margin: 12px 10px 9px; color: var(--at-muted); font-size: 12px; }
+  #at-priority-proposal .at-project svg { width: 14px; height: 14px; }
+  #at-priority-proposal .at-group { margin-bottom: 12px; }
+  #at-priority-proposal .at-group-heading { display: flex; align-items: center; gap: 6px; padding: 6px 10px; color: var(--at-muted); font-size: 12px; }
+  #at-priority-proposal .at-group-title { font-weight: 500; }
+  #at-priority-proposal .at-sort { margin-left: auto; font-size: 11px; }
+  #at-priority-proposal .at-count { font-size: 11px; margin-left: auto; }
+  #at-priority-proposal .at-sort + .at-count { margin-left: 2px; color: var(--at-p1); background: var(--at-p1-bg); padding: 0 6px; border-radius: 10px; }
+  #at-priority-proposal .at-group-heading svg { width: 12px; height: 12px; }
+  #at-priority-proposal .at-task { display: flex; align-items: center; padding-right: 8px; margin-left: 5px; border-radius: 6px; min-width: 0; }
+  #at-priority-proposal .at-task:hover { background: var(--at-hover); }
+  #at-priority-proposal .at-task.at-current { background: var(--at-selected); }
+  #at-priority-proposal .at-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 9px 7px; text-align: left; }
+  #at-priority-proposal .at-status-symbol { width: 15px; height: 15px; flex: 0 0 15px; color: var(--at-p1); }
+  #at-priority-proposal .at-running .at-status-symbol { color: var(--at-p3); }
+  #at-priority-proposal .at-pending .at-status-symbol { color: var(--at-muted); }
+  #at-priority-proposal .at-task-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #at-priority-proposal .at-task-meta { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+  #at-priority-proposal .at-task-project { display: none; }
+  #at-priority-proposal .at-time { color: var(--at-muted); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 26px; text-align: right; }
+  #at-priority-proposal .at-priority { border: 0; display: inline-flex; align-items: center; justify-content: center; padding: 2px 5px; border-radius: 4px; min-height: 22px; font-size: 11px; font-weight: 500; }
+  #at-priority-proposal .at-p0 { color: var(--at-p0); background: var(--at-p0-bg); }
+  #at-priority-proposal .at-p1 { color: var(--at-p1); background: var(--at-p1-bg); }
+  #at-priority-proposal .at-p2 { color: var(--at-p2); background: var(--at-p2-bg); }
+  #at-priority-proposal .at-p3 { color: var(--at-p3); background: var(--at-p3-bg); }
+  #at-priority-proposal[data-normal="false"] .at-task .at-p2 { display: none; }
+  #at-priority-proposal[data-layout="metadata"] .at-task { display: block; padding: 2px 8px 7px; margin-bottom: 2px; }
+  #at-priority-proposal[data-layout="metadata"] .at-open { width: 100%; padding: 5px 0; }
+  #at-priority-proposal[data-layout="metadata"] .at-task-meta { padding-left: 23px; }
+  #at-priority-proposal[data-layout="metadata"] .at-task-project { display: inline; color: var(--at-muted); font-size: 11px; margin-right: auto; }
+  #at-priority-proposal .at-detail { min-width: 0; background: var(--at-surface); border: 1px solid var(--at-line); border-radius: 10px; margin: 0 8px 8px 0; }
+  #at-priority-proposal .at-detail-header { padding: 17px 20px 14px; border-bottom: 1px solid var(--at-line); display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  #at-priority-proposal .at-heading-copy { flex: 1 1 200px; min-width: 0; }
+  #at-priority-proposal .at-breadcrumb { color: var(--at-muted); font-size: 11px; margin-bottom: 4px; overflow-wrap: anywhere; }
+  #at-priority-proposal .at-title { margin: 0; font-size: 16px; font-weight: 500; overflow-wrap: anywhere; }
+  #at-priority-proposal .at-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+  #at-priority-proposal .at-status-picker { font-size: 12px; border: 0; background: var(--at-p1-bg); color: var(--at-p1); border-radius: 5px; padding: 5px 3px; max-width: 100%; }
+  #at-priority-proposal .at-detail-priority { gap: 5px; min-height: 29px; padding: 4px 8px; font-size: 12px; }
+  #at-priority-proposal .at-detail-priority svg { width: 13px; height: 13px; }
+  #at-priority-proposal .at-body { padding: 26px 22px; min-height: 294px; }
+  #at-priority-proposal .at-body-label { font-size: 12px; color: var(--at-muted); margin-bottom: 8px; }
+  #at-priority-proposal .at-description { margin: 0; max-width: 44em; overflow-wrap: anywhere; }
+  #at-priority-proposal .at-detail-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 41px; padding: 9px 20px; color: var(--at-muted); font-size: 12px; border-top: 1px solid var(--at-line); }
+  #at-priority-proposal .at-detail-footer svg { width: 14px; height: 14px; }
+  #at-priority-proposal .at-new-pane { padding: 30px 22px; }
+  #at-priority-proposal .at-new-title { margin: 0 0 18px; font-size: 18px; font-weight: 500; }
+  #at-priority-proposal .at-composer { border: 1px solid var(--at-line); border-radius: 10px; background: var(--at-surface); }
+  #at-priority-proposal .at-input { padding: 14px; width: 100%; resize: vertical; min-height: 124px; background: transparent; border: 0; }
+  #at-priority-proposal .at-composer-tools { padding: 8px; display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+  #at-priority-proposal .at-tool-label { display: flex; align-items: center; gap: 5px; color: var(--at-muted); font-size: 12px; }
+  #at-priority-proposal .at-tool-label svg { width: 14px; height: 14px; }
+  #at-priority-proposal .at-create { background: var(--at-text); color: var(--at-surface); border: 0; border-radius: 6px; padding: 6px 11px; margin-left: auto; font-size: 12px; }
+  #at-priority-proposal .at-menu { position: absolute; width: 182px; background: var(--at-surface); box-shadow: 0 8px 24px var(--at-shadow); border: 1px solid var(--at-line); border-radius: 8px; z-index: 10; padding: 5px; }
+  #at-priority-proposal .at-menu-title { padding: 5px 7px; color: var(--at-muted); font-size: 11px; }
+  #at-priority-proposal .at-menu-option { display: flex; align-items: center; gap: 9px; border: 0; background: transparent; border-radius: 4px; width: 100%; padding: 7px; text-align: left; }
+  #at-priority-proposal .at-menu-option:hover { background: var(--at-hover); }
+  #at-priority-proposal .at-check { margin-left: auto; width: 14px; height: 14px; }
+  #at-priority-proposal .at-live { position: absolute; width: 1px; height: 1px; padding: 0; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+  @container (max-width: 700px) {
+    #at-priority-proposal .at-workspace { grid-template-columns: minmax(0, 1fr); }
+    #at-priority-proposal .at-detail { margin: 0 8px 8px; }
+    #at-priority-proposal .at-sidebar { padding-bottom: 2px; }
+    #at-priority-proposal .at-body { min-height: 120px; padding: 20px 16px; }
+    #at-priority-proposal .at-detail-header { padding: 15px 16px; }
+    #at-priority-proposal .at-new-pane { padding: 22px 16px; }
+  }
+  @media (pointer: coarse) {
+    #at-priority-proposal .at-open, #at-priority-proposal .at-priority, #at-priority-proposal .at-menu-option, #at-priority-proposal .at-status-picker, #at-priority-proposal .at-create { min-height: 44px; }
+    #at-priority-proposal .at-priority { min-width: 44px; }
+    #at-priority-proposal .at-input, #at-priority-proposal .at-status-picker { font-size: 16px; }
+  }
+</style>
+<div id="at-priority-proposal" data-layout="compact" data-normal="false" aria-label="Agent Tower 任务优先级布局方案">
+  <div class="at-window">
+    <div class="at-chrome"><i data-lucide="layers" aria-hidden="true"></i><span>Agent Tower</span></div>
+    <div class="at-workspace">
+      <aside class="at-sidebar" aria-label="任务列表">
+        <button type="button" class="at-new" data-new><i data-lucide="square-pen" aria-hidden="true"></i>新建任务</button>
+        <div class="at-project"><i data-lucide="folders" aria-hidden="true"></i>全部项目</div>
+        <div data-task-groups></div>
+      </aside>
+      <main class="at-detail" aria-label="任务详情">
+        <div data-existing-task>
+          <div class="at-detail-header">
+            <div class="at-heading-copy"><div class="at-breadcrumb" data-project></div><h2 class="at-title" data-title></h2></div>
+            <div class="at-actions">
+              <select class="at-status-picker" data-status aria-label="任务状态">
+                <option value="review">待审查</option><option value="running">进行中</option><option value="pending">待开始</option><option value="done">已完成</option>
+              </select>
+              <button type="button" class="at-priority at-detail-priority" data-detail-priority aria-label="设置任务优先级" aria-haspopup="true" aria-expanded="false"></button>
+            </div>
+          </div>
+          <div class="at-body"><div class="at-body-label">任务说明</div><p class="at-description" data-description></p></div>
+          <div class="at-detail-footer"><i data-lucide="clipboard-check" aria-hidden="true"></i><span data-footer></span></div>
+        </div>
+        <form class="at-new-pane" data-create-form hidden>
+          <h2 class="at-new-title">创建任务</h2>
+          <div class="at-composer">
+            <textarea class="at-input" data-create-title required aria-label="任务内容" placeholder="描述你想完成的任务…"></textarea>
+            <div class="at-composer-tools">
+              <span class="at-tool-label"><i data-lucide="folder" aria-hidden="true"></i>Agent Tower</span>
+              <span class="at-tool-label"><i data-lucide="git-branch" aria-hidden="true"></i>工作树</span>
+              <button type="button" class="at-priority at-detail-priority" data-create-priority aria-label="设置新任务优先级" aria-haspopup="true" aria-expanded="false"></button>
+              <button type="submit" class="at-create">创建任务</button>
+            </div>
+          </div>
+        </form>
+      </main>
+    </div>
+  </div>
+  <div class="at-menu" data-priority-menu hidden aria-label="选择优先级"></div>
+  <div class="at-live" aria-live="polite" data-live></div>
+</div>
+<script>
+(() => {
+  const root = document.getElementById('at-priority-proposal');
+  const priorities = [
+    { code: 'P0', label: '紧急' }, { code: 'P1', label: '高' },
+    { code: 'P2', label: '普通' }, { code: 'P3', label: '低' }
+  ];
+  const tasks = [
+    { id: 'access', title: '收紧工作区文件访问', project: 'Agent Tower', status: 'review', priority: 0, position: 1, time: '2h', body: '检查工作区目录的文件访问边界，完善异常路径处理。' },
+    { id: 'login', title: '修复登录回调异常', project: '控制台', status: 'review', priority: 2, position: 2, time: '1h', body: '登录返回页面后偶尔出现空白，需要检查路由跳转和会话恢复。' },
+    { id: 'reconnect', title: '优化会话重连', project: 'Agent Tower', status: 'review', priority: 1, position: 3, time: '35m', body: '网络恢复后重新加载会话状态，并保留当前查看位置。' },
+    { id: 'docs', title: '完善项目说明', project: 'Agent Tower', status: 'review', priority: 3, position: 4, time: '20m', body: '补充项目配置和常用操作的说明。' },
+    { id: 'notify', title: '更新通知设置', project: '控制台', status: 'review', priority: 1, position: 5, time: '8m', body: '完善通知设置的保存反馈与默认选项。' },
+    { id: 'mobile', title: '整理移动端工具栏', project: 'Agent Tower', status: 'running', priority: 1, position: 6, time: '3m', body: '在较窄屏幕下优化工具栏换行和按钮间距。' },
+    { id: 'config', title: '补充配置示例', project: 'Agent Tower', status: 'pending', priority: 2, position: 7, time: '1d', body: '补充常见项目的配置示例。' }
+  ];
+  const groups = [
+    { id: 'review', label: '待审查', icon: 'circle-dot' },
+    { id: 'running', label: '进行中', icon: 'loader-circle' },
+    { id: 'pending', label: '待开始', icon: 'circle-dashed' },
+    { id: 'done', label: '已完成', icon: 'circle-check' }
+  ];
+  const design = { layout: 'compact', showNormal: false };
+  let selectedId = 'login';
+  let creating = false;
+  let draftPriority = 2;
+  let menuTarget = null;
+  let menuTrigger = null;
+  const menu = root.querySelector('[data-priority-menu]');
+  const byId = id => tasks.find(task => task.id === id);
+  const escape = text => String(text).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
+  const enhanceIcons = () => { if (globalThis.lucide) globalThis.lucide.createIcons({ attrs: { width: 16, height: 16 } }); };
+
+  function render(animate = false) {
+    const previous = new Map();
+    if (animate) root.querySelectorAll('[data-task-row]').forEach(row => previous.set(row.dataset.taskRow, row.getBoundingClientRect()));
+    root.dataset.layout = design.layout;
+    root.dataset.normal = String(design.showNormal);
+    root.querySelector('[data-task-groups]').innerHTML = groups.map(group => {
+      const rows = tasks.filter(task => task.status === group.id).sort((a, b) => group.id === 'review' ? a.priority - b.priority || a.position - b.position : a.position - b.position);
+      if (!rows.length) return '';
+      return `<section class="at-group at-${group.id}" aria-label="${group.label}">
+        <div class="at-group-heading"><span class="at-group-title">${group.label}</span>${group.id === 'review' ? '<span class="at-sort">优先级 ↓</span>' : ''}<span class="at-count">${rows.length}</span>${icon('chevron-down')}</div>
+        ${rows.map(task => `<div class="at-task ${task.id === selectedId && !creating ? 'at-current' : ''}" data-task-row="${task.id}">
+          <button type="button" class="at-open" data-select="${task.id}" aria-label="${escape(task.title)}，${priorities[task.priority].label}优先级" aria-pressed="${task.id === selectedId && !creating}"><i data-lucide="${group.icon}" class="at-status-symbol" aria-hidden="true"></i><span class="at-task-title">${escape(task.title)}</span></button>
+          <div class="at-task-meta"><span class="at-task-project">${escape(task.project)}</span><button type="button" class="at-priority at-p${task.priority}" data-priority-for="${task.id}" aria-label="${escape(task.title)}的优先级：${priorities[task.priority].label}" aria-haspopup="true" aria-expanded="false" data-tooltip="${priorities[task.priority].label}优先级">${priorities[task.priority].code}</button><span class="at-time">${task.time}</span></div>
+        </div>`).join('')}
+      </section>`;
+    }).join('');
+    root.querySelector('[data-existing-task]').hidden = creating;
+    root.querySelector('[data-create-form]').hidden = !creating;
+    if (!creating) {
+      const task = byId(selectedId);
+      root.querySelector('[data-project]').textContent = `${task.project} / at/${task.id}`;
+      root.querySelector('[data-title]').textContent = task.title;
+      root.querySelector('[data-description]').textContent = task.body;
+      root.querySelector('[data-status]').value = task.status;
+      const priorityButton = root.querySelector('[data-detail-priority]');
+      priorityButton.className = `at-priority at-detail-priority at-p${task.priority}`;
+      priorityButton.innerHTML = `${priorities[task.priority].code} · ${priorities[task.priority].label}${icon('chevron-down')}`;
+      root.querySelector('[data-footer]').textContent = task.status === 'review' ? '等待审查' : groups.find(group => group.id === task.status).label;
+    }
+    const draftButton = root.querySelector('[data-create-priority]');
+    draftButton.className = `at-priority at-detail-priority at-p${draftPriority}`;
+    draftButton.innerHTML = `${priorities[draftPriority].label}${icon('chevron-down')}`;
+    enhanceIcons();
+    if (animate && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      root.querySelectorAll('[data-task-row]').forEach(row => {
+        const before = previous.get(row.dataset.taskRow);
+        if (!before) return;
+        const after = row.getBoundingClientRect();
+        const dy = before.top - after.top;
+        if (dy) row.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }], { duration: 220, easing: 'ease-out' });
+      });
+    }
+  }
+
+  function closeMenu() {
+    menu.hidden = true;
+    if (menuTrigger) menuTrigger.setAttribute('aria-expanded', 'false');
+    menuTarget = null;
+    menuTrigger = null;
+  }
+
+  function openMenu(target, trigger) {
+    closeMenu();
+    menuTarget = target;
+    menuTrigger = trigger;
+    trigger.setAttribute('aria-expanded', 'true');
+    const value = target === 'draft' ? draftPriority : byId(target).priority;
+    menu.innerHTML = '<div class="at-menu-title">优先级</div>' + priorities.map((priority, index) => `<button type="button" class="at-menu-option" data-set-priority="${index}" aria-pressed="${value === index}"><span class="at-priority at-p${index}">${priority.code}</span><span>${priority.label}</span>${value === index ? '<i data-lucide="check" class="at-check" aria-hidden="true"></i>' : ''}</button>`).join('');
+    menu.hidden = false;
+    const host = root.getBoundingClientRect();
+    const anchor = trigger.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    const height = menu.offsetHeight;
+    root.style.position = 'relative';
+    menu.style.left = `${Math.max(8, Math.min(anchor.left - host.left, host.width - width - 8))}px`;
+    const below = anchor.bottom - host.top + 5;
+    menu.style.top = `${below + height <= host.height - 5 ? below : Math.max(8, anchor.top - host.top - height - 5)}px`;
+    enhanceIcons();
+    menu.querySelector(`[data-set-priority="${value}"]`).focus();
+  }
+
+  root.addEventListener('click', event => {
+    const option = event.target.closest('[data-set-priority]');
+    if (option) {
+      const priority = Number(option.dataset.setPriority);
+      const target = menuTarget;
+      const trigger = menuTrigger;
+      if (target === 'draft') draftPriority = priority;
+      else byId(target).priority = priority;
+      closeMenu();
+      render(true);
+      root.querySelector('[data-live]').textContent = target === 'draft' ? `新任务优先级：${priorities[priority].label}` : `${byId(target).title}已设为${priorities[priority].label}优先级`;
+      if (trigger && trigger.isConnected) trigger.focus();
+      else if (target !== 'draft') root.querySelector(`[data-select="${target}"]`)?.focus();
+      return;
+    }
+    const priorityControl = event.target.closest('[data-priority-for], [data-detail-priority], [data-create-priority]');
+    if (priorityControl) {
+      const target = priorityControl.hasAttribute('data-create-priority') ? 'draft' : priorityControl.dataset.priorityFor || selectedId;
+      if (menuTarget === target && menuTrigger === priorityControl) closeMenu();
+      else openMenu(target, priorityControl);
+      return;
+    }
+    const selection = event.target.closest('[data-select]');
+    if (selection) { closeMenu(); selectedId = selection.dataset.select; creating = false; render(); }
+    if (event.target.closest('[data-new]')) { closeMenu(); creating = true; draftPriority = 2; render(); root.querySelector('[data-create-title]').focus(); }
+    if (!event.target.closest('[data-priority-menu]')) closeMenu();
+  });
+  root.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && menuTarget) { const trigger = menuTrigger; closeMenu(); trigger?.focus(); }
+    if (event.target.closest('[data-priority-menu]') && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
+      event.preventDefault();
+      const buttons = [...menu.querySelectorAll('[data-set-priority]')];
+      const index = buttons.indexOf(document.activeElement);
+      buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length].focus();
+    }
+  });
+  root.querySelector('[data-status]').addEventListener('change', event => {
+    const task = byId(selectedId);
+    task.status = event.target.value;
+    closeMenu();
+    render(true);
+    root.querySelector('[data-live]').textContent = `${task.title}已移到${groups.find(group => group.id === task.status).label}`;
+  });
+  root.querySelector('[data-create-form]').addEventListener('submit', event => {
+    event.preventDefault();
+    const input = root.querySelector('[data-create-title]');
+    const title = input.value.trim();
+    if (!title) { input.focus(); return; }
+    const id = `example-${tasks.length + 1}`;
+    tasks.push({ id, title, project: 'Agent Tower', status: 'pending', priority: draftPriority, position: tasks.length + 1, time: '刚刚', body: title });
+    input.value = '';
+    creating = false;
+    selectedId = id;
+    closeMenu();
+    render();
+    root.querySelector('[data-live]').textContent = '示例任务已创建';
+  });
+  render();
+  if (globalThis.Tweak) {
+    const tweak = new Tweak({ container: root, onChange: () => { closeMenu(); render(); } });
+    tweak.addSelect(design, 'layout', { label: '列表布局', options: [{ label: '紧凑单行（推荐）', value: 'compact' }, { label: '双行，显示项目', value: 'metadata' }] });
+    tweak.addToggle(design, 'showNormal', { label: '列表显示普通优先级' });
+  }
+})();
+</script>

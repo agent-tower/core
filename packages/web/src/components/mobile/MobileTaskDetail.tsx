@@ -49,6 +49,7 @@ import { useGitChanges } from '@/hooks/use-git'
 import { queryKeys } from '@/hooks/query-keys'
 import { apiClient } from '@/lib/api-client'
 import type { UITaskDetailData } from '@/components/task/types'
+import { TaskPrioritySelect } from '@/components/task/TaskPrioritySelect'
 import { UITaskStatus } from '@/components/task/types'
 import { useSlashCommandMenu } from '@/components/task/useSlashCommandMenu'
 import { useSkillMentionMenu } from '@/components/task/useSkillMentionMenu'
@@ -78,6 +79,7 @@ interface MobileTaskDetailProps {
   task: UITaskDetailData
   onBack: () => void
   onDeleteTask?: (taskId: string) => void
+  onTaskPriorityChange?: (taskId: string, priority: number) => void
   isDeleting?: boolean
   autoStartState?: TaskStartProgressState | null
   onAutoStartRecovered?: (taskId: string) => void
@@ -116,7 +118,7 @@ const TEAM_RUN_TAB_CONFIG: { key: MobileTab; label: string; icon: typeof Message
 
 // ============ Main Component ============
 
-export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoStartState, onAutoStartRecovered }: MobileTaskDetailProps) {
+export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityChange, isDeleting, autoStartState, onAutoStartRecovered }: MobileTaskDetailProps) {
   const { t } = useI18n()
   const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
   const [activeTab, setActiveTab] = useState<MobileTab>('chat')
@@ -724,6 +726,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
             </div>
           </div>
           <StatusDot status={task.status} />
+          <TaskPrioritySelect
+            value={task.priority}
+            compact
+            onChange={!isProjectReadOnly && onTaskPriorityChange ? (priority) => onTaskPriorityChange(task.id, priority) : undefined}
+          />
           <button
             onClick={handleOpenInIde}
             disabled={!selectedWorkspaceOpenId || isProjectReadOnly}

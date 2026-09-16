@@ -14,6 +14,7 @@ import { defaultWorkspaceLifecycleBarrier } from './workspace-lifecycle-barrier.
 import { ensureProjectIsMutable, getStoredProjectGitCapability } from './project-guards.js';
 import { defaultTeamLockService } from './team-lock.service.js';
 import type { TaskBoardItem, TaskBoardResponse } from '@agent-tower/shared';
+import { TaskPriority } from '@agent-tower/shared';
 import prismaPkg from '@prisma/client';
 
 const { Prisma } = prismaPkg;
@@ -78,6 +79,16 @@ type TaskBoardWorkspaceRow = {
   branchName: string;
   agentType: string | null;
   hasActiveSession: bigint | number | boolean;
+};
+
+type TaskBoardTaskRow = {
+  id: string;
+  projectId: string;
+  title: string;
+  status: string;
+  priority: number | null;
+  position: number;
+  updatedAt: Date | string | number;
 };
 
 function compactWhitespace(value: string): string {
@@ -414,21 +425,43 @@ export class TaskService {
       ...(params.status ? { status: params.status } : {}),
     };
 
+    const projectFilter = params.projectId
+      ? Prisma.sql`AND task."projectId" = ${params.projectId}`
+      : Prisma.empty;
+    const statusFilter = params.status
+      ? Prisma.sql`AND task."status" = ${params.status}`
+      : Prisma.empty;
+
     const [tasks, total] = await Promise.all([
-      prisma.task.findMany({
-        where,
-        select: {
-          id: true,
-          projectId: true,
-          title: true,
-          status: true,
-          position: true,
-          updatedAt: true,
-        },
-        orderBy: { updatedAt: 'desc' },
-        skip,
-        take: limit,
-      }),
+      prisma.$queryRaw<TaskBoardTaskRow[]>(Prisma.sql`
+        SELECT
+          task."id" AS "id",
+          task."projectId" AS "projectId",
+          task."title" AS "title",
+          task."status" AS "status",
+          task."priority" AS "priority",
+          task."position" AS "position",
+          task."updatedAt" AS "updatedAt"
+        FROM "Task" task
+        INNER JOIN "Project" project ON project."id" = task."projectId"
+        WHERE task."deletedAt" IS NULL
+          AND project."archivedAt" IS NULL
+          ${projectFilter}
+          ${statusFilter}
+        ORDER BY
+          CASE task."status"
+            WHEN ${TaskStatus.IN_PROGRESS} THEN 0
+            WHEN ${TaskStatus.IN_REVIEW} THEN 1
+            WHEN ${TaskStatus.TODO} THEN 2
+            WHEN ${TaskStatus.DONE} THEN 3
+            WHEN ${TaskStatus.CANCELLED} THEN 4
+            ELSE 99
+          END ASC,
+          CASE WHEN task."status" = ${TaskStatus.IN_REVIEW} THEN task."priority" ELSE 0 END DESC,
+          task."position" ASC,
+          task."id" ASC
+        LIMIT ${limit} OFFSET ${skip}
+      `),
       prisma.task.count({ where }),
     ]);
 
@@ -492,30 +525,21 @@ export class TaskService {
       }
     }
 
-    const statusOrder: Record<string, number> = {
-      [TaskStatus.IN_PROGRESS]: 0,
-      [TaskStatus.IN_REVIEW]: 1,
-      [TaskStatus.TODO]: 2,
-      [TaskStatus.DONE]: 3,
-      [TaskStatus.CANCELLED]: 4,
-    };
-    tasks.sort((a, b) => {
-      const statusDelta = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99);
-      if (statusDelta !== 0) return statusDelta;
-      return a.position - b.position;
-    });
-
     const data: TaskBoardItem[] = tasks.map((task) => {
       const titlePreview = buildTextPreview(task.title, TASK_TITLE_MAX_LENGTH);
       const preferredWorkspace = preferredWorkspaceByTaskId.get(task.id);
       const hasRunningSession = (workspacesByTaskId.get(task.id) ?? [])
         .some((workspace) => workspace.hasActiveSession);
+      const updatedAt = task.updatedAt instanceof Date
+        ? task.updatedAt.getTime()
+        : new Date(task.updatedAt).getTime();
 
       return {
         id: task.id,
         projectId: task.projectId,
         title: titlePreview,
         status: task.status as TaskStatus,
+        priority: task.priority ?? TaskPriority.NORMAL,
         ...(preferredWorkspace ? {
           preferredWorkspace: {
             ...(preferredWorkspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY
@@ -528,7 +552,7 @@ export class TaskService {
           latestAgentType: preferredWorkspace.agentType as import('@agent-tower/shared').AgentType,
         } : {}),
         ...(hasRunningSession ? { hasRunningSession: true as const } : {}),
-        updatedAt: task.updatedAt.getTime(),
+        updatedAt,
       };
     });
 
@@ -598,7 +622,11 @@ export class TaskService {
       const sa = statusOrder[a.status] ?? 99;
       const sb = statusOrder[b.status] ?? 99;
       if (sa !== sb) return sa - sb;
-      return (a.position ?? 0) - (b.position ?? 0);
+      if (a.status === TaskStatus.IN_REVIEW) {
+        const priorityDelta = (b.priority ?? TaskPriority.NORMAL) - (a.priority ?? TaskPriority.NORMAL);
+        if (priorityDelta !== 0) return priorityDelta;
+      }
+      return (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id);
     });
 
     const projectGitCapability = getStoredProjectGitCapability(project);
@@ -709,7 +737,7 @@ export class TaskService {
       data: {
         title: normalizedInput.title,
         description: normalizedInput.description,
-        priority: normalizedInput.priority ?? 0,
+        priority: normalizedInput.priority ?? TaskPriority.NORMAL,
         position: (maxPosition._max.position ?? 0) + 1,
         projectId,
       },
@@ -742,6 +770,10 @@ export class TaskService {
       where: { id },
       data: normalizedInput,
     });
+
+    if (input.priority !== undefined) {
+      this.emitTaskUpdated(id, task.projectId, updated.status, updated.priority);
+    }
 
     return {
       ...updated,
@@ -1121,7 +1153,12 @@ export class TaskService {
   /**
    * 发射 task:updated 事件，通知 SocketGateway 转发到前端
    */
-  emitTaskUpdated(taskId: string, projectId: string, status: string): void {
-    this.eventBus.emit('task:updated', { taskId, projectId, status });
+  emitTaskUpdated(taskId: string, projectId: string, status: string, priority?: number): void {
+    this.eventBus.emit('task:updated', {
+      taskId,
+      projectId,
+      status,
+      ...(priority === undefined ? {} : { priority }),
+    });
   }
 }

@@ -22,7 +22,7 @@ type EventMap = {
   'session:permission_requested': SessionPermissionRequestedPayload;
   'session:permission_invalidated': SessionPermissionInvalidatedPayload;
   'session:runtime_state_changed': SessionRuntimeStateChangedPayload;
-  'task:updated': { taskId: string; projectId: string; status: string };
+  'task:updated': { taskId: string; projectId: string; status: string; priority?: number };
   'task:deleted': { taskId: string; projectId: string };
   // Standalone terminal events
   'terminal:stdout': { terminalId: string; data: string };

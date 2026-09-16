@@ -106,8 +106,8 @@ export function getNotificationService(): NotificationService {
     notificationService = new NotificationService();
 
     // 监听 task:updated，当任务进入 IN_REVIEW 时发送通知
-    getEventBus().on('task:updated', ({ taskId, status }) => {
-      if (status !== 'IN_REVIEW') return;
+    getEventBus().on('task:updated', ({ taskId, status, priority }) => {
+      if (status !== 'IN_REVIEW' || priority !== undefined) return;
       prisma.task.findUnique({
         where: { id: taskId },
         select: { title: true, projectId: true },

@@ -141,6 +141,7 @@ export interface TaskUpdatedPayload {
   taskId: string;
   projectId: string;
   status: string;
+  priority?: number;
 }
 
 export interface TaskDeletedPayload {

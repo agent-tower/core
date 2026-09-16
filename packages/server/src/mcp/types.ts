@@ -21,6 +21,8 @@ export const CreateTaskInput = z.object({
   project_id: z.string().describe('The ID of the project to create the task in'),
   title: z.string().min(1).describe('The title of the task'),
   description: z.string().optional().describe('Optional description of the task'),
+  priority: z.number().int().min(-1).max(2).optional()
+    .describe('Task priority: -1 low, 0 normal, 1 high, 2 urgent'),
 });
 
 export const GetTaskInput = z.object({
@@ -31,6 +33,8 @@ export const UpdateTaskInput = z.object({
   task_id: z.string().describe('The ID of the task to update'),
   title: z.string().min(1).optional().describe('New title for the task'),
   description: z.string().optional().describe('New description for the task'),
+  priority: z.number().int().min(-1).max(2).optional()
+    .describe('Task priority: -1 low, 0 normal, 1 high, 2 urgent'),
   status: z.enum(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED']).optional()
     .describe("New status: 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'"),
 });

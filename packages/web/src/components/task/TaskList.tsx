@@ -11,6 +11,7 @@ import type { FlipHandle } from './TaskGroup'
 import { TaskSearchModal } from './TaskSearchModal'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
+import { TaskPriority } from '@agent-tower/shared'
 
 const GHOST_DURATION = 260
 const GHOST_FALLBACK_DURATION = 220
@@ -32,6 +33,8 @@ interface TaskListProps {
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   /** 删除任务回调 */
   onDeleteTask?: (taskId: string) => void
+  /** 修改任务优先级回调 */
+  onTaskPriorityChange?: (taskId: string, priority: TaskPriority) => void
 }
 
 /**
@@ -50,6 +53,10 @@ function groupTasksByStatus(tasks: UITask[]) {
   for (const task of tasks) {
     groups[task.status].push(task)
   }
+
+  groups[UITaskStatus.Review].sort((a, b) =>
+    (b.priority ?? TaskPriority.NORMAL) - (a.priority ?? TaskPriority.NORMAL),
+  )
 
   return groups
 }
@@ -76,6 +83,7 @@ export function TaskList({
   isCreateActive,
   onTaskStatusChange,
   onDeleteTask,
+  onTaskPriorityChange,
 }: TaskListProps) {
   const { t } = useI18n()
   const { preserveDesktopSearch } = useDesktopTitlebar()
@@ -345,6 +353,7 @@ export function TaskList({
               dragFromStatus={activeDragFromStatus}
               onTaskStatusChange={onTaskStatusChange}
               onDeleteTask={onDeleteTask}
+              onTaskPriorityChange={onTaskPriorityChange}
               disableDrag={isMobile}
             />
           ))}
