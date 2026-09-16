@@ -18,6 +18,11 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const publishDir = path.join(repoRoot, 'packages/server/publish');
 const publishPackagePath = path.join(publishDir, 'package.json');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+// Windows only exposes npm as a `.cmd` shim, which Node refuses to spawn
+// without a shell (EINVAL). `execFileSync` does not quote arguments, so quote
+// the paths ourselves when a shell is involved.
+const npmShell = process.platform === 'win32';
+const npmArg = value => (npmShell && value.includes(' ') ? `"${value}"` : value);
 const piPackageName = '@earendil-works/pi-coding-agent';
 const args = process.argv.slice(2);
 if (args[0] === '--') args.shift();
@@ -51,8 +56,8 @@ try {
     mkdirSync(packDir, { recursive: true });
     const tarballName = execFileSync(
       npmCommand,
-      ['pack', '--silent', '--pack-destination', packDir],
-      { cwd: publishDir, encoding: 'utf8' },
+      ['pack', '--silent', '--pack-destination', npmArg(packDir)],
+      { cwd: publishDir, encoding: 'utf8', shell: npmShell },
     ).trim().split(/\r?\n/).at(-1);
     if (!tarballName) throw new Error('npm pack did not return a tarball name.');
     tarballPath = path.join(packDir, tarballName);
@@ -65,8 +70,8 @@ try {
       'install',
       '--global',
       '--prefix',
-      installPrefix,
-      tarballPath,
+      npmArg(installPrefix),
+      npmArg(tarballPath),
       '--no-audit',
       '--no-fund',
     ],
@@ -78,13 +83,14 @@ try {
         PWD: consumerDir,
       },
       stdio: 'inherit',
+      shell: npmShell,
     },
   );
 
   const globalRoot = execFileSync(
     npmCommand,
-    ['root', '--global', '--prefix', installPrefix],
-    { encoding: 'utf8' },
+    ['root', '--global', '--prefix', npmArg(installPrefix)],
+    { encoding: 'utf8', shell: npmShell },
   ).trim();
   const installedRoot = path.join(globalRoot, 'agent-tower');
   const installedPackage = JSON.parse(readFileSync(path.join(installedRoot, 'package.json'), 'utf8'));

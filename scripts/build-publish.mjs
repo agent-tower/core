@@ -215,7 +215,9 @@ try {
       '--no-audit',
       '--no-fund',
     ],
-    { cwd: piStageRoot, stdio: 'inherit' },
+    // Windows only exposes npm as a `.cmd` shim, which Node refuses to spawn
+    // without a shell (EINVAL). All paths travel through `cwd`, never argv.
+    { cwd: piStageRoot, stdio: 'inherit', shell: process.platform === 'win32' },
   );
 
   const piSrc = resolve(piStageRoot, 'node_modules', piPackageName);

@@ -49,6 +49,8 @@ const tarballName = 'agent-tower-1.2.3-beta.4.tgz';
 const generatedTarball = path.join(tempRoot, 'pack', tarballName);
 const externalTarball = path.resolve('release artifacts', tarballName);
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const npmShell = process.platform === 'win32';
+const npmArg = (value: string) => (npmShell && value.includes(' ') ? `"${value}"` : value);
 const piVersion = '0.85.1';
 const originalArgv = process.argv;
 let existingFiles: Set<string>;
@@ -62,11 +64,20 @@ async function runSmoke(args: string[] = []) {
 function expectInstall(tarballPath: string) {
   expect(mocks.execFileSync).toHaveBeenCalledWith(
     npmCommand,
-    ['install', '--global', '--prefix', installPrefix, tarballPath, '--no-audit', '--no-fund'],
+    [
+      'install',
+      '--global',
+      '--prefix',
+      npmArg(installPrefix),
+      npmArg(tarballPath),
+      '--no-audit',
+      '--no-fund',
+    ],
     {
       cwd: consumerDir,
       env: expect.objectContaining({ INIT_CWD: consumerDir, PWD: consumerDir }),
       stdio: 'inherit',
+      shell: npmShell,
     },
   );
 }
@@ -144,8 +155,8 @@ describe('publish install smoke tarball reuse', () => {
 
     expect(mocks.execFileSync).toHaveBeenCalledWith(
       npmCommand,
-      ['pack', '--silent', '--pack-destination', path.join(tempRoot, 'pack')],
-      { cwd: publishDir, encoding: 'utf8' },
+      ['pack', '--silent', '--pack-destination', npmArg(path.join(tempRoot, 'pack'))],
+      { cwd: publishDir, encoding: 'utf8', shell: npmShell },
     );
     expectInstall(generatedTarball);
     expect(mocks.rmSync).toHaveBeenCalledExactlyOnceWith(tempRoot, { recursive: true, force: true });
