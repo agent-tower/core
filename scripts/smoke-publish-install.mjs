@@ -12,11 +12,17 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyCliStartup } from './verify-cli-startup.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const publishDir = path.join(repoRoot, 'packages/server/publish');
 const publishPackagePath = path.join(publishDir, 'package.json');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+// Windows only exposes npm as a `.cmd` shim, which Node refuses to spawn
+// without a shell (EINVAL). `execFileSync` does not quote arguments, so quote
+// the paths ourselves when a shell is involved.
+const npmShell = process.platform === 'win32';
+const npmArg = value => (npmShell && value.includes(' ') ? `"${value}"` : value);
 const piPackageName = '@earendil-works/pi-coding-agent';
 const args = process.argv.slice(2);
 if (args[0] === '--') args.shift();
@@ -50,8 +56,8 @@ try {
     mkdirSync(packDir, { recursive: true });
     const tarballName = execFileSync(
       npmCommand,
-      ['pack', '--silent', '--pack-destination', packDir],
-      { cwd: publishDir, encoding: 'utf8' },
+      ['pack', '--silent', '--pack-destination', npmArg(packDir)],
+      { cwd: publishDir, encoding: 'utf8', shell: npmShell },
     ).trim().split(/\r?\n/).at(-1);
     if (!tarballName) throw new Error('npm pack did not return a tarball name.');
     tarballPath = path.join(packDir, tarballName);
@@ -64,8 +70,8 @@ try {
       'install',
       '--global',
       '--prefix',
-      installPrefix,
-      tarballPath,
+      npmArg(installPrefix),
+      npmArg(tarballPath),
       '--no-audit',
       '--no-fund',
     ],
@@ -77,13 +83,14 @@ try {
         PWD: consumerDir,
       },
       stdio: 'inherit',
+      shell: npmShell,
     },
   );
 
   const globalRoot = execFileSync(
     npmCommand,
-    ['root', '--global', '--prefix', installPrefix],
-    { encoding: 'utf8' },
+    ['root', '--global', '--prefix', npmArg(installPrefix)],
+    { encoding: 'utf8', shell: npmShell },
   ).trim();
   const installedRoot = path.join(globalRoot, 'agent-tower');
   const installedPackage = JSON.parse(readFileSync(path.join(installedRoot, 'package.json'), 'utf8'));
@@ -122,27 +129,43 @@ try {
     throw new Error('Prisma generate did not install a query engine.');
   }
 
-  const expectedPiVersion = installedPackage.dependencies?.[piPackageName];
+  const serverPackage = JSON.parse(readFileSync(path.join(repoRoot, 'packages/server/package.json'), 'utf8'));
+  const expectedPiVersion = serverPackage.dependencies?.[piPackageName];
   if (!expectedPiVersion) {
-    throw new Error(`Installed Agent Tower package does not declare ${piPackageName}.`);
+    throw new Error(`packages/server does not pin ${piPackageName}.`);
   }
-  const piRoot = path.join(installedRoot, 'node_modules', piPackageName);
+  // Pi must stay out of the published dependency graph: `npm install -g`
+  // otherwise treats it as a bundle that already provides the rest of the tree
+  // and skips unpacking those packages. See scripts/build-publish.mjs step 9.
+  for (const field of ['dependencies', 'bundledDependencies']) {
+    if (installedPackage[field]?.[piPackageName] || installedPackage[field]?.includes?.(piPackageName)) {
+      throw new Error(`Published package must not declare ${piPackageName} in ${field}.`);
+    }
+  }
+  const piRoot = path.join(installedRoot, 'vendor', 'pi');
+  const piPackagePath = path.join(piRoot, 'package.json');
+  if (!existsSync(piPackagePath)) {
+    throw new Error(`Vendored Pi runtime is missing: ${piPackagePath}`);
+  }
+  const piPackage = JSON.parse(readFileSync(piPackagePath, 'utf8'));
+  if (piPackage.version !== expectedPiVersion) {
+    throw new Error(`Vendored Pi version mismatch: expected=${expectedPiVersion}, actual=${piPackage.version}`);
+  }
   for (const requiredPath of [
-    'dist/cli.js',
     'node_modules/undici/package.json',
     'node_modules/@earendil-works/pi-agent-core/package.json',
   ]) {
     if (!existsSync(path.join(piRoot, requiredPath))) {
-      throw new Error(`Installed Pi runtime is incomplete: missing ${requiredPath}`);
+      throw new Error(`Vendored Pi runtime is incomplete: missing ${requiredPath}`);
     }
   }
   const piExecutable = path.join(
-    installedRoot,
-    'node_modules/.bin',
-    process.platform === 'win32' ? 'pi.cmd' : 'pi',
+    piRoot,
+    'bin',
+    process.platform === 'win32' ? 'pi.cmd' : 'pi.mjs',
   );
   if (!existsSync(piExecutable)) {
-    throw new Error('Installed Agent Tower package does not expose the bundled Pi executable.');
+    throw new Error('Published Agent Tower package does not expose the vendored Pi executable.');
   }
   const piVersionCheck = spawnSync(piExecutable, ['--version'], {
     cwd: installedRoot,
@@ -153,7 +176,7 @@ try {
   });
   if (piVersionCheck.status !== 0) {
     throw new Error([
-      'Bundled Pi executable failed.',
+      'Vendored Pi executable failed.',
       piVersionCheck.error?.message,
       piVersionCheck.stdout?.trim(),
       piVersionCheck.stderr?.trim(),
@@ -164,11 +187,14 @@ try {
     throw new Error(`Unexpected Pi version: expected=${expectedPiVersion}, actual=${actualPiVersion}`);
   }
 
+  const startupSummary = await verifyCliStartup(installedRoot, installedPackage.version, tempRoot);
+
   console.log([
     '[publish-smoke] status=passed',
     `prisma=${clientPackage.version}`,
     `pi=${actualPiVersion}`,
     `engines=${engineFiles.join(',')}`,
+    startupSummary,
   ].join(' '));
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });

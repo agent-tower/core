@@ -64,13 +64,28 @@ export function resolveBundledPiExecutable(): string | undefined {
     '..',
     '..',
   );
-  const executable = path.join(
-    serverPackageRoot,
-    'node_modules',
-    '.bin',
-    process.platform === 'win32' ? 'pi.cmd' : 'pi',
-  );
-  return existsSync(executable) ? executable : undefined;
+  // Published npm packages vendor Pi outside `node_modules` (see
+  // scripts/build-publish.mjs); desktop and workspace runtimes resolve the
+  // installed dependency instead.
+  const candidates = [
+    path.join(
+      serverPackageRoot,
+      'vendor',
+      'pi',
+      'bin',
+      process.platform === 'win32' ? 'pi.cmd' : 'pi.mjs',
+    ),
+    path.join(
+      serverPackageRoot,
+      'node_modules',
+      '.bin',
+      process.platform === 'win32' ? 'pi.cmd' : 'pi',
+    ),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 export async function isExecutableFile(target: string): Promise<boolean> {
