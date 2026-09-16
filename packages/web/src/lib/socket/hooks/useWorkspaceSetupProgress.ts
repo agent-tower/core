@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { socketManager } from '../manager.js'
+import { apiClient } from '@/lib/api-client'
+import { queryKeys } from '@/hooks/query-keys'
 import {
   ServerEvents,
   type WorkspaceSetupProgressPayload,
@@ -11,101 +14,78 @@ export interface SetupProgress {
   currentIndex?: number
   totalCommands: number
   error?: string
+  output?: string
 }
 
-/** running 状态最少展示时长（ms），避免快速闪过 */
-const MIN_RUNNING_MS = 1500
-/** 终态（completed/failed）展示时长（ms），之后自动清除 */
+/** Setup 终态展示时长（ms），之后卡片自动收起。 */
 const CLEAR_DELAY_MS = 3000
 
-/**
- * 订阅 workspace setup 脚本的执行进度。
- * 通过 task room 接收 WORKSPACE_SETUP_PROGRESS 事件。
- *
- * 为避免 setup 执行过快导致 running 状态一闪而过，
- * 内部保证 running 至少展示 MIN_RUNNING_MS 后才切换到终态。
- */
-export function useWorkspaceSetupProgress(taskId: string | undefined): SetupProgress | null {
-  const [progress, setProgress] = useState<SetupProgress | null>(null)
+function mergeProgress(snapshots: WorkspaceSetupProgressPayload[], updates: WorkspaceSetupProgressPayload[]) {
+  const byWorkspace = new Map(snapshots.map(progress => [progress.workspaceId, progress]))
+  for (const progress of updates) {
+    const previous = byWorkspace.get(progress.workspaceId)
+    if (!previous || progress.updatedAt >= previous.updatedAt) byWorkspace.set(progress.workspaceId, progress)
+  }
+  return [...byWorkspace.values()]
+}
 
-  // 记录 running 首次展示的时间戳
-  const runningStartRef = useRef<number>(0)
-  // 缓存待延迟展示的终态
-  const pendingTerminalRef = useRef<SetupProgress | null>(null)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+/** Restore missed setup events on mount/reconnect; keep newer events during a snapshot request. */
+export function useWorkspaceSetupProgress(taskId: string | undefined): SetupProgress | null {
+  const queryClient = useQueryClient()
+  const liveUpdates = useRef({ version: 0, values: new Map<string, { version: number; progress: WorkspaceSetupProgressPayload }>() })
+  const [dismissedTerminalAt, setDismissedTerminalAt] = useState(0)
+  const { data = [] } = useQuery<WorkspaceSetupProgressPayload[]>({
+    queryKey: queryKeys.workspaces.setupProgress(taskId ?? ''),
+    enabled: Boolean(taskId),
+    refetchOnMount: 'always',
+    refetchInterval: query => query.state.data?.some(progress => progress.status === 'running') ? 3000 : false,
+    queryFn: async ({ signal }) => {
+      const version = liveUpdates.current.version
+      const snapshot = await apiClient.get<WorkspaceSetupProgressPayload[]>(`/tasks/${taskId}/setup-progress`, { signal })
+      const updates = [...liveUpdates.current.values.values()]
+        .filter(update => update.version > version && update.progress.taskId === taskId)
+        .map(update => update.progress)
+      return mergeProgress(snapshot, updates)
+    },
+  })
 
   useEffect(() => {
     if (!taskId) return
-
-    const clearTimer = () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current)
-        timerRef.current = null
-      }
-    }
-
     const socket = socketManager.connect()
-
-    const applyTerminal = (p: SetupProgress) => {
-      setProgress(p)
-      timerRef.current = setTimeout(() => setProgress(null), CLEAR_DELAY_MS)
-    }
-
+    const queryKey = queryKeys.workspaces.setupProgress(taskId)
     const handler = (payload: WorkspaceSetupProgressPayload) => {
       if (payload.taskId !== taskId) return
-
-      const incoming: SetupProgress = {
-        status: payload.status,
-        currentCommand: payload.currentCommand,
-        currentIndex: payload.currentIndex,
-        totalCommands: payload.totalCommands,
-        error: payload.error,
-      }
-
-      if (payload.status === 'running') {
-        clearTimer()
-        pendingTerminalRef.current = null
-        if (runningStartRef.current === 0) {
-          runningStartRef.current = Date.now()
-        }
-        setProgress(incoming)
-        return
-      }
-
-      // 终态：completed / failed
-      const elapsed = runningStartRef.current > 0 ? Date.now() - runningStartRef.current : 0
-      const remaining = MIN_RUNNING_MS - elapsed
-
-      if (runningStartRef.current === 0) {
-        // 从未收到 running 事件 — 先合成一个 running 再延迟切换
-        runningStartRef.current = Date.now()
-        setProgress({
-          status: 'running',
-          totalCommands: payload.totalCommands,
-          currentIndex: payload.totalCommands,
-        })
-        pendingTerminalRef.current = incoming
-        timerRef.current = setTimeout(() => applyTerminal(incoming), MIN_RUNNING_MS)
-      } else if (remaining > 0) {
-        // running 展示不够久 — 延迟切换
-        pendingTerminalRef.current = incoming
-        clearTimer()
-        timerRef.current = setTimeout(() => applyTerminal(incoming), remaining)
-      } else {
-        // running 已展示足够久 — 立即切换
-        applyTerminal(incoming)
-      }
+      const previous = liveUpdates.current.values.get(payload.workspaceId)
+      if (previous && previous.progress.updatedAt > payload.updatedAt) return
+      liveUpdates.current.values.set(payload.workspaceId, {
+        version: ++liveUpdates.current.version,
+        progress: payload,
+      })
+      queryClient.setQueryData<WorkspaceSetupProgressPayload[]>(queryKey,
+        previous => mergeProgress(previous ?? [], [payload]))
+    }
+    const onConnect = () => {
+      void queryClient.invalidateQueries({ queryKey })
     }
 
     socket.on(ServerEvents.WORKSPACE_SETUP_PROGRESS, handler)
-
+    socket.on('connect', onConnect)
     return () => {
       socket.off(ServerEvents.WORKSPACE_SETUP_PROGRESS, handler)
-      clearTimer()
-      runningStartRef.current = 0
-      pendingTerminalRef.current = null
+      socket.off('connect', onConnect)
     }
-  }, [taskId])
+  }, [taskId, queryClient])
 
-  return progress
+  const sorted = [...data].sort((a, b) => b.updatedAt - a.updatedAt)
+  const progress = sorted.find(item => item.status === 'running')
+    ?? sorted.find(item => item.status !== 'running' && item.updatedAt > dismissedTerminalAt)
+
+  const terminalAt = progress?.status !== 'running' ? progress?.updatedAt ?? null : null
+  useEffect(() => {
+    if (terminalAt === null) return
+    const timer = setTimeout(() => setDismissedTerminalAt(terminalAt), CLEAR_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [terminalAt])
+
+  return progress ?? null
 }

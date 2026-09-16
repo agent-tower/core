@@ -48,6 +48,8 @@ Service / Manager
 
 新增事件时同步事件声明、payload、forwarder 和前端订阅/释放。namespace 固定为 `/events`，`socket/events.ts` 转导出 shared 契约。Session stdout/patch/status、Task 和部分 Workspace 事件广播到通过认证的整个 namespace；独立 Terminal 保留 room 分发。不要把 room 订阅当作所有业务消息的隔离保证。
 
+Workspace Setup 的进度由容器共享的 `WorkspaceSetupProgressStore` 在事件发出前记录；`WorkspaceService.getSetupProgress()` 校验任务可见性并只返回仍为 ACTIVE 的 workspace 快照。快照是当前进程的执行状态，终态有保留期限，Setup stdout/stderr 以有界 `output` 字段随事件和快照返回，不写入 Prisma，也不宣称能跨服务重启恢复脚本。
+
 `team-run:invalidated`、`workspace:git_changed` 是重新查询信号。断线后要重新读 authoritative REST state；日志还需处理 snapshot/patch seq，见前端 reference。Gateway 的认证状态会在消息和转发时复验，新增路径应沿用检查并释放 listener。
 
 ## MCP 与配置

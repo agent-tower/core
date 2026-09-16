@@ -23,6 +23,7 @@ TanStack Query 管理 REST 可重建状态；Zustand 管理客户端状态和高
 App 管理单例 `lib/socket/manager.ts` 的连接生命周期；hook 可调用 `connect()` 取得同一个连接。`GlobalRealtimeSync` 集中挂载 Task、TeamRun、Workspace Git 同步。沿用 shared 事件常量，按 payload 的实体 id 过滤，cleanup 使用同一 handler；修改房间订阅时核对 server gateway，不能凭旧注释推断广播范围。
 
 - 每条 Socket 状态链都需要重连补偿。TeamRun 依据 invalidation scopes 定向失效；Git changed 是重查提示，不能从通知推演业务状态。
+- `useWorkspaceSetupProgress` 从 `/tasks/:taskId/setup-progress` 恢复进度，并按 workspace 和服务端 `updatedAt` 合并实时事件；快照请求期间的新事件不能被旧响应覆盖。`TaskStartProgress` 分别消费启动状态、配置的 setupScript 和执行进度，卡片与日志独立渲染；Setup 的有界 stdout/stderr 只在用户点击“查看 Setup 输出”后展示，不能用 Agent 启动完成替代 Setup 完成。
 - Git 查询受 `git-visibility-store` 与 `lib/git-refresh-policy.ts` 控制。可见 workspace 的当前 tab 才立即重查/轮询，其余只标 stale；重连先标记所有 Git cache，再刷新当前上下文，避免每个 workspace 同时重查。
 - `useNormalizedLogs` 将 `session:patch` 写入 session log store，绕过 Query cache。恢复链保留 snapshot 加载期间缓冲、seq 去重与缺口检测、connection epoch、旧请求取消、瞬时失败重试和后台恢复；缓存可先展示，但不等同于当前连接已同步。修改时联查 server MsgStore、store 与 reconnect tests。
 - Runtime UI 的入口是 `hooks/use-sessions.ts` 中的 `useRuntimeState`/`useSessionActivity`。持久化 Session status 与 runtime turn state 是两层状态；活动判断包含 `PENDING`/`RUNNING` 和 `RUNNING`/`AWAITING_PERMISSION`/`CANCELLING`，不能只凭 Session 是否完成决定停止按钮或输入状态。

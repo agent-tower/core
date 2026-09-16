@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { WorkspaceKind, type Task, type TaskBoardItem } from '@agent-tower/shared'
 import { TaskList } from '@/components/task'
 import { TaskDetail } from '@/components/task/TaskDetail'
+import type { TaskStartProgressState } from '@/components/task/TaskStartProgress'
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 import { toast } from 'sonner'
@@ -31,12 +32,7 @@ import { sortProjectsByActivity } from '@/lib/project-activity'
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
 type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
-type BackgroundStartStatus = 'creating-workspace' | 'creating-session' | 'starting-session' | 'failed'
-
-interface BackgroundStartState {
-  status: BackgroundStartStatus
-  error?: string
-}
+type BackgroundStartState = TaskStartProgressState
 
 /** 顶栏项目切换器：面包屑式「Agent Tower / 项目 ▾」，侧栏空间全部留给任务 */
 function ProjectSwitcher({
@@ -337,10 +333,13 @@ export function ProjectKanbanPage() {
   const startTaskInBackground = useCallback((task: Task, providerId: string, workspaceMode: WorkspaceMode) => {
     const taskId = task.id
     const prompt = [task.title, task.description].filter(Boolean).join('\n\n')
+    const setupScript = workspaceMode === WorkspaceKind.WORKTREE
+      ? activeProjects.find(project => project.id === task.projectId)?.setupScript ?? null
+      : null
 
     setBackgroundStarts(current => ({
       ...current,
-      [taskId]: { status: 'creating-workspace' },
+      [taskId]: { status: 'creating-workspace', setupScript },
     }))
 
     void (async () => {
@@ -351,7 +350,7 @@ export function ProjectKanbanPage() {
         )
         setBackgroundStarts(current => ({
           ...current,
-          [taskId]: { status: 'creating-session' },
+          [taskId]: { status: 'creating-session', setupScript },
         }))
 
         const session = await apiClient.post<{ id: string }>(
@@ -360,11 +359,12 @@ export function ProjectKanbanPage() {
         )
         setBackgroundStarts(current => ({
           ...current,
-          [taskId]: { status: 'starting-session' },
+          [taskId]: { status: 'starting-session', setupScript },
         }))
 
         await startSession.mutateAsync(session.id)
         await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
+        await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.setupProgress(taskId) })
         await queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
 
         setBackgroundStarts(current => {
@@ -375,14 +375,14 @@ export function ProjectKanbanPage() {
         const message = error instanceof Error ? error.message : t('启动 Agent 失败')
         setBackgroundStarts(current => ({
           ...current,
-          [taskId]: { status: 'failed', error: message },
+          [taskId]: { status: 'failed', error: message, setupScript },
         }))
         toast.error(t('任务已创建，但启动 Agent 失败，可在详情中重试'))
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       }
     })()
-  }, [queryClient, startSession, t])
+  }, [activeProjects, queryClient, startSession, t])
 
   const handleAutoStartRecovered = useCallback((taskId: string) => {
     setBackgroundStarts(current => {

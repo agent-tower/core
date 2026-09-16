@@ -18,6 +18,7 @@ import { MobileHistoryView } from './MobileHistoryView'
 import { useTaskTeamRun, useRoomMessages, usePostRoomMessage } from '@/hooks/use-team-run'
 import { useWorkspaces, useOpenInEditor } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
+import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
 import { useSendMessage, useSessionActivity, useStopSession } from '@/hooks/use-sessions'
 import { useProviders } from '@/hooks/use-providers'
 import { useTaskBody } from '@/hooks/use-tasks'
@@ -26,7 +27,7 @@ import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { StartAgentDialog } from '@/components/task/StartAgentDialog'
-import { TaskStartProgress } from '@/components/task/TaskStartProgress'
+import { TaskStartProgress, type TaskStartProgressState } from '@/components/task/TaskStartProgress'
 import { getSessionTokenUsage, SessionReadonlyMeta } from '@/components/task/SessionReadonlyMeta'
 import { ProviderSelector } from '@/components/task/ProviderSelector'
 import { SlashCommandPopover } from '@/components/task/SlashCommandPopover'
@@ -78,10 +79,7 @@ interface MobileTaskDetailProps {
   onBack: () => void
   onDeleteTask?: (taskId: string) => void
   isDeleting?: boolean
-  autoStartState?: {
-    status: 'creating-workspace' | 'creating-session' | 'starting-session' | 'failed'
-    error?: string
-  } | null
+  autoStartState?: TaskStartProgressState | null
   onAutoStartRecovered?: (taskId: string) => void
 }
 
@@ -156,6 +154,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
   // ============ Session Discovery ============
 
   const { data: workspaces, isLoading: isLoadingWorkspaces } = useWorkspaces(task.id)
+  const setupProgress = useWorkspaceSetupProgress(task.id)
+  const visibleAutoStartState = setupProgress?.status === 'completed' && autoStartState?.status !== 'failed'
+    ? null
+    : autoStartState
+  const hasStartProgress = Boolean(visibleAutoStartState || (setupProgress && setupProgress.status !== 'completed'))
   const { data: taskTeamRun } = useTaskTeamRun(task.id)
   const { data: roomMessages } = useRoomMessages(taskTeamRun?.id ?? '')
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
@@ -890,18 +893,19 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
               )}
             </div>
 
-            {!isProjectReadOnly && autoStartState && sessionId ? (
-              <div className="flex justify-center py-2">
-                <TaskStartProgress
-                  state={autoStartState}
-                  onRetry={autoStartState.status === 'failed' ? async () => { await ensureTaskBody(); setIsStartDialogOpen(true) } : undefined}
-                  compact
-                />
-              </div>
-            ) : null}
+            {!isProjectReadOnly && (
+              <TaskStartProgress
+                key={task.id}
+                state={visibleAutoStartState}
+                setupProgress={setupProgress}
+                sessionStarted={Boolean(activeSession?.startedAt)}
+                onRetry={sessionId && autoStartState?.status === 'failed' ? async () => { await ensureTaskBody(); setIsStartDialogOpen(true) } : undefined}
+                compact
+              />
+            )}
 
             {isLoadingWorkspaces ? (
-              <LoadingSpinner label="Loading..." />
+              (!hasStartProgress || isProjectReadOnly) && <LoadingSpinner label="Loading..." />
             ) : sessionId ? (
               isLoadingSnapshot ? (
                 <LoadingSpinner label="Loading logs..." />
@@ -923,10 +927,10 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                   />
                 </LogViewBoundary>
               )
-            ) : (
+            ) : !hasStartProgress || autoStartState?.status === 'failed' || setupProgress?.status === 'failed' || isProjectReadOnly ? (
               /* No session — show start agent CTA */
               <div className="flex flex-col items-center justify-center py-12 text-center">
-                {(!autoStartState || isProjectReadOnly) && <>
+                {(!hasStartProgress || isProjectReadOnly) && <>
                 <div className="w-12 h-12 bg-neutral-50 rounded-xl border border-neutral-100 flex items-center justify-center mb-4">
                   <Play size={20} className="text-neutral-400 ml-0.5" />
                 </div>
@@ -935,9 +939,6 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                   {isProjectReadOnly ? projectReadOnlyMessage : t('选择一个 Agent 来执行此任务')}
                 </p>
                 </>}
-                {!isProjectReadOnly && autoStartState ? (
-                  <TaskStartProgress state={autoStartState} compact />
-                ) : null}
                 {!isProjectReadOnly && (!autoStartState || autoStartState.status === 'failed') && (
                   <Button
                     onClick={async () => { await ensureTaskBody(); setIsStartDialogOpen(true) }}
@@ -948,7 +949,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, isDeleting, autoS
                   </Button>
                 )}
               </div>
-            )}
+            ) : null}
             </div>
           </div>
 

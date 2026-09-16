@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { WorkspaceKind } from '../../types/index.js';
+import type { WorkspaceSetupProgressPayload } from '@agent-tower/shared/socket';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-workspace-routes-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -128,6 +129,47 @@ describe('workspace routes', () => {
       await app.close();
       merge.mockRestore();
       resolveIdentity.mockRestore();
+    }
+  });
+
+  it('restores setup progress through REST after the running event has already been emitted', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'setup-route-project-'));
+    execFileSync('git', ['init', '-b', 'main', repoPath], { stdio: 'pipe' });
+    fs.writeFileSync(path.join(repoPath, 'README.md'), 'Setup progress test\n');
+    execFileSync('git', ['-C', repoPath, 'add', '.']);
+    execFileSync('git', ['-C', repoPath, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'], { stdio: 'pipe' });
+    const setupScript = 'node -e "console.log(\'setup-ok\'); setTimeout(() => {}, 400)"';
+    const project = await prisma.project.create({ data: { name: 'Setup route project', repoPath, mainBranch: 'main', setupScript } });
+    const task = await prisma.task.create({ data: { title: 'Setup route task', projectId: project.id } });
+    const { getEventBus } = await import('../../core/container.js');
+    const events: WorkspaceSetupProgressPayload[] = [];
+    let finish!: () => void;
+    const completed = new Promise<void>(resolve => { finish = resolve; });
+    const onProgress = (payload: WorkspaceSetupProgressPayload) => {
+      if (payload.taskId !== task.id) return;
+      events.push(payload);
+      if (payload.status === 'completed') finish();
+    };
+    getEventBus().on('workspace:setup_progress', onProgress);
+    const app = await buildTestApp();
+    try {
+      await new WorkspaceService().create(task.id, {});
+      expect(events[0]?.status).toBe('running');
+      const running = await app.inject({ method: 'GET', url: `/tasks/${task.id}/setup-progress` });
+      expect(running.statusCode).toBe(200);
+      expect(running.json()).toEqual([expect.objectContaining({ status: 'running', currentCommand: setupScript, updatedAt: expect.any(Number) })]);
+      await completed;
+      const finished = await app.inject({ method: 'GET', url: `/tasks/${task.id}/setup-progress` });
+      expect(finished.json()).toEqual([expect.objectContaining({ status: 'completed', output: expect.stringContaining('setup-ok') })]);
+      expect(events[1].updatedAt).toBeGreaterThan(events[0].updatedAt);
+
+      await prisma.task.update({ where: { id: task.id }, data: { deletedAt: new Date() } });
+      const deleted = await app.inject({ method: 'GET', url: `/tasks/${task.id}/setup-progress` });
+      expect(deleted.statusCode).toBe(404);
+    } finally {
+      await completed;
+      getEventBus().off('workspace:setup_progress', onProgress);
+      await app.close();
     }
   });
 });

@@ -152,6 +152,11 @@ export async function workspaceRoutes(app: FastifyInstance) {
 
   // ── 获取工作空间详情 ────────────────────────────────────────────────────────
 
+  app.get<{ Params: { taskId: string } }>(
+    '/tasks/:taskId/setup-progress',
+    async (request) => workspaceService.getSetupProgress(request.params.taskId),
+  );
+
   app.get<{ Params: { id: string } }>(
     '/workspaces/:id',
     async (request, reply) => {

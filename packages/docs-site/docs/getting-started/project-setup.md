@@ -47,6 +47,10 @@ pnpm install
 pnpm db:generate
 ```
 
+Setup 在后台执行，可以与 Agent 输出同时进行。任务详情的启动卡片会同时展示 Agent 启动和 Setup 进度；Agent 启动完成后，如果 Setup 仍在运行，卡片会保留到 Setup 结束，日志区域持续显示 Agent 输出。
+
+配置的 Setup 命令会直接显示在卡片中；命令产生输出后，卡片才提供“查看 Setup 输出”。打开任务或重新连接时，卡片会查询当前 Setup 进度。
+
 脚本应尽量幂等。每个任务可能创建新的 worktree，非幂等脚本会让恢复和重试变得困难。
 
 ## mainBranch

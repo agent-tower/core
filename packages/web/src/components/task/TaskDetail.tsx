@@ -57,7 +57,7 @@ import { ConflictBanner } from '@/components/workspace/ConflictBanner'
 import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsDialog'
 import { WorkspaceChangeSummaryBar } from '@/components/workspace/WorkspaceChangeSummaryBar'
 import { type ConflictDetails } from '@/components/workspace/GitOperationsDialog'
-import { TaskStartProgress } from './TaskStartProgress'
+import { TaskStartProgress, type TaskStartProgressState } from './TaskStartProgress'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
@@ -93,10 +93,7 @@ interface TaskDetailProps {
   /** 状态变更回调 */
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   /** 自动启动后台状态。创建 task 成功后不阻塞 UI，只在详情区展示后续启动进度。 */
-  autoStartState?: {
-    status: 'creating-workspace' | 'creating-session' | 'starting-session' | 'failed'
-    error?: string
-  } | null
+  autoStartState?: TaskStartProgressState | null
   /** 自动启动失败后，用户手动重试成功时通知父级清理后台失败状态。 */
   onAutoStartRecovered?: (taskId: string) => void
 }
@@ -251,6 +248,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
 
   const { data: workspaces, isLoading: isLoadingWorkspaces } = useWorkspaces(task?.id ?? '')
   const setupProgress = useWorkspaceSetupProgress(task?.id)
+  const visibleAutoStartState = setupProgress?.status === 'completed' && autoStartState?.status !== 'failed'
+    ? null
+    : autoStartState
+  const hasStartProgress = Boolean(visibleAutoStartState || (setupProgress && setupProgress.status !== 'completed'))
   const { data: taskTeamRun } = useTaskTeamRun(task?.id ?? '')
   const { data: roomMessages } = useRoomMessages(taskTeamRun?.id ?? '')
   const postRoomMessage = usePostRoomMessage(taskTeamRun?.id ?? '')
@@ -1207,53 +1208,18 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 </div>
               )}
 
-              {/* Setup Script Progress */}
-              {setupProgress && !autoStartState && (
-                <div className="flex items-center justify-center gap-2 py-3 text-muted-foreground/70 text-sm">
-                  {setupProgress.status === 'running' && (
-                    <>
-                      <svg className="animate-spin h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      <span>{t('Setup ({current}/{total}): {command}', {
-                        current: setupProgress.currentIndex,
-                        total: setupProgress.totalCommands,
-                        command: setupProgress.currentCommand,
-                      })}</span>
-                    </>
-                  )}
-                  {setupProgress.status === 'completed' && (
-                    <span className="text-success">{t('Setup 完成')}</span>
-                  )}
-                  {setupProgress.status === 'failed' && (
-                    <span className="text-destructive/80">{t('Setup 失败: {error}', { error: setupProgress.error })}</span>
-                  )}
-                </div>
+              {!isProjectReadOnly && (
+                <TaskStartProgress
+                  key={task.id}
+                  state={visibleAutoStartState}
+                  setupProgress={setupProgress}
+                  sessionStarted={Boolean(activeSession?.startedAt)}
+                  onRetry={sessionId && autoStartState?.status === 'failed' ? handleOpenStartDialog : undefined}
+                />
               )}
 
-              {!isProjectReadOnly && autoStartState && sessionId ? (
-                <div className="flex justify-center py-3">
-                  <TaskStartProgress
-                    state={autoStartState}
-                    onRetry={autoStartState.status === 'failed' ? handleOpenStartDialog : undefined}
-                    details={setupProgress?.status === 'running'
-                      ? t('Setup ({current}/{total}): {command}', {
-                        current: setupProgress.currentIndex,
-                        total: setupProgress.totalCommands,
-                        command: setupProgress.currentCommand,
-                      })
-                      : setupProgress?.status === 'failed'
-                        ? t('Setup 失败: {error}', { error: setupProgress.error })
-                        : setupProgress?.status === 'completed'
-                          ? t('Setup 完成')
-                          : undefined}
-                  />
-                </div>
-              ) : null}
-
               {isLoadingWorkspaces ? (
-                <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground/70">
+                (!hasStartProgress || isProjectReadOnly) && <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground/70">
                   <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -1289,9 +1255,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     />
                   </LogViewBoundary>
                 )
-              ) : (
+              ) : !hasStartProgress || autoStartState?.status === 'failed' || setupProgress?.status === 'failed' || isProjectReadOnly ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
-                  {(!autoStartState || isProjectReadOnly) && <>
+                  {(!hasStartProgress || isProjectReadOnly) && <>
                   <div className="w-14 h-14 bg-muted/50 rounded-2xl border border-border/60 flex items-center justify-center mb-5">
                     <Play size={24} className="text-muted-foreground/70 ml-0.5" />
                   </div>
@@ -1304,9 +1270,6 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                       : t('选择一个 Agent 来执行此任务，Agent 将自动创建工作空间并开始工作。')}
                   </p>
                   </>}
-                  {!isProjectReadOnly && autoStartState ? (
-                    <TaskStartProgress state={autoStartState} />
-                  ) : null}
                   {!isProjectReadOnly && (!autoStartState || autoStartState.status === 'failed') && (
                     <div className="flex flex-wrap items-center justify-center gap-3">
                       <Button onClick={handleOpenStartDialog} disabled={Boolean(autoStartState && autoStartState.status !== 'failed')}>
@@ -1322,7 +1285,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     </div>
                   )}
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
 

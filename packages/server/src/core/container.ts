@@ -5,6 +5,7 @@ import { NotificationService } from '../services/notifications/index.js';
 import { TaskCleanupService } from '../services/task-cleanup.service.js';
 import { AgentCliEnvironmentService } from '../services/agent-cli/environment.service.js';
 import { WorkspaceBackgroundService } from '../services/workspace-background-service.service.js';
+import { WorkspaceSetupProgressStore } from '../services/workspace-setup-progress.js';
 import { prisma } from '../utils/index.js';
 import { TunnelService } from '../services/tunnel.service.js';
 import { assertApplicationProcessStartAllowed, beginApplicationProcessShutdown, cleanupApplicationProcessOwners } from '../runtime/application-process-cleanup.js';
@@ -21,6 +22,11 @@ let notificationService: NotificationService | null = null;
 let taskCleanupService: TaskCleanupService | null = null;
 let agentCliEnvironmentService: AgentCliEnvironmentService | null = null;
 let workspaceBackgroundService: WorkspaceBackgroundService | null = null;
+const workspaceSetupProgressStore = new WorkspaceSetupProgressStore();
+
+export function getWorkspaceSetupProgressStore(): WorkspaceSetupProgressStore {
+  return workspaceSetupProgressStore;
+}
 
 export function getEventBus(): EventBus {
   if (!eventBus) {

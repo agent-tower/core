@@ -71,11 +71,13 @@ workspace setup payload：
 {
   workspaceId: string;
   taskId: string;
+  updatedAt: number; // 服务端进度更新时间，毫秒
   status: 'running' | 'completed' | 'failed';
   currentCommand?: string;
   currentIndex?: number;
   totalCommands: number;
   error?: string;
+  output?: string; // bounded stdout/stderr from setup commands
 }
 ```
 

@@ -2,17 +2,19 @@ import { useState } from 'react'
 import { CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2, XCircle } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
+import type { SetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
 
 export type TaskStartProgressState = {
   status: 'creating-workspace' | 'creating-session' | 'starting-session' | 'failed'
   error?: string
+  setupScript?: string | null
 }
 
 interface TaskStartProgressProps {
-  state: TaskStartProgressState
+  state?: TaskStartProgressState | null
+  setupProgress?: SetupProgress | null
+  sessionStarted?: boolean
   onRetry?: () => void
-  /** Optional live setup command detail supplied by the workspace hook. */
-  details?: string
   /** Use the tighter spacing used by the mobile task detail. */
   compact?: boolean
 }
@@ -24,52 +26,74 @@ const STEP_STATUSES = ['creating-workspace', 'creating-session', 'starting-sessi
  * session are being prepared. Keeping this outside TaskDetail lets desktop
  * and mobile use the same visual language and state semantics.
  */
-export function TaskStartProgress({ state, onRetry, details, compact = false }: TaskStartProgressProps) {
+export function TaskStartProgress({ state, setupProgress, sessionStarted = false, onRetry, compact = false }: TaskStartProgressProps) {
   const { t } = useI18n()
   const [showDetails, setShowDetails] = useState(false)
-  const isFailed = state.status === 'failed'
-  const currentIndex = STEP_STATUSES.indexOf(state.status as typeof STEP_STATUSES[number])
-  const steps = [
+  const startFailed = state?.status === 'failed'
+  const setupFailed = setupProgress?.status === 'failed'
+  const isFailed = startFailed || setupFailed
+  const currentIndex = state
+    ? STEP_STATUSES.indexOf(state.status as typeof STEP_STATUSES[number])
+    : STEP_STATUSES.length
+  const startupSteps = [
     t('Preparing workspace'),
     t('Creating session'),
     t('Starting agent'),
   ]
-  // The active step is already listed below. Keep the card header as a stable
-  // task-level status so the first and last rows do not repeat the same label.
-  const title = isFailed ? t('Agent start failed') : t('Starting task')
+  // Startup failures do not identify the failed phase, so keep those rows neutral.
+  const setupCommands = (state?.setupScript ?? '').split('\n').map(command => command.trim()).filter(Boolean)
+  const steps: { label: string; status: 'pending' | 'active' | 'completed' | 'failed'; description?: string }[] = state || sessionStarted
+    ? startupSteps.map((label, index) => ({
+      label,
+      status: startFailed ? 'pending' : index < currentIndex ? 'completed' : index === currentIndex ? 'active' : 'pending',
+    }))
+    : []
+  if (setupProgress || setupCommands.length > 0) {
+    // Setup runs alongside session startup; it is not a later sequential step.
+    steps.push({
+      label: setupProgress?.status === 'running'
+        ? t('Running setup ({current}/{total})', { current: setupProgress.currentIndex ?? 0, total: setupProgress.totalCommands })
+        : setupProgress?.status === 'completed'
+          ? t('Setup complete')
+          : setupProgress?.status === 'failed'
+            ? t('Setup failed')
+            : t('Run setup script'),
+      status: setupProgress?.status === 'running' ? 'active' : setupProgress?.status ?? 'pending',
+      description: setupProgress?.currentCommand || setupCommands.join('\n'),
+    })
+  }
+  const hasSetupOutput = Boolean(setupProgress?.output?.trim())
+
+  if (!state && !setupProgress) return null
 
   return (
     <div
-      className={`${compact ? 'mb-4' : 'mb-6'} w-full max-w-2xl rounded-xl border ${isFailed ? 'border-destructive/30 bg-destructive/[0.03]' : 'border-border/70 bg-background'} px-4 py-3 text-left shadow-sm`}
+      className={`${compact ? 'my-2 mb-4' : 'my-3 mb-6'} mx-auto w-full max-w-2xl rounded-xl border ${isFailed ? 'border-destructive/30 bg-destructive/[0.03]' : 'border-border/70 bg-background'} px-4 py-3 text-left shadow-sm`}
       role={isFailed ? 'alert' : 'status'}
       aria-live={isFailed ? 'assertive' : 'polite'}
     >
-      <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground/90">
-        {isFailed ? <XCircle className="h-4 w-4 shrink-0 text-destructive" /> : <Loader2 className="h-4 w-4 shrink-0 animate-spin text-info motion-reduce:animate-none" />}
-        <span>{title}</span>
-      </div>
-      {isFailed && state.error ? (
-        <p className="mb-2 break-words text-xs text-destructive/80">{state.error}</p>
+      {isFailed && (state?.error || setupProgress?.error || startFailed) ? (
+        <p className="mb-2 break-words text-xs text-destructive/80">{state?.error || setupProgress?.error || t('Agent start failed')}</p>
       ) : null}
 
       <div className="space-y-2">
-        {steps.map((label, index) => {
-          const completed = !isFailed && index < currentIndex
-          const active = !isFailed && index === currentIndex
-          // The API only reports a terminal failure, without the phase that
-          // failed. Keep individual rows neutral and surface the error in the
-          // card header/details instead of guessing the failing step.
+        {steps.map(({ label, status, description }) => {
+          const completed = status === 'completed'
+          const active = status === 'active'
           return (
-            <div key={label} className={`flex items-center gap-2 text-sm ${completed || active ? 'text-info' : 'text-muted-foreground'}`}>
-              {completed ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : active ? <Loader2 className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" /> : <Circle className="h-4 w-4 shrink-0" />}
-              <span>{label}</span>
+            <div key={label} className={`flex items-start gap-2 text-sm ${status === 'failed' ? 'text-destructive' : completed || active ? 'text-info' : 'text-muted-foreground'}`}>
+              {completed ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : active ? <Loader2 className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" /> : status === 'failed' ? <XCircle className="h-4 w-4 shrink-0" /> : <Circle className="h-4 w-4 shrink-0" />}
+              <div className="min-w-0 flex-1">
+                <span>{label}</span>
+                {description && <code className="mt-1 block whitespace-pre-wrap break-all rounded-md bg-muted/35 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">{description}</code>}
+              </div>
             </div>
           )
         })}
       </div>
 
-      <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/50 pt-2">
-        <button
+      {(hasSetupOutput || startFailed) && <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/50 pt-2">
+        {hasSetupOutput ? <button
           type="button"
           onClick={() => setShowDetails(value => !value)}
           className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
@@ -77,18 +101,18 @@ export function TaskStartProgress({ state, onRetry, details, compact = false }: 
           aria-controls="task-start-progress-details"
         >
           {showDetails ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          {showDetails ? t('Hide details') : t('More details')}
-        </button>
-        {isFailed && onRetry ? (
+          {showDetails ? t('Hide setup output') : t('View setup output')}
+        </button> : <span />}
+        {startFailed && onRetry ? (
           <Button size="sm" variant="outline" onClick={onRetry}>
             {t('Retry start')}
           </Button>
         ) : null}
-      </div>
+      </div>}
 
       {showDetails && (
         <div id="task-start-progress-details" className="mt-2 rounded-md bg-muted/35 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
-          {isFailed ? t('启动失败，请重试') : details ?? t('Workspace setup is running in the background.')}
+          <pre className="whitespace-pre-wrap break-words font-mono">{setupProgress?.output ?? ''}</pre>
         </div>
       )}
     </div>

@@ -3,7 +3,8 @@ import { WorkspaceKind, WorkspaceStatus, TaskStatus, SessionStatus, SessionPurpo
 import { WorktreeManager } from '../git/worktree.manager.js';
 import { execGit, MergeConflictError } from '../git/git-cli.js';
 import { NotFoundError, ServiceError } from '../errors.js';
-import { getSessionManager, getEventBus, getWorkspaceBackgroundService } from '../core/container.js';
+import { getSessionManager, getEventBus, getWorkspaceBackgroundService, getWorkspaceSetupProgressStore } from '../core/container.js';
+import type { WorkspaceSetupProgressPayload } from '@agent-tower/shared/socket';
 import { copyProjectFiles } from './copy-files.service.js';
 import { defaultTeamLockService, type TeamLockService } from './team-lock.service.js';
 import { exec } from 'node:child_process';
@@ -452,6 +453,21 @@ export class WorkspaceService {
       where: { taskId },
       include: { sessions: visibleSessionsFilter },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async getSetupProgress(taskId: string): Promise<WorkspaceSetupProgressPayload[]> {
+    const task = await prisma.task.findUnique({ where: { id: taskId } });
+    if (!task) throw new NotFoundError('Task', taskId);
+    ensureTaskNotDeleted(task);
+    const workspaces = await prisma.workspace.findMany({
+      where: { taskId, status: WorkspaceStatus.ACTIVE },
+      select: { id: true },
+    });
+    const store = getWorkspaceSetupProgressStore();
+    return workspaces.flatMap(({ id }) => {
+      const progress = store.get(id);
+      return progress ? [progress] : [];
     });
   }
 
@@ -2805,10 +2821,16 @@ export class WorkspaceService {
     const commands = setupScript.split('\n').map((c) => c.trim()).filter(Boolean);
     if (commands.length === 0) return;
 
+    let output = '';
+    const appendOutput = (value: string | undefined) => {
+      if (!value) return;
+      output = `${output}${output ? '\n' : ''}${value}`.slice(-32_000);
+    };
+
     for (let i = 0; i < commands.length; i++) {
       const cmd = commands[i];
       console.log(`[WorkspaceService] Setup [${i + 1}/${commands.length}] running: "${cmd}"`);
-      this.eventBus.emit('workspace:setup_progress', {
+      this.reportSetupProgress({
         workspaceId,
         taskId,
         status: 'running',
@@ -2818,21 +2840,37 @@ export class WorkspaceService {
       });
 
       try {
-        await execAsync(cmd, { cwd: worktreePath, timeout: 300_000 });
+        const result = await execAsync(cmd, { cwd: worktreePath, timeout: 300_000 });
+        appendOutput(result.stdout);
+        appendOutput(result.stderr);
       } catch (err) {
+        const commandError = err as { stdout?: string; stderr?: string };
+        appendOutput(commandError.stdout);
+        appendOutput(commandError.stderr);
+        appendOutput(err instanceof Error ? err.message : String(err));
         console.warn(
           `[WorkspaceService] Setup command failed: "${cmd}" - ${err instanceof Error ? err.message : err}`
         );
         // 不中断，继续执行下一条
       }
+      this.reportSetupProgress({
+        workspaceId,
+        taskId,
+        status: 'running',
+        currentCommand: cmd,
+        currentIndex: i + 1,
+        totalCommands: commands.length,
+        output: output || undefined,
+      });
     }
 
     console.log(`[WorkspaceService] Setup completed (${commands.length} commands)`);
-    this.eventBus.emit('workspace:setup_progress', {
+    this.reportSetupProgress({
       workspaceId,
       taskId,
       status: 'completed',
       totalCommands: commands.length,
+      output: output || undefined,
     });
   }
 
@@ -2848,7 +2886,7 @@ export class WorkspaceService {
     if (!setupScript?.trim()) return;
     this.runSetupScript(workspaceId, taskId, worktreePath, setupScript).catch((err) => {
       console.error(`[WorkspaceService] Setup script unexpected error:`, err);
-      this.eventBus.emit('workspace:setup_progress', {
+      this.reportSetupProgress({
         workspaceId,
         taskId,
         status: 'failed',
@@ -2856,6 +2894,11 @@ export class WorkspaceService {
         error: err instanceof Error ? err.message : String(err),
       });
     });
+  }
+
+  private reportSetupProgress(progress: Omit<WorkspaceSetupProgressPayload, 'updatedAt'>): void {
+    const snapshot = getWorkspaceSetupProgressStore().record(progress);
+    this.eventBus.emit('workspace:setup_progress', snapshot);
   }
 
   /**

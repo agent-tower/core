@@ -57,6 +57,7 @@ description: 当前代码库中公开的主要 REST 端点。
 | --- | --- | --- |
 | `POST` | `/api/tasks/:taskId/workspaces` | 创建 workspace |
 | `GET` | `/api/tasks/:taskId/workspaces` | 获取任务下所有 workspace |
+| `GET` | `/api/tasks/:taskId/setup-progress` | 获取任务下 ACTIVE workspace 的 Setup 进度快照，返回与 `workspace:setup_progress` 相同的 payload 数组（包含有界 stdout/stderr） |
 | `GET` | `/api/workspaces/:id` | 获取 workspace 详情 |
 | `GET` | `/api/workspaces/:id/diff` | 获取 workspace diff |
 | `POST` | `/api/workspaces/:id/merge` | squash merge；可用 `stopActiveServices: true` 明确允许先停止源 workspace 的活跃后台服务 |
@@ -69,6 +70,8 @@ description: 当前代码库中公开的主要 REST 端点。
 | `POST` | `/api/workspaces/:id/reactivate` | 唤醒休眠 workspace |
 | `POST` | `/api/system/cleanup` | 清理可清理的 workspace |
 | `POST` | `/api/system/hibernate-idle` | 手动触发空闲 workspace 休眠 |
+
+Setup 进度快照保存在当前服务进程内，运行态保留至脚本结束，终态最多保留 10 分钟；服务重启后不保留。前端可在打开任务或 Socket 重连时读取快照，补偿错过的进度事件。
 
 Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspace 存在 `STARTING`、`RUNNING`、`STOPPING` 服务，或任意状态仍保留 runtime identity 时，默认以 `409 WORKSPACE_HAS_ACTIVE_SERVICE` 阻止合并。用户明确确认后，merge 请求可携带 `stopActiveServices: true`，服务端会在 workspace lifecycle barrier 和 merge target lock 内先停止这些服务，再重新检查并执行合并；停止后的服务不会自动恢复。
 

@@ -193,6 +193,8 @@ export type WorkspaceSetupStatus = 'running' | 'completed' | 'failed';
 export interface WorkspaceSetupProgressPayload {
   workspaceId: string;
   taskId: string;
+  /** 服务端进度更新时间（毫秒），用于合并快照与实时事件。 */
+  updatedAt: number;
   status: WorkspaceSetupStatus;
   /** 当前正在执行的命令 */
   currentCommand?: string;
@@ -202,6 +204,8 @@ export interface WorkspaceSetupProgressPayload {
   totalCommands: number;
   /** 失败时的错误信息 */
   error?: string;
+  /** Setup 命令的 stdout/stderr，供任务卡片按需查看。 */
+  output?: string;
 }
 
 export interface WorkspaceCommitMessageUpdatedPayload {

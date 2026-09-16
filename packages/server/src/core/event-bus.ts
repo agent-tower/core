@@ -4,6 +4,7 @@ import type {
   SessionRuntimeStateChangedPayload,
   TeamRunInvalidatedPayload,
   WorkspaceGitChangedPayload,
+  WorkspaceSetupProgressPayload,
 } from '@agent-tower/shared/socket';
 
 type EventMap = {
@@ -27,15 +28,7 @@ type EventMap = {
   'terminal:stdout': { terminalId: string; data: string };
   'terminal:exit': { terminalId: string; exitCode?: number };
   // Workspace setup progress
-  'workspace:setup_progress': {
-    workspaceId: string;
-    taskId: string;
-    status: 'running' | 'completed' | 'failed';
-    currentCommand?: string;
-    currentIndex?: number;
-    totalCommands: number;
-    error?: string;
-  };
+  'workspace:setup_progress': WorkspaceSetupProgressPayload;
   'workspace:commit_message_updated': {
     workspaceId: string;
     taskId: string;

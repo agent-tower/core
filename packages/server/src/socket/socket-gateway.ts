@@ -19,6 +19,7 @@ import {
   type TerminalResizePayload,
   type TeamRunInvalidatedPayload,
   type WorkspaceGitChangedPayload,
+  type WorkspaceSetupProgressPayload,
 } from './events.js';
 
 export class SocketGateway {
@@ -181,15 +182,7 @@ export class SocketGateway {
     };
 
     // --- Workspace events: broadcast to entire namespace ---
-    const onWorkspaceSetupProgress = (payload: {
-      workspaceId: string;
-      taskId: string;
-      status: string;
-      currentCommand?: string;
-      currentIndex?: number;
-      totalCommands: number;
-      error?: string;
-    }) => {
+    const onWorkspaceSetupProgress = (payload: WorkspaceSetupProgressPayload) => {
       emitToCurrentSockets(ServerEvents.WORKSPACE_SETUP_PROGRESS, payload);
     };
 
