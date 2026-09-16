@@ -13,11 +13,16 @@ const mocks = vi.hoisted(() => ({
   rmSync: vi.fn(),
   statSync: vi.fn(),
   writeFileSync: vi.fn(),
+  verifyCliStartup: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
   execFileSync: mocks.execFileSync,
   spawnSync: mocks.spawnSync,
+}));
+
+vi.mock('../../../scripts/verify-cli-startup.mjs', () => ({
+  verifyCliStartup: mocks.verifyCliStartup,
 }));
 
 vi.mock('node:fs', () => ({
@@ -32,7 +37,9 @@ vi.mock('node:fs', () => ({
 }));
 
 const scriptPath = fileURLToPath(new URL('../../../scripts/smoke-publish-install.mjs', import.meta.url));
-const publishDir = path.resolve(path.dirname(scriptPath), '../packages/server/publish');
+const repoRoot = path.resolve(path.dirname(scriptPath), '..');
+const publishDir = path.join(repoRoot, 'packages/server/publish');
+const serverPackagePath = path.join(repoRoot, 'packages/server/package.json');
 const tempRoot = path.resolve('mock-publish-smoke');
 const installPrefix = path.join(tempRoot, 'prefix');
 const globalRoot = path.join(installPrefix, 'lib/node_modules');
@@ -71,18 +78,25 @@ beforeEach(() => {
   existingFiles = new Set([
     path.join(publishDir, 'package.json'),
     externalTarball,
-    path.join(installedRoot, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'),
-    path.join(installedRoot, 'node_modules/@earendil-works/pi-coding-agent/node_modules/undici/package.json'),
-    path.join(installedRoot, 'node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/package.json'),
-    path.join(installedRoot, 'node_modules/.bin', process.platform === 'win32' ? 'pi.cmd' : 'pi'),
+    path.join(installedRoot, 'vendor/pi/package.json'),
+    path.join(installedRoot, 'vendor/pi/node_modules/undici/package.json'),
+    path.join(installedRoot, 'vendor/pi/node_modules/@earendil-works/pi-agent-core/package.json'),
+    path.join(installedRoot, 'vendor/pi/bin', process.platform === 'win32' ? 'pi.cmd' : 'pi.mjs'),
   ]);
   packageMetadata = new Map([
     [path.join(installedRoot, 'package.json'), {
       name: 'agent-tower',
+      version: '1.2.3-beta.4',
+      dependencies: { fastify: '^4.26.0' },
+      bundledDependencies: ['@agent-tower/shared', '@prisma/client', '@shitiandmw/node-pty', 'cloudflared'],
+    }],
+    [serverPackagePath, {
       dependencies: { '@earendil-works/pi-coding-agent': piVersion },
     }],
+    [path.join(installedRoot, 'vendor/pi/package.json'), { version: piVersion }],
     [path.join(installedRoot, 'node_modules/@prisma/client/package.json'), { version: '5.22.0' }],
   ]);
+  mocks.verifyCliStartup.mockResolvedValue('cli=1.2.3-beta.4 health=ok web=ok mcp=agent-tower');
   mocks.existsSync.mockImplementation(filePath => existingFiles.has(filePath));
   mocks.statSync.mockReturnValue({ isFile: () => true });
   mocks.mkdtempSync.mockReturnValue(tempRoot);
@@ -207,10 +221,31 @@ describe('publish install smoke tarball reuse', () => {
     expect(mocks.rmSync).toHaveBeenCalledExactlyOnceWith(tempRoot, { recursive: true, force: true });
   });
 
-  it('retains bundled Pi executable validation for an existing tarball', async () => {
+  it('retains vendored Pi executable validation for an existing tarball', async () => {
     mocks.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'Missing dependency' });
 
-    await expect(runSmoke(['--tarball', externalTarball])).rejects.toThrow('Bundled Pi executable failed');
+    await expect(runSmoke(['--tarball', externalTarball])).rejects.toThrow('Vendored Pi executable failed');
+    expect(mocks.rmSync).toHaveBeenCalledExactlyOnceWith(tempRoot, { recursive: true, force: true });
+  });
+
+  it('boots the installed CLI to catch incomplete install trees', async () => {
+    await runSmoke(['--tarball', externalTarball]);
+
+    expect(mocks.verifyCliStartup).toHaveBeenCalledWith(installedRoot, '1.2.3-beta.4', tempRoot);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('health=ok'));
+  });
+
+  it('rejects a published package that declares Pi in its dependency graph', async () => {
+    packageMetadata.set(path.join(installedRoot, 'package.json'), {
+      name: 'agent-tower',
+      version: '1.2.3-beta.4',
+      dependencies: { '@earendil-works/pi-coding-agent': piVersion },
+      bundledDependencies: ['@agent-tower/shared'],
+    });
+
+    await expect(runSmoke(['--tarball', externalTarball]))
+      .rejects.toThrow('must not declare @earendil-works/pi-coding-agent in dependencies');
+    expect(mocks.verifyCliStartup).not.toHaveBeenCalled();
     expect(mocks.rmSync).toHaveBeenCalledExactlyOnceWith(tempRoot, { recursive: true, force: true });
   });
 });

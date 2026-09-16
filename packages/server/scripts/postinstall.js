@@ -140,8 +140,28 @@ function fixSpawnHelperPermissions() {
     console.log('[postinstall] 所有 spawn-helper 权限正常，无需修复');
   }
 }
+/**
+ * 打包不保证保留可执行位，vendored Pi 启动器没有执行权限时无法被 spawn。
+ */
+function ensureVendoredPiLauncherExecutable() {
+  if (process.platform === 'win32') return;
+
+  const launcher = join(packageRoot, 'vendor', 'pi', 'bin', 'pi.mjs');
+  if (!existsSync(launcher)) return;
+
+  try {
+    if ((statSync(launcher).mode & 0o111) === 0) {
+      chmodSync(launcher, 0o755);
+      console.log(`[postinstall] 已修复 Pi 启动器权限: ${launcher}`);
+    }
+  } catch (err) {
+    console.warn('[postinstall] 无法修复 Pi 启动器权限', launcher, err.message);
+  }
+}
+
 generatePrismaClient();
 fixSpawnHelperPermissions();
+ensureVendoredPiLauncherExecutable();
 const claudePatch = await patchClaudeAgentAcp();
 if (claudePatch.changed) {
   console.log(`[postinstall] 已修复 Claude ACP 网关 context-window 探测: ${claudePatch.adapterPath}`);

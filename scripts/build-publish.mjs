@@ -10,7 +10,7 @@ import {
   chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -122,6 +122,9 @@ console.log(`Bundled @prisma/client@${prismaClientPkg.version} without install-t
 const deps = { ...serverPkg.dependencies };
 // 替换 workspace 协议为真实版本
 deps['@agent-tower/shared'] = sharedPkg.version;
+// Pi ships vendored (see step 9). Declaring it here would make npm treat the
+// rest of the tree as already provided by Pi's bundle and skip installing it.
+delete deps[piPackageName];
 // The generated client and CLI must stay on the same exact Prisma release.
 const prismaPkg = JSON.parse(readFileSync(resolve(serverDir, 'node_modules/prisma/package.json'), 'utf-8'));
 if (prismaPkg.version !== prismaClientPkg.version) {
@@ -178,10 +181,17 @@ delete nodePtyPkg.scripts.postinstall;
 writeFileSync(nodePtyPkgPath, JSON.stringify(nodePtyPkg, null, 2) + '\n');
 console.log(`Bundled @shitiandmw/node-pty@${nodePtyVersion} with prebuilds`);
 
-// 9. Materialize Pi with npm's nested install strategy before bundling it.
-// Copying the pnpm package alone would leave symlinks into the workspace virtual
-// store, while relying on npm to reconstruct Pi's shrinkwrap has produced
-// incomplete global installs. This tree is self-contained and portable.
+// 9. Materialize Pi with npm's nested install strategy, then vendor the tree
+// under `vendor/pi/` instead of `node_modules/`.
+//
+// Pi must not appear in the published package's `dependencies` or
+// `bundledDependencies`: `npm install -g` treats a package's own bundled
+// dependencies as "provided by a dependency's bundle" (Arborist `inDepBundle`)
+// and then skips unpacking every node it considers covered by that bundle,
+// leaving them as empty directories. Bundling Pi made `zod` and the whole
+// `@modelcontextprotocol/sdk` subtree install empty, so the CLI crashed on
+// startup. Keeping the tree outside `node_modules` sidesteps that code path
+// while still shipping a complete, self-contained Pi runtime.
 const piVersion = serverPkg.dependencies[piPackageName];
 if (!piVersion || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(piVersion)) {
   throw new Error(`Expected an exact ${piPackageName} version, received ${String(piVersion)}`);
@@ -209,27 +219,44 @@ try {
   );
 
   const piSrc = resolve(piStageRoot, 'node_modules', piPackageName);
-  const piDest = resolve(publishDir, 'node_modules', piPackageName);
+  const piDest = resolve(publishDir, 'vendor', 'pi');
   mkdirSync(dirname(piDest), { recursive: true });
   cpSync(piSrc, piDest, { recursive: true, dereference: true });
-  // npm pack excludes generated dependency bin links and recreates them when
-  // installing. Remove them now because npm stages them as absolute temp links.
+  // npm's staged dependency bin links point at absolute temp paths; the
+  // launchers below replace them with portable ones.
   rmSync(resolve(piDest, 'node_modules/.bin'), { recursive: true, force: true });
 
   const piPackage = JSON.parse(readFileSync(resolve(piDest, 'package.json'), 'utf-8'));
   if (piPackage.version !== piVersion) {
     throw new Error(`Staged Pi version mismatch: expected=${piVersion}, actual=${piPackage.version}`);
   }
+  const piEntry = resolve(piDest, piPackage.bin?.pi ?? 'dist/bundle/cli.js');
+  if (!existsSync(piEntry)) {
+    throw new Error(`Incomplete vendored Pi runtime: missing ${piPackage.bin?.pi ?? 'dist/bundle/cli.js'}`);
+  }
   for (const requiredPath of [
-    'dist/cli.js',
     'node_modules/undici/package.json',
     'node_modules/@earendil-works/pi-agent-core/package.json',
   ]) {
     if (!existsSync(resolve(piDest, requiredPath))) {
-      throw new Error(`Incomplete bundled Pi runtime: missing ${requiredPath}`);
+      throw new Error(`Incomplete vendored Pi runtime: missing ${requiredPath}`);
     }
   }
-  console.log(`Bundled ${piPackageName}@${piVersion} with its complete runtime dependency tree`);
+
+  // `pi-acp` spawns this path directly and only switches to a shell for
+  // `.cmd`/`.bat`, so POSIX needs an executable shebang script while Windows
+  // needs a batch shim.
+  const piBinDir = resolve(piDest, 'bin');
+  mkdirSync(piBinDir, { recursive: true });
+  const piEntrySpecifier = relative(piBinDir, piEntry).split(sep).join('/');
+  const piShimPath = resolve(piBinDir, 'pi.mjs');
+  writeFileSync(
+    piShimPath,
+    `#!/usr/bin/env node\nimport ${JSON.stringify(piEntrySpecifier.startsWith('.') ? piEntrySpecifier : `./${piEntrySpecifier}`)};\n`,
+  );
+  chmodSync(piShimPath, 0o755);
+  writeFileSync(resolve(piBinDir, 'pi.cmd'), '@echo off\r\nnode "%~dp0pi.mjs" %*\r\n');
+  console.log(`Vendored ${piPackageName}@${piVersion} at vendor/pi with its complete runtime dependency tree`);
 } finally {
   rmSync(piStageRoot, { recursive: true, force: true });
 }
@@ -257,8 +284,8 @@ const publishPkg = {
     'dist/',
     'prisma/',
     'scripts/',
+    'vendor/',
     'node_modules/@agent-tower/',
-    'node_modules/@earendil-works/pi-coding-agent/',
     'node_modules/@prisma/',
     'node_modules/@shitiandmw/',
     'node_modules/cloudflared/',
@@ -272,7 +299,6 @@ const publishPkg = {
   },
   bundledDependencies: [
     '@agent-tower/shared',
-    '@earendil-works/pi-coding-agent',
     '@prisma/client',
     '@shitiandmw/node-pty',
     'cloudflared',
