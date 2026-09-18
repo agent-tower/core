@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { execFileSync } from 'node:child_process';
+import { AgentType } from '@agent-tower/shared';
 import {
   AcpProcessManager,
   cleanupPersistedAcpProcessTree,
@@ -11,9 +12,10 @@ import {
   type WindowsProcessTreeAdapter,
 } from '../acp/process-manager.js';
 import {
-  codexAcpMaxStdoutFrameBytes,
-  normalizeCodexAcpStdoutFrame,
-} from '../acp/agents/codex-frame-normalizer.js';
+  acpMaxStdoutFrameBytes,
+  normalizeAcpToolFrame,
+} from '../acp/agents/tool-frame-normalizer.js';
+import { getAcpAgentDefinition } from '../acp/agents/registry.js';
 import { acpLaunchCleanupRegistry } from '../acp/launch-cleanup-registry.js';
 import { RuntimeCoordinator } from '../runtime-coordinator.js';
 import { StaticRuntimeRegistry } from '../runtime-registry.js';
@@ -107,8 +109,8 @@ describe('AcpProcessManager', () => {
       "const update={sessionUpdate:'tool_call_update',toolCallId:'tool-1',status:'completed',rawOutput:{formatted_output:output,exit_code:0},_meta:{terminal_output_delta:{data:output,terminal_id:'tool-1'}}}",
       "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{sessionId:'session-1',update}})+'\\n')",
     ].join(';'), {
-      maxStdoutFrameBytes: codexAcpMaxStdoutFrameBytes,
-      transformStdoutFrame: normalizeCodexAcpStdoutFrame,
+      maxStdoutFrameBytes: acpMaxStdoutFrameBytes,
+      transformStdoutFrame: normalizeAcpToolFrame,
     });
     const streams = await manager.start();
     const exit = waitForExit(manager);
@@ -135,8 +137,8 @@ describe('AcpProcessManager', () => {
       "const update={sessionUpdate:'tool_call_update',toolCallId:'tool-large',status:'completed',rawOutput:{formatted_output:output,exit_code:0},_meta:{terminal_output_delta:{data:output,terminal_id:'tool-large'}}}",
       "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{sessionId:'session-1',update}})+'\\n')",
     ].join(';'), {
-      maxStdoutFrameBytes: codexAcpMaxStdoutFrameBytes,
-      transformStdoutFrame: normalizeCodexAcpStdoutFrame,
+      maxStdoutFrameBytes: acpMaxStdoutFrameBytes,
+      transformStdoutFrame: normalizeAcpToolFrame,
     });
     const streams = await manager.start();
     const reader = streams.output.getReader();
@@ -151,14 +153,14 @@ describe('AcpProcessManager', () => {
     await manager.stop();
   });
 
-  it('bounds oversized structured Codex tool payloads', async () => {
+  it('bounds oversized structured tool payloads and replaces inline base64 with a placeholder', async () => {
     const manager = managerFor([
       "const image='data:image/png;base64,'+'x'.repeat(2*1024*1024)",
       "const update={sessionUpdate:'tool_call',toolCallId:'tool-image',status:'completed',rawInput:{image},rawOutput:{output:[{type:'input_image',image_url:image}]},content:[{type:'content',content:{type:'image',data:image,mimeType:'image/png'}}]}",
       "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{sessionId:'session-1',update}})+'\\n')",
     ].join(';'), {
-      maxStdoutFrameBytes: codexAcpMaxStdoutFrameBytes,
-      transformStdoutFrame: normalizeCodexAcpStdoutFrame,
+      maxStdoutFrameBytes: acpMaxStdoutFrameBytes,
+      transformStdoutFrame: normalizeAcpToolFrame,
     });
     const streams = await manager.start();
     const result = await streams.output.getReader().read();
@@ -173,7 +175,11 @@ describe('AcpProcessManager', () => {
     });
     expect(frame.params.update.rawOutput.preview.length).toBeLessThanOrEqual(32 * 1024);
     expect(frame.params.update.rawInput).toMatchObject({ _truncated: true });
-    expect(frame.params.update.content[0].content.text).toContain('[TRUNCATED]');
+    // A truncated base64 body is unusable, so the image collapses to a
+    // placeholder instead of a 32 KiB preview of payload noise.
+    expect(frame.params.update.content).toHaveLength(1);
+    expect(frame.params.update.content[0].content.text)
+      .toMatch(/^\[image omitted: image\/png, 1\.5 MiB\]$/);
     await manager.stop();
   });
 
@@ -183,8 +189,8 @@ describe('AcpProcessManager', () => {
       "const update={sessionUpdate:'tool_call_update',toolCallId:'tool-stream',_meta:{terminal_output_delta:{data:output,terminal_id:'tool-stream'},diagnostic:output}}",
       "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{sessionId:'session-1',update}})+'\\n')",
     ].join(';'), {
-      maxStdoutFrameBytes: codexAcpMaxStdoutFrameBytes,
-      transformStdoutFrame: normalizeCodexAcpStdoutFrame,
+      maxStdoutFrameBytes: acpMaxStdoutFrameBytes,
+      transformStdoutFrame: normalizeAcpToolFrame,
     });
     const streams = await manager.start();
     const result = await streams.output.getReader().read();
@@ -203,6 +209,55 @@ describe('AcpProcessManager', () => {
     expect(frame.params.update._meta).not.toHaveProperty('diagnostic');
     await manager.stop();
   }, 15_000);
+
+  it('honours a raised frame budget for an adapter that declares one without a normalizer', async () => {
+    // Regression: the re-serialized frame used to be re-checked against the
+    // shared 1 MiB constant, which silently overrode `maxStdoutFrameBytes` and
+    // killed any session that read back an image above ~768 KiB.
+    const imageSize = 2_540_000;
+    const manager = managerFor([
+      `const image='x'.repeat(${imageSize})`,
+      "const update={sessionUpdate:'tool_call',toolCallId:'tool-image',status:'completed',content:[{type:'content',content:{type:'image',data:image,mimeType:'image/png'}}]}",
+      "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{sessionId:'session-1',update}})+'\\n')",
+    ].join(';'), {
+      maxStdoutFrameBytes: acpMaxStdoutFrameBytes,
+    });
+    const streams = await manager.start();
+    const result = await streams.output.getReader().read();
+    const output = new TextDecoder().decode(result.value);
+
+    expect(result.done).toBe(false);
+    expect(Buffer.byteLength(output, 'utf8')).toBeGreaterThan(imageSize);
+    expect(JSON.parse(output.trim()).params.update.content[0].content.data).toHaveLength(imageSize);
+    await manager.stop();
+  }, 20_000);
+
+  it('keeps a DeepSeek Harness image read inside the frame limit end to end', async () => {
+    // Drives the transport with the definition the ACP driver actually uses, so
+    // a configuration-only "fix" (raising the budget without bounding the frame)
+    // cannot pass this test again.
+    const definition = getAcpAgentDefinition(AgentType.DEEPSEEK_HERMES);
+    const imageSize = 2_540_000;
+    const manager = managerFor([
+      `const image='x'.repeat(${imageSize})`,
+      "const update={sessionUpdate:'tool_call',toolCallId:'call_read_image',status:'completed',title:'read_image',rawInput:{file_path:'/tmp/t1.png'},content:[{type:'content',content:{type:'image',data:image,mimeType:'image/png'}}]}",
+      "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{sessionId:'session-1',update}})+'\\n')",
+    ].join(';'), {
+      maxStdoutFrameBytes: definition.maxStdoutFrameBytes,
+      transformStdoutFrame: definition.transformStdoutFrame,
+    });
+    const streams = await manager.start();
+    const result = await streams.output.getReader().read();
+    const output = new TextDecoder().decode(result.value);
+    const frame = JSON.parse(output.trim());
+
+    expect(result.done).toBe(false);
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThan(1024 * 1024);
+    expect(output).not.toContain('xxxxxxxxxx');
+    expect(frame.params.update.content[0].content.text).toMatch(/^\[image omitted: image\/png, /);
+    expect(frame.params.update.rawInput).toMatchObject({ file_path: '/tmp/t1.png' });
+    await manager.stop();
+  }, 20_000);
 
   it('terminates the detached adapter process on stop', async () => {
     const manager = managerFor("process.on('SIGTERM',()=>process.exit(0));process.stdout.write('{}\\n');setInterval(()=>{},1000)");

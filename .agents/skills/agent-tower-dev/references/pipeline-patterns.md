@@ -89,7 +89,7 @@ Agent 专属配置使用结构化解析：Codex TOML、Claude JSON 及现有标�
 ### CLI 与 ACP
 
 - CLI 扩展实现 `BaseExecutor` 的身份、命令与可用性入口，通过 `CommandBuilder`、`ExecutionEnv` 和现有 PTY wrapper 启动；follow-up、slash commands、MCP 路径按 Agent 能力扩展。保留 Windows ConPTY、stdin 临时文件权限与清理、日志脱敏。
-- ACP 扩展实现 `AcpAgentDefinition` 并注册到 `agents/registry.ts`；原生 ACP Agent 优先参考 `native-agent.ts`。Definition 负责 launch、Provider 投影、可用性、认证与会话配置，通用 Driver 负责 ACP 生命周期。专属 session option 依据 bootstrap 广告的 capability/configOptions 设置。
+- ACP 扩展实现 `AcpAgentDefinition` 并注册到 `agents/registry.ts`；原生 ACP Agent 优先参考 `native-agent.ts`。Definition 负责 launch、Provider 投影、可用性、认证与会话配置，通用 Driver 负责 ACP 生命周期。专属 session option 依据 bootstrap 广告的 capability/configOptions 设置。经 `native-agent.ts` 工厂新增 Definition 选项时，除加入 `NativeAgentOptions` 外**必须同时展开到工厂返回的 Definition**——漏掉展开会被静默丢弃且类型检查通过（`maxStdoutFrameBytes` 与 `transformStdoutFrame` 都踩过），因此新选项要配一条断言 Definition 实际取到值的测试。
 - ACP 权限标准为 `ASK` / `UNRESTRICTED`，旧 `AUTO_APPROVE` 由 shared 兼容归一化。Definition 配置原生全权限模式；通用权限请求处理优先 `allow_once`。权限请求是独立协议事件，不能从 tool 的 `pending` 状态推断；结束/取消后使旧请求失效。
 - adapter、可执行文件覆盖及打包解析参考相邻 Definition 和 `agents/executable-resolution.ts`。随包发行的 adapter 由 server production dependencies 管理；不要 patch 第三方 adapter 或写用户全局配置来实现单次会话隔离。
 - Codex ACP 启动与可用性检测共用系统优先的解析规则：自动查找系统 `codex`，仅在未找到时使用内置 Runtime；查找时排除项目 `node_modules/.bin` 与相对 PATH 目录，不改变 Agent 工具执行时的原始 PATH。`CODEX_PATH` 是 Tower 根据检测结果写入或清除的 adapter 参数，不再作为用户选择 Runtime 的入口；系统 Codex 启动失败不自动重试内置版本。
@@ -109,7 +109,7 @@ CLI 的 Claude Code、Cursor Agent、Codex 使用结构化 Parser；Gemini CLI �
 
 ACP `tool_call_update` 是按 `toolCallId` 合并的局部更新，省略字段沿用旧值，显式 `null` 清除字段。保留工具的状态、输入输出、content/locations；运行时诊断不误计作用户工具调用，非阻塞诊断用警告日志。
 
-ACP 帧和工具输出保持有界：通用 ProcessManager 保留归一化帧上限，Agent 专属大帧问题由 Definition 的原始帧限制及结构化 transform 处理；Projector 的 terminal delta 使用有界首尾预览。不要让完成事件重新把完整聚合输出塞回 snapshot。
+ACP 帧和工具输出保持有界：帧预算统一取 Definition 的 `maxStdoutFrameBytes`（缺省 1 MiB），**原始行与 transform 后的重序列化帧共用同一预算**，不要在 ProcessManager 内另设常量卡口覆盖它。内联回传大工具结果的 adapter（base64 图片/音频）必须同时声明更大预算**和** `transformStdoutFrame`（`agents/tool-frame-normalizer.ts`）：只提高预算不生效，只做 transform 则大帧仍会撞默认上限。Projector 的 terminal delta 使用有界首尾预览。不要让完成事件重新把完整聚合输出塞回 snapshot。
 
 MsgStore 的 patch `seq` 单调递增，restore 后继续计数；淘汰旧 patch 时折叠入 base snapshot。使用导出的 `sessionMsgStoreManager`。改 `NormalizedEntry` 时同时检查 `shared/log-adapter.ts`、前端日志/Todo/Token 与 `useNormalizedLogs` 的 seq-gap/reconnect 恢复。
 

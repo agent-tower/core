@@ -1210,9 +1210,9 @@ export function shouldAdjustScrollPositionOnItemSizeChange(
 2. **会话往上翻时被新内容拽到底部**
    - 现状依据：§14.7 收尾时已明确"隐藏→显示把读者甩到底部"（P1）归属未定、**未动 `useStickToBottom` 及其调用点**；本节登记的是同一族的另一场景——**用户主动上翻时新内容到达被拽到底部**，同样未排查、未修。
    - 需要先定产品口径（上翻时是否自动滚动、如何提示未读），非纯实现项。
-3. **DSH/ACP 大帧上限隐患（非性能项，暂挂本文，待定归属）**
-   - `packages/server/src/runtime/acp/process-manager.ts:775` 对 stdout 帧**重新序列化后**调用 `assertFrameSize(serialized, MAX_STDOUT_LINE_BYTES)`，用的是模块常量 1 MiB（`:16`）：既没有走 `launch.maxStdoutFrameBytes`，也没有在"无 transform"时跳过（无 transform 时 `serialized` 与已通过 `:761` 检查的原文等价，这次检查是重复且更严的卡口）。入站方向用的是 `this.launch.maxStdoutFrameBytes ?? MAX_STDOUT_LINE_BYTES`（`:160`），两侧口径不一致；超过 1 MiB 直接抛 `protocol_violation`。
-   - 影响面与真实触发频率未测（断开排查中 DSH 未出现过帧超限）。仓库内无专门的 ACP 传输文档，故登记在此。
+3. ~~**DSH/ACP 大帧上限隐患（非性能项，暂挂本文，待定归属）**~~ → **已定位并修复（2026-09-17）**，实现见 §16。
+   - 原登记：`packages/server/src/runtime/acp/process-manager.ts` 对 stdout 帧**重新序列化后**调用 `assertFrameSize(serialized, MAX_STDOUT_LINE_BYTES)`，用的是模块常量 1 MiB：既没有走 `launch.maxStdoutFrameBytes`，也没有在"无 transform"时跳过（无 transform 时 `serialized` 与已通过原始行检查的原文等价，这次检查是重复且更严的卡口）。入站方向用的是 `this.launch.maxStdoutFrameBytes ?? MAX_STDOUT_LINE_BYTES`，两侧口径不一致；超过 1 MiB 直接抛 `protocol_violation`。
+   - 当时"影响面与真实触发频率未测"的结论**已被推翻**：这不是隐患而是**必现缺陷**——2026-09-10 的修复（commit `312af15c`）只提高了 `maxStdoutFrameBytes` 这个配置值，没动这道硬编码卡口，因此从未生效；实测任何 > ~768 KiB 的图片读取都会中断会话。证据、修法与验证见 §16。
 
 ## 附录 A：核心证据代码位置
 
@@ -1411,3 +1411,43 @@ export function shouldAdjustScrollPositionOnItemSizeChange(
 **⑥ 一句话放行结论（覆盖两个终点）**：**能（有条件）** —— `db09d20c..647e108b` 可作为"会话进行中卡顿的 **store 归因部分** 已修复"的放行依据；条件同 §16.6（markdown 大 entry 一次渲染的 ~239 ms settle / 56 ms Long Task 属范围外，10k 为外推，E5 分配采样缺失），另加一条：**root replace 的元素不再递归冻结**（契约 §3.4 例外，dev 安全网在该路径上收窄，prod 行为不受影响）。
 
 **产物（第二轮）**：`/tmp/at-p0-2/verify-node-incremental.json`、`verify-node-647e108b.json`（含 timing 合并）、`verify-node-6233c8ba.json`（第一轮留存）、`core-{prod,dev}-6233c8ba.mjs`（第一轮 bundle 归档）、`vitest-scratch-647e108b.log`、`vitest-full-647e108b.log`、`web-build-647e108b.log`、`chrome-results-{ab,domprobe,interactions}-647e108b.json`、`browser-summary-647e108b.json`、`patch-seq2{,-report}.json`、`final-page-metrics.json`、`real-dsh-session-final.png`。
+
+## 17. DSH/ACP 大帧中断修复（§15 第 3 条的收口；2026-09-17）
+
+> 本文主体是性能专项，本节是非性能缺陷的**收口记录**：§15 第 3 条把它登记为"暂缓 + 未测"，实测后确认是**必现缺陷**，故在此结案并给出证据与修法。
+
+### 17.1 现象与根因
+
+**现象**：DeepSeek Harness 会话读取较大图片时，工具调用后立刻出现红色错误 `ACP stdout line exceeded the size limit`，**本轮 turn 作废**（下一条消息会重启 ACP transport 并 `session/load` 恢复，但被中断的一轮工作丢失）。
+
+**根因**：`packages/server/src/runtime/acp/process-manager.ts` 对**同一条帧**串了两道上限，且第二道不读该 Agent 的预算：
+
+| 检查点 | 上限来源 | dsh 实际值 |
+|---|---|---|
+| 原始行 `assertFrameSize(trimmed, …)` | `launch.maxStdoutFrameBytes ?? 1 MiB` | 64 MiB ✅ |
+| 重新序列化后 `assertFrameSize(serialized, MAX_STDOUT_LINE_BYTES)` | **模块常量 1 MiB** | 1 MiB ❌ |
+
+dsh 当时没有 `transformStdoutFrame`，`serialized` 与 `trimmed` 等价，因此第二道检查既**冗余**又**更严**，把 64 MiB 预算悄悄降回 1 MiB。
+
+**为什么 2026-09-10 的修复（`312af15c`）失效**：该 commit 只做了"`native-agent` 工厂透传 `maxStdoutFrameBytes`"+"dsh 声明 64 MiB"，**没有触碰 process-manager**；其"实测"只量了裸 stdout 行大小，从未让该帧穿过 Tower 的校验器。`deepseek-hermes-definition.test.ts` 当时只断言**配置值** > 8 MiB——这正是"配置改对了、行为没变"能通过全部测试的原因。
+
+### 17.2 证据
+
+- **真实触发样本**：历史会话 `5fd9830e-…` 的 `logSnapshot`。`read_image` 工具调用（`toolId=call_00_uunkt6Owtn2SUtTlg9cg5003`）指向 `~/.agent-tower/attachments/36/36ff03f5….png` = **1.91 MiB**，base64 后 **2.54 MiB**；**520 ms 后**即写入 `error_message` entry。2.54 MiB < 64 MiB 且 > 1 MiB ⇒ 必然落在第二道闸门上，**任何 > ~768 KiB 的图片读取都必现**。
+- **反证（修复前）**：以 `maxStdoutFrameBytes = 64 MiB` + 无 transform 写一条 2 MiB 的 `session/update` 帧，被拒 `protocol_violation`。
+- **收口验证（修复后，真实样本回放）**：同一条 2.54 MiB 帧经 dsh 定义的预算+归一化器后，**投递帧 0.4 KiB**，工具内容渲染为 `[image omitted: image/png, 1.9 MiB]`，`rawInput`（文件路径）原样保留。
+
+### 17.3 修法
+
+1. **统一口径**：重序列化检查改用 `options.maxFrameBytes`（即该 Agent 的预算），不再引用模块常量；`maxInputFrameBytes` 随之更名以消除"入站/出站"歧义。仅靠这一步即可止血。
+2. **成对配置**：把原 `codex-frame-normalizer.ts` 泛化为 `agents/tool-frame-normalizer.ts`（`normalizeAcpToolFrame`），dsh 与 Codex 共用：`rawInput`/`rawOutput`/`content`/`locations`/`_meta` 限幅，**内联 base64 图片/音频（> 4 KiB）折叠为带体积的文本占位**。这一步与 1 是配套的：1 让大帧不再误杀，2 让常见帧保持小（内存有界）。
+   - 占位而非截断：被截断的 base64 不可用，且 `AcpProjector` 本就把二进制内容投影为 `unsupported`，客户端**看不到任何损失**（此前反而会把 32 KiB base64 预览当文本显示）。
+   - 替换物必须是合法的 `ToolCallContent`（文本块），否则 SDK schema 的 `vecSkipError` 会**静默丢弃**该条内容。
+   - 覆盖 `session/update` 与 `session/request_permission`（后者会重复整个 tool call）。
+3. **可诊断**：错误信息带上实际值与上限（`… (2.54 MiB > 1.00 MiB)`）。三个卡口原先抛同一句话，这正是上一轮只能靠猜、§15 只能"暂缓"的直接原因。
+4. **行为级回归**（防止再次"只改配置"）：新增 `honours a raised frame budget …`（无 transform + 64 MiB 预算，2.5 MiB 帧必须通过）、`keeps a DeepSeek Harness image read inside the frame limit end to end`（**用 registry 里 dsh 定义的真实 `maxStdoutFrameBytes`/`transformStdoutFrame` 驱动传输层**）、`tool-frame-normalizer.test.ts`（占位、权限请求、schema 合法性、小帧不动）。
+
+**红/绿**：分别单独回退第①步与第②步，对应新测试各自失败（`protocol_violation` / 投递帧 > 1 MiB），加回后全绿。`packages/server` 全量 **1301 passed**，其中 3 个失败位于 `session-manager.team-run.test.ts`，已在**同一提交的干净树上**复现为既有失败，与本修复无关；`pnpm --filter @agent-tower/server build` 零 TS 错误。
+
+**残留（记录级，未扩大改动）**：占位只覆盖 `{type:'content', content:{type:'image'|'audio', data}}` 这两种内联二进制。`{type:'content', content:{type:'resource', resource:{blob}}}` 形式的 base64 资源未单独识别，仍走通用有界预览——帧大小仍有界（≤ 32 KiB 文本），但预览里会含一小段 base64 头部。该形态在 dsh 的 `read_image` 路径上未出现。
+

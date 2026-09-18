@@ -4,6 +4,7 @@ import * as acp from '@agentclientprotocol/sdk';
 import { AgentType } from '@agent-tower/shared';
 import { resolveDataDir } from '../../../utils/data-dir.js';
 import { createNativeAcpAgentDefinition } from './native-agent.js';
+import { acpMaxStdoutFrameBytes, normalizeAcpToolFrame } from './tool-frame-normalizer.js';
 import type { AcpAgentProfile, AcpAgentDefinition } from './types.js';
 
 /** Route name `dsh-llm-deepseek` registers for DeepSeek's official API. */
@@ -14,17 +15,6 @@ const DEFAULT_PROVIDER_ROUTE = 'deepseek-official';
  * may bootstrap a pnpm workspace on first launch, so allow a generous window.
  */
 const INITIALIZE_TIMEOUT_MS = 180_000;
-
-/**
- * The harness reports tool results inline, and its image-capable models send
- * file reads back as base64 — which inflates payloads by roughly a third. A
- * frame budget of the shared 1 MiB default rejects any image above ~768 KiB
- * with "ACP stdout line exceeded the size limit", so the harness needs the same
- * generous raw-frame budget Codex already uses rather than the default.
- */
-const MAX_RAW_FRAME_BYTES = 64 * 1024 * 1024;
-
-export const deepseekHermesMaxStdoutFrameBytes = MAX_RAW_FRAME_BYTES;
 
 /**
  * `dsh` exposes the model selector as an opaque *string* that carries a JSON
@@ -132,7 +122,12 @@ const nativeAgent = createNativeAcpAgentDefinition({
   // `dsh --profile acp` is the published automation entry point.
   arguments: ['--profile', 'acp'],
   initializeTimeoutMs: INITIALIZE_TIMEOUT_MS,
-  maxStdoutFrameBytes: deepseekHermesMaxStdoutFrameBytes,
+  // The harness reports tool results inline and its image-capable models send
+  // `read_image` results back as base64, so it needs both halves of the
+  // large-tool-result setup: the raised raw-frame budget *and* the normalizer
+  // that keeps an individual frame small.
+  maxStdoutFrameBytes: acpMaxStdoutFrameBytes,
+  transformStdoutFrame: normalizeAcpToolFrame,
   // `dsh` exposes no permission-bypass flag and no ACP mode selector; the
   // sandbox scope and approval policy are selected together through the
   // `DSH_PERMISSION_MODE` launch variable instead.

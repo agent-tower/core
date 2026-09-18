@@ -7,7 +7,12 @@ import { normalizeRuntimePermissionMode, type AgentType } from '@agent-tower/sha
 import { which } from '../../../utils/index.js';
 import { AgentRuntimeError } from '../../errors.js';
 import type { RuntimeOpenInput } from '../../contracts.js';
-import type { AcpAgentDefinition, AcpAgentProfile, AcpLaunchSpec } from './types.js';
+import type {
+  AcpAgentDefinition,
+  AcpAgentProfile,
+  AcpLaunchSpec,
+  AcpStdoutFrameTransform,
+} from './types.js';
 
 type NativeArguments = (
   input: RuntimeOpenInput,
@@ -28,6 +33,8 @@ interface NativeAgentOptions {
    * base64 image reads); the shared default rejects anything above 1 MiB.
    */
   maxStdoutFrameBytes?: number;
+  /** Bounds an individual tool result frame before it reaches the SDK. */
+  transformStdoutFrame?: AcpStdoutFrameTransform;
   permissionConfigKeys?: string[];
   configureSessionModel?: boolean;
   sessionModelValue?: (profile: AcpAgentProfile) => string | undefined;
@@ -75,6 +82,7 @@ export function createNativeAcpAgentDefinition(options: NativeAgentOptions): Acp
     displayName: options.displayName,
     ...(options.initializeTimeoutMs ? { initializeTimeoutMs: options.initializeTimeoutMs } : {}),
     ...(options.maxStdoutFrameBytes ? { maxStdoutFrameBytes: options.maxStdoutFrameBytes } : {}),
+    ...(options.transformStdoutFrame ? { transformStdoutFrame: options.transformStdoutFrame } : {}),
     projectProvider,
 
     async resolveLaunch(input, profile) {

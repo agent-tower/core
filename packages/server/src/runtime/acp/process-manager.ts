@@ -158,7 +158,7 @@ export class AcpProcessManager {
     let output: ReadableStream<Uint8Array>;
     try {
       const validatedOutput = createValidatedOutput(child.stdout, {
-        maxInputFrameBytes: this.launch.maxStdoutFrameBytes ?? MAX_STDOUT_LINE_BYTES,
+        maxFrameBytes: this.launch.maxStdoutFrameBytes ?? MAX_STDOUT_LINE_BYTES,
         transformFrame: this.launch.transformStdoutFrame,
       });
       validatedOutput.once('error', (error) => {
@@ -718,7 +718,7 @@ function processEnumerationFailed(cause?: unknown): AgentRuntimeError {
 function createValidatedOutput(
   input: Readable,
   options: {
-    maxInputFrameBytes: number;
+    maxFrameBytes: number;
     transformFrame?: AcpStdoutFrameTransform;
   },
 ): Readable {
@@ -736,7 +736,7 @@ function createValidatedOutput(
           if (frame) this.push(`${frame}\n`);
           newlineIndex = pending.indexOf('\n');
         }
-        assertFrameSize(pending, options.maxInputFrameBytes);
+        assertFrameSize(pending, options.maxFrameBytes);
         callback();
       } catch (error) {
         callback(error as Error);
@@ -760,13 +760,13 @@ function createValidatedOutput(
 function processFrame(
   line: string,
   options: {
-    maxInputFrameBytes: number;
+    maxFrameBytes: number;
     transformFrame?: AcpStdoutFrameTransform;
   },
 ): string | undefined {
   const trimmed = line.trim();
   if (!trimmed) return undefined;
-  assertFrameSize(trimmed, options.maxInputFrameBytes);
+  assertFrameSize(trimmed, options.maxFrameBytes);
   let value: unknown;
   try {
     value = JSON.parse(trimmed);
@@ -780,14 +780,28 @@ function processFrame(
     ? options.transformFrame(value as Record<string, unknown>)
     : value as Record<string, unknown>;
   const serialized = JSON.stringify(normalized);
-  assertFrameSize(serialized, MAX_STDOUT_LINE_BYTES);
+  // A transform may only shrink a frame today, but re-check against the same
+  // per-adapter budget as the raw line: reusing the shared 1 MiB default here
+  // silently overrode an adapter that declared a larger budget.
+  assertFrameSize(serialized, options.maxFrameBytes);
   return serialized;
 }
 
 function assertFrameSize(value: string, maxBytes: number): void {
-  if (Buffer.byteLength(value, 'utf8') > maxBytes) {
-    throw new AgentRuntimeError('protocol_violation', 'protocol', 'ACP stdout line exceeded the size limit', false);
+  const bytes = Buffer.byteLength(value, 'utf8');
+  if (bytes > maxBytes) {
+    throw new AgentRuntimeError(
+      'protocol_violation',
+      'protocol',
+      `ACP stdout line exceeded the size limit (${describeBytes(bytes)} > ${describeBytes(maxBytes)})`,
+      false,
+    );
   }
+}
+
+function describeBytes(bytes: number): string {
+  const mib = bytes / (1024 * 1024);
+  return mib >= 1 ? `${mib.toFixed(2)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
 }
 
 function appendBounded(current: string, next: string, maxBytes: number): string {

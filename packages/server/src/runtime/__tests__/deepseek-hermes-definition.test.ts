@@ -4,7 +4,10 @@ import path from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
 import { AgentType, RuntimeType } from '@agent-tower/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deepseekHermesMaxStdoutFrameBytes } from '../acp/agents/deepseek-hermes.js';
+import {
+  acpMaxStdoutFrameBytes,
+  normalizeAcpToolFrame,
+} from '../acp/agents/tool-frame-normalizer.js';
 import { getAcpAgentDefinition } from '../acp/agents/registry.js';
 import type { AcpAgentProfile } from '../acp/agents/types.js';
 import type { RuntimeOpenInput } from '../contracts.js';
@@ -151,15 +154,18 @@ describe('DeepSeek Harness ACP definition', () => {
     );
   });
 
-  it('raises the stdout frame budget so inline base64 images survive', () => {
+  it('declares both halves of the large tool result setup', () => {
     const definition = getAcpAgentDefinition(AgentType.DEEPSEEK_HERMES);
     // The shared default (1 MiB) rejects any image above ~768 KiB because
     // base64 inflates the payload by roughly a third.
     const oneMiB = 1024 * 1024;
-    expect(definition.maxStdoutFrameBytes).toBe(deepseekHermesMaxStdoutFrameBytes);
+    expect(definition.maxStdoutFrameBytes).toBe(acpMaxStdoutFrameBytes);
     expect(definition.maxStdoutFrameBytes!).toBeGreaterThan(8 * oneMiB);
     // A 4 MiB file read back as base64 must fit.
     expect(definition.maxStdoutFrameBytes!).toBeGreaterThan(4 * oneMiB * 4 / 3);
+    // The budget alone is not enough: the frame the harness emits still has to
+    // be bounded, which is what `AcpProcessManager` exercises end to end.
+    expect(definition.transformStdoutFrame).toBe(normalizeAcpToolFrame);
   });
 
   it('maps permission modes onto the harness sandbox presets instead of an ACP mode', async () => {
