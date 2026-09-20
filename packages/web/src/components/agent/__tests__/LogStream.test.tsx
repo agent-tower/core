@@ -318,6 +318,30 @@ describe('LogStream tool grouping', () => {
     expectCountStill()
   })
 
+  it('pins the tool count to a single line so multi-digit counts stay inside the badge', async () => {
+    // 窗口宽度按 ch 估（ch 只是"0"的字宽，tabular 数字实测更宽），多位数字会比窗口略宽。
+    // 祖先一旦带 overflow-wrap: anywhere / word-break: break-all，这点溢出就会把计数折成
+    // 两行，第二行被窗口裁在胶囊下沿（"两位数字超出范围"），所以卡片必须锁死单行。
+    const first = [successTool('tool-1', 'first command')]
+    const next = [...first, successTool('tool-2', 'second command')]
+
+    await act(async () => {
+      root.render(<LogStream logs={first} />)
+    })
+    const expectSingleLine = (value: Element | null | undefined) => {
+      expect(value?.classList.contains('whitespace-nowrap')).toBe(true)
+      expect(value?.classList.contains('min-w-max')).toBe(true)
+    }
+    expectSingleLine(container.querySelector('.agent-tool-count__value--in'))
+
+    await act(async () => {
+      root.render(<LogStream logs={next} />)
+    })
+    // 退场卡片同样要和窗口一起滚动，不能在两行里换行。
+    expectSingleLine(container.querySelector('.agent-tool-count__value--out'))
+    expectSingleLine(container.querySelector('.agent-tool-count__value--in'))
+  })
+
   it('summarizes generic shell tools with their command instead of repeating bash', async () => {
     await act(async () => {
       root.render(

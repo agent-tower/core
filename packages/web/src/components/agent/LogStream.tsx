@@ -633,7 +633,11 @@ const ToolCountBadge = memo(({ count }: { count: number }) => {
 
   return (
     <span className="agent-tool-count inline-flex items-center justify-center px-1.5 rounded-full bg-neutral-100 text-neutral-400 text-[10px] font-medium leading-none tabular-nums">
-      {/* 用 ch 锁定窗口宽度（tabular-nums 下 1ch 即一位数字），位数变化时平滑加宽而不是瞬跳。 */}
+      {/* 用 ch 锁定窗口宽度，位数变化时平滑加宽而不是瞬跳。ch 只是"一位数字有多宽"的近似值
+          （tabular 数字实测比 ch 略宽），窗口因此会略窄于多位数字。这点溢出平时看不出来，
+          但只要祖先带 overflow-wrap: anywhere / break-all（日志正文、房间消息里都有），
+          溢出的计数就会折成两行，第二行被窗口裁在胶囊下沿，看着像"两位数字超出范围"。
+          所以每张卡片都必须 nowrap 单行，并用 min-w-max 保证不窄于自身数字。 */}
       <span
         className="agent-tool-count__window"
         style={{ width: `${String(count).length}ch` }}
@@ -642,7 +646,7 @@ const ToolCountBadge = memo(({ count }: { count: number }) => {
         {roll.previous !== null && (
           <span
             key={`out-${roll.previous}`}
-            className="agent-tool-count__value agent-tool-count__value--out"
+            className="agent-tool-count__value agent-tool-count__value--out whitespace-nowrap min-w-max"
             onAnimationEnd={() => setRoll((state) => (state.previous === null ? state : { ...state, previous: null }))}
           >
             {roll.previous}
@@ -651,7 +655,7 @@ const ToolCountBadge = memo(({ count }: { count: number }) => {
         <span
           key={`in-${roll.current}`}
           className={cn(
-            'agent-tool-count__value agent-tool-count__value--in',
+            'agent-tool-count__value agent-tool-count__value--in whitespace-nowrap min-w-max',
             roll.previous !== null && 'agent-tool-count__value--rolling',
           )}
         >
