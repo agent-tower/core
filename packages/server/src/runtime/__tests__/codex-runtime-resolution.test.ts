@@ -1,3 +1,5 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { AgentType, RuntimeType, type Provider } from '@agent-tower/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -68,6 +70,23 @@ describe('Codex ACP runtime resolution', () => {
     expect(launch.env).not.toHaveProperty('CODEX_PATH');
     expect(resolveBundledCodexEntrypoint).toHaveBeenCalledOnce();
     expect(await codexAcpAgentDefinition.checkAvailability(provider)).toEqual({ type: 'INSTALLATION_FOUND' });
+  });
+
+  it('directly resolves a local Codex executable when the which command is unavailable', async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-resolution-'));
+    const executable = path.join(directory, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+    writeFileSync(executable, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\nexit 0\n');
+    if (process.platform !== 'win32') chmodSync(executable, 0o755);
+
+    try {
+      const { profile, input } = setup({ PATH: directory });
+      const launch = await codexAcpAgentDefinition.resolveLaunch(input, profile);
+
+      expect(launch.env.CODEX_PATH).toBe(executable);
+      expect(resolveBundledCodexEntrypoint).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it.each([systemCodex, null])('replaces inherited CODEX_PATH with the automatically selected runtime: %s', async (detectedCodex) => {

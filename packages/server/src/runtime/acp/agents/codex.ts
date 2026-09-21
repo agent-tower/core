@@ -1,3 +1,4 @@
+import { constants, accessSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
@@ -132,5 +133,34 @@ async function resolveSystemCodex(environment: NodeJS.ProcessEnv): Promise<strin
       .filter(directory => path.isAbsolute(directory) && !/[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/i.test(directory))
       .join(path.delimiter);
   }
-  return await which('codex', { env: searchEnvironment }) ?? undefined;
+  const resolved = await which('codex', { env: searchEnvironment });
+  if (resolved) return resolved;
+
+  // Packaged/GUI launches can run without a usable system `which` command.
+  // Resolve the same absolute PATH entries directly so a locally installed
+  // npm/nvm Codex is still preferred over the bundled fallback. The entries
+  // have already been filtered above, so project-local bins stay excluded.
+  const pathValue = searchEnvironment.PATH ?? searchEnvironment.Path;
+  const executableNames = process.platform === 'win32'
+    ? ['codex.exe', 'codex.cmd', 'codex.bat', 'codex']
+    : ['codex'];
+  for (const directory of pathValue?.split(path.delimiter) ?? []) {
+    if (!path.isAbsolute(directory)) continue;
+    for (const executableName of executableNames) {
+      const candidate = path.join(directory, executableName);
+      if (isExecutableFile(candidate)) return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function isExecutableFile(target: string): boolean {
+  try {
+    if (!statSync(target).isFile()) return false;
+    accessSync(target, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
