@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
+import { RuntimeType } from '@agent-tower/shared';
 import { WorkspaceKind } from '../../types/index.js';
 import type { WorkspaceSetupProgressPayload } from '@agent-tower/shared/socket';
 
@@ -24,7 +25,7 @@ let WorkspaceService: typeof import('../../services/workspace.service.js').Works
 
 async function buildTestApp() {
   const app = Fastify();
-  await app.register(workspaceRoutes);
+  await app.register(workspaceRoutes, { prefix: '/api' });
   return app;
 }
 
@@ -61,6 +62,50 @@ describe('workspace routes', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
+  it('returns session runtimeType so task detail can offer same-type Provider switching', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'runtime-route-project-'));
+    const project = await prisma.project.create({
+      data: { name: 'Runtime route project', repoPath },
+    });
+    const task = await prisma.task.create({
+      data: { title: 'Runtime route task', projectId: project.id },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'runtime-route',
+        worktreePath: repoPath,
+        status: 'ACTIVE',
+        sessions: {
+          create: [
+            { agentType: 'CODEX', runtimeType: RuntimeType.ACP, providerId: 'codex-acp-primary', prompt: 'run', status: 'RUNNING' },
+            { agentType: 'CODEX', runtimeType: RuntimeType.CLI, providerId: 'codex-cli', prompt: 'run', status: 'RUNNING' },
+          ],
+        },
+      },
+      include: { sessions: true },
+    });
+    const app = await buildTestApp();
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/tasks/${task.id}/workspaces`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const payload = response.json() as Array<{ id: string; sessions: Array<{ id: string; runtimeType?: string }> }>;
+      const sessions = payload.find(item => item.id === workspace.id)?.sessions ?? [];
+      const acpSession = workspace.sessions.find(session => session.runtimeType === RuntimeType.ACP);
+      const cliSession = workspace.sessions.find(session => session.runtimeType === RuntimeType.CLI);
+
+      expect(sessions.find(session => session.id === acpSession?.id)?.runtimeType).toBe(RuntimeType.ACP);
+      expect(sessions.find(session => session.id === cliSession?.id)?.runtimeType).toBe(RuntimeType.CLI);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('returns git unavailable for non-git main-directory workspace status', async () => {
     const repoPath = fs.mkdtempSync(path.join(testDir, 'local-route-project-'));
     const project = await prisma.project.create({
@@ -90,7 +135,7 @@ describe('workspace routes', () => {
     try {
       const response = await app.inject({
         method: 'GET',
-        url: `/workspaces/${workspace.id}/git-status`,
+        url: `/api/workspaces/${workspace.id}/git-status`,
       });
 
       expect(response.statusCode).toBe(400);
@@ -113,7 +158,7 @@ describe('workspace routes', () => {
     try {
       const response = await app.inject({
         method: 'POST',
-        url: '/workspaces/workspace-1/merge',
+        url: '/api/workspaces/workspace-1/merge',
         payload: {
           commitMessage: 'fix: merge safely',
           stopActiveServices: true,
@@ -155,16 +200,16 @@ describe('workspace routes', () => {
     try {
       await new WorkspaceService().create(task.id, {});
       expect(events[0]?.status).toBe('running');
-      const running = await app.inject({ method: 'GET', url: `/tasks/${task.id}/setup-progress` });
+      const running = await app.inject({ method: 'GET', url: `/api/tasks/${task.id}/setup-progress` });
       expect(running.statusCode).toBe(200);
       expect(running.json()).toEqual([expect.objectContaining({ status: 'running', currentCommand: setupScript, updatedAt: expect.any(Number) })]);
       await completed;
-      const finished = await app.inject({ method: 'GET', url: `/tasks/${task.id}/setup-progress` });
+      const finished = await app.inject({ method: 'GET', url: `/api/tasks/${task.id}/setup-progress` });
       expect(finished.json()).toEqual([expect.objectContaining({ status: 'completed', output: expect.stringContaining('setup-ok') })]);
       expect(events[1].updatedAt).toBeGreaterThan(events[0].updatedAt);
 
       await prisma.task.update({ where: { id: task.id }, data: { deletedAt: new Date() } });
-      const deleted = await app.inject({ method: 'GET', url: `/tasks/${task.id}/setup-progress` });
+      const deleted = await app.inject({ method: 'GET', url: `/api/tasks/${task.id}/setup-progress` });
       expect(deleted.statusCode).toBe(404);
     } finally {
       await completed;

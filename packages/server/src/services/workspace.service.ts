@@ -67,6 +67,7 @@ const visibleSessionsFilter = {
     id: true,
     workspaceId: true,
     agentType: true,
+    runtimeType: true,
     variant: true,
     providerId: true,
     status: true,

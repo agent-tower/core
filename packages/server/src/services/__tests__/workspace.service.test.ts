@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
+import { RuntimeType } from '@agent-tower/shared';
 import { TeamLockService } from '../team-lock.service.js';
 import { WorkspaceKind } from '../../types/index.js';
 
@@ -461,6 +462,46 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     });
     expect(workspaces[0]?.sessions?.[0]).not.toHaveProperty('prompt');
     expect(workspaces[0]?.sessions?.[0]).not.toHaveProperty('logSnapshot');
+  });
+
+  it('returns session runtimeType in workspace task lists so same-type Providers stay switchable', async () => {
+    const { task } = await createTask('workspace session runtime task');
+    const workspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: 'runtime-workspace',
+        worktreePath: path.join(testDir, 'runtime-workspace'),
+        status: 'ACTIVE',
+      },
+    });
+    const [acpSession, cliSession] = await Promise.all([
+      prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: 'CODEX',
+          runtimeType: RuntimeType.ACP,
+          providerId: 'codex-acp-primary',
+          prompt: 'follow up',
+          status: 'RUNNING',
+        },
+      }),
+      prisma.session.create({
+        data: {
+          workspaceId: workspace.id,
+          agentType: 'CODEX',
+          prompt: 'cli follow up',
+          status: 'RUNNING',
+        },
+      }),
+    ]);
+
+    const workspaces = await service.findByTaskId(task.id);
+    const sessions = workspaces[0]?.sessions ?? [];
+
+    // 任务详情依赖该 DTO 判断运行时可选项；缺失时 ACP Session 会被前端归一化为 CLI，
+    // 只剩内置 CLI Provider 可选，Provider 切换入口被隐藏。
+    expect(sessions.find(session => session.id === acpSession.id)?.runtimeType).toBe(RuntimeType.ACP);
+    expect(sessions.find(session => session.id === cliSession.id)?.runtimeType).toBe(RuntimeType.CLI);
   });
 
   it('rejects worktree lifecycle git operations for main-directory workspaces', async () => {

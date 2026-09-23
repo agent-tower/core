@@ -58,4 +58,45 @@ describe('ProviderSelector', () => {
     expect(document.body.textContent).not.toContain('codex-cli')
     act(() => root.unmount())
   })
+
+  it('keeps every same-type Codex ACP Provider selectable for a running ACP Session', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const onSelect = vi.fn()
+    act(() => root.render(
+      <ProviderSelector
+        providers={[
+          provider('codex-cli', RuntimeType.CLI),
+          provider('codex-acp-default', RuntimeType.ACP),
+          provider('codex-acp-alpha', RuntimeType.ACP),
+          provider('codex-acp-bravo', RuntimeType.ACP),
+        ]}
+        currentProviderId="codex-acp-alpha"
+        agentType={AgentType.CODEX}
+        runtimeType={RuntimeType.ACP}
+        onSelect={onSelect}
+      />,
+    ))
+
+    // ACP Session 必须渲染可点击下拉，而不是把切换入口退化成静态文本。
+    const trigger = document.querySelector('button')
+    expect(trigger).not.toBeNull()
+    act(() => trigger?.click())
+
+    const optionButtons = () => Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.relative button'),
+    )
+    const optionLabels = () => optionButtons().map(button => button.textContent ?? '')
+
+    expect(optionLabels().some(text => text.includes('codex-acp-default'))).toBe(true)
+    expect(optionLabels().some(text => text.includes('codex-acp-alpha'))).toBe(true)
+    expect(optionLabels().some(text => text.includes('codex-acp-bravo'))).toBe(true)
+    expect(optionLabels().some(text => text.includes('codex-cli'))).toBe(false)
+
+    const target = optionButtons().find(button => button.textContent?.includes('codex-acp-bravo'))
+    act(() => target?.click())
+    expect(onSelect).toHaveBeenCalledWith('codex-acp-bravo')
+    act(() => root.unmount())
+  })
 })
