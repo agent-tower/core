@@ -5,7 +5,8 @@ import * as acp from '@agentclientprotocol/sdk';
 import { AgentType } from '@agent-tower/shared';
 import { which } from '../../../utils/index.js';
 import { AgentRuntimeError } from '../../errors.js';
-import { projectCodexAcpProvider } from '../codex-provider-config.js';
+import { projectCodexAcpProvider, withCodexCliUserAgent } from '../codex-provider-config.js';
+import { resolveCodexCliUserAgent } from '../codex-cli-identity.js';
 import {
   acpMaxStdoutFrameBytes,
   normalizeAcpToolFrame,
@@ -67,6 +68,12 @@ export const codexAcpAgentDefinition: AcpAgentDefinition = {
     const environment = { ...profile.environment };
     if (codexPath) environment.CODEX_PATH = codexPath;
     else delete environment.CODEX_PATH;
+
+    // Present the same client identity a native `codex exec` process sends.
+    // The version and platform are only known once the runtime is resolved.
+    const userAgent = await resolveCodexCliUserAgent({ codexPath, environment });
+    const codexConfig = withCodexCliUserAgent(environment.CODEX_CONFIG, userAgent);
+    if (codexConfig) environment.CODEX_CONFIG = codexConfig;
 
     return {
       command: process.execPath,

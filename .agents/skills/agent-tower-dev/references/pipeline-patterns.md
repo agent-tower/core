@@ -93,6 +93,7 @@ Agent 专属配置使用结构化解析：Codex TOML、Claude JSON 及现有标�
 - ACP 权限标准为 `ASK` / `UNRESTRICTED`，旧 `AUTO_APPROVE` 由 shared 兼容归一化。Definition 配置原生全权限模式；通用权限请求处理优先 `allow_once`。权限请求是独立协议事件，不能从 tool 的 `pending` 状态推断；结束/取消后使旧请求失效。
 - adapter、可执行文件覆盖及打包解析参考相邻 Definition 和 `agents/executable-resolution.ts`。随包发行的 adapter 由 server production dependencies 管理；不要 patch 第三方 adapter 或写用户全局配置来实现单次会话隔离。
 - Codex ACP 启动与可用性检测共用系统优先的解析规则：自动查找系统 `codex`，仅在未找到时使用内置 Runtime；查找时排除项目 `node_modules/.bin` 与相对 PATH 目录，不改变 Agent 工具执行时的原始 PATH。`CODEX_PATH` 是 Tower 根据检测结果写入或清除的 adapter 参数，不再作为用户选择 Runtime 的入口；系统 Codex 启动失败不自动重试内置版本。
+- Codex ACP 会在兼容网关上把出网身份伪装成原生 `codex exec`：Provider 投影写入 `originator`，`resolveLaunch` 再补 `user-agent`（`codex-cli-identity.ts` 按 Codex CLI 的格式复刻，含 OS 与终端回退）。两者分处两个阶段是因为版本要等 Runtime 解析完成；改动任一处都要保持 UA 与 `originator` 一致，并保留「Provider 自带 header 优先、无显式 `model_providers` 条目的内置 Provider 不改写」的规则。`x-codex-turn-metadata` 由 Codex 自行生成，无法用 header 覆盖；ACP 缺少 `turn_trigger` 是已知残余差异。
 - 托管 MCP 命令由 `services/mcp-config.service.ts` 统一解析开发源码、编译 CLI 和桌面入口，并注入当前服务 URL。存在 session credential 时传递该凭据，否则才使用 internal token；缺入口或实例信息时显式失败，不猜默认端口。
 - Definition 创建的敏感临时配置使用 `managed-directory.ts` 的隔离目录和受限权限，并将幂等 cleanup 交给 Driver；启动失败、transport reset 和 close 都须回收。Pi 的隔离配置/adapter 与历史 Minion bridge 属于对应 Definition。
 - 与上述临时目录相对，Agent 自身的持久数据目录属于长期状态，不能注册 cleanup：DeepSeek Harness 把 `DSH_HOME` 指向 `resolveDataDir()/deepseek-harness/<providerId>`，由 Definition 预置 profile 骨架并保留会话与 storage。区分二者时以「停止后是否还需要这份数据」为准。

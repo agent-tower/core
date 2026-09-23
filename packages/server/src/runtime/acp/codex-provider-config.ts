@@ -189,3 +189,40 @@ export function projectCodexAcpProvider(
     ...(fastMode !== undefined ? { fastMode } : {}),
   };
 }
+
+/**
+ * Add the native Codex CLI `user-agent` to the active custom model provider.
+ *
+ * The ACP adapter identifies itself as `@agentclientprotocol/codex-acp` in the
+ * `user-agent` header, so rewriting `originator` alone still lets a gateway tell
+ * Agent Tower traffic apart from a native `codex exec` process. The header can
+ * only be replaced through the provider's `http_headers`; the value is resolved
+ * in `resolveLaunch` because it depends on the Codex runtime actually launched.
+ *
+ * Built-in providers without an explicit `model_providers` entry are left
+ * untouched, and headers configured by the Provider itself always win.
+ */
+export function withCodexCliUserAgent(
+  configJson: string | undefined,
+  userAgent: string | undefined,
+): string | undefined {
+  if (!configJson || !userAgent) return configJson;
+  let config: unknown;
+  try {
+    config = JSON.parse(configJson);
+  } catch {
+    return configJson;
+  }
+  if (!isRecord(config)) return configJson;
+
+  const modelProviderId = typeof config.model_provider === 'string' ? config.model_provider : undefined;
+  if (!modelProviderId || !isRecord(config.model_providers)) return configJson;
+  const modelProvider = config.model_providers[modelProviderId];
+  if (!isRecord(modelProvider)) return configJson;
+
+  const configuredHeaders = isRecord(modelProvider.http_headers) ? modelProvider.http_headers : {};
+  if (typeof configuredHeaders['user-agent'] === 'string') return configJson;
+
+  modelProvider.http_headers = { 'user-agent': userAgent, ...configuredHeaders };
+  return JSON.stringify(config);
+}

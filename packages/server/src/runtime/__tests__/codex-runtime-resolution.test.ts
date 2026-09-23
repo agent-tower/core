@@ -7,6 +7,7 @@ import { ExecutionEnv } from '../../executors/execution-env.js';
 import { which } from '../../utils/index.js';
 import { codexAcpAgentDefinition } from '../acp/agents/codex.js';
 import { resolveBundledCodexEntrypoint } from '../acp/agents/executable-resolution.js';
+import { resetCodexCliIdentityCache } from '../acp/codex-cli-identity.js';
 
 vi.mock('../../utils/index.js', () => ({ which: vi.fn() }));
 vi.mock('../acp/agents/executable-resolution.js', () => ({
@@ -41,6 +42,7 @@ function setup(environment: Record<string, string> = {}) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  resetCodexCliIdentityCache();
   vi.mocked(which).mockResolvedValue(null);
   vi.mocked(resolveBundledCodexEntrypoint).mockReturnValue(bundledCodex);
 });
@@ -142,5 +144,41 @@ describe('Codex ACP runtime resolution', () => {
     expect(which).toHaveBeenCalledWith('codex', { env: { [pathKey]: systemDirectory } });
     expect(launch.env[pathKey]).toBe(environment[pathKey]);
     expect(profile.environment).toEqual(environment);
+  });
+
+  it('presents the native codex exec client identity to custom model providers', async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'codex-identity-launch-'));
+    const executable = path.join(directory, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+    writeFileSync(executable, process.platform === 'win32'
+      ? '@echo off\r\necho codex-cli 9.9.9\r\n'
+      : '#!/bin/sh\necho "codex-cli 9.9.9"\n');
+    if (process.platform !== 'win32') chmodSync(executable, 0o755);
+
+    try {
+      vi.mocked(which).mockResolvedValue(executable);
+      const provider: Provider = {
+        id: 'codex-gateway',
+        name: 'Codex Gateway',
+        agentType: AgentType.CODEX,
+        runtimeType: RuntimeType.ACP,
+        env: { PATH: systemDirectory, TERM_PROGRAM: 'Apple_Terminal', TERM_PROGRAM_VERSION: '455.1' },
+        config: { model: 'gpt-6-sol' },
+        settings: 'openai_base_url = "https://gateway.example/v1"',
+        isDefault: false,
+      };
+      const profile = codexAcpAgentDefinition.projectProvider(provider, provider.env);
+
+      const launch = await codexAcpAgentDefinition.resolveLaunch(setup().input, profile);
+      const headers = (JSON.parse(String(launch.env.CODEX_CONFIG)) as {
+        model_providers: Record<string, { http_headers: Record<string, string> }>;
+      }).model_providers['agent-tower-openai-compatible'].http_headers;
+
+      expect(headers.originator).toBe('codex_exec');
+      expect(headers['user-agent']).toMatch(
+        /^codex_exec\/9\.9\.9 \(.+\) Apple_Terminal\/455\.1 \(codex_exec; 9\.9\.9\)$/,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
