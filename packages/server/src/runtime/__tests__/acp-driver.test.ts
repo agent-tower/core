@@ -6,6 +6,23 @@ import { AcpRuntimeDriver } from '../acp/acp-driver.js';
 import { projectCodexAcpProvider } from '../acp/codex-provider-config.js';
 
 describe('AcpRuntimeDriver', () => {
+  it.each([
+    ['gpt-6-sol', 'ultra'],
+    ['gpt-6-luna', 'max'],
+  ])('passes %s effort %s through the Codex ACP adapter config', (model, effort) => {
+    const builtInProvider = getDefaultProviders().find(provider => provider.id === 'codex-acp-default');
+    expect(builtInProvider).toBeDefined();
+    const projection = projectCodexAcpProvider({
+      ...builtInProvider!,
+      config: { model },
+      settings: `model_reasoning_effort = "${effort}"\n`,
+    }, {});
+    expect(JSON.parse(projection.environment.CODEX_CONFIG!)).toMatchObject({
+      model,
+      model_reasoning_effort: effort,
+    });
+  });
+
   it('projects the Codex ACP context window default into custom settings that omit it', () => {
     const builtInProvider = getDefaultProviders().find(provider => provider.id === 'codex-acp-default');
     expect(builtInProvider).toBeDefined();

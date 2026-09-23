@@ -90,6 +90,22 @@ describe('Codex Provider runtime connection snapshots', () => {
   });
 
   it.each([
+    ['gpt-6-sol', 'ultra'],
+    ['gpt-6-luna', 'max'],
+  ])('passes %s effort %s through Codex CLI arguments', (model, effort) => {
+    const provider = createProvider({
+      name: `${model} ${effort}`,
+      agentType: AgentType.CODEX,
+      env: {},
+      config: { model },
+      settings: `model_reasoning_effort = "${effort}"\n`,
+      isDefault: false,
+    });
+    const runtime = inspectRuntime(getExecutorByProvider(provider.id)!);
+    expect(runtime.args).toContain(`model_reasoning_effort="${effort}"`);
+  });
+
+  it.each([
     ['missing', undefined],
     ['false', false],
     ['string true', 'true'],

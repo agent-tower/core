@@ -10,6 +10,10 @@ import { which } from '../utils/index.js'
 
 const execFileAsync = promisify(execFile)
 const CODEX_FALLBACK_REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const
+const CODEX_MODEL_EXTRA_REASONING_EFFORTS: Record<string, readonly string[]> = {
+  'gpt-6-sol': ['max', 'ultra'],
+  'gpt-6-luna': ['max'],
+}
 const CODEX_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000
 const CODEX_CATALOG_MAX_BUFFER = 16 * 1024 * 1024
 
@@ -88,7 +92,16 @@ export async function getCodexReasoningEffortOptions(model?: string): Promise<{
   const normalizedModel = model?.trim()
   if (!normalizedModel) return { options: getCodexFallbackReasoningEfforts(), source: 'fallback' }
   const catalog = await loadCatalog()
-  const options = catalog.models.get(normalizedModel)
+  const options = catalog.models.get(normalizedModel)?.filter(
+    effort => normalizedModel !== 'gpt-6-luna' || effort !== 'ultra',
+  )
+  const extraOptions = CODEX_MODEL_EXTRA_REASONING_EFFORTS[normalizedModel]
+  if (extraOptions) {
+    return {
+      options: [...new Set([...(options ?? getCodexFallbackReasoningEfforts()), ...extraOptions])],
+      source: options ? 'catalog' : 'fallback',
+    }
+  }
   return options
     ? { options: [...options], source: 'catalog' }
     : { options: getCodexFallbackReasoningEfforts(), source: 'fallback' }

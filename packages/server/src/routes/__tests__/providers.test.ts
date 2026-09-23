@@ -12,6 +12,7 @@ import {
 } from '@agent-tower/shared';
 import { providerRoutes } from '../providers.js';
 import { getAllProviders, getProviderById, reloadProviders } from '../../executors/providers.js';
+import { resetCodexModelCatalogForTests } from '../../services/codex-model-capabilities.service.js';
 import {
   AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
   AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
@@ -97,6 +98,7 @@ describe('provider routes', () => {
   });
 
   afterEach(() => {
+    resetCodexModelCatalogForTests();
     if (originalDataDir === undefined) delete process.env.AGENT_TOWER_DATA_DIR;
     else process.env.AGENT_TOWER_DATA_DIR = originalDataDir;
     if (originalPath === undefined) delete process.env.PATH;
@@ -136,6 +138,68 @@ describe('provider routes', () => {
       reasoningEffort: { kind: 'config', path: 'effort' },
     });
     expect(response.json()[AgentType.MINION_CODE]).toBeUndefined();
+    await app.close();
+  });
+
+  it('offers the documented GPT-6 effort ceiling for both Codex runtimes', async () => {
+    const catalog = {
+      models: [
+        { slug: 'gpt-6-sol', supported_reasoning_levels: [{ effort: 'low' }] },
+        { slug: 'gpt-6-luna', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'ultra' }] },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(dataDir, 'bin', 'codex'),
+      `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify(catalog)}'\n`,
+      { mode: 0o755 },
+    );
+    resetCodexModelCatalogForTests();
+    const app = await createApp();
+
+    for (const [model, effort] of [['gpt-6-sol', 'ultra'], ['gpt-6-luna', 'max']] as const) {
+      const capabilities = await app.inject({
+        method: 'GET',
+        url: `/api/providers/capabilities?agentType=CODEX&model=${model}`,
+      });
+      expect(capabilities.statusCode).toBe(200);
+      const options = capabilities.json()[AgentType.CODEX].reasoningEffort.options as string[];
+      expect(options).toContain(effort);
+      if (model === 'gpt-6-luna') expect(options).not.toContain('ultra');
+
+      for (const runtimeType of [RuntimeType.CLI, RuntimeType.ACP]) {
+        const created = await app.inject({
+          method: 'POST',
+          url: '/api/providers',
+          payload: {
+            name: `${model} ${runtimeType}`,
+            agentType: AgentType.CODEX,
+            runtimeType,
+            simplified: { model, reasoningEffort: effort },
+          },
+        });
+        expect(created.statusCode).toBe(201);
+        expect(created.json()).toMatchObject({
+          runtimeType,
+          config: { model },
+          settings: `model_reasoning_effort = "${effort}"`,
+        });
+      }
+    }
+
+    const unsupported = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: {
+        name: 'Luna Ultra',
+        agentType: AgentType.CODEX,
+        runtimeType: RuntimeType.ACP,
+        simplified: { model: 'gpt-6-luna', reasoningEffort: 'ultra' },
+      },
+    });
+    expect(unsupported.statusCode).toBe(400);
+    expect(unsupported.json()).toMatchObject({
+      diagnostics: [{ field: 'reasoningEffort', code: 'INVALID_ENUM' }],
+    });
     await app.close();
   });
 
