@@ -6,12 +6,25 @@
 
 - Agent Tower 生产发布产物，构建时复用 `pnpm build:publish`。
 - Node.js 22.19、git、openssh-client、bash、curl、ripgrep、ca-certificates、tini。
-- 默认内置可 pin 的 Agent CLI：
-  - `@openai/codex@0.149.1`，提供 `codex`
-  - `@anthropic-ai/claude-code@2.1.196`，提供 `claude`
-  - `@google/gemini-cli@0.23.0`，提供 `gemini`
+- 默认在构建时安装 npm `latest` 标签对应的 Agent CLI：
+  - `@openai/codex@latest`，提供 `codex`
+  - `@anthropic-ai/claude-code@latest`，提供 `claude`
+  - `@google/gemini-cli@latest`，提供 `gemini`
 - 如果外部 CLI 包或网络临时不可用，可用 `INSTALL_AGENT_CLIS=false` 构建只含 Agent Tower 和基础开发工具的镜像。
 - Cursor CLI 不默认安装。官方安装脚本不适合稳定 pin，Dockerfile 提供 `INSTALL_CURSOR_CLI=true` 实验开关。
+
+`CODEX_CLI_VERSION`、`CLAUDE_CODE_VERSION`、`GEMINI_CLI_VERSION` 默认均为 `latest`。需要固定版本以便复现或回退时，可以通过 shell 环境变量、本地 `.env` 或 Docker build args 覆盖，例如：
+
+```bash
+CODEX_CLI_VERSION=0.149.1 docker compose build agent-tower
+```
+
+CLI 版本在构建镜像时确定，容器启动时不会自动升级。Docker 可能复用已有安装层；要重新获取 `latest`，需要绕过构建缓存：
+
+```bash
+docker compose build --no-cache agent-tower
+docker compose up -d
+```
 
 ## 快速启动
 
@@ -134,13 +147,13 @@ CURSOR_API_KEY: ${CURSOR_API_KEY}
 
 ### Gemini CLI
 
-当前 executor 固定调用：
+CLI runtime 优先调用 PATH 中已安装的 `gemini`，因此会使用镜像构建时安装的版本，`GEMINI_CLI_VERSION` 的覆盖也会生效。未安装时才回退调用：
 
 ```bash
-npx -y @google/gemini-cli@0.23.0
+npx -y @google/gemini-cli@latest
 ```
 
-镜像内已全局安装并预热该版本 npm cache，但 `npx` 在某些网络或 cache 状态下仍可能访问 npm registry。UI 可用性检测主要看 `/home/node/.gemini/oauth_creds.json`、`settings.json` 或 `installation_id`，因此建议挂载 `~/.gemini`。
+默认镜像内已全局安装 `gemini`，无需通过 `npx` 另行下载。回退到 `npx` 时可能需要访问 npm registry。UI 可用性检测主要看 `/home/node/.gemini/oauth_creds.json`、`settings.json` 或 `installation_id`，因此建议挂载 `~/.gemini`。
 
 ### Cursor CLI
 
@@ -198,14 +211,16 @@ Agent Tower CLI 启动时会对 `/data/data.db` 执行 Prisma `db push --skip-ge
 
 ```bash
 docker compose config
-docker compose exec agent-tower which agent-tower codex claude git rg
+docker compose exec agent-tower which agent-tower codex claude gemini git rg
 docker compose exec agent-tower agent-tower --version
 ```
 
-Gemini 当前由 executor 通过 `npx` 启动，可用下面命令检查 cache/网络路径：
+检查镜像内安装的 CLI 版本：
 
 ```bash
-docker compose exec agent-tower npx -y @google/gemini-cli@0.23.0 --version
+docker compose exec agent-tower codex --version
+docker compose exec agent-tower claude --version
+docker compose exec agent-tower gemini --version
 ```
 
 ## 当前限制

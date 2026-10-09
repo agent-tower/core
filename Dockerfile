@@ -34,9 +34,10 @@ RUN pnpm build:publish
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
-ARG CODEX_CLI_VERSION=0.149.1
-ARG CLAUDE_CODE_VERSION=2.1.196
-ARG GEMINI_CLI_VERSION=0.23.0
+# Resolve npm's latest tag at build time; override these args to pin versions.
+ARG CODEX_CLI_VERSION=latest
+ARG CLAUDE_CODE_VERSION=latest
+ARG GEMINI_CLI_VERSION=latest
 ARG INSTALL_AGENT_CLIS=true
 ARG INSTALL_CURSOR_CLI=false
 
@@ -96,11 +97,6 @@ WORKDIR /workspace
 
 ENV NPM_CONFIG_CACHE=/home/node/.npm \
   NPM_CONFIG_PREFER_OFFLINE=true
-
-RUN if [ "${INSTALL_AGENT_CLIS}" = "true" ]; then \
-      npm cache add "@google/gemini-cli@${GEMINI_CLI_VERSION}"; \
-    fi \
-  && npm cache verify
 
 EXPOSE 12580
 VOLUME ["/data"]

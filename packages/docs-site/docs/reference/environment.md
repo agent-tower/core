@@ -59,9 +59,9 @@ description: 当前代码中实际使用的环境变量。
 | --- | --- |
 | `NODE_VERSION` | Docker build 使用的 Node 版本 |
 | `PNPM_VERSION` | Docker build 使用的 pnpm 版本 |
-| `CODEX_CLI_VERSION` | Docker build 内置 Codex CLI 版本 |
-| `CLAUDE_CODE_VERSION` | Docker build 内置 Claude Code 版本 |
-| `GEMINI_CLI_VERSION` | Docker build 内置 Gemini CLI 版本 |
+| `CODEX_CLI_VERSION` | Docker build 内置 Codex CLI 版本，默认 `latest`，可指定版本固定安装 |
+| `CLAUDE_CODE_VERSION` | Docker build 内置 Claude Code 版本，默认 `latest`，可指定版本固定安装 |
+| `GEMINI_CLI_VERSION` | Docker build 内置 Gemini CLI 版本，默认 `latest`，可指定版本固定安装 |
 | `INSTALL_AGENT_CLIS` | Docker build 是否安装默认 Agent CLI |
 | `INSTALL_CURSOR_CLI` | Docker build 是否实验性安装 Cursor CLI |
 | `AGENT_TOWER_WORKSPACE_DIR` | docker-compose 映射到容器 `/workspace` 的宿主机目录 |

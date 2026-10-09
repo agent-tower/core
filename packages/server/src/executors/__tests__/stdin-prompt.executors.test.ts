@@ -117,7 +117,8 @@ describe('executor prompt stdin transport', () => {
   beforeEach(() => {
     spawnMock.mockReset();
     spawnMock.mockReturnValue(makePty());
-    whichMock.mockClear();
+    whichMock.mockReset();
+    whichMock.mockImplementation(async (command: string) => `/mock/bin/${command}`);
     process.env.PATH = '/nonexistent-agent-tower-test-path';
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
@@ -197,9 +198,9 @@ describe('executor prompt stdin transport', () => {
     await executor.spawn(spawnConfig);
     const childArgs = expectPromptOnlyInStdin();
 
+    const args = lastWrapperArgs();
+    expect(args[args.indexOf('pipe-file') + 1]).toBe('/mock/bin/gemini');
     expect(childArgs).toEqual(expect.arrayContaining([
-      '-y',
-      '@google/gemini-cli@0.23.0',
       '--model',
       'gemini-test',
       '--output-format=stream-json',
@@ -219,6 +220,8 @@ describe('executor prompt stdin transport', () => {
     await executor.spawnFollowUp(spawnConfig, 'latest');
     const childArgs = expectPromptOnlyInStdin();
 
+    const args = lastWrapperArgs();
+    expect(args[args.indexOf('pipe-file') + 1]).toBe('/mock/bin/gemini');
     expect(childArgs).toEqual(expect.arrayContaining([
       '--output-format=stream-json',
       '-p',
@@ -231,6 +234,41 @@ describe('executor prompt stdin transport', () => {
     expect(childArgs[promptArgIndex + 1]).toBe('');
     expect(childArgs).not.toContain('--experimental-acp');
     expect(childArgs).not.toContain(spawnConfig.prompt);
+  });
+
+  it.each(['initial', 'follow-up'])('Gemini %s falls back to latest via npx when gemini is absent', async (turn) => {
+    whichMock.mockImplementation(async (command: string) => (
+      command === 'gemini' ? null : `/mock/bin/${command}`
+    ));
+    const executor = new GeminiCliExecutor({ model: 'gemini-test', yolo: true });
+
+    if (turn === 'initial') {
+      await executor.spawn(spawnConfig);
+    } else {
+      await executor.spawnFollowUp(spawnConfig, 'gemini-session-1');
+    }
+    const args = lastWrapperArgs();
+    expect(args[args.indexOf('pipe-file') + 1]).toBe('/mock/bin/npx');
+    expect(expectPromptOnlyInStdin()).toEqual(expect.arrayContaining([
+      '-y', '@google/gemini-cli@latest', '--model', 'gemini-test', '--yolo', '-p', '',
+    ]));
+    if (turn === 'follow-up') {
+      expect(expectPromptOnlyInStdin()).toEqual(expect.arrayContaining(['--resume', 'gemini-session-1']));
+    }
+  });
+
+  it.each(['initial', 'follow-up'])('Gemini %s respects an explicit command override', async (turn) => {
+    const executor = new GeminiCliExecutor({ cmd: { baseCommandOverride: 'custom-gemini --custom' } });
+
+    if (turn === 'initial') {
+      await executor.spawn(spawnConfig);
+    } else {
+      await executor.spawnFollowUp(spawnConfig, 'gemini-session-1');
+    }
+    const args = lastWrapperArgs();
+    expect(args[args.indexOf('pipe-file') + 1]).toBe('/mock/bin/custom-gemini');
+    expect(expectPromptOnlyInStdin()).toContain('--custom');
+    expect(whichMock).not.toHaveBeenCalledWith('gemini');
   });
 });
 

@@ -45,11 +45,26 @@ AGENT_TOWER_WORKSPACE_DIR=/path/to/projects docker compose up -d --build
 
 ## 内置 Agent CLI
 
-镜像默认构建时安装可 pin 的 Agent CLI：
+镜像默认在构建时安装 npm `latest` 标签对应的 Agent CLI：
 
-- `@openai/codex@0.149.1`
-- `@anthropic-ai/claude-code@2.1.196`
-- `@google/gemini-cli@0.23.0`
+- `@openai/codex@latest`
+- `@anthropic-ai/claude-code@latest`
+- `@google/gemini-cli@latest`
+
+`CODEX_CLI_VERSION`、`CLAUDE_CODE_VERSION`、`GEMINI_CLI_VERSION` 默认均为 `latest`，也可以通过 shell 环境变量、本地 `.env` 或 Docker build args 固定版本以便复现或回退。例如：
+
+```bash
+CODEX_CLI_VERSION=0.149.1 docker compose build agent-tower
+```
+
+CLI 版本在构建镜像时确定，容器启动时不会自动升级。Docker 可能复用已有安装层；要重新获取 `latest`，需要绕过构建缓存：
+
+```bash
+docker compose build --no-cache agent-tower
+docker compose up -d
+```
+
+Gemini CLI runtime 优先使用已安装的 `gemini`，因此会使用镜像内的版本；未安装时才回退到 `npx -y @google/gemini-cli@latest`。
 
 如果只想构建基础服务镜像：
 
@@ -86,7 +101,7 @@ Cursor CLI 默认不内置。`Dockerfile` 提供 `INSTALL_CURSOR_CLI=true` 实�
 
 ```bash
 docker compose config
-docker compose exec agent-tower which agent-tower codex claude git rg
+docker compose exec agent-tower which agent-tower codex claude gemini git rg
 docker compose exec agent-tower agent-tower --version
 ```
 

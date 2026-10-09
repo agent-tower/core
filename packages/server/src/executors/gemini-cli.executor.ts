@@ -31,13 +31,6 @@ export interface GeminiCliConfig {
   cmd?: CmdOverrides;
 }
 
-/**
- * 获取基础命令
- */
-function getBaseCommand(): string {
-  return 'npx -y @google/gemini-cli@0.23.0';
-}
-
 export class GeminiCliExecutor extends BaseExecutor {
   readonly agentType = AgentType.GEMINI_CLI;
   readonly displayName = 'Gemini CLI';
@@ -96,8 +89,8 @@ export class GeminiCliExecutor extends BaseExecutor {
   /**
    * 构建命令
    */
-  protected buildCommandBuilder(): CommandBuilder {
-    let builder = CommandBuilder.new(getBaseCommand());
+  protected buildCommandBuilder(baseCommand = 'gemini'): CommandBuilder {
+    let builder = CommandBuilder.new(baseCommand);
 
     // 模型选择
     if (this.config.model) {
@@ -118,11 +111,20 @@ export class GeminiCliExecutor extends BaseExecutor {
     return applyOverrides(builder, this.cmdOverrides);
   }
 
+  private async buildResolvedCommandBuilder(): Promise<CommandBuilder> {
+    if (this.cmdOverrides?.baseCommandOverride) {
+      return this.buildCommandBuilder();
+    }
+    // Use the installed CLI so Docker build args also control the runtime version.
+    const baseCommand = await which('gemini') ? 'gemini' : 'npx -y @google/gemini-cli@latest';
+    return this.buildCommandBuilder(baseCommand);
+  }
+
   /**
    * 启动新会话
    */
   async spawn(config: ExecutorSpawnConfig): Promise<SpawnedChild> {
-    const commandBuilder = this.buildCommandBuilder();
+    const commandBuilder = await this.buildResolvedCommandBuilder();
     const commandParts = commandBuilder.buildInitial();
 
     // 组合 prompt
@@ -139,7 +141,7 @@ export class GeminiCliExecutor extends BaseExecutor {
     sessionId: string,
     resetToMessageId?: string
   ): Promise<SpawnedChild> {
-    const commandBuilder = this.buildCommandBuilder();
+    const commandBuilder = await this.buildResolvedCommandBuilder();
 
     const additionalArgs: string[] = [];
     if (sessionId) {
