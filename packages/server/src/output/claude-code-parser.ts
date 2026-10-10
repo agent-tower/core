@@ -35,6 +35,7 @@ interface ClaudeCodeMessage {
   type: string
   subtype?: string
   session_id?: string
+  parent_tool_use_id?: string | null
   message_id?: string
   message?: {
     id?: string
@@ -74,6 +75,7 @@ interface ClaudeCodeMessage {
   }
   content?: string
   error?: string
+  errors?: string[]
   result?: string
   is_error?: boolean
   usage?: {
@@ -173,9 +175,22 @@ export class ClaudeCodeParser {
   // API 重试条目的 entry index（用于 replace 更新，避免刷屏）
   private apiRetryEntryIndex: number | null = null
   private apiRetryEntryId: string | null = null
+  private turnTerminal = false
+  private turnCompletedListeners = new Set<() => void>()
+  private turnFailedListeners = new Set<() => void>()
 
   constructor(msgStore: MsgStore) {
     this.msgStore = msgStore
+  }
+
+  onTurnCompleted(listener: () => void): () => void {
+    this.turnCompletedListeners.add(listener)
+    return () => this.turnCompletedListeners.delete(listener)
+  }
+
+  onTurnFailed(listener: () => void): () => void {
+    this.turnFailedListeners.add(listener)
+    return () => this.turnFailedListeners.delete(listener)
   }
 
   /** 使用 MsgStore 共享的索引提供器 */
@@ -548,14 +563,24 @@ export class ClaudeCodeParser {
    * 处理结果消息
    */
   private handleResultMessage(msg: ClaudeCodeMessage): void {
-    if (msg.subtype === 'tool_result' && msg.tool_use_id) {
-      this.updateToolResultStatus(msg.tool_use_id, msg.tool_result?.is_error)
-      this.appendToolResultContent(msg.tool_use_id, msg.tool_result?.content)
+    if (msg.subtype === 'tool_result') {
+      if (msg.tool_use_id) {
+        this.updateToolResultStatus(msg.tool_use_id, msg.tool_result?.is_error)
+        this.appendToolResultContent(msg.tool_use_id, msg.tool_result?.content)
+      }
+      return
     }
 
+    const isFailure = msg.is_error === true || msg.subtype?.startsWith('error_') === true
+    const isTerminal = msg.parent_tool_use_id == null && (msg.subtype === 'success' || isFailure)
+    if (isTerminal && this.turnTerminal) return
+
     // 最终错误结果（如 API 重试全部失败后）
-    if (msg.is_error && msg.result) {
-      const content = msg.result
+    if (isFailure) {
+      const errors = Array.isArray(msg.errors)
+        ? msg.errors.filter((error) => typeof error === 'string').join('\n')
+        : undefined
+      const content = msg.result || errors || msg.error || msg.subtype || 'Claude Code reported a failed turn'
       // 如果有 api_retry entry，替换它为最终错误；否则新建
       if (this.apiRetryEntryIndex != null && this.apiRetryEntryId != null) {
         const entry = createErrorMessage(content, content, this.apiRetryEntryId)
@@ -627,6 +652,16 @@ export class ClaudeCodeParser {
       } catch {
         // token 提取失败不影响正常解析
       }
+    }
+
+    // A message_stop can precede tool execution or another assistant message.
+    // Only the top-level final result terminates this runtime turn, after its
+    // messages and usage have been committed to the store.
+    if (isTerminal) {
+      this.flushAssistantText()
+      this.turnTerminal = true
+      const listeners = isFailure ? this.turnFailedListeners : this.turnCompletedListeners
+      for (const listener of [...listeners]) listener()
     }
   }
 

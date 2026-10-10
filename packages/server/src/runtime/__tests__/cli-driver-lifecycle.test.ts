@@ -5,6 +5,7 @@ import { ExecutionEnv } from '../../executors/execution-env.js';
 import { MsgStore } from '../../output/msg-store.js';
 import type { RuntimeDriverEventSink } from '../contracts.js';
 import { CliRuntimeDriver } from '../cli-driver.js';
+import { PTY_WRAPPER_EXIT_TIMEOUT_MS, PTY_WRAPPER_FORCE_KILL_GRACE_MS } from '../../utils/process-launch.js';
 
 describe('CliRuntimeDriver cleanup lifecycle', () => {
   afterEach(() => {
@@ -54,19 +55,94 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
 
     const firstClose = session.close();
     void firstClose.catch(() => undefined);
-    await vi.advanceTimersByTimeAsync(4_000);
+    await vi.advanceTimersByTimeAsync(PTY_WRAPPER_EXIT_TIMEOUT_MS);
     await expect(firstClose).rejects.toMatchObject({ code: 'process_exit_timeout' });
 
     const secondClose = session.close();
     let settled = false;
     void secondClose.finally(() => { settled = true; });
-    await vi.advanceTimersByTimeAsync(1_999);
+    await vi.advanceTimersByTimeAsync(PTY_WRAPPER_EXIT_TIMEOUT_MS - 1);
     expect(settled).toBe(false);
     expect(vi.mocked(sink.process).mock.calls.some(([event]) => event.type === 'tree_cleanup_completed')).toBe(false);
 
     for (const listener of exitListeners) listener({ exitCode: 0, signal: null });
     await expect(secondClose).resolves.toBeUndefined();
     expect(vi.mocked(sink.process).mock.calls.some(([event]) => event.type === 'tree_cleanup_completed')).toBe(true);
+  });
+
+  it.each(['success', 'error_during_execution'])('finishes Claude %s before exit and waits for wrapper escalation on close', async (subtype) => {
+    vi.useFakeTimers();
+    const dataListeners = new Set<(data: string) => void>();
+    const exitListeners = new Set<(event: { exitCode: number; signal?: number }) => void>();
+    let stopping = false;
+    let treeClean = false;
+    const pty = {
+      onData: (listener: (data: string) => void) => {
+        dataListeners.add(listener);
+        return { dispose: () => dataListeners.delete(listener) };
+      },
+      onExit: (listener: (event: { exitCode: number; signal?: number }) => void) => {
+        exitListeners.add(listener);
+        return { dispose: () => exitListeners.delete(listener) };
+      },
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: vi.fn(() => {
+        if (stopping) return;
+        stopping = true;
+        setTimeout(() => {
+          treeClean = true;
+          for (const listener of [...exitListeners]) listener({ exitCode: 0, signal: 0 });
+        }, PTY_WRAPPER_FORCE_KILL_GRACE_MS);
+      }),
+    };
+    vi.spyOn(executors, 'getExecutor').mockReturnValue({
+      spawn: vi.fn(async () => ({
+        pid: 123, processGroupId: 'pgid', birthMarker: 'birth', ownershipToken: 'owner',
+        pty, cancel: { cancel: vi.fn() }, verifyTreeCleanup: () => treeClean,
+      })),
+    } as never);
+    const sink: RuntimeDriverEventSink = {
+      stream: vi.fn(), process: vi.fn(async () => undefined),
+    };
+    const session = await new CliRuntimeDriver().open({
+      towerSessionId: 'tower-claude', agentType: AgentType.CLAUDE_CODE,
+      runtimeType: RuntimeType.CLI, variant: 'DEFAULT', workingDir: process.cwd(),
+      env: ExecutionEnv.default(process.cwd()),
+    });
+    const store = new MsgStore();
+    const turn = await session.runTurn({ turnId: 'claude-turn', prompt: 'hello', msgStore: store }, sink);
+    const terminalResult = {
+      type: 'result', subtype, is_error: subtype !== 'success', errors: ['API failed'],
+      usage: { input_tokens: 2, cache_creation_input_tokens: 9780, cache_read_input_tokens: 8493 },
+    };
+    for (const listener of dataListeners) listener(JSON.stringify(terminalResult) + '\n');
+    if (subtype === 'success') {
+      await expect(turn.completion).resolves.toEqual({});
+      expect(store.getSnapshot().entries.at(-1)?.metadata?.tokenUsage?.totalTokens).toBe(18275);
+    } else {
+      await expect(turn.completion).rejects.toMatchObject({ code: 'turn_failed' });
+    }
+    expect(store.isFinished()).toBe(true);
+    expect(pty.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(pty.kill).toHaveBeenCalled();
+
+    const close = session.close();
+    void close.catch(() => undefined);
+    let closed = false;
+    void close.then(() => { closed = true; }, () => undefined);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(closed).toBe(false);
+    expect(vi.mocked(sink.process).mock.calls.map(([event]) => event.type)).toEqual(['started']);
+    await vi.advanceTimersByTimeAsync(PTY_WRAPPER_FORCE_KILL_GRACE_MS);
+    await expect(close).resolves.toBeUndefined();
+    expect(vi.mocked(sink.process).mock.calls.map(([event]) => event.type)).toEqual([
+      'started', 'exited', 'tree_cleanup_completed',
+    ]);
+    if (subtype !== 'success') {
+      await expect(turn.completion).rejects.toMatchObject({ code: 'turn_failed' });
+    }
   });
 
   it('keeps the raw owner reachable when started persistence fails', async () => {

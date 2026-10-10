@@ -144,7 +144,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-async function createSessionFixture(options: { providerId?: string } = {}) {
+async function createSessionFixture(options: { providerId?: string; agentType?: AgentType } = {}) {
   const project = await prisma.project.create({
     data: { name: 'lifecycle project', repoPath: testDir },
   });
@@ -162,7 +162,7 @@ async function createSessionFixture(options: { providerId?: string } = {}) {
   const session = await prisma.session.create({
     data: {
       workspaceId: workspace.id,
-      agentType: AgentType.CODEX,
+      agentType: options.agentType ?? AgentType.CODEX,
       variant: 'DEFAULT',
       providerId: options.providerId ?? null,
       prompt: 'do something',
@@ -1646,6 +1646,54 @@ describe('SessionManager session status vs real process state', () => {
     expect(reconcileSpy).not.toHaveBeenCalled();
     expect(spawnMock).toHaveBeenCalledTimes(2);
     await manager.destroyAll();
+  });
+
+  it.each(['success', 'error_during_execution'])('persists Claude final %s and automatically reclaims the CLI process', async (subtype) => {
+    const { task, session } = await createSessionFixture({ agentType: AgentType.CLAUDE_CODE });
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    const expectedStatus = subtype === 'success' ? SessionStatus.COMPLETED : SessionStatus.FAILED;
+    try {
+      await manager.start(session.id);
+      pty.emitData(JSON.stringify({
+        type: 'assistant', message: {
+          role: 'assistant', content: [{ type: 'text', text: 'Claude final reply' }],
+        },
+      }) + '\n');
+      pty.emitData(JSON.stringify({
+        type: 'result', subtype, is_error: subtype !== 'success', errors: ['Request failed'],
+        usage: { input_tokens: 2, cache_creation_input_tokens: 9780, cache_read_input_tokens: 8493 },
+      }) + '\n');
+      await expect(completed).resolves.toMatchObject({ status: expectedStatus });
+      expect(manager.hasActivePipeline(session.id)).toBe(false);
+      await vi.waitFor(() => expect(pty.killed).toBe(true));
+      await manager.stop(session.id);
+
+      const persisted = await prisma.session.findUniqueOrThrow({ where: { id: session.id } });
+      expect(persisted.status).toBe(expectedStatus);
+      const snapshot = JSON.parse(persisted.logSnapshot ?? '{}');
+      expect(snapshot.entries).toContainEqual(expect.objectContaining({
+        entryType: 'assistant_message', content: 'Claude final reply',
+      }));
+      if (subtype === 'success') {
+        expect(snapshot.entries).toContainEqual(expect.objectContaining({
+          entryType: 'token_usage_info', metadata: expect.objectContaining({
+            tokenUsage: expect.objectContaining({ totalTokens: 18275 }),
+          }),
+        }));
+        expect((await prisma.task.findUniqueOrThrow({ where: { id: task.id } })).status).toBe('IN_REVIEW');
+      } else {
+        expect(snapshot.entries).toContainEqual(expect.objectContaining({
+          entryType: 'error_message', content: 'Request failed',
+        }));
+        expect((await prisma.task.findUniqueOrThrow({ where: { id: task.id } })).status).not.toBe('IN_REVIEW');
+      }
+    } finally {
+      await manager.destroyAll();
+    }
   });
 
   it('keeps turn.failed terminal when the wrapper exits with code 0', async () => {

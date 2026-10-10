@@ -8,6 +8,10 @@ export interface CommandInvocation {
   args: string[];
 }
 
+export const PTY_WRAPPER_FORCE_KILL_GRACE_MS = 5_000;
+// Include the wrapper's escalation grace and final tree polling/PTY exit.
+export const PTY_WRAPPER_EXIT_TIMEOUT_MS = PTY_WRAPPER_FORCE_KILL_GRACE_MS + 5_000;
+
 export function getNodeRuntimeCommand(): string {
   return process.env.AGENT_TOWER_NODE_RUNTIME || process.execPath;
 }
@@ -105,6 +109,7 @@ const trackedGroupMembers = new Map();
 const trackedWindowsMembers = new Map();
 let identityIncomplete = false;
 let childExited = false;
+let lastProcessProbeFailure = null;
 
 function getChildEnv() {
   const env = { ...process.env };
@@ -130,16 +135,29 @@ function cleanup() {
 function parseProcessRows(stdout) {
   if (typeof stdout !== 'string' || !stdout.trim()) return null;
   const rows = stdout.split('\n').filter((line) => line.trim()).map((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$/.exec(line);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$/.exec(line);
     return match ? {
       pid: Number(match[1]),
       ppid: Number(match[2]),
       pgid: Number(match[3]),
-      birthIdentity: match[4],
-      command: match[5],
+      state: match[4][0],
+      birthIdentity: match[5],
+      command: match[6],
     } : null;
   });
   return rows.length > 0 && !rows.some((row) => !row) ? rows : null;
+}
+
+function isExitedProcessRow(row) {
+  return row.state === 'Z' || row.state === 'X';
+}
+
+function reportProcessProbeFailure(status, detail) {
+  const diagnostic = JSON.stringify({ status, detail });
+  if (diagnostic === lastProcessProbeFailure) return;
+  lastProcessProbeFailure = diagnostic;
+  // Never print ps stdout: it contains every process's environment.
+  console.error('[PTY wrapper] Process tree probe failed: ' + diagnostic);
 }
 
 function readProcessTable() {
@@ -151,22 +169,32 @@ function readProcessTable() {
   // portable C layout even when the server inherits a localized user env.
   probeEnv.LC_ALL = 'C';
   probeEnv.LANG = 'C';
-  const base = spawnSync('ps', ['eww', '-axo', 'pid=,ppid=,pgid=,lstart=,command='], {
+  // -A selects all processes on both macOS and Linux. Mixing BSD 'eww'
+  // with '-ax' makes procps-ng reject -x under its default personality.
+  const base = spawnSync('ps', ['eww', '-Ao', 'pid=,ppid=,pgid=,stat=,lstart=,command='], {
     encoding: 'utf8',
     windowsHide: true,
     maxBuffer: 256 * 1024 * 1024,
     env: probeEnv,
   });
   if (base.error || base.status !== 0 || typeof base.stdout !== 'string' || !base.stdout.trim()) {
+    reportProcessProbeFailure('PROBE_UNAVAILABLE', {
+      code: base.error && base.error.code,
+      exitCode: base.status,
+      stderr: typeof base.stderr === 'string' ? base.stderr.trim().slice(0, 500) : undefined,
+    });
     return { status: 'PROBE_UNAVAILABLE', rows: [], complete: false };
   }
   const rows = parseProcessRows(base.stdout);
   if (!rows) {
+    reportProcessProbeFailure('IDENTITY_INCOMPLETE', 'Malformed process table');
     return { status: 'IDENTITY_INCOMPLETE', rows: [], complete: false };
   }
   if (rows.length > 16_384) {
+    reportProcessProbeFailure('IDENTITY_INCOMPLETE', 'Process table exceeds row limit');
     return { status: 'IDENTITY_INCOMPLETE', rows: [], complete: false };
   }
+  lastProcessProbeFailure = null;
   const owned = rows.filter((row) => (
     row.pid !== process.pid
       && row.command.includes(processIdentityEnvKey + '=' + processIdentityToken)
@@ -278,7 +306,8 @@ function matchingTrackedGroupMembers() {
   const probe = readProcessTable();
   if (probe.status !== 'ALIVE') return null;
   return probe.rows.filter((row) => (
-    trackedGroupMembers.get(row.pid)?.pgid === row.pgid
+    !isExitedProcessRow(row)
+      && trackedGroupMembers.get(row.pid)?.pgid === row.pgid
       && trackedGroupMembers.get(row.pid)?.birthIdentity === row.birthIdentity
   ));
 }
@@ -315,7 +344,8 @@ const unixIdentityAdapter = {
       return childExited && probe.complete ? 'CLEAN_EMPTY' : 'IDENTITY_INCOMPLETE';
     }
     const matches = probe.rows.filter((row) => (
-      trackedGroupMembers.get(row.pid)?.pgid === row.pgid
+      !isExitedProcessRow(row)
+        && trackedGroupMembers.get(row.pid)?.pgid === row.pgid
         && trackedGroupMembers.get(row.pid)?.birthIdentity === row.birthIdentity
     ));
     return matches.length > 0 ? 'ALIVE' : 'CLEAN_EMPTY';
@@ -468,7 +498,7 @@ function scheduleForceKill() {
   if (forceKillTimer) return;
   forceKillTimer = setTimeout(() => {
     killTree('SIGKILL');
-  }, 5000);
+  }, ${PTY_WRAPPER_FORCE_KILL_GRACE_MS});
   if (forceKillTimer.unref) forceKillTimer.unref();
 }
 

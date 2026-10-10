@@ -20,6 +20,7 @@ import {
   buildPtyCommandWithStdin,
   buildPtyWrapperEnv,
   getPtyLogFilePath,
+  PTY_WRAPPER_EXIT_TIMEOUT_MS,
 } from '../utils/process-launch.js';
 import { writeErrorLog } from '../utils/error-log.js';
 import {
@@ -168,7 +169,6 @@ const POST_SPAWN_TERM_GRACE_MS = 500;
 // Never SIGKILL the wrapper from this owner: doing so skips its killTree()
 // handler and can leave the agent descendants running. The wrapper escalates
 // its known group to SIGKILL after its own bounded grace period.
-const POST_SPAWN_WRAPPER_ESCALATION_GRACE_MS = 7_000;
 
 /**
  * A PTY handle is the only safe owner available before process identity has
@@ -251,7 +251,7 @@ function createSpawnCleanupOwner(
         // already captured child process group. A wrapper exit is the only
         // evidence this owner accepts as complete tree cleanup.
         try { shell.kill('SIGTERM'); } catch { /* retry on the next cleanup attempt */ }
-        await waitForExit(POST_SPAWN_WRAPPER_ESCALATION_GRACE_MS);
+        await waitForExit(PTY_WRAPPER_EXIT_TIMEOUT_MS);
       }
       if (!exited) {
         throw new Error('Spawned PTY did not confirm exit during cleanup');

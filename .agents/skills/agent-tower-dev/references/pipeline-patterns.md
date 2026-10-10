@@ -57,7 +57,7 @@ Parser / Projector -> MsgStore -> Runtime events -> SessionManager / EventBus ->
 
 ACP transport 的 generation 与 connection identity 隔离异步回调。修改启动、重连或取消时保留取消信号和身份复核，使旧连接的通知、权限请求、close/exit 与迟到结果不能覆盖新连接。
 
-CLI spawn 与 Pipeline attach 之间保留 `collectEarlyPtyEvents()` / `takeEarlyEvents()` 一次性交接，短命进程的 data/exit 不能丢失。Codex CLI `turn.completed` / `turn.failed` 是独立的逻辑终态：先处理最终消息与 usage、标记 store finished，再报告结果；后来到达的 PTY exit 不能把失败改为成功。Parser finish 与终态通知均只执行一次。
+CLI spawn 与 Pipeline attach 之间保留 `collectEarlyPtyEvents()` / `takeEarlyEvents()` 一次性交接，短命进程的 data/exit 不能丢失。Codex CLI `turn.completed` / `turn.failed` 和 Claude Code CLI 的顶层最终 `result` 是独立的逻辑终态：先处理最终消息与 usage、标记 store finished，再报告结果；后来到达的 PTY exit 不能把失败改为成功。Claude 的 `message_stop`、`tool_result` 与带 `parent_tool_use_id` 的子 Agent 结果不是整轮终态。Parser finish 与终态通知均只执行一次。
 
 终态 DB、快照、auto-commit、commit message 和任务推进由 SessionManager/Team services 处理。auto-commit 绑定 Session generation，follow-up 在其完成或放弃后再启动，避免旧轮 Git 操作与新轮重叠。
 
@@ -70,6 +70,7 @@ CLI spawn 与 Pipeline attach 之间保留 `collectEarlyPtyEvents()` / `takeEarl
 - workspace 删除、归档、休眠、周期清理和 conversation 删除通过 `session-resource-cleanup.ts` 停止所有状态的 Session 并核验 cleanup gate。资源清理期间阻止创建/续发，失败保留目录与持久进程证据。已经 spawn 的 `started` 事件必须继续写入所有权，不能被新启动的 admission guard 拦掉。
 - `close()`/dispose 必须可等待、并发复用且失败后可重试。CLI 保留 active 与 pending cleanup 的真实退出 owner；ACP 保留各 transport 的 ProcessManager 和临时配置 cleanup owner。超时、DB 写失败或禁用新轮都不等于清理成功。
 - CLI wrapper 的整树完成证据由父进程持有的能力确认；子进程继承的 ownership marker 仅用于归属发现。wrapper 必须使用本次 launch 的唯一 marker：`buildPtyWrapperEnv()` 会清除父进程 marker 并生成缺省 token，脚本被直接调用且缺少显式 seed 时也会先生成并覆盖继承 marker，避免测试或嵌套 Agent 将祖先进程误认成自己的进程树。沿用 `utils/process-launch.ts`、`tree-cleanup-channel.ts` 和平台进程身份工具，不通过直接杀 wrapper 绕过整树回收。
+- CLI Driver 和 Executor 启动失败清理共用 wrapper 的退出等待预算，须覆盖 wrapper 的强制终止宽限与最终清理确认。Unix wrapper 的进程探测同时读取状态与 birth identity；Z/X 行保留为后代发现的拓扑证据，但不作为存活成员发信号或阻塞退出。探测失败保留清理 owner，并输出去重的诊断，不打印带环境变量的进程表正文。
 - 恢复可处理没有当前内存 owner 的旧进程，不能清理仍由当前 runtime 持有的进程。TeamRun 下一项 admission、锁释放与 review 使用统一 cleanup gate，具体业务规则见 TeamRun reference。
 - 应用关闭经 `runtime/shutdown-coordinator.ts`、`server-entry-shutdown.ts` 与桌面 shutdown 入口等待并重试清理。未确认 owner 必须保留可重试状态并报告失败，不能静默丢弃或提前 `process.exit`。
 - Git、CLI 检测与安装器使用 `utils/owned-child-process.ts` 持有整树 owner；timeout、abort、输出超限和自然根退出都先等清理再返回。通用 child 与 route 局部 manager 注册到 `runtime/application-process-cleanup.ts`，应用关闭后禁止新 spawn；Windows wrapper 在确认后代清理前保持存活，根已退出时按重新核验的后代身份继续清理。

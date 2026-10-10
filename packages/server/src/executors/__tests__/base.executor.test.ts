@@ -12,7 +12,7 @@ import {
   ExecutionEnv,
   isAgentSubprocessProtectedEnvKey,
 } from '../execution-env.js';
-import { PTY_WRAPPER_ENV_KEYS } from '../../utils/process-launch.js';
+import { PTY_WRAPPER_ENV_KEYS, PTY_WRAPPER_EXIT_TIMEOUT_MS } from '../../utils/process-launch.js';
 import { getSpawnCleanupOwner } from '../start-error.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
@@ -346,7 +346,7 @@ describe('BaseExecutor.spawnWithStdin', () => {
       await vi.advanceTimersByTimeAsync(0);
       // The wrapper owns the hard tree escalation and needs its bounded
       // force-kill grace before reporting a complete exit.
-      await vi.advanceTimersByTimeAsync(8_000);
+      await vi.advanceTimersByTimeAsync(PTY_WRAPPER_EXIT_TIMEOUT_MS + 1_000);
       let failure: unknown;
       try {
         await spawning;

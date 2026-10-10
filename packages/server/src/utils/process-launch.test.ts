@@ -58,7 +58,124 @@ function spawnWrapperWithGrandchild(childScript: string) {
   return { wrapper, grandPid, ownershipToken }
 }
 
+interface UnixProbeRow {
+  pid: number
+  ppid: number
+  pgid: number
+  state: string
+  command: string
+}
+
+function simulateLinuxWrapper(initialRows: UnixProbeRow[]) {
+  const child = Object.assign(new EventEmitter(), {
+    pid: 100, exitCode: null as number | null, signalCode: null, kill: () => false,
+  })
+  const system = { rows: initialRows, probeFailure: false }
+  const signals: Array<{ pid: number; signal: string }> = []
+  const exits: number[] = []
+  const diagnostics: string[] = []
+  const timers: Array<{ callback: () => void; delay: number; cleared: boolean; unref(): void }> = []
+  const wrapperProcess = Object.assign(new EventEmitter(), {
+    argv: ['node', 'spawn', 'fake-agent'], platform: 'linux', pid: 50,
+    env: { AGENT_TOWER_PTY_IDENTITY_SEED: 'test-owner' },
+    kill: (pid: number, signal: string) => signals.push({ pid, signal }),
+    exit: (code: number) => exits.push(code),
+  })
+  runInNewContext(buildPtyCommand('fake-agent', []).args[1], {
+    process: wrapperProcess,
+    console: { error: (message: string) => diagnostics.push(message) },
+    require: (name: string) => name === 'node:child_process' ? {
+      spawn: () => child,
+      spawnSync: (_command: string, args: string[]) => {
+        // Model procps-ng's default personality rather than accepting the
+        // macOS-only mixed BSD/POSIX selection flags.
+        if (args.includes('-axo') || system.probeFailure) {
+          return { status: 1, stdout: '', stderr: 'error: must set personality to get -x option' }
+        }
+        const columns = args.at(-1)!.split(',').map((column) => column.replace(/=$/, ''))
+        const stdout = system.rows.map((row) => {
+          const fields: Record<string, string | number> = {
+            pid: row.pid, ppid: row.ppid, pgid: row.pgid, stat: row.state,
+            lstart: 'Sat Oct 10 03:14:29 2026', command: row.command,
+          }
+          return columns.map((column) => fields[column]).join(' ')
+        }).join('\n')
+        return { status: 0, stdout, stderr: '' }
+      },
+    } : { unlinkSync: () => undefined },
+    setTimeout: (callback: () => void, delay: number) => {
+      const timer = { callback, delay, cleared: false, unref: () => undefined }
+      timers.push(timer)
+      return timer
+    },
+    clearTimeout: (timer: typeof timers[number]) => { timer.cleared = true },
+  })
+  return {
+    system, signals, exits, diagnostics,
+    exitChild: () => {
+      child.exitCode = 0
+      system.rows = system.rows.filter((row) => row.pid !== child.pid)
+      child.emit('exit', 0, null)
+    },
+    poll: () => {
+      const timer = timers.find((timer) => !timer.cleared && timer.delay === 50)
+      expect(timer).toBeDefined()
+      timer!.cleared = true
+      timer!.callback()
+    },
+  }
+}
+
+const linuxWrapperRow: UnixProbeRow = { pid: 50, ppid: 1, pgid: 50, state: 'Sl', command: 'wrapper' }
+const linuxRootRow: UnixProbeRow = {
+  pid: 100, ppid: 50, pgid: 100, state: 'Sl', command: 'agent AGENT_TOWER_PROCESS_IDENTITY=test-owner',
+}
+
 describe('process-launch', () => {
+  it('confirms a normal Linux root exit using default procps-ng selection flags', () => {
+    const wrapper = simulateLinuxWrapper([linuxWrapperRow, linuxRootRow])
+    wrapper.exitChild()
+    expect(wrapper.exits).toEqual([0])
+    expect(wrapper.diagnostics).toEqual([])
+  })
+
+  it.each(['Z', 'Z+', 'X'])('treats %s descendants as exited without signaling their groups', (state) => {
+    const wrapper = simulateLinuxWrapper([
+      linuxWrapperRow, linuxRootRow,
+      { pid: 101, ppid: 100, pgid: 101, state, command: '[worker] <defunct>' },
+    ])
+    wrapper.exitChild()
+    expect(wrapper.exits).toEqual([0])
+    expect(wrapper.signals).toEqual([])
+  })
+
+  it('retains zombie ancestry to discover living descendants without ownership markers', () => {
+    const wrapper = simulateLinuxWrapper([
+      linuxWrapperRow, linuxRootRow,
+      { pid: 101, ppid: 100, pgid: 101, state: 'Z', command: '[worker] <defunct>' },
+      { pid: 102, ppid: 101, pgid: 102, state: 'S', command: 'worker without marker' },
+    ])
+    wrapper.exitChild()
+    expect(wrapper.exits).toEqual([])
+    expect(wrapper.signals).toEqual([{ pid: -102, signal: 'SIGHUP' }])
+    wrapper.system.rows = wrapper.system.rows.filter((row) => row.pid !== 102)
+    wrapper.poll()
+    expect(wrapper.exits).toEqual([0])
+  })
+
+  it('reports a repeated failed probe once and keeps cleanup pending until recovery', () => {
+    const wrapper = simulateLinuxWrapper([linuxWrapperRow, linuxRootRow])
+    wrapper.system.probeFailure = true
+    wrapper.exitChild()
+    expect(wrapper.exits).toEqual([])
+    expect(wrapper.diagnostics).toHaveLength(1)
+    expect(wrapper.diagnostics[0]).toContain('PROBE_UNAVAILABLE')
+    expect(wrapper.diagnostics[0]).toContain('must set personality')
+    wrapper.system.probeFailure = false
+    wrapper.poll()
+    expect(wrapper.exits).toEqual([0])
+  })
+
   it('should add bundled node runtime env only to the PTY wrapper env', () => {
     const wrapperEnv = buildPtyWrapperEnv(
       {

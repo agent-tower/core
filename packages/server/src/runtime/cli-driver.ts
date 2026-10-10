@@ -17,6 +17,7 @@ import {
 } from '../executors/index.js';
 import { AgentPipeline } from '../pipeline/agent-pipeline.js';
 import { AgentType } from '../types/index.js';
+import { PTY_WRAPPER_EXIT_TIMEOUT_MS } from '../utils/process-launch.js';
 import type {
   DriverSession,
   DriverTurn,
@@ -251,10 +252,7 @@ class CliDriverSession implements DriverSession {
     for (const active of targets) {
       active.requestProcessStop?.();
       this.settleFailure(active, closeError);
-      await Promise.race([
-        active.completion.catch(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-      ]);
+      await active.completion.catch(() => undefined);
       await this.waitForProcessExit(active);
       if (active.processEventFlush) await active.processEventFlush;
       if (active.processEvents.length > 0 && active.processEventSink) {
@@ -296,7 +294,7 @@ class CliDriverSession implements DriverSession {
               'CLI process tree did not confirm termination before the shutdown deadline',
               true,
             ),
-          ), 2_000);
+          ), PTY_WRAPPER_EXIT_TIMEOUT_MS);
         }),
       ]);
     } finally {
