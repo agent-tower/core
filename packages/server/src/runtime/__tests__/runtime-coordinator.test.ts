@@ -76,6 +76,43 @@ function setup() {
 }
 
 describe('RuntimeCoordinator', () => {
+  it('exposes no reusable permission snapshot after ACP disconnect and records the replacement launch', async () => {
+    const { coordinator, input, session, turns } = setup();
+    let connected = true;
+    let runtimeInstanceId = 'runtime-1';
+    Object.defineProperty(session, 'hasActiveTransport', { get: () => connected });
+    Object.defineProperty(session, 'runtimeInstanceId', { get: () => runtimeInstanceId });
+    const first = await coordinator.startTurn({ ...input, executionPermission: 'FULL_ACCESS' });
+    turns[0].resolve({});
+    await first.completion;
+    connected = false;
+    expect(coordinator.getState(input.towerSessionId).executionPermission).toBeUndefined();
+    vi.mocked(session.runTurn).mockImplementationOnce(async () => {
+      connected = true;
+      runtimeInstanceId = 'runtime-2';
+      return { completion: Promise.resolve({}) };
+    });
+    const second = await coordinator.startTurn({ ...input, executionPermission: 'ASK' });
+    await second.completion;
+    expect(coordinator.getState(input.towerSessionId).executionPermission).toBe('ASK');
+    await coordinator.destroyAll();
+  });
+  it('keeps the ACP launch mode after same-ID Provider edits and applies the new mode only after disposal', async () => {
+    const { coordinator, input, driver, turns } = setup();
+    const first = await coordinator.startTurn({ ...input, providerId: 'same-provider', executionPermission: 'FULL_ACCESS' });
+    turns[0].resolve({});
+    await first.completion;
+    const second = await coordinator.startTurn({ ...input, providerId: 'same-provider', executionPermission: 'ASK' });
+    expect(driver.open).toHaveBeenCalledOnce();
+    expect(coordinator.getState(input.towerSessionId).executionPermission).toBe('FULL_ACCESS');
+    turns[1].resolve({});
+    await second.completion;
+    await coordinator.disposeSession(input.towerSessionId);
+    await coordinator.startTurn({ ...input, providerId: 'same-provider', executionPermission: 'ASK' });
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(coordinator.getState(input.towerSessionId).executionPermission).toBe('ASK');
+    await coordinator.destroyAll();
+  });
   it('allows only one active turn per Tower session', async () => {
     const { coordinator, input } = setup();
     await coordinator.startTurn(input);
@@ -247,6 +284,40 @@ describe('RuntimeCoordinator', () => {
     await coordinator.resolvePermission(input.towerSessionId, 'permission-1', 'allow');
     expect(session.resolvePermission).toHaveBeenCalledWith('permission-1', 'allow');
     expect(coordinator.getState(input.towerSessionId).turnState).toBe('RUNNING');
+    await coordinator.destroyAll();
+  });
+
+  it('rejects duplicate in-flight replies and never lets a late response clear the next turn request', async () => {
+    const { coordinator, input, session, turns, sinks } = setup();
+    const first = await coordinator.startTurn(input);
+    const request = { requestId: 'permission', sessionId: input.towerSessionId, turnId: first.turnId,
+      runtimeInstanceId: 'runtime-1', options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' as const }], createdAt: new Date().toISOString() };
+    sinks[0].stream({ type: 'permission_requested', request });
+    const delivery = deferred<void>(); vi.mocked(session.resolvePermission!).mockReturnValueOnce(delivery.promise);
+    const reply = coordinator.resolvePermission(input.towerSessionId, request.requestId, 'allow');
+    await expect(coordinator.resolvePermission(input.towerSessionId, request.requestId, 'allow')).rejects.toMatchObject({ code: 'permission_not_found' });
+    turns[0].resolve({}); await first.completion;
+    const second = await coordinator.startTurn(input);
+    sinks[1].stream({ type: 'permission_requested', request: { ...request, turnId: second.turnId } });
+    delivery.resolve(); await reply;
+    expect(coordinator.getState(input.towerSessionId)).toMatchObject({ turnState: 'AWAITING_PERMISSION', pendingPermissions: [{ turnId: second.turnId }] });
+    sinks[1].stream({ type: 'permission_requested', request: { ...request, requestId: 'stale-generation', turnId: second.turnId, runtimeInstanceId: 'old-runtime' } });
+    expect(coordinator.getState(input.towerSessionId).pendingPermissions).toHaveLength(1);
+    await coordinator.destroyAll();
+  });
+
+  it('does not restore RUNNING or accept another permission while a late reply races cancellation', async () => {
+    const { coordinator, input, session, sinks } = setup();
+    const turn = await coordinator.startTurn(input);
+    const request = { requestId: 'cancel-race', sessionId: input.towerSessionId, turnId: turn.turnId,
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' as const }], createdAt: new Date().toISOString() };
+    sinks[0].stream({ type: 'permission_requested', request });
+    const delivery = deferred<void>(); vi.mocked(session.resolvePermission!).mockReturnValueOnce(delivery.promise);
+    const reply = coordinator.resolvePermission(input.towerSessionId, request.requestId, 'allow');
+    await coordinator.cancelTurn(input.towerSessionId);
+    sinks[0].stream({ type: 'permission_requested', request: { ...request, requestId: 'after-cancel' } });
+    delivery.resolve(); await reply;
+    expect(coordinator.getState(input.towerSessionId)).toMatchObject({ turnState: 'CANCELLING', pendingPermissions: [] });
     await coordinator.destroyAll();
   });
 

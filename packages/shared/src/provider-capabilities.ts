@@ -1,4 +1,4 @@
-import { AgentType } from './types.js'
+import { AgentType, type ExecutionPermissionOption, type RuntimeType } from './types.js'
 
 export type ProviderConfigPathKind = 'env' | 'config' | 'settings'
 
@@ -16,11 +16,10 @@ export type ProviderExecutionPermissionRiskKind =
   | 'bypass-approvals-and-sandbox'
 
 /**
- * Execution-permission toggle for a Provider.
+ * Legacy dangerous-field migration metadata for a Provider.
  *
- * `path` is optional: an agent that never offers a permission-bypass surface
- * (for example an ACP agent that only advertises interactive approval) omits it,
- * and consumers must not render or validate a toggle in that case.
+ * `path` is optional. New configuration uses executionPermission; resolved
+ * executionPermissionOptions determine selectable modes for every runtime.
  */
 export interface ProviderExecutionPermissionCapability
   extends Omit<ProviderMappedFieldCapability, 'path'> {
@@ -40,6 +39,8 @@ export interface ProviderCapability {
   model: ProviderMappedFieldCapability
   reasoningEffort?: ProviderMappedFieldCapability
   executionPermission: ProviderExecutionPermissionCapability
+  /** Resolved by the server; legacy executionPermission.path is migration metadata only. */
+  executionPermissionOptions?: Record<RuntimeType, ExecutionPermissionOption[]>
   fastMode?: ProviderBooleanConfigCapability
   disableResponsesWebsocket?: ProviderBooleanConfigCapability
   settingsFormat?: 'json' | 'toml'

@@ -25,6 +25,9 @@ import {
   AGENT_RUNTIME_SUPPORT,
   PROVIDER_CAPABILITIES,
   RuntimeType,
+  resolveProviderExecutionPermission,
+  withoutLegacyPermissionConfig,
+  type ExecutionPermissionMode,
   USER_VISIBLE_AGENT_TYPES,
   type AppLocale,
   type ProviderBackupFile,
@@ -41,6 +44,7 @@ import { toast } from 'sonner'
 import { AgentLogo } from '@/components/agent'
 import { CursorAgentModelField } from '@/components/provider/CursorAgentModelField'
 import { ProviderDraftTestResultPanel } from '@/components/provider/ProviderDraftTestResultPanel'
+import { ExecutionPermissionSelector, EXECUTION_PERMISSION_LABELS } from '@/components/provider/ExecutionPermissionSelector'
 import { SegmentedEffortSlider } from '@/components/provider/SegmentedEffortSlider'
 import {
   buildProviderEnvWrites,
@@ -48,8 +52,9 @@ import {
   createProviderEnvDraftRows,
   getApiBaseUrlValidationError,
   getApiKeyDraftStatus,
-  getExecutionPermissionState,
   getProviderBooleanConfigState,
+  getProviderPermissionIssue,
+  getProviderStartIssue,
   isProviderEnvDraftRowSensitive,
   isSameProviderEnvKey,
   markActiveCredentialEnvRowSensitive,
@@ -360,21 +365,22 @@ function getImportActionMeta(action: ProviderImportAction) {
   }
 }
 
-function AvailabilityDot({ type }: { type: string }) {
-  const available = type === 'LOGIN_DETECTED' || type === 'INSTALLATION_FOUND'
+function AvailabilityDot({ issue }: { issue?: string }) {
+  const { t } = useI18n()
+  const available = !issue
   return (
     <span
       className={cn('inline-block h-2 w-2 rounded-full shrink-0', available ? 'bg-success' : 'bg-border')}
-      title={available ? 'Available' : 'Unavailable'}
+      title={issue ? `${t('不可用')}: ${t(issue)}` : t('可用')}
     >
-      <span className="sr-only">{available ? 'Available' : 'Unavailable'}</span>
+      <span className="sr-only">{available ? t('可用') : t('不可用')}</span>
     </span>
   )
 }
 
-function AvailabilityBadge({ type }: { type: string }) {
+function AvailabilityBadge({ issue }: { issue?: string }) {
   const { t } = useI18n()
-  if (type === 'LOGIN_DETECTED' || type === 'INSTALLATION_FOUND') {
+  if (!issue) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
         <CheckCircle2 size={11} aria-hidden="true" />
@@ -394,6 +400,8 @@ export interface ProviderFormData {
   name: string
   agentType: AgentType
   runtimeType: RuntimeType
+  executionPermission?: ExecutionPermissionMode
+  executionPermissionReviewRequired?: boolean
   config: Record<string, unknown>
   settings: string
   env: ProviderEnvDraftRow[]
@@ -457,6 +465,7 @@ export function ProviderFormModal({
       name: '',
       agentType: AgentType.CLAUDE_CODE,
       runtimeType: RuntimeType.CLI,
+      executionPermission: 'ASK',
       config: getDefaultConfigForAgentType(),
       settings: '',
       env: [],
@@ -482,25 +491,18 @@ export function ProviderFormModal({
   const [conflictResolutions, setConflictResolutions] = useState<Record<string, ProviderConflictResolution>>({})
   const testSequence = useRef(createProviderDraftTestSequence())
 
-  const { data: capabilities } = useProviderCapabilities(formData.agentType, formData.simplified.model)
+  const { data: capabilities } = useProviderCapabilities(formData.agentType, formData.simplified.model, { providerId, runtimeType: formData.runtimeType, config: formData.config, settings: formData.settings })
   const capability = capabilities?.[formData.agentType] ?? PROVIDER_CAPABILITIES[formData.agentType]
   const apiBaseUrlError = capability.apiBaseUrl
     ? getApiBaseUrlValidationError(formData.simplified.apiBaseUrl)
     : null
-  const permissionState = getExecutionPermissionState(formData.config, capability)
-  const rawAcpPermissionMode = formData.config.permissionMode ?? formData.config.acpPermissionMode
-  const acpPermissionMode = rawAcpPermissionMode === 'UNRESTRICTED'
-    || rawAcpPermissionMode === 'AUTO_APPROVE'
-    || (rawAcpPermissionMode === undefined && permissionState.enabled)
-    ? 'UNRESTRICTED'
-    : 'ASK'
-  const acpPermissionModeError = formData.runtimeType === RuntimeType.ACP
-    && rawAcpPermissionMode !== undefined
-    && rawAcpPermissionMode !== 'ASK'
-    && rawAcpPermissionMode !== 'UNRESTRICTED'
-    && rawAcpPermissionMode !== 'AUTO_APPROVE'
-    ? t('ACP 权限策略必须为 ASK 或 UNRESTRICTED')
-    : null
+  const permission = resolveProviderExecutionPermission(formData)
+  const executionPermission = formData.executionPermission ?? permission.mode
+  const permissionOptions = capability.executionPermissionOptions?.[formData.runtimeType]
+  const selectedPermission = permissionOptions?.find(option => option.mode === executionPermission)
+  const permissionError = permission.diagnostics[0]?.message
+    ?? (!permissionOptions ? t('Loading permission support…')
+      : !selectedPermission?.selectable ? selectedPermission?.reasons[0]?.message ?? t('This Agent has no available execution permission mode.') : null)
   const websocketCapability = capability.disableResponsesWebsocket
   const websocketState = websocketCapability
     ? getProviderBooleanConfigState(formData.config, websocketCapability)
@@ -622,13 +624,13 @@ export function ProviderFormModal({
     if (dirty && !window.confirm(t('切换 Agent 类型会清空当前类型的配置，是否继续？'))) return
     const { agentType, runtimeType } = parseProviderAgentOption(value)
     const nextCapability = PROVIDER_CAPABILITIES[agentType]
-    const config = runtimeType === RuntimeType.ACP
-      ? { permissionMode: 'ASK' }
-      : getDefaultConfigForAgentType()
+    const config = getDefaultConfigForAgentType()
     const next: ProviderFormData = {
       ...formData,
       agentType,
       runtimeType,
+      executionPermission,
+      executionPermissionReviewRequired: undefined,
       config,
       settings: '',
       env: [],
@@ -649,7 +651,7 @@ export function ProviderFormModal({
   }
 
   const validateAdvanced = (forTest = false): boolean => {
-    let valid = !configError && !permissionState.error && !acpPermissionModeError && !fastModeState?.error && !websocketState?.error && !reasoningEffortError
+    let valid = !configError && !permissionError && !fastModeState?.error && !websocketState?.error && !reasoningEffortError
     const settings = formData.settings.trim()
     if (settings && (settingsTouched || forTest)) {
       try {
@@ -680,6 +682,7 @@ export function ProviderFormModal({
       name: formData.name,
       agentType: formData.agentType,
       runtimeType: formData.runtimeType,
+      executionPermission,
       env,
       config: formData.config,
       settings: formData.settings,
@@ -733,7 +736,7 @@ export function ProviderFormModal({
   )
   const apiKeyAdvancedManaged = apiKeyStatus === 'advanced'
   const keyConfigured = apiKeyStatus !== 'unconfigured'
-  const saveBlocked = !formData.name.trim() || !!apiBaseUrlError || !!configError || !!permissionState.error || !!acpPermissionModeError || !!fastModeState?.error || !!websocketState?.error || !!reasoningEffortError || (!!settingsError && settingsTouched) || conflicts.length > 0
+  const saveBlocked = !formData.name.trim() || !!apiBaseUrlError || !!configError || !!permissionError || !!fastModeState?.error || !!websocketState?.error || !!reasoningEffortError || (!!settingsError && settingsTouched) || conflicts.length > 0
 
   return (
     <>
@@ -744,7 +747,7 @@ export function ProviderFormModal({
       className="max-w-3xl"
       action={
         <div className="flex w-full flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <Button variant="outline" onClick={handleTest} disabled={testProvider.isPending || !!apiBaseUrlError || !!configError || !!permissionState.error || !!acpPermissionModeError || !!fastModeState?.error || !!websocketState?.error || !!reasoningEffortError || (!!settingsError && settingsTouched) || conflicts.length > 0}>
+          <Button variant="outline" onClick={handleTest} disabled={testProvider.isPending || !!apiBaseUrlError || !!configError || !!permissionError || !!fastModeState?.error || !!websocketState?.error || !!reasoningEffortError || (!!settingsError && settingsTouched) || conflicts.length > 0}>
             {testProvider.isPending ? <Loader2 className="animate-spin" /> : <FlaskConical />}
             {testProvider.isPending ? t('测试中...') : t('测试配置')}
           </Button>
@@ -809,35 +812,12 @@ export function ProviderFormModal({
 
         <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-4">
           <div className="text-sm font-medium text-foreground">{t('基本配置')}</div>
-          {formData.runtimeType === RuntimeType.ACP && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-foreground">{t('权限策略')}</label>
-              <Select
-                value={acpPermissionMode}
-                onChange={permissionMode => {
-                  updateForm(previous => {
-                    const config: Record<string, unknown> = { ...previous.config, permissionMode }
-                    delete config.acpPermissionMode
-                    const next = { ...previous, config }
-                    setConfigText(JSON.stringify(next.config, null, 2))
-                    return next
-                  })
-                }}
-                options={[
-                  { value: 'ASK', label: t('每次询问') },
-                  { value: 'UNRESTRICTED', label: t('无限制') },
-                ]}
-              />
-              {acpPermissionMode === 'UNRESTRICTED' && (
-                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                  {t('Agent 将拥有完全访问电脑的权限')}
-                </p>
-              )}
-              {acpPermissionModeError && (
-                <p role="alert" className="mt-1 text-xs text-destructive">{acpPermissionModeError}</p>
-              )}
-            </div>
-          )}
+          <ExecutionPermissionSelector value={executionPermission} agentType={formData.agentType} options={permissionOptions} error={permissionError}
+            onChange={mode => updateForm(previous => {
+              const config = withoutLegacyPermissionConfig(previous.agentType, previous.config)
+              setConfigText(JSON.stringify(config, null, 2))
+              return { ...previous, executionPermission: mode, executionPermissionReviewRequired: undefined, config }
+            })} />
           {capability.apiBaseUrl && !usesNativeCodexConnection && (
             <div>
               <label htmlFor="provider-api-url" className="mb-1 block text-xs font-medium text-foreground">{t('API 地址')}</label>
@@ -1029,7 +1009,7 @@ export function ProviderFormModal({
 
         <CollapsibleSection
           title={t('高级配置')}
-          defaultOpen={!!configError || !!settingsError || !!permissionState.error || !!fastModeState?.error || conflicts.length > 0}
+          defaultOpen={!!configError || !!settingsError || !!permissionError || !!fastModeState?.error || conflicts.length > 0}
         >
           <div>
             <label className="mb-1 block text-xs font-medium text-foreground">{t('运行配置 (JSON)')}</label>
@@ -1063,11 +1043,7 @@ export function ProviderFormModal({
               aria-invalid={!!configError}
             />
             {configError && <p role="alert" className="mt-1 text-xs text-destructive">{configError}</p>}
-            {permissionState.error && (
-              <p role="alert" className="mt-1 text-xs text-destructive">
-                {t('执行权限字段必须为 true 或 false，请在运行配置 JSON 中修正。')}
-              </p>
-            )}
+
           </div>
 
           <div className="border-t border-border pt-3">
@@ -1398,7 +1374,8 @@ function ProviderDetailPanel({
 }) {
   const { t } = useI18n()
   const provider = item.provider
-  const availability = item.availability
+  const startIssue = getProviderStartIssue(item)
+  const permissionIssue = getProviderPermissionIssue(provider)
   const normalizedConfig = normalizeProviderConfig(provider.agentType as AgentType, provider.config)
   const capability = PROVIDER_CAPABILITIES[provider.agentType as AgentType]
   const configEntries = Object.entries(normalizedConfig).filter(([k]) => (
@@ -1412,7 +1389,7 @@ function ProviderDetailPanel({
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2.5">
             <h3 className="min-w-0 truncate text-base font-semibold text-foreground">{provider.name}</h3>
-            <AvailabilityBadge type={availability.type} />
+            <AvailabilityBadge issue={startIssue} />
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1446,6 +1423,19 @@ function ProviderDetailPanel({
             {provider.builtIn ? t('恢复默认') : t('删除')}
           </Button>
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <SettingsSectionTitle>{t('Execution permission')}</SettingsSectionTitle>
+        <p className="text-sm">{t(EXECUTION_PERMISSION_LABELS[resolveProviderExecutionPermission(provider).mode])}</p>
+        {permissionIssue && !provider.diagnostics?.some(item => item.field === 'executionPermission') ? (
+          <p role="alert" className="text-xs text-destructive">{t(permissionIssue)}</p>
+        ) : null}
+        {provider.diagnostics?.filter(item => item.field === 'executionPermission').map((item, index) => (
+          <p key={`${item.code}-${index}`} role="alert" className="text-xs text-destructive">{t(item.message)}</p>
+        ))}
+        {startIssue && !permissionIssue ? <p role="alert" className="text-xs text-destructive">{t(startIssue)}</p> : null}
+        <p className="text-xs text-muted-foreground">{t('Changes apply when a new runtime starts. Running sessions keep their launch mode.')}</p>
       </div>
 
       {configEntries.length > 0 && (
@@ -1632,6 +1622,8 @@ export function ProviderSettingsPage() {
         name: p.name,
         agentType: p.agentType as AgentType,
         runtimeType: p.runtimeType === RuntimeType.ACP ? RuntimeType.ACP : RuntimeType.CLI,
+        executionPermission: p.executionPermission,
+        executionPermissionReviewRequired: p.executionPermissionReviewRequired,
         config: normalizeProviderConfig(p.agentType as AgentType, p.config),
         settings: p.settings ?? '',
         env: envEntries,
@@ -1704,9 +1696,10 @@ export function ProviderSettingsPage() {
           onMobileBack={() => setMobileShowDetail(false)}
           renderListItem={(item, isActive) => {
             const p = item.provider
+            const issue = getProviderStartIssue(item)
             return (
               <>
-                <AvailabilityDot type={item.availability.type} />
+                <AvailabilityDot issue={issue} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13px] font-medium">{p.name}</div>
                   <div className={cn('flex min-w-0 items-center gap-1.5 text-[11px]', isActive ? 'text-primary-foreground/60' : 'text-muted-foreground')}>
@@ -1717,6 +1710,7 @@ export function ProviderSettingsPage() {
                     />
                     <span className="min-w-0 truncate">{getProviderAgentLabel(p.agentType, p.runtimeType)}</span>
                   </div>
+                  {issue ? <div className={cn('mt-0.5 break-words text-[11px] leading-snug', isActive ? 'text-primary-foreground/80' : 'text-destructive')}>{t(issue)}</div> : null}
                 </div>
                 {p.isDefault && (
                   <span className={cn(

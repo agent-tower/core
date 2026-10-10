@@ -5,22 +5,20 @@
       "name": "Claude Code",
       "agentType": "CLAUDE_CODE",
       "env": {},
-      "config": {
-        "dangerouslySkipPermissions": true
-      },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "FULL_ACCESS"
     },
     {
       "id": "gemini-cli-default",
       "name": "Gemini CLI",
       "agentType": "GEMINI_CLI",
       "env": {},
-      "config": {
-        "yolo": true
-      },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "FULL_ACCESS"
     },
     {
       "id": "cursor-agent-default",
@@ -28,11 +26,11 @@
       "agentType": "CURSOR_AGENT",
       "env": {},
       "config": {
-        "force": true,
         "model": "auto"
       },
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "FULL_ACCESS"
     },
     {
       "id": "codex-default",
@@ -41,7 +39,8 @@
       "env": {},
       "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "codex-acp-default",
@@ -49,12 +48,11 @@
       "agentType": "CODEX",
       "runtimeType": "ACP",
       "env": {},
-      "config": {
-        "permissionMode": "ASK"
-      },
+      "config": {},
       "settings": "model_context_window = 800000\n",
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "claude-code-acp-default",
@@ -62,11 +60,10 @@
       "agentType": "CLAUDE_CODE",
       "runtimeType": "ACP",
       "env": {},
-      "config": {
-        "permissionMode": "ASK"
-      },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "qwen-code-acp-default",
@@ -74,11 +71,10 @@
       "agentType": "QWEN_CODE",
       "runtimeType": "ACP",
       "env": {},
-      "config": {
-        "permissionMode": "ASK"
-      },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "gemini-cli-acp-default",
@@ -86,9 +82,10 @@
       "agentType": "GEMINI_CLI",
       "runtimeType": "ACP",
       "env": {},
-      "config": { "permissionMode": "ASK" },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "cursor-agent-acp-default",
@@ -96,9 +93,10 @@
       "agentType": "CURSOR_AGENT",
       "runtimeType": "ACP",
       "env": {},
-      "config": { "permissionMode": "ASK" },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "kiro-cli-acp-default",
@@ -106,9 +104,10 @@
       "agentType": "KIRO_CLI",
       "runtimeType": "ACP",
       "env": {},
-      "config": { "permissionMode": "ASK" },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "opencode-acp-default",
@@ -116,9 +115,10 @@
       "agentType": "OPENCODE",
       "runtimeType": "ACP",
       "env": {},
-      "config": { "permissionMode": "ASK" },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "pi-coding-agent-acp-default",
@@ -126,9 +126,10 @@
       "agentType": "PI_CODING_AGENT",
       "runtimeType": "ACP",
       "env": {},
-      "config": { "permissionMode": "ASK" },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "grok-build-acp-default",
@@ -136,9 +137,10 @@
       "agentType": "GROK_BUILD",
       "runtimeType": "ACP",
       "env": {},
-      "config": { "permissionMode": "ASK" },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "minion-code-acp-default",
@@ -146,9 +148,10 @@
       "agentType": "MINION_CODE",
       "runtimeType": "ACP",
       "env": {},
-      "config": { "permissionMode": "ASK" },
+      "config": {},
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     },
     {
       "id": "deepseek-hermes-acp-default",
@@ -156,9 +159,12 @@
       "agentType": "DEEPSEEK_HERMES",
       "runtimeType": "ACP",
       "env": {},
-      "config": { "permissionMode": "ASK", "model": "deepseek-v4-pro" },
+      "config": {
+        "model": "deepseek-v4-pro"
+      },
       "isDefault": true,
-      "builtIn": true
+      "builtIn": true,
+      "executionPermission": "ASK"
     }
   ]
 }

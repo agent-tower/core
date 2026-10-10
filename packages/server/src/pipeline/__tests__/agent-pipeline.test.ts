@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { IPty } from '@shitiandmw/node-pty'
 import { AgentPipeline, type OutputParser } from '../agent-pipeline.js'
 import { MsgStore } from '../../output/msg-store.js'
 import { CodexParser } from '../../output/codex-parser.js'
 import { EventBus } from '../../core/event-bus.js'
+import { ClaudeCodeParser } from '../../output/claude-code-parser.js'
+import type { CliDuplexEvent, CliDuplexIO } from '../../utils/cli-duplex-channel.js'
 
 /**
  * 最小可控 PTY：手动触发 data/exit，模拟 node-pty 的事件语义
@@ -78,6 +80,37 @@ function setup() {
 }
 
 describe('AgentPipeline end-to-end data flow', () => {
+  it('retains the duplex reader after PTY exit until delayed result/usage and EOF arrive', async () => {
+    const pty = new FakePty(); const msgStore = new MsgStore(); const bus = new EventBus()
+    const parser = new ClaudeCodeParser(msgStore); const finish = vi.spyOn(parser, 'finish')
+    let reader: ((event: CliDuplexEvent) => void) | undefined
+    const io: CliDuplexIO = { subscribe: next => { reader = next; return () => { reader = undefined } }, write: async () => {}, end: async () => {}, close: () => reader?.({ type: 'disconnected', error: new Error('closed') }) }
+    const exits: number[] = []; bus.on('session:exit', e => exits.push(e.exitCode!))
+    const pipeline = new AgentPipeline('session-1', pty.asIPty(), parser, msgStore, bus, undefined, io)
+    pty.emitExit(0)
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(finish).not.toHaveBeenCalled(); expect(exits).toEqual([]); expect(pipeline.isAlive).toBe(true)
+    reader!({ type: 'stdout', data: JSON.stringify({ type: 'assistant', message: { id: 'late', content: [{ type: 'text', text: 'final result' }], usage: { input_tokens: 17, output_tokens: 9 } } }) + '\n' })
+    reader!({ type: 'stdout', data: JSON.stringify({ type: 'result', subtype: 'success', modelUsage: { test: { contextWindow: 200000 } } }) + '\n' })
+    expect(finish).not.toHaveBeenCalled()
+    reader!({ type: 'eof' })
+    expect(finish).toHaveBeenCalledTimes(1); expect(exits).toEqual([0]); expect(pipeline.isAlive).toBe(false)
+    expect(msgStore.getSnapshot().entries.map(e => e.content)).toContain('final result')
+    expect(msgStore.getSnapshot().entries.find(e => e.entryType === 'token_usage_info')?.metadata?.tokenUsage?.totalTokens).toBe(17)
+  })
+
+  it('bounds a missing duplex EOF and releases the reader on transport failure', () => {
+    vi.useFakeTimers()
+    try {
+      const pty = new FakePty(); const parser = { processData: vi.fn(), finish: vi.fn() }
+      let reader: ((event: CliDuplexEvent) => void) | undefined
+      const close = vi.fn(() => reader?.({ type: 'disconnected', error: new Error('timeout') }))
+      const io: CliDuplexIO = { subscribe: next => { reader = next; return () => { reader = undefined } }, write: async () => {}, end: async () => {}, close }
+      const pipeline = new AgentPipeline('session-1', pty.asIPty(), parser, new MsgStore(), new EventBus(), undefined, io)
+      pty.emitExit(1); vi.advanceTimersByTime(10_000)
+      expect(close).toHaveBeenCalledOnce(); expect(parser.finish).toHaveBeenCalledOnce(); expect(pipeline.isAlive).toBe(false); expect(reader).toBeUndefined()
+    } finally { vi.useRealTimers() }
+  })
   it('forwards parsed patches with monotonic seq and resumes after long silence between chunks', () => {
     const { pty, msgStore, patches } = setup()
 

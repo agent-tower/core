@@ -1,7 +1,7 @@
 import type * as acp from '@agentclientprotocol/sdk';
 import type {
   AgentType,
-  RuntimePermissionMode,
+  ExecutionPermissionMode,
 } from '@agent-tower/shared';
 import type { AvailabilityInfo } from '../../../executors/base.executor.js';
 import type { Provider } from '../../../executors/providers.js';
@@ -10,7 +10,7 @@ import type { RuntimeOpenInput } from '../../contracts.js';
 export interface AcpAgentProfile {
   agentType: AgentType;
   environment: Record<string, string>;
-  permissionMode: RuntimePermissionMode;
+  permissionMode: ExecutionPermissionMode;
   authenticationRequest?: acp.AuthenticateRequest;
   appendPrompt?: string;
   model?: string;
@@ -38,6 +38,8 @@ export type AcpSessionBootstrapResponse = Pick<acp.NewSessionResponse, 'modes' |
 export interface AcpAgentDefinition {
   readonly agentType: AgentType;
   readonly displayName: string;
+  /** False when a loaded native session cannot reliably have its permissions reapplied. */
+  readonly supportsPermissionRestore?: boolean;
   readonly initializeTimeoutMs?: number;
   readonly maxStdoutFrameBytes?: number;
   readonly transformStdoutFrame?: AcpStdoutFrameTransform;

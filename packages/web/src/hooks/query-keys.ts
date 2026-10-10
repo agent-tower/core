@@ -88,8 +88,8 @@ export const queryKeys = {
 
   providers: {
     all: ['providers'] as const,
-    capabilities: (agentType?: string, model?: string) =>
-      ['providers', 'capabilities', agentType ?? '', model ?? ''] as const,
+    capabilities: (agentType?: string, model?: string, providerId?: string, runtimeType?: string, config?: Record<string, unknown>, settings?: string) =>
+      ['providers', 'capabilities', agentType ?? '', model ?? '', providerId ?? '', runtimeType ?? '', config ?? null, settings ?? null] as const,
     detail: (id: string) => ['providers', 'detail', id] as const,
   },
 

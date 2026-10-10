@@ -13,12 +13,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import type {
+  ExecutionPermissionMode,
   ProviderBackupFile,
   ProviderImportPreview,
   ProviderImportPreviewItem,
   ProviderImportResult,
 } from '@agent-tower/shared';
-import { RuntimeType, supportsAgentRuntime } from '@agent-tower/shared';
+import { RuntimeType, supportsAgentRuntime, resolveProviderExecutionPermission, withoutLegacyPermissionConfig } from '@agent-tower/shared';
 import { AgentType } from '../types/index.js';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
@@ -30,6 +31,8 @@ export interface Provider {
   name: string;
   agentType: AgentType | string;
   runtimeType?: RuntimeType;
+  executionPermission?: ExecutionPermissionMode;
+  executionPermissionReviewRequired?: boolean;
   /** 环境变量，启动进程时注入（API URL、API Key 等） */
   env: Record<string, string>;
   /** Agent 运行参数（如 dangerouslySkipPermissions、model、plan 等） */
@@ -45,6 +48,7 @@ export interface Provider {
 
 export interface ProvidersData {
   providers: Provider[];
+  version?: 2;
 }
 
 type PersistedProvider = Omit<Provider, 'builtIn'>;
@@ -61,9 +65,15 @@ export function getProviderRuntimeType(provider: Pick<Provider, 'runtimeType'> |
 }
 
 function normalizeProvider(provider: Omit<Provider, 'runtimeType'> & { runtimeType?: unknown }): Provider {
+  const runtimeType = normalizeRuntimeType(provider.runtimeType);
+  const resolved = resolveProviderExecutionPermission({ ...provider, runtimeType });
+  const review = resolved.diagnostics.some(item => item.code === 'LEGACY_PERMISSION_REVIEW_REQUIRED');
   return {
-    ...provider,
-    runtimeType: normalizeRuntimeType(provider.runtimeType),
+    ...provider, runtimeType,
+    executionPermission: provider.executionPermission !== undefined ? provider.executionPermission : resolved.mode,
+    ...(review ? { executionPermissionReviewRequired: true } : {}),
+    config: resolved.diagnostics.some(item => item.code !== 'LEGACY_PERMISSION_REVIEW_REQUIRED')
+      ? provider.config : withoutLegacyPermissionConfig(provider.agentType, provider.config),
   };
 }
 
@@ -136,11 +146,14 @@ function mergeProviders(builtIns: Provider[], userProviders: Provider[]): Provid
 }
 
 function toPersistedProvider(provider: Provider): PersistedProvider {
+  provider = normalizeProvider(provider);
   const normalized: PersistedProvider = {
     id: provider.id,
     name: provider.name,
     agentType: provider.agentType,
     runtimeType: getProviderRuntimeType(provider),
+    executionPermission: provider.executionPermission,
+    ...(provider.executionPermissionReviewRequired ? { executionPermissionReviewRequired: true } : {}),
     env: { ...(provider.env ?? {}) },
     config: { ...(provider.config ?? {}) },
     isDefault: !!provider.isDefault,
@@ -293,7 +306,7 @@ export function getUserProviders(): Provider[] {
 
 export function createProviderBackup(): ProviderBackupFile {
   return {
-    version: 1,
+    version: 2,
     kind: 'provider-backup',
     exportedAt: new Date().toISOString(),
     mode: 'full',
@@ -382,10 +395,15 @@ function saveProviders(providers: Provider[]): void {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  const data: ProvidersData = { providers: userProviders };
+  const data: ProvidersData = { version: 2, providers: userProviders };
   const tempPath = `${userPath}.tmp`;
   const backupPath = `${userPath}.bak`;
   if (fs.existsSync(userPath)) {
+    const migrationBackup = `${userPath}.permission-v1.bak`;
+    if (!fs.existsSync(migrationBackup)) {
+      const oldData = JSON.parse(fs.readFileSync(userPath, 'utf-8')) as ProvidersData;
+      if (oldData.version !== 2) fs.copyFileSync(userPath, migrationBackup);
+    }
     fs.copyFileSync(userPath, backupPath);
   }
   fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf-8');

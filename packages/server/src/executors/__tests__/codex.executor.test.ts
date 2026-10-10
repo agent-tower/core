@@ -12,6 +12,7 @@ import {
   waitForCodexMcpServerCacheRefresh,
   CODEX_HTTP_ONLY_OPENAI_PROVIDER_ID,
   getCodexPermissionMode,
+  CodexExecutor,
 } from '../codex.executor.js';
 import {
   AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
@@ -19,11 +20,12 @@ import {
   AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
   ExecutionEnv,
 } from '../execution-env.js';
-import { getExecutorByProvider } from '../index.js';
-import { createProvider, reloadProviders, updateProvider } from '../providers.js';
+import { getExecutorByProvider, createExecutorFromProvider } from '../index.js';
+import { createProvider as createRawProvider, reloadProviders, updateProvider } from '../providers.js';
 import type { BaseExecutor } from '../base.executor.js';
 import type { CmdOverrides, CommandBuilder } from '../command-builder.js';
 import { AgentType } from '../../types/index.js';
+import * as codexAskCapabilities from '../../services/codex-cli-capabilities.service.js';
 import { CODEX_NATIVE_MODEL_PROVIDER_IDS } from '@agent-tower/shared';
 import {
   CODEX_OPENAI_COMPATIBLE_ENV_KEY,
@@ -74,7 +76,86 @@ function inspectRuntime(executor: BaseExecutor, sessionEnv: Record<string, strin
   return { args, env };
 }
 
+function createProvider(input: Parameters<typeof createRawProvider>[0]) {
+  return createRawProvider({ executionPermission: 'FULL_ACCESS', ...input });
+}
+
 describe('Codex Provider runtime connection snapshots', () => {
+  it.each(['ASK', 'AUTO_SANDBOX'] as const)('launches %s app-server with model, effort, authentication and MCP config on initial and resume paths', async executionPermission => {
+    const refresh = vi.spyOn(codexAskCapabilities, 'refreshCodexCliSupport').mockResolvedValue({ supported: true, executable: '/verified/codex' });
+    const support = vi.spyOn(codexAskCapabilities, 'cachedCodexCliSupport').mockReturnValue({ supported: true, executable: '/verified/codex' });
+    const executor = new CodexExecutor({ executionPermission, model: 'gpt-6-sol', fastMode: true,
+      settings: 'model_reasoning_effort="ultra"\n[mcp_servers.agent-tower]\ncommand="tower-mcp"',
+      cmd: { env: { AUTH_VALUE: 'credential' } } });
+    const spawn = vi.spyOn(executor as any, 'spawnWithDuplex').mockResolvedValueOnce({}).mockResolvedValueOnce({});
+    try {
+      const env = ExecutionEnv.default(tmpDir).set('AGENT_TOWER_SESSION_ID', 'session');
+      const config = { workingDir: tmpDir, prompt: 'task', env };
+      const initial = await executor.spawn(config); const follow = await executor.spawnFollowUp(config, 'native-thread');
+      for (const call of spawn.mock.calls as any[]) {
+        const parts = call[1];
+        expect(parts.program).toBe('/verified/codex');
+        expect(parts.args).toEqual(expect.arrayContaining(['app-server', '--listen', 'stdio://', 'approval_policy=on-request', `approvals_reviewer=${executionPermission === 'ASK' ? 'user' : 'auto_review'}`, 'sandbox_mode=workspace-write', 'model="gpt-6-sol"', 'model_reasoning_effort="ultra"', 'service_tier="fast"', 'mcp_servers.agent-tower.env.AGENT_TOWER_SESSION_ID="session"']));
+        expect(parts.args).not.toContain('exec'); expect(parts.args).not.toContain('--model');
+        if (executionPermission === 'AUTO_SANDBOX') {
+          expect(parts.args).toEqual(expect.arrayContaining([
+            'sandbox_workspace_write.writable_roots=[]', 'sandbox_workspace_write.network_access=false',
+          ]));
+        }
+      }
+      expect(JSON.parse(initial.initialInput!).input[0].text).toBe('task');
+      expect(JSON.parse(initial.initialInput!).resumeThreadId).toBeUndefined();
+      expect(JSON.parse(follow.initialInput!).resumeThreadId).toBe('native-thread');
+      expect(inspectRuntime(executor).env.AUTH_VALUE).toBe('credential');
+    } finally { spawn.mockRestore(); refresh.mockRestore(); support.mockRestore(); }
+  });
+  it.each([undefined, 'gpt-6.1-sol'])('keeps AUTO_SANDBOX on initial and resumed launches with model %s', async model => {
+    const refresh = vi.spyOn(codexAskCapabilities, 'refreshCodexCliSupport').mockResolvedValue({ supported: true, executable: '/verified/codex' });
+    const support = vi.spyOn(codexAskCapabilities, 'cachedCodexCliSupport').mockReturnValue({ supported: true, executable: '/verified/codex' });
+    const executor = new CodexExecutor({ executionPermission: 'AUTO_SANDBOX', ...(model ? { model } : {}) });
+    const spawn = vi.spyOn(executor as any, 'spawnWithDuplex').mockResolvedValue({});
+    try {
+      const config = { workingDir: tmpDir, prompt: 'task', env: ExecutionEnv.default(tmpDir) };
+      await executor.spawn(config);
+      await executor.spawnFollowUp(config, 'native-thread');
+      expect(spawn).toHaveBeenCalledTimes(2);
+      for (const [, parts] of spawn.mock.calls as any[]) {
+        expect(parts.args).toEqual(expect.arrayContaining([
+          'approval_policy=on-request', 'approvals_reviewer=auto_review', 'sandbox_mode=workspace-write',
+          'sandbox_workspace_write.writable_roots=[]', 'sandbox_workspace_write.network_access=false',
+        ]));
+        expect(parts.args).not.toContain('approvals_reviewer=user');
+        expect(parts.args).not.toContain('sandbox_mode=danger-full-access');
+        expect(parts.args.filter((arg: string) => arg.startsWith('model='))).toEqual(model ? [`model="${model}"`] : []);
+      }
+    } finally { spawn.mockRestore(); refresh.mockRestore(); support.mockRestore(); }
+  });
+  it('projects the AUTO_SANDBOX workspace boundary after advanced settings on new and resumed launches', async () => {
+    const refresh = vi.spyOn(codexAskCapabilities, 'refreshCodexCliSupport').mockResolvedValue({ supported: true, executable: '/verified/codex' });
+    const support = vi.spyOn(codexAskCapabilities, 'cachedCodexCliSupport').mockReturnValue({ supported: true, executable: '/verified/codex' });
+    const executor = new CodexExecutor({ executionPermission: 'AUTO_SANDBOX', model: 'gpt-6-sol',
+      settings: '[sandbox_workspace_write]\nwritable_roots=["/outside"]\nnetwork_access=true' });
+    const spawn = vi.spyOn(executor as any, 'spawnWithDuplex').mockResolvedValue({});
+    try {
+      const config = { workingDir: tmpDir, prompt: 'task', env: ExecutionEnv.default(tmpDir) };
+      await executor.spawn(config);
+      await executor.spawnFollowUp(config, 'native-thread');
+      for (const [, parts] of spawn.mock.calls as any[]) {
+        expect(parts.args.lastIndexOf('sandbox_workspace_write.writable_roots=[]')).toBeGreaterThan(parts.args.indexOf('sandbox_workspace_write.writable_roots=["/outside"]'));
+        expect(parts.args.lastIndexOf('sandbox_workspace_write.network_access=false')).toBeGreaterThan(parts.args.indexOf('sandbox_workspace_write.network_access=true'));
+      }
+    } finally { spawn.mockRestore(); refresh.mockRestore(); support.mockRestore(); }
+  });
+  it('preserves unrelated legacy profile command overrides while projecting the explicit permission', () => {
+    const executor = createExecutorFromProvider({ id: '', name: 'Legacy profile', agentType: AgentType.CLAUDE_CODE,
+      executionPermission: 'FULL_ACCESS', env: {}, config: { dangerouslySkipPermissions: true,
+        cmd: { baseCommandOverride: 'profile-claude', env: { PROFILE_SETTING: 'profile-value' } } }, isDefault: false });
+    const runtime = inspectRuntime(executor);
+    expect(runtime.env.PROFILE_SETTING).toBe('profile-value');
+    expect(runtime.args).toEqual(expect.arrayContaining(['--permission-mode', 'bypassPermissions']));
+    const inspectable = executor as unknown as { buildCommandBuilder(): CommandBuilder };
+    expect(inspectable.buildCommandBuilder().buildInitial().program).toBe('profile-claude');
+  });
   let providerDataDir = '';
 
   beforeEach(() => {
@@ -111,12 +192,12 @@ describe('Codex Provider runtime connection snapshots', () => {
     ['string true', 'true'],
     ['number one', 1],
     ['null', null],
-  ])('uses noninteractive workspace mode for %s permission values', (_label, value) => {
+  ])('requires review or rejects invalid legacy %s permission values', (_label, value) => {
     expect(getCodexPermissionMode({
       dangerouslyBypassApprovalsAndSandbox: value as never,
     })).toBe('noninteractive-workspace');
 
-    const provider = createProvider({
+    const provider = createRawProvider({
       name: `Codex safe mode ${String(value)}`,
       agentType: AgentType.CODEX,
       env: {},
@@ -124,15 +205,8 @@ describe('Codex Provider runtime connection snapshots', () => {
       settings: '',
       isDefault: false,
     });
-    const runtime = inspectRuntime(getExecutorByProvider(provider.id)!);
-
-    expect(runtime.args).toEqual(expect.arrayContaining([
-      '-c',
-      'approval_policy=never',
-      '-c',
-      'sandbox_mode=workspace-write',
-    ]));
-    expect(runtime.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(() => getExecutorByProvider(provider.id)).toThrow(value === undefined || value === false
+      ? 'Select an execution permission mode' : 'must be true or false');
   });
 
   it('uses full bypass only for strict boolean true and omits safe defaults', () => {
@@ -150,10 +224,11 @@ describe('Codex Provider runtime connection snapshots', () => {
     expect(runtime.args).toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(runtime.args).not.toContain('approval_policy=never');
     expect(runtime.args).not.toContain('sandbox_mode=workspace-write');
+
   });
 
-  it('keeps legacy fullAuto providers on the safe default mode', () => {
-    const provider = createProvider({
+  it('requires explicit permission selection for legacy fullAuto providers', () => {
+    const provider = createRawProvider({
       name: 'Codex legacy fullAuto',
       agentType: AgentType.CODEX,
       env: {},
@@ -161,21 +236,16 @@ describe('Codex Provider runtime connection snapshots', () => {
       settings: '',
       isDefault: false,
     });
-    const runtime = inspectRuntime(getExecutorByProvider(provider.id)!);
-
-    expect(runtime.args).toEqual(expect.arrayContaining([
-      'approval_policy=never',
-      'sandbox_mode=workspace-write',
-    ]));
-    expect(runtime.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(() => getExecutorByProvider(provider.id)).toThrow('Select an execution permission mode');
   });
 
-  it('uses safe defaults for the built-in Codex provider', () => {
+  it('projects explicit native ASK defaults for the built-in Codex provider', () => {
     const runtime = inspectRuntime(getExecutorByProvider('codex-default')!);
 
     expect(runtime.args).toEqual(expect.arrayContaining([
-      'approval_policy=never',
+      'approval_policy=on-request',
       'sandbox_mode=workspace-write',
+      'approvals_reviewer=user',
     ]));
     expect(runtime.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
   });
@@ -254,6 +324,15 @@ describe('Codex Provider runtime connection snapshots', () => {
     expect(runtime.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(runtime.args).not.toContain('approval_policy=never');
     expect(runtime.args).not.toContain('sandbox_mode=workspace-write');
+    if (agentType === AgentType.CLAUDE_CODE) {
+      expect(runtime.args).toEqual(expect.arrayContaining(['--permission-mode', 'bypassPermissions']));
+      const settingsIndex = runtime.args.lastIndexOf('--settings');
+      expect(JSON.parse(runtime.args[settingsIndex + 1]!)).toMatchObject({ sandbox: { enabled: false } });
+    } else if (agentType === AgentType.GEMINI_CLI) {
+      expect(runtime.args).toEqual(expect.arrayContaining(['--approval-mode', 'yolo', '--no-sandbox']));
+    } else if (agentType === AgentType.CURSOR_AGENT) {
+      expect(runtime.args).toEqual(expect.arrayContaining(['--sandbox', 'disabled', '--force', '--approve-mcps']));
+    }
   });
 
   it('uses saved connection A for the existing executor and connection B for the next spawn factory lookup', () => {
@@ -309,7 +388,7 @@ describe('Codex Provider runtime connection snapshots', () => {
       `model_providers.${CODEX_OPENAI_COMPATIBLE_PROVIDER_ID}.supports_websockets=false`,
       `model_provider="${CODEX_OPENAI_COMPATIBLE_PROVIDER_ID}"`,
     ]));
-    expect(runtimeB.args.at(-1)).toBe(
+    expect(runtimeB.args.filter(arg => arg.includes('.supports_websockets=')).at(-1)).toBe(
       `model_providers.${CODEX_OPENAI_COMPATIBLE_PROVIDER_ID}.supports_websockets=false`,
     );
 
@@ -378,7 +457,7 @@ describe('Codex Provider runtime connection snapshots', () => {
     expect(runtime.args).toContain('model_providers.proxy.env_key="PROXY_TOKEN"');
     expect(runtime.args.filter(arg => arg === 'model_providers.proxy.supports_websockets=true')).toHaveLength(1);
     expect(runtime.args.filter(arg => arg === 'model_providers.proxy.supports_websockets=false')).toHaveLength(1);
-    expect(runtime.args.at(-1)).toBe('model_providers.proxy.supports_websockets=false');
+    expect(runtime.args.filter(arg => arg.startsWith('model_providers.proxy.supports_websockets=')).at(-1)).toBe('model_providers.proxy.supports_websockets=false');
     expect(runtime.env.PROXY_TOKEN === customKey).toBe(true);
     expect(runtime.env).not.toHaveProperty('CODEX_API_KEY');
     expect(JSON.stringify(runtime.args)).not.toContain(customKey);

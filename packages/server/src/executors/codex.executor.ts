@@ -12,6 +12,9 @@ import { ExecutorConfigurationError } from './start-error.js';
 import { AgentType } from '../types/index.js';
 import { which } from '../utils/index.js';
 import { hasCodexBuiltinProviderAliasCollision } from '../utils/codex-provider-config.js';
+import type { ExecutionPermissionMode } from '@agent-tower/shared';
+import { cachedCodexCliSupport, refreshCodexCliSupport } from '../services/codex-cli-capabilities.service.js';
+import type { CodexCliStart } from '../runtime/codex-cli-control.js';
 import {
   BaseExecutor,
   AvailabilityInfo,
@@ -383,6 +386,7 @@ export function buildAgentTowerMcpEnvConfigOverrides(
  * Codex CLI 配置
  */
 export interface CodexConfig {
+  executionPermission?: ExecutionPermissionMode;
   /** 追加到 prompt 的文本 */
   appendPrompt?: string;
   /** 模型选择 (gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.1-codex-max) */
@@ -534,7 +538,13 @@ export class CodexExecutor extends BaseExecutor {
 
     // Apply the effective permission mode after raw settings so the safe
     // defaults cannot be overridden accidentally by an Advanced snippet.
-    if (this.permissionMode === 'noninteractive-workspace') {
+    if (this.config.executionPermission === 'ASK' || this.config.executionPermission === 'AUTO_SANDBOX') {
+      args.push('-c', 'approval_policy=on-request', '-c', 'sandbox_mode=workspace-write', '-c',
+        `approvals_reviewer=${this.config.executionPermission === 'AUTO_SANDBOX' ? 'auto_review' : 'user'}`);
+      if (this.config.executionPermission === 'AUTO_SANDBOX') {
+        args.push('-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'sandbox_workspace_write.network_access=false');
+      }
+    } else if (this.permissionMode === 'noninteractive-workspace') {
       args.push(
         '-c', 'approval_policy=never',
         '-c', 'sandbox_mode=workspace-write',
@@ -628,6 +638,7 @@ export class CodexExecutor extends BaseExecutor {
    * 启动新会话
    */
   async spawn(config: ExecutorSpawnConfig): Promise<SpawnedChild> {
+    if (this.config.executionPermission === 'ASK' || this.config.executionPermission === 'AUTO_SANDBOX') return this.spawnAppServer(config);
     const commandBuilder = this.buildCommandBuilder();
     const configOverrideArgs = this.buildConfigOverrides();
     const probeCommand = commandBuilder.buildInitial();
@@ -672,6 +683,7 @@ export class CodexExecutor extends BaseExecutor {
     sessionId: string,
     resetToMessageId?: string
   ): Promise<SpawnedChild> {
+    if (this.config.executionPermission === 'ASK' || this.config.executionPermission === 'AUTO_SANDBOX') return this.spawnAppServer(config, sessionId);
     const commandBuilder = this.buildCommandBuilder();
     const configOverrideArgs = this.buildConfigOverrides();
     const probeCommand = commandBuilder.buildInitial();
@@ -723,5 +735,27 @@ export class CodexExecutor extends BaseExecutor {
       return `${prompt}${this.config.appendPrompt}`;
     }
     return prompt;
+  }
+
+  private async spawnAppServer(config: ExecutorSpawnConfig, resumeThreadId?: string): Promise<SpawnedChild> {
+    await refreshCodexCliSupport();
+    const support = cachedCodexCliSupport({ config: this.config as unknown as Record<string, unknown>, env: this.cmdOverrides?.env ?? {} });
+    if (!support.supported || !support.executable || this.config.dangerouslyBypassApprovalsAndSandbox === true) {
+      throw new ExecutorConfigurationError(this.agentType, new Error(support.message ?? 'Codex interactive mode has conflicting permission configuration'));
+    }
+    // app-server takes config overrides, not exec's task/model/search flags.
+    const args = this.buildConfigOverrides();
+    if (this.config.model) args.push('-c', `model=${toTomlLiteral(this.config.model)}`);
+    if (this.config.liveSearch) args.push('-c', 'web_search=live');
+    const explicitPath = getExplicitMcpConfigPath(this.getDefaultMcpConfigPath());
+    const names = getCachedCodexMcpServerNames(args, explicitPath, { program: support.executable, args }, config.env.withProfile(this.cmdOverrides).getFullEnv());
+    args.push(...buildAgentTowerMcpEnvConfigOverrides(config.env, names), 'app-server', '--listen', 'stdio://');
+    const { textPrompt, imagePaths } = await extractImagePaths(this.combinePrompt(config.prompt));
+    const input: CodexCliStart = { cwd: config.workingDir, ...(resumeThreadId ? { resumeThreadId } : {}), input: [
+      { type: 'text', text: textPrompt, text_elements: [] }, ...imagePaths.map(image => ({ type: 'localImage' as const, path: image })),
+    ] };
+    const child = await this.spawnWithDuplex(config, { program: support.executable, args });
+    child.initialInput = JSON.stringify(input);
+    return child;
   }
 }

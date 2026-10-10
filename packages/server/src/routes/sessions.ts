@@ -416,8 +416,8 @@ export async function sessionRoutes(app: FastifyInstance) {
         );
         return { success: true };
       } catch (error) {
-        reply.code(409);
-        return { error: error instanceof Error ? error.message : 'Permission request is no longer active' };
+        reply.code(error instanceof ServiceError && error.statusCode === 403 ? 403 : 409);
+        return { error: error instanceof Error ? error.message : 'Permission request is no longer active', ...(error instanceof ServiceError ? { code: error.code } : {}) };
       }
     },
   );

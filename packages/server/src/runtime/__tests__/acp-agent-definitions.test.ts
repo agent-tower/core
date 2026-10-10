@@ -13,6 +13,7 @@ function provider(
     env: Record<string, string>;
     config: Record<string, unknown>;
     settings: string;
+    executionPermission: import('@agent-tower/shared').ExecutionPermissionMode;
   }> = {},
 ) {
   return {
@@ -23,11 +24,58 @@ function provider(
     env: input.env ?? {},
     config: input.config ?? {},
     settings: input.settings,
+    // Normal fixtures are explicit new configurations; legacy modes remain separate compatibility cases.
+    executionPermission: input.executionPermission ?? (agentType === AgentType.CODEX && input.config?.permissionMode === undefined ? 'ASK' : undefined),
     isDefault: false,
   };
 }
 
 describe('ACP Agent definitions', () => {
+  it.each(['ASK', 'FULL_ACCESS'] as const)('projects OpenCode %s through config and late env overrides while retaining deny rules', async executionPermission => {
+    const definition = getAcpAgentDefinition(AgentType.OPENCODE);
+    const profile = definition.projectProvider(provider(AgentType.OPENCODE, {
+      executionPermission,
+      env: { OPENCODE_PATH: process.execPath,
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { '*': 'allow', bash: { 'rm *': 'deny', 'git *': 'allow' } }, agent: { custom: { permission: 'allow' } } }),
+        OPENCODE_PERMISSION: JSON.stringify({ edit: 'deny', '*': 'allow' }),
+      },
+    }), {});
+    const input = { towerSessionId: 'test', agentType: AgentType.OPENCODE, runtimeType: RuntimeType.ACP,
+      variant: 'DEFAULT', workingDir: process.cwd(), env: ExecutionEnv.default(process.cwd()) };
+    const launch = await definition.resolveLaunch(input, profile);
+    const baseline = executionPermission === 'FULL_ACCESS' ? 'allow' : 'ask';
+    const expected = { '*': baseline, bash: { '*': baseline, 'rm *': 'deny' }, edit: 'deny' };
+    const config = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT!);
+    expect(config.permission).toEqual(expected);
+    expect(config.agent.custom.permission).toEqual(expected);
+    expect(JSON.parse(launch.env.OPENCODE_PERMISSION!)).toEqual(expected);
+  });
+
+  it.each([AgentType.CURSOR_AGENT, AgentType.KIRO_CLI, AgentType.GROK_BUILD])('retains the explicit permission-restore restriction for %s', agentType => {
+    expect(getAcpAgentDefinition(agentType).supportsPermissionRestore).toBe(false);
+  });
+
+  it('does not widen an OpenCode deny-all rule through narrower environment overrides', async () => {
+    const definition = getAcpAgentDefinition(AgentType.OPENCODE);
+    const profile = definition.projectProvider(provider(AgentType.OPENCODE, { executionPermission: 'FULL_ACCESS',
+      env: { OPENCODE_PATH: process.execPath, OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: 'deny' }),
+        OPENCODE_PERMISSION: JSON.stringify({ bash: { '*': 'allow', 'rm *': 'deny' } }) },
+    }), {});
+    const launch = await definition.resolveLaunch({ towerSessionId: 'test', agentType: AgentType.OPENCODE,
+      runtimeType: RuntimeType.ACP, variant: 'DEFAULT', workingDir: process.cwd(), env: ExecutionEnv.default(process.cwd()) }, profile);
+    expect(JSON.parse(launch.env.OPENCODE_PERMISSION!)).toEqual({ '*': 'deny' });
+  });
+  it.each([
+    ['ASK', 'read-only'], ['AUTO_SANDBOX', 'agent'], ['FULL_ACCESS', 'agent-full-access'],
+  ] as const)('explicitly configures Codex %s on a restored native session', async (executionPermission, modeId) => {
+    const definition = getAcpAgentDefinition(AgentType.CODEX);
+    const profile = definition.projectProvider(provider(AgentType.CODEX, { executionPermission }), {});
+    const request = vi.fn().mockResolvedValue({});
+    await definition.configureSession?.({ request } as unknown as acp.ClientContext, 'restored-session', {
+      modes: { currentModeId: 'old-mode', availableModes: [{ id: modeId }] } as never,
+    }, profile);
+    expect(request).toHaveBeenCalledWith(acp.methods.agent.session.setMode, { sessionId: 'restored-session', modeId });
+  });
   it('registers every advertised ACP agent identity', () => {
     for (const agentType of [
       AgentType.CLAUDE_CODE,
@@ -69,7 +117,7 @@ describe('ACP Agent definitions', () => {
       agentType: AgentType.CLAUDE_CODE,
       model: 'claude-sonnet-4-5',
       effort: 'high',
-      permissionMode: 'UNRESTRICTED',
+      permissionMode: 'FULL_ACCESS',
       appendPrompt: '\nUse the repository conventions.',
     });
     expect(profile.environment).toMatchObject({
@@ -84,7 +132,7 @@ describe('ACP Agent definitions', () => {
             settings: {
               model: 'claude-sonnet-4-5',
               effortLevel: 'high',
-              permissions: { defaultMode: 'acceptEdits' },
+              permissions: { defaultMode: 'bypassPermissions' },
               sandbox: { enabled: false },
             },
           },
@@ -302,6 +350,7 @@ describe('ACP Agent definitions', () => {
     const request = vi.fn().mockResolvedValue({ configOptions: [] });
 
     await definition.configureSession?.({ request } as unknown as acp.ClientContext, 'codex-session-1', {
+      modes: { currentModeId: 'read-only', availableModes: [{ id: 'read-only' }] } as never,
       configOptions: [{
         id: 'fast-mode',
         name: 'Fast mode',
@@ -324,6 +373,7 @@ describe('ACP Agent definitions', () => {
     const request = vi.fn();
 
     await definition.configureSession?.({ request } as unknown as acp.ClientContext, 'codex-session-2', {
+      modes: { currentModeId: 'read-only', availableModes: [{ id: 'read-only' }] } as never,
       configOptions: [{ id: 'fast-mode', type: 'boolean', currentValue: false }] as never,
     }, profile);
 
@@ -374,7 +424,7 @@ describe('ACP Agent definitions', () => {
     await definition.configureSession?.(
       { request } as unknown as acp.ClientContext,
       'codex-session-3',
-      { configOptions: [] },
+      { configOptions: [], modes: { currentModeId: 'read-only', availableModes: [{ id: 'read-only' }] } as never },
       profile,
     );
 
@@ -397,7 +447,7 @@ describe('ACP Agent definitions', () => {
     expect(profile).toMatchObject({
       agentType: AgentType.QWEN_CODE,
       model: 'qwen3-coder-plus',
-      permissionMode: 'UNRESTRICTED',
+      permissionMode: 'FULL_ACCESS',
       environment: {
         OPENAI_API_KEY: 'qwen-provider-key',
         OPENAI_BASE_URL: 'https://dashscope.example/v1',
@@ -478,7 +528,7 @@ describe('ACP Agent definitions', () => {
       config: { permissionMode: 'UNRESTRICTED' },
     }), {});
     const geminiLaunch = await gemini.resolveLaunch({ ...input, agentType: AgentType.GEMINI_CLI }, geminiProfile);
-    expect(geminiLaunch.args).toEqual(['--experimental-acp', '--no-sandbox', '--approval-mode', 'yolo']);
+    expect(geminiLaunch.args).toEqual(['--experimental-acp', '--approval-mode', 'yolo', '--no-sandbox']);
 
     const qwen = getAcpAgentDefinition(AgentType.QWEN_CODE);
     const qwenProfile = qwen.projectProvider(provider(AgentType.QWEN_CODE, {
@@ -486,7 +536,7 @@ describe('ACP Agent definitions', () => {
       config: { permissionMode: 'UNRESTRICTED' },
     }), {});
     const qwenLaunch = await qwen.resolveLaunch({ ...input, agentType: AgentType.QWEN_CODE }, qwenProfile);
-    expect(qwenLaunch.args).toEqual(['--acp', '--experimental-skills', '--no-sandbox']);
+    expect(qwenLaunch.args).toEqual(['--acp', '--experimental-skills', '--approval-mode', 'yolo', '--no-sandbox']);
 
     const openCode = getAcpAgentDefinition(AgentType.OPENCODE);
     const openCodeProfile = openCode.projectProvider(provider(AgentType.OPENCODE, {
@@ -520,6 +570,7 @@ describe('ACP Agent definitions', () => {
     }), {});
     const grokLaunch = await grok.resolveLaunch({ ...input, agentType: AgentType.GROK_BUILD }, grokProfile);
     expect(grokLaunch.args).toEqual([
+      '--permission-mode', 'bypassPermissions', '--sandbox', 'off',
       'agent', '--model', 'grok-model', '--always-approve',
       '--xai-api-base-url', 'https://xai.example/v1', 'stdio',
     ]);

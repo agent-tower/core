@@ -39,6 +39,7 @@ const provider = {
   id: 'provider-1',
   name: 'Codex Proxy',
   agentType: AgentType.CODEX,
+  executionPermission: 'ASK' as const,
   env: { OPENAI_API_KEY: 'sk-secret', OPENAI_BASE_URL: 'https://old.example', UNKNOWN_ENV: 'keep-me' },
   config: { model: 'gpt-old', unknown: { enabled: true } },
   settings: '# keep this comment\nmodel_reasoning_effort = "medium" # keep inline\n\n[custom]\nvalue = "keep"\n',

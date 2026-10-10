@@ -27,6 +27,7 @@ export interface GeminiCliConfig {
   model?: string;
   /** YOLO 模式 - 自动批准所有操作 */
   yolo?: boolean;
+  executionPermission?: import('@agent-tower/shared').ExecutionPermissionMode;
   /** 命令覆盖 */
   cmd?: CmdOverrides;
 }
@@ -97,8 +98,12 @@ export class GeminiCliExecutor extends BaseExecutor {
       builder.extendParams(['--model', this.config.model]);
     }
 
-    // YOLO 模式
-    if (this.config.yolo) {
+    if (this.config.executionPermission === 'FULL_ACCESS') {
+      builder.extendParams(['--approval-mode', 'yolo', '--no-sandbox']);
+    }
+
+    // Legacy profiles have no canonical mode. Gemini rejects --yolo together with --approval-mode.
+    if (this.config.executionPermission === undefined && this.config.yolo) {
       builder.extendParams(['--yolo']);
       builder.extendParams(['--allowed-tools', 'run_shell_command']);
     }

@@ -3,6 +3,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
 import { useCreateWorkspace } from '@/hooks/use-workspaces'
 import { useStartSession } from '@/hooks/use-sessions'
+import { getProviderStartIssue } from '@/components/provider/provider-draft'
+import { EXECUTION_PERMISSION_LABELS } from '@/components/provider/ExecutionPermissionSelector'
 import { useProviders } from '@/hooks/use-providers'
 import { useRefreshProjectGitCapability } from '@/hooks/use-projects'
 import { queryKeys } from '@/hooks/query-keys'
@@ -62,13 +64,13 @@ export function StartAgentDialog({
   const effectiveGitReason = detectedCapability?.reason ?? projectGitReason
   const projectSupportsWorktree = effectiveIsGitRepo !== false && effectiveWorktreeReady !== false
 
-  // 打开时选择第一个可用的 provider
+  // Preserve a selected Provider when a capability refresh makes it unavailable.
   useEffect(() => {
     if (!isOpen || !providersData) return
-    const available = providersData.find(p => p.availability.type !== 'NOT_FOUND')
-    if (available) {
-      setSelectedProviderId(available.provider.id)
-    }
+    const available = providersData.find(p => !getProviderStartIssue(p))
+    setSelectedProviderId(current => current && providersData.some(p => p.provider.id === current)
+      ? current
+      : available?.provider.id ?? '')
   }, [isOpen, providersData])
 
   // 打开时用任务信息预填 prompt
@@ -103,6 +105,8 @@ export function StartAgentDialog({
 
   const handleStart = async () => {
     if (!selectedProviderId || !prompt.trim()) return
+    const selected = providersData?.find(item => item.provider.id === selectedProviderId)
+    if (!selected || getProviderStartIssue(selected)) return
 
     setError(null)
 
@@ -143,15 +147,25 @@ export function StartAgentDialog({
     'creating-session': t('创建会话...'),
     'starting-session': t('启动 Agent...'),
   }
-  const providerOptions = (providersData ?? []).map(({ provider, availability }) => {
-    const isAvailable = availability.type !== 'NOT_FOUND'
+  const providerOptions = (providersData ?? []).map(item => {
+    const provider = item.provider
+    const issue = getProviderStartIssue(item)
+    const isAvailable = !issue
+    const permission = provider.executionPermission
+      ? t('Required permission: {mode}', { mode: t(EXECUTION_PERMISSION_LABELS[provider.executionPermission]) })
+      : undefined
     return {
       value: provider.id,
       label: isAvailable ? provider.name : `${provider.name}${t(' (不可用)')}`,
+      description: [permission, issue && t(issue)].filter(Boolean).join(' · '),
       icon: <AgentLogo agentType={provider.agentType} className="size-4" />,
       disabled: !isAvailable,
     }
   })
+  const selectedProvider = providersData?.find(item => item.provider.id === selectedProviderId)
+  const blockedPermission = selectedProvider ? getProviderStartIssue(selectedProvider) : undefined
+  const allProvidersBlocked = !!providersData?.length && providersData.every(item => !!getProviderStartIssue(item))
+  const noProviders = !isLoading && !providersData?.length
   const worktreeModeHint = t('工作树隔离改动，支持 TeamRun、Merge、Rebase 和冲突解决。')
   const mainDirectoryModeHint = t('本地模式会直接修改项目主目录，不会自动提交，也不能使用 Merge、Rebase 或冲突解决。')
   const nonGitProjectModeHint = effectiveGitReason === 'NO_HEAD'
@@ -174,7 +188,7 @@ export function StartAgentDialog({
           </Button>
           <Button
             onClick={handleStart}
-            disabled={isStarting || !selectedProviderId || !prompt.trim()}
+            disabled={isStarting || !selectedProvider || !prompt.trim() || !!blockedPermission}
           >
             {stepLabel[step]}
           </Button>
@@ -195,6 +209,20 @@ export function StartAgentDialog({
                 placeholder={isLoading ? t('加载中...') : t('选择 Agent')}
                 disabled={isStarting || isLoading}
               />
+              {blockedPermission ? <p role="alert" className="mt-2 break-words text-xs leading-snug text-destructive">{t(blockedPermission)}</p> : null}
+              {allProvidersBlocked && !selectedProvider ? (
+                <div role="alert" className="mt-2 space-y-1 break-words text-xs leading-snug text-destructive">
+                  <p>{t('No available Provider for this session.')}</p>
+                  <ul className="space-y-1">
+                    {providersData.map(item => (
+                      <li key={item.provider.id}>
+                        {item.provider.name}: {t(getProviderStartIssue(item)!)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {noProviders ? <p role="alert" className="mt-2 text-xs text-destructive">{t('No available Provider for this session.')}</p> : null}
             </div>
             <div>
               <label className="block text-sm font-medium text-neutral-700 mb-2">

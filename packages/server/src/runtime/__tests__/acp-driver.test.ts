@@ -6,6 +6,25 @@ import { AcpRuntimeDriver } from '../acp/acp-driver.js';
 import { projectCodexAcpProvider } from '../acp/codex-provider-config.js';
 
 describe('AcpRuntimeDriver', () => {
+  it('rejects a CLI Session input at the ACP Driver boundary', async () => {
+    await expect(new AcpRuntimeDriver().open({
+      towerSessionId: 'wrong-driver', agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI,
+      variant: 'DEFAULT', workingDir: process.cwd(), env: ExecutionEnv.default(process.cwd()),
+    }, { stream: vi.fn(), process: vi.fn(async () => undefined) })).rejects.toMatchObject({ code: 'provider_config_invalid' });
+  });
+  it.each([{}, { permissionMode: 'ASK' }, { acpPermissionMode: 'ASK' }])('rejects ambiguous old Codex ACP %j before launching a transport', async config => {
+    const input = {
+      towerSessionId: 'legacy-codex', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP,
+      variant: 'DEFAULT', workingDir: process.cwd(), env: ExecutionEnv.default(process.cwd()),
+      providerSnapshot: { id: 'legacy', name: 'Legacy', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP,
+        config, env: {}, isDefault: false },
+    };
+    const sink = { stream: vi.fn(), process: vi.fn(async () => undefined) };
+    await expect(new AcpRuntimeDriver().open(input, sink)).rejects.toMatchObject({ code: 'LEGACY_PERMISSION_REVIEW_REQUIRED' });
+    expect(sink.process).not.toHaveBeenCalled();
+    const profile = projectCodexAcpProvider({ ...input.providerSnapshot, executionPermission: 'ASK' }, {});
+    expect(profile.permissionMode).toBe('ASK');
+  });
   it.each([
     ['gpt-6-sol', 'ultra'],
     ['gpt-6-luna', 'max'],
@@ -80,7 +99,7 @@ describe('AcpRuntimeDriver', () => {
       DEFAULT_AUTH_REQUEST: JSON.stringify({ methodId: 'api-key', apiKey: 'stale-auth-secret' }),
     });
 
-    expect(projection.permissionMode).toBe('UNRESTRICTED');
+    expect(projection.permissionMode).toBe('FULL_ACCESS');
     expect(projection.fastMode).toBe(true);
     expect(projection.appendPrompt).toBe('\nFollow repository instructions.');
     expect(projection.environment.OPENAI_BASE_URL).toBeUndefined();
@@ -109,6 +128,7 @@ describe('AcpRuntimeDriver', () => {
     const projection = projectCodexAcpProvider({
       id: 'codex-acp-gateway',
       name: 'Codex ACP Gateway',
+      executionPermission: 'ASK',
       agentType: AgentType.CODEX,
       runtimeType: RuntimeType.ACP,
       env: { OPENAI_API_KEY: 'provider-secret' },
@@ -162,6 +182,7 @@ describe('AcpRuntimeDriver', () => {
     const projection = projectCodexAcpProvider({
       id: 'codex-acp-openai',
       name: 'Codex ACP OpenAI',
+      executionPermission: 'ASK',
       agentType: AgentType.CODEX,
       runtimeType: RuntimeType.ACP,
       env: { OPENAI_API_KEY: 'official-provider-secret' },

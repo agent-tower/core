@@ -21,6 +21,7 @@ import {
 } from './command-builder.js';
 import { which } from '../utils/index.js';
 import { parsePromptWithImages, buildUserMessageNDJSON } from './image-utils.js';
+import { cachedClaudeCliAskSupport, refreshClaudeCliAskSupport } from '../services/claude-cli-capabilities.service.js';
 import { ExecutorConfigurationError } from './start-error.js';
 
 /**
@@ -39,6 +40,7 @@ export enum PermissionMode {
  * Claude Code 配置
  */
 export interface ClaudeCodeConfig {
+  executionPermission?: import('@agent-tower/shared').ExecutionPermissionMode;
   /** 追加到 prompt 的文本 */
   appendPrompt?: string;
   /** 是否使用 claude-code-router */
@@ -126,6 +128,8 @@ export class ClaudeCodeExecutor extends BaseExecutor {
    * 获取权限模式
    */
   getPermissionMode(): PermissionMode {
+    if (this.config.executionPermission === 'ASK') return PermissionMode.Default;
+    if (this.config.executionPermission === 'FULL_ACCESS') return PermissionMode.BypassPermissions;
     if (this.config.plan) {
       return PermissionMode.Plan;
     }
@@ -169,12 +173,16 @@ export class ClaudeCodeExecutor extends BaseExecutor {
           const existingEnv = (settings.env as Record<string, string> | undefined) ?? {};
           settings.env = { ...existingEnv, ...anthropicEnv };
         }
+        if (this.config.executionPermission === 'FULL_ACCESS') settings.sandbox = { ...(settings.sandbox as Record<string, unknown> ?? {}), enabled: false };
         return ['--settings', JSON.stringify(settings)];
       } catch (error) {
         throw new ExecutorConfigurationError(this.agentType, error);
       }
     }
 
+    if (this.config.executionPermission === 'FULL_ACCESS') {
+      return ['--settings', JSON.stringify({ env: anthropicEnv, sandbox: { enabled: false } })];
+    }
     // fallback: 无 settings 时，仅注入 ANTHROPIC_* 变量
     if (Object.keys(anthropicEnv).length === 0) {
       return [];
@@ -193,13 +201,18 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     builder.setParams(['-p']);
 
     // 权限模式设置
+    const ask = this.config.executionPermission === 'ASK';
     const plan = this.config.plan ?? false;
     const approvals = this.config.approvals ?? false;
 
-    if (plan || approvals) {
+    if (!ask && (plan || approvals)) {
       builder.extendParams(['--permission-prompt-tool=stdio']);
       builder.extendParams([`--permission-mode=${PermissionMode.BypassPermissions}`]);
     }
+
+    if (this.config.executionPermission) builder.extendParams(['--permission-mode', this.config.executionPermission === 'FULL_ACCESS' ? 'bypassPermissions' : 'default']);
+
+    if (ask) builder.extendParams(['--permission-prompt-tool', 'stdio', '--permission-prompts', 'host']);
 
     // 跳过权限检查
     if (this.config.dangerouslySkipPermissions) {
@@ -243,62 +256,14 @@ export class ClaudeCodeExecutor extends BaseExecutor {
    * 使用 -p 模式配合 --input-format=stream-json
    */
   protected buildCommandBuilderForStreamJson(): CommandBuilder {
-    const useRouter = this.config.claudeCodeRouter ?? false;
-    let builder = CommandBuilder.new(getBaseCommand(useRouter));
-
-    // 使用 -p 参数（print 模式）
-    builder.setParams(['-p']);
-
-    // 权限模式设置
-    const plan = this.config.plan ?? false;
-    const approvals = this.config.approvals ?? false;
-
-    if (plan || approvals) {
-      builder.extendParams(['--permission-prompt-tool=stdio']);
-      builder.extendParams([`--permission-mode=${PermissionMode.BypassPermissions}`]);
-    }
-
-    // 跳过权限检查
-    if (this.config.dangerouslySkipPermissions) {
-      builder.extendParams(['--dangerously-skip-permissions']);
-    }
-
-    // 模型选择
-    if (this.config.model) {
-      builder.extendParams(['--model', this.config.model]);
-    }
-
-    // 推理努力程度
-    if (this.config.effort) {
-      builder.extendParams(['--effort', this.config.effort]);
-    }
-
-    // 通过 --settings 覆盖 ~/.claude/settings.json 中的 ANTHROPIC_* env
-    builder.extendParams(this.buildSettingsOverride());
-
-    // 输出格式 - 使用 stream-json 进行双向通信
-    builder.extendParams([
-      '--verbose',
-      '--output-format=stream-json',
-      '--input-format=stream-json',
-      '--include-partial-messages',
-      '--replay-user-messages',
-      '--disallowedTools=AskUserQuestion',
-    ]);
-
-    // 追加系统提示
-    if (this.config.appendPrompt) {
-      builder.extendParams(['--append-system-prompt', this.config.appendPrompt]);
-    }
-
-    // 应用覆盖
-    return applyOverrides(builder, this.cmdOverrides);
+    return this.buildCommandBuilder();
   }
 
   /**
    * 启动新会话
    */
   async spawn(config: ExecutorSpawnConfig): Promise<SpawnedChild> {
+    const verifiedExecutable = await this.assertAskSupported();
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
 
@@ -307,7 +272,13 @@ export class ClaudeCodeExecutor extends BaseExecutor {
 
     const commandBuilder = this.buildCommandBuilderForStreamJson();
     const commandParts = commandBuilder.buildInitial();
+    if (verifiedExecutable) commandParts.program = verifiedExecutable;
     const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
+    if (this.config.executionPermission === 'ASK') {
+      const child = await this.spawnWithDuplex(config, commandParts);
+      child.initialInput = userMessage;
+      return child;
+    }
     return this.spawnWithStdin(config, commandParts, userMessage);
   }
 
@@ -319,6 +290,7 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     sessionId: string,
     resetToMessageId?: string
   ): Promise<SpawnedChild> {
+    const verifiedExecutable = await this.assertAskSupported();
     // 组合 prompt
     const prompt = this.combinePrompt(config.prompt);
 
@@ -331,8 +303,28 @@ export class ClaudeCodeExecutor extends BaseExecutor {
       additionalArgs.push('--resume-session-at', resetToMessageId);
     }
     const commandParts = commandBuilder.buildFollowUp(additionalArgs);
+    if (verifiedExecutable) commandParts.program = verifiedExecutable;
     const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
+    if (this.config.executionPermission === 'ASK') {
+      const child = await this.spawnWithDuplex(config, commandParts);
+      child.initialInput = userMessage;
+      return child;
+    }
     return this.spawnWithStdin(config, commandParts, userMessage);
+  }
+
+  private async assertAskSupported(): Promise<string | undefined> {
+    if (this.config.executionPermission !== 'ASK') return;
+    await refreshClaudeCliAskSupport();
+    const support = cachedClaudeCliAskSupport({ config: this.config as unknown as Record<string, unknown>, env: {} });
+    let rawMode: unknown;
+    try { rawMode = this.config.settings ? JSON.parse(this.config.settings).permissions?.defaultMode : undefined; }
+    catch (error) { throw new ExecutorConfigurationError(this.agentType, error); }
+    const permissionEnv = Object.keys(this.cmdOverrides?.env ?? {}).some(key => /(?:PERMISSION|BYPASS|SKIP.*CHECK)/i.test(key));
+    if (!support.supported || permissionEnv || (rawMode !== undefined && rawMode !== 'default') || this.config.plan || this.config.approvals || this.config.dangerouslySkipPermissions) {
+      throw new ExecutorConfigurationError(this.agentType, new Error(support.message ?? 'Claude ASK has conflicting native permission configuration'));
+    }
+    return support.executable;
   }
 
   /**

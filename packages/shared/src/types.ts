@@ -68,6 +68,17 @@ export type RuntimeTurnState =
 
 export type RuntimePermissionMode = 'ASK' | 'UNRESTRICTED'
 
+export type ExecutionPermissionMode = 'ASK' | 'AUTO_SANDBOX' | 'FULL_ACCESS'
+
+export interface ExecutionPermissionOption {
+  mode: ExecutionPermissionMode
+  supported: boolean
+  authorized: boolean
+  selectable: boolean
+  reasons: Array<{ code: string; message: string }>
+  sandboxScope?: 'commands' | 'agent-process' | 'tools'
+}
+
 /** Normalize persisted ACP permission values. AUTO_APPROVE is the legacy unrestricted value. */
 export function normalizeRuntimePermissionMode(value: unknown): RuntimePermissionMode {
   return value === 'UNRESTRICTED' || value === 'AUTO_APPROVE' ? 'UNRESTRICTED' : 'ASK'
@@ -90,11 +101,29 @@ export interface RuntimePermissionRequest {
   requestId: string
   sessionId: string
   turnId: string
+  /** Launch generation owning this interaction; native IDs stay server-side. */
+  runtimeInstanceId?: string
+  /** Bounded, redacted action summary supplied by the adapter. */
+  actionDetails?: string
   toolCallId?: string
   toolName?: string
   toolSummary?: string
   options: RuntimePermissionOption[]
   createdAt: string
+}
+
+/** Future user input uses stable IDs scoped to session/turn/runtime, never permission option IDs.
+ * No question API/adapter is enabled yet; FULL_ACCESS cannot synthesize an answer. */
+export interface RuntimeQuestionRequest {
+  requestId: string
+  sessionId: string
+  turnId: string
+  runtimeInstanceId: string
+  questions: Array<{ questionId: string; text: string; options: Array<{ optionId: string; label: string }>; multiSelect: boolean }>
+}
+export interface RuntimeQuestionAnswer {
+  requestId: string
+  answers: Array<{ questionId: string; optionIds: string[] }>
 }
 
 export interface RuntimeErrorDto {
@@ -107,6 +136,8 @@ export interface RuntimeErrorDto {
 export interface RuntimeStateDto {
   sessionId: string
   runtimeType: RuntimeType
+  /** Mode applied when this runtime/process started, never inferred from the live Provider. */
+  executionPermission?: ExecutionPermissionMode
   turnState: RuntimeTurnState
   turnId?: string
   capabilities: RuntimeCapabilities
@@ -293,6 +324,9 @@ export interface Provider {
   agentType: AgentType | string;
   /** 缺失时按 CLI 解释，用于兼容旧 Provider backup。 */
   runtimeType?: RuntimeType;
+  executionPermission?: ExecutionPermissionMode;
+  /** Retained across reload/backup until an explicit mode selection resolves old semantics. */
+  executionPermissionReviewRequired?: boolean;
   env: Record<string, string>;
   config: Record<string, unknown>;
   /** Agent 原生配置字符串（Claude Code: JSON, Codex: TOML），由所选 Runtime 投影。 */
@@ -323,6 +357,7 @@ export interface ProviderSimplifiedConfig {
 }
 
 export interface RedactedProvider extends Provider {
+  executionPermissionOptions?: ExecutionPermissionOption[]
   /** Read APIs leave env empty and expose keys/status here without values. */
   redactedEnv?: Record<string, ProviderRedactedEnvValue>
   simplified?: ProviderSimplifiedConfig
@@ -337,6 +372,7 @@ export interface ProviderDraftInput {
   name: string
   agentType: AgentType
   runtimeType?: RuntimeType
+  executionPermission?: ExecutionPermissionMode
   env?: Record<string, ProviderSecretWriteState>
   config?: Record<string, unknown>
   settings?: string
@@ -347,7 +383,7 @@ export interface ProviderDraftInput {
 
 export interface ProviderConfigDiagnostic {
   field: 'name' | 'apiBaseUrl' | 'apiKey' | 'model' | 'reasoningEffort' | 'executionPermission' | 'fastMode' | 'disableResponsesWebsocket' | 'env' | 'config' | 'settings'
-  code: 'REQUIRED' | 'INVALID_URL' | 'INVALID_ENUM' | 'INVALID_TYPE' | 'INVALID_FORMAT' | 'CONFLICT'
+  code: 'REQUIRED' | 'INVALID_URL' | 'INVALID_ENUM' | 'INVALID_TYPE' | 'INVALID_FORMAT' | 'CONFLICT' | 'LEGACY_PERMISSION_REVIEW_REQUIRED' | 'AGENT_MODE_UNSUPPORTED' | 'RUNTIME_MODE_UNSUPPORTED' | 'CAPABILITY_UNVERIFIED' | 'POLICY_MODE_DENIED' | 'POLICY_ENFORCEMENT_UNAVAILABLE'
   message: string
 }
 
@@ -386,7 +422,7 @@ export interface ProviderDraftTestResult {
 export type ProviderBackupMode = 'full'
 
 export interface ProviderBackupFile {
-  version: 1
+  version: 1 | 2
   kind: 'provider-backup'
   exportedAt: string
   mode: ProviderBackupMode

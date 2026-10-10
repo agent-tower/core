@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { RuntimeType } from '@agent-tower/shared';
+import { RuntimeType, resolveProviderExecutionPermission } from '@agent-tower/shared';
 import { EventBus } from '../core/event-bus.js';
 import {
   getExecutor,
-  getExecutorByProvider,
+  getProviderById,
+  createExecutorFromProvider,
   ExecutorConfigurationError,
   ExecutorNotFoundError,
   isPreChildProcessFailure,
@@ -27,15 +28,31 @@ import type {
   RuntimeRunTurnInput,
   RuntimeTurnOutcome,
 } from './contracts.js';
+import { getProviderSecretValues } from '../services/provider-config.service.js';
+import { ClaudeCliControl } from './claude-cli-control.js';
+import { CodexCliControl } from './codex-cli-control.js';
 import { AgentRuntimeError } from './errors.js';
 import { createCliParser } from './cli-parser.js';
+import { getProviderRuntimeType, type Provider } from '../executors/providers.js';
+
+function assertCliProviderMatchesInput(provider: Provider | undefined, input: RuntimeOpenInput): void {
+  if (input.runtimeType !== RuntimeType.CLI || (provider && (
+    provider.agentType !== input.agentType || getProviderRuntimeType(provider) !== RuntimeType.CLI
+  ))) {
+    throw markPreChildProcessFailure(new AgentRuntimeError('provider_config_invalid', 'provider_config',
+      'The Provider Agent or runtime does not match this CLI Session. Create a new Session with this Provider.', false));
+  }
+}
 
 const LOGICAL_COMPLETION_GRACE_MS = 250;
+const DUPLEX_OUTPUT_GRACE_MS = 10_000;
 type BufferedProcessEvent = Parameters<RuntimeDriverEventSink['process']>[0];
 interface ActiveCliTurn {
   turnId: string;
   runtimeInstanceId: string;
   pipeline?: AgentPipeline;
+  control?: ClaudeCliControl | CodexCliControl;
+  duplex?: SpawnedChild['duplex'];
   cancel?: CancellationToken;
   completion: Promise<RuntimeTurnOutcome>;
   resolve: (outcome: RuntimeTurnOutcome) => void;
@@ -66,17 +83,16 @@ export class CliRuntimeDriver implements RuntimeDriver {
   readonly type = RuntimeType.CLI;
 
   async open(input: RuntimeOpenInput): Promise<DriverSession> {
+    assertCliProviderMatchesInput(input.providerSnapshot, input);
     return new CliDriverSession(input);
   }
 }
 
 class CliDriverSession implements DriverSession {
-  readonly capabilities = {
-    loadSession: true,
-    terminalInput: true,
-    terminalResize: true,
-    permissions: false,
-  };
+  get capabilities() {
+    const permissions = !!this.active?.control;
+    return { loadSession: true, terminalInput: !permissions, terminalResize: !permissions, permissions };
+  }
   private active?: ActiveCliTurn;
   private readonly pendingCleanup = new Set<ActiveCliTurn>();
   private currentRuntimeInstanceId = randomUUID();
@@ -122,11 +138,24 @@ class CliDriverSession implements DriverSession {
         throw new AgentRuntimeError('turn_already_running', 'prompt', 'CLI turn is already running', false);
       }
     }
+    if (this.active?.duplex) {
+      if (!this.active.processExited) await this.waitForProcessExit(this.active);
+      if (this.active.processEventFlush) await this.active.processEventFlush;
+      if (this.active.processEvents.length && this.active.processEventSink) await this.flushProcessEvents(this.active, this.active.processEventSink);
+      if (this.active.processEvents.length) throw new AgentRuntimeError('runtime_cleanup_pending', 'open', 'Previous CLI cleanup events are not durably acknowledged', true);
+    }
     this.cleanupActive();
+
+    const snapshot = input.providerSnapshot ?? this.input.providerSnapshot;
+    if (this.input.agentType === AgentType.CODEX && snapshot && input.executionPermission
+      && resolveProviderExecutionPermission(snapshot).mode !== input.executionPermission) {
+      throw markPreChildProcessFailure(new AgentRuntimeError('provider_config_invalid', 'provider_config',
+        'The authorized Codex permission mode does not match the Provider launch snapshot.', false));
+    }
 
     let executor: BaseExecutor;
     try {
-      executor = this.resolveExecutor();
+      executor = this.resolveExecutor(input);
     } catch (error) {
       throw markPreChildProcessFailure(error);
     }
@@ -142,7 +171,7 @@ class CliDriverSession implements DriverSession {
         try {
           spawnResult = await executor.spawnFollowUp(spawnConfig, resumeId);
         } catch (error) {
-          if (!isPreChildProcessFailure(error)) throw error;
+          if (!isPreChildProcessFailure(error) || (this.input.agentType === AgentType.CODEX && (input.executionPermission === 'ASK' || input.executionPermission === 'AUTO_SANDBOX'))) throw error;
           spawnResult = await executor.spawn(spawnConfig);
         }
       } else {
@@ -177,7 +206,7 @@ class CliDriverSession implements DriverSession {
     try {
       // Install the raw exit handoff and reusable stop owner before the first
       // durable started event. A persistence failure must still be closable.
-      this.attachSpawnedTurn(active, spawnResult, input.msgStore, sink);
+      this.attachSpawnedTurn(active, spawnResult, input.msgStore, sink, input.executionPermission ?? 'ASK', input.admissionSignal, input.providerSnapshot ? getProviderSecretValues(input.providerSnapshot) : []);
       await sink.process({
         type: 'started',
         runtimeInstanceId: active.runtimeInstanceId,
@@ -189,6 +218,11 @@ class CliDriverSession implements DriverSession {
       });
       active.processEventsReleased = true;
       await this.flushProcessEvents(active, sink);
+      if (input.admissionSignal?.aborted) throw new AgentRuntimeError('turn_cancelled', 'open', 'CLI admission was cancelled', true);
+      if (active.control) {
+        if (!spawnResult.initialInput || active.settled) throw new AgentRuntimeError('control_start_failed', 'open', 'Native control transport ended before initialization', false);
+        await active.control.start(spawnResult.initialInput, () => sink.stream({ type: 'execution_permission_applied', mode: input.executionPermission ?? 'ASK' }));
+      }
     } catch (error) {
       // Preserve early exit evidence even when the started row is rejected.
       // A later recovery/start retry can replay these events; the owner stays
@@ -211,15 +245,25 @@ class CliDriverSession implements DriverSession {
   async cancelTurn(turnId: string): Promise<void> {
     const active = this.active;
     if (!active || active.turnId !== turnId) return;
-    active.cancel?.cancel();
-    active.pipeline?.destroy();
+    // Settle cancellation before closing the transport so its synchronous
+    // disconnect cannot replace the cancellation with a protocol failure.
     this.settleFailure(
       active,
       new AgentRuntimeError('turn_cancelled', 'cancel', 'CLI turn was cancelled', true),
     );
+    // Use the same stop owner as disposal: close duplex before removing its
+    // reader, then retain the real tree-exit gate for the replacement turn.
+    active.requestProcessStop?.();
+  }
+
+  async resolvePermission(requestId: string, optionId: string, authorizeDelivery?: () => void): Promise<void> {
+    const active = this.active;
+    if (!active?.control || active.settled || active.processExitObserved) throw new AgentRuntimeError('permission_not_found', 'permission', 'Permission request is no longer active', false);
+    await active.control.resolve(requestId, optionId, authorizeDelivery);
   }
 
   writeInput(data: string): void {
+    if (this.active?.duplex) throw new AgentRuntimeError('terminal_input_disabled', 'permission', 'Native protocol stdin cannot be written through terminal input', false);
     this.active?.pipeline?.write(data);
   }
 
@@ -307,8 +351,13 @@ class CliDriverSession implements DriverSession {
     spawnResult: SpawnedChild,
     msgStore: RuntimeRunTurnInput['msgStore'],
     sink: RuntimeDriverEventSink,
+    executionPermission: NonNullable<RuntimeRunTurnInput['executionPermission']>,
+    admissionSignal?: AbortSignal,
+    sensitiveValues: string[] = [],
   ): void {
     active.processEventSink = sink;
+    active.cancel = spawnResult.cancel;
+    active.duplex = spawnResult.duplex;
     active.verifyTreeCleanup = spawnResult.verifyTreeCleanup;
     active.disposeTreeCleanupChannel = spawnResult.disposeTreeCleanupChannel;
     const bus = new EventBus();
@@ -321,10 +370,14 @@ class CliDriverSession implements DriverSession {
       sink.stream({ type: 'external_session_id', externalSessionId: agentSessionId });
     };
     const onCompleted = () => {
+      active.control?.close();
+      void active.duplex?.end().catch(() => active.requestProcessStop?.());
       this.settleSuccess(active, {});
       this.schedulePipelineCleanup(active);
     };
     const onFailed = () => {
+      active.control?.close();
+      void active.duplex?.end().catch(() => active.requestProcessStop?.());
       this.settleFailure(
         active,
         new AgentRuntimeError('turn_failed', 'prompt', 'CLI agent reported a failed turn', true),
@@ -337,6 +390,8 @@ class CliDriverSession implements DriverSession {
           active,
           new AgentRuntimeError('process_exit', 'runtime', `CLI process exited with code ${exitCode}`, true),
         );
+      } else if (active.control && !active.settled) {
+        this.settleFailure(active, new AgentRuntimeError('control_unexpected_eof', 'runtime', 'CLI native protocol ended without a final result', false));
       } else {
         this.settleSuccess(active, {});
       }
@@ -401,6 +456,10 @@ class CliDriverSession implements DriverSession {
       reportProcessExit(exitCode, signal as NodeJS.Signals | null | undefined);
     });
     active.requestProcessStop = () => {
+      active.control?.close();
+      // Explicit cancellation abandons output. Release the consumption barrier
+      // so cleanup never waits for a reader that is about to be removed.
+      active.duplex?.close();
       active.cancel?.cancel();
       active.pipeline?.destroy();
       try {
@@ -417,7 +476,29 @@ class CliDriverSession implements DriverSession {
     const earlyExit = earlyEvents.find((event) => event.type === 'exit');
     if (earlyExit?.type === 'exit') reportProcessExit(earlyExit.exitCode);
 
-    const parser = createCliParser(this.input.agentType as AgentType, this.input.workingDir, msgStore);
+    const protocolFailed = (failure: unknown) => {
+      if (active.settled) return;
+      active.control?.close();
+      this.settleFailure(active, failure);
+      active.requestProcessStop?.();
+    };
+    if (spawnResult.duplex) {
+      const context = {
+        sessionId: this.input.towerSessionId, turnId: active.turnId, runtimeInstanceId: active.runtimeInstanceId,
+        executionPermission,
+        sensitiveValues: [...sensitiveValues, ...Object.entries(this.input.env.getFullEnv()).flatMap(([key, value]) => /(?:TOKEN|KEY|PASSWORD|SECRET|AUTH|COOKIE)/i.test(key) ? [value] : [])],
+      };
+      const callbacks = {
+        requested: (request: import('@agent-tower/shared').RuntimePermissionRequest) => sink.stream({ type: 'permission_requested' as const, request }),
+        invalidated: (requestId: string) => sink.stream({ type: 'permission_invalidated' as const, requestId }),
+        failed: protocolFailed,
+      };
+      if (this.input.agentType === AgentType.CLAUDE_CODE) active.control = new ClaudeCliControl(spawnResult.duplex, context, callbacks);
+      else if (this.input.agentType === AgentType.CODEX) active.control = new CodexCliControl(spawnResult.duplex, msgStore, context, callbacks);
+      else throw new AgentRuntimeError('control_protocol_unsupported', 'open', 'No native protocol adapter for this CLI transport', false);
+    }
+    const parser = active.control instanceof CodexCliControl ? active.control : createCliParser(this.input.agentType as AgentType, this.input.workingDir, msgStore,
+      active.control ? { message: message => active.control?.handle(message), failed: protocolFailed } : undefined);
     const pipeline = new AgentPipeline(
       this.input.towerSessionId,
       spawnResult.pty,
@@ -425,9 +506,17 @@ class CliDriverSession implements DriverSession {
       msgStore,
       bus,
       earlyEvents,
+      spawnResult.duplex,
+      event => {
+        if ((event.type === 'disconnected' || event.type === 'eof') && !active.settled) {
+          protocolFailed(new AgentRuntimeError('control_disconnected', 'runtime', 'Native control channel ended before its result', false));
+        }
+      },
     );
     active.pipeline = pipeline;
-    active.cancel = spawnResult.cancel;
+    const abort = () => { protocolFailed(new AgentRuntimeError('turn_cancelled', 'open', 'CLI admission was cancelled', true)); };
+    admissionSignal?.addEventListener('abort', abort, { once: true });
+    active.cleanups.push(() => admissionSignal?.removeEventListener('abort', abort));
     if (!pipeline.isAlive) this.cleanupTurnResources(active);
   }
 
@@ -460,12 +549,15 @@ class CliDriverSession implements DriverSession {
     }
   }
 
-  private resolveExecutor(): BaseExecutor {
+  private resolveExecutor(turn: RuntimeRunTurnInput): BaseExecutor {
     const agentType = this.input.agentType as AgentType;
+    const snapshot = turn.providerSnapshot ?? this.input.providerSnapshot;
+    const provider = snapshot ?? (this.input.providerId ? getProviderById(this.input.providerId) ?? undefined : undefined);
+    assertCliProviderMatchesInput(provider, this.input);
     let executor: BaseExecutor | undefined;
     try {
-      executor = this.input.providerId
-        ? getExecutorByProvider(this.input.providerId)
+      executor = provider ? createExecutorFromProvider(provider) : this.input.providerId
+        ? undefined
         : getExecutor(agentType, this.input.variant);
     } catch (error) {
       throw new ExecutorConfigurationError(agentType, error, this.input.providerId);
@@ -478,12 +570,14 @@ class CliDriverSession implements DriverSession {
 
   private settleSuccess(active: ActiveCliTurn, outcome: RuntimeTurnOutcome): void {
     if (active.settled) return;
+    active.control?.close();
     active.settled = true;
     active.resolve(outcome);
   }
 
   private settleFailure(active: ActiveCliTurn, error: unknown): void {
     if (active.settled) return;
+    active.control?.close();
     active.settled = true;
     active.reject(error);
   }
@@ -498,13 +592,16 @@ class CliDriverSession implements DriverSession {
       // wrapper signaling, and descendant cleanup all run through one path.
       active.requestProcessStop?.();
       this.cleanupTurnResources(active);
-    }, LOGICAL_COMPLETION_GRACE_MS);
+      // Duplex EOF/consumption owns normal teardown. Keep its reader attached
+      // through delayed final frames; the deadline still stops a hung native process.
+    }, active.duplex ? DUPLEX_OUTPUT_GRACE_MS : LOGICAL_COMPLETION_GRACE_MS);
     active.cleanupTimer.unref?.();
   }
 
   private cleanupTurnResources(active: ActiveCliTurn): void {
     if (active.cleanupTimer) clearTimeout(active.cleanupTimer);
     active.cleanupTimer = undefined;
+    active.control?.close();
     for (const cleanup of active.cleanups.splice(0)) cleanup();
     active.pipeline = undefined;
     active.cancel = undefined;

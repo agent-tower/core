@@ -42,7 +42,12 @@ vi.mock('@/hooks/use-providers', () => ({
   useUpdateProvider: () => ({ mutate: hookMocks.update, isPending: false }),
   useDeleteProvider: () => ({ mutate: hookMocks.remove, isPending: false }),
   useTestProviderDraft: () => ({ mutate: hookMocks.testDraft, isPending: false }),
-  useProviderCapabilities: () => ({ data: undefined }),
+  useProviderCapabilities: () => ({ data: Object.fromEntries(Object.entries(PROVIDER_CAPABILITIES).map(([agent, capability]) => [agent, {
+    ...capability, executionPermissionOptions: {
+      CLI: [{ mode: 'ASK', supported: false, authorized: true, selectable: false, reasons: [{ code: 'RUNTIME_MODE_UNSUPPORTED', message: 'Use ACP for approval' }] }, { mode: 'AUTO_SANDBOX', supported: false, authorized: true, selectable: false, reasons: [{ code: 'CAPABILITY_UNVERIFIED', message: 'Sandbox not verified' }] }, { mode: 'FULL_ACCESS', supported: true, authorized: true, selectable: true, reasons: [] }],
+      ACP: ['ASK', 'AUTO_SANDBOX', 'FULL_ACCESS'].map(mode => ({ mode, supported: true, authorized: true, selectable: true, reasons: [] })),
+    },
+  }])) }),
   useExportProviderBackup: () => ({ mutate: hookMocks.exportBackup, isPending: false }),
   usePreviewProviderImport: () => ({ mutate: hookMocks.previewImport, isPending: false }),
   useImportProviderBackup: () => ({ mutate: hookMocks.importBackup, isPending: false }),
@@ -64,13 +69,13 @@ function providerFixture(
       id: 'codex-fixture',
       name: 'Codex Fixture',
       agentType: AgentType.CODEX,
+      executionPermission: 'FULL_ACCESS',
       env: {},
       redactedEnv: {
         OPENAI_API_KEY: { configured: true, sensitive: true },
       },
       config: {
         model: 'gpt-old',
-        dangerouslyBypassApprovalsAndSandbox: false,
         unknownConfig: { keep: true },
       },
       settings: [
@@ -202,6 +207,33 @@ beforeEach(() => {
 })
 
 describe('ProviderSettingsPage deterministic behavior fixture', () => {
+  it('keeps list and detail availability aligned with refreshed permission capability', () => {
+    const reason = 'Remove sandbox_workspace_write from Codex advanced settings before using automatic sandbox approval.'
+    const base = providerFixture({ executionPermission: 'AUTO_SANDBOX' })
+    hookMocks.providers = [base]
+    renderPage()
+    const selected = () => document.querySelector<HTMLButtonElement>('button[aria-current="true"]')!
+    expect(selected().querySelector('[title]')?.getAttribute('title')).toBe('可用')
+    expect(document.body.textContent).toContain('可用')
+
+    hookMocks.providers = [{
+      ...base,
+      provider: {
+        ...base.provider,
+        executionPermissionOptions: [{ mode: 'AUTO_SANDBOX', supported: false, authorized: true, selectable: false, reasons: [{ code: 'CONFLICT', message: reason }] }],
+      },
+    }]
+    act(() => root!.render(<ProviderSettingsPage />))
+    expect(selected().querySelector('[title]')?.getAttribute('title')).toContain(reason)
+    expect(selected().textContent).toContain(reason)
+    expect(document.body.textContent).toContain('不可用')
+    expect(document.body.textContent).toContain(reason)
+
+    hookMocks.providers = [base]
+    act(() => root!.render(<ProviderSettingsPage />))
+    expect(selected().querySelector('[title]')?.getAttribute('title')).toBe('可用')
+  })
+
   it('syncs simplified Codex fields into Advanced, tests, saves, and reopens persisted values', () => {
     renderPage()
     openEditor()
@@ -220,7 +252,6 @@ describe('ProviderSettingsPage deterministic behavior fixture', () => {
     const { configInput, settingsInput } = advancedInputs()
     expect(JSON.parse(configInput.value)).toMatchObject({
       model: 'gpt-new',
-      dangerouslyBypassApprovalsAndSandbox: false,
       unknownConfig: { keep: true },
     })
     expect(settingsInput.value).toContain('openai_base_url = "https://new.example/v1" # keep URL note')
@@ -233,6 +264,7 @@ describe('ProviderSettingsPage deterministic behavior fixture', () => {
     expect(hookMocks.testDraft).toHaveBeenCalledTimes(1)
     expect(hookMocks.testDraft.mock.calls[0]![0]).toMatchObject({
       providerId: 'codex-fixture',
+      executionPermission: 'FULL_ACCESS',
       config: { model: 'gpt-new' },
       simplified: {
         apiBaseUrl: 'https://new.example/v1',
@@ -261,7 +293,6 @@ describe('ProviderSettingsPage deterministic behavior fixture', () => {
 
     changeTextInput(configInput, JSON.stringify({
       model: 'gpt-advanced',
-      dangerouslyBypassApprovalsAndSandbox: false,
       unknownConfig: { keep: true },
     }, null, 2))
     changeTextInput(settingsInput, [
@@ -297,7 +328,7 @@ describe('ProviderSettingsPage deterministic behavior fixture', () => {
       dangerouslyBypassApprovalsAndSandbox: 'true',
     }, null, 2))
 
-    expect(document.body.textContent).toContain('执行权限字段必须为 true 或 false')
+    expect(document.body.textContent).toContain('dangerouslyBypassApprovalsAndSandbox must be true or false')
     expect(findButton('测试配置').disabled).toBe(true)
     expect(findButton('保存 Provider').disabled).toBe(true)
     act(() => {
@@ -319,7 +350,7 @@ describe('ProviderSettingsPage deterministic behavior fixture', () => {
     openEditor()
 
     expect(findButton('高级配置').getAttribute('aria-expanded')).toBe('true')
-    expect(document.body.textContent).toContain('执行权限字段必须为 true 或 false')
+    expect(document.body.textContent).toContain('dangerouslyBypassApprovalsAndSandbox must be true or false')
     expect((document.querySelector('textarea') as HTMLTextAreaElement).value)
       .toContain('dangerouslyBypassApprovalsAndSandbox')
     expect(findButton('测试配置').disabled).toBe(true)

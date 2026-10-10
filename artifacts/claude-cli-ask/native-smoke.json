@@ -1,0 +1,42 @@
+{
+  "platform": "darwin-arm64",
+  "version": "2.1.293",
+  "executableSha256": "4e21122a227857da1178aca3299700c1fd7f2b77c93f12e73c2c76db796a105e",
+  "runs": [
+    {
+      "choice": "reject_once",
+      "resume": false,
+      "initialization": true,
+      "modeConfirmed": true,
+      "requests": 1,
+      "result": true,
+      "initMode": "default",
+      "stderrBytes": 82,
+      "requestSubtype": "can_use_tool",
+      "toolName": "Bash",
+      "toolIdPresent": true,
+      "resultSubtype": "success",
+      "isError": false,
+      "exitCode": 0,
+      "fileExists": false
+    },
+    {
+      "choice": "allow_once",
+      "resume": true,
+      "initialization": true,
+      "modeConfirmed": true,
+      "requests": 1,
+      "result": true,
+      "initMode": "default",
+      "stderrBytes": 82,
+      "requestSubtype": "can_use_tool",
+      "toolName": "Bash",
+      "toolIdPresent": true,
+      "resultSubtype": "success",
+      "isError": false,
+      "exitCode": 0,
+      "fileExists": true
+    }
+  ],
+  "passed": true
+}

@@ -4,10 +4,11 @@ import { createNativeAcpAgentDefinition } from './native-agent.js';
 export const cursorAgentAcpAgentDefinition = createNativeAcpAgentDefinition({
   agentType: AgentType.CURSOR_AGENT,
   displayName: 'Cursor Agent',
+  supportsPermissionRestore: false,
   executableCandidates: ['agent', 'cursor-agent'],
   executableEnvKeys: ['CURSOR_AGENT_PATH', 'CURSOR_PATH'],
   arguments: (_input, profile) => [
-    ...(profile.permissionMode === 'UNRESTRICTED'
+    ...(profile.permissionMode === 'FULL_ACCESS'
       ? ['--sandbox', 'disabled', '--force', '--approve-mcps']
       : []),
     'acp',

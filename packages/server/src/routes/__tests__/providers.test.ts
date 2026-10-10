@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AgentType,
   CODEX_NATIVE_MODEL_PROVIDER_IDS,
@@ -13,6 +13,9 @@ import {
 import { providerRoutes } from '../providers.js';
 import { getAllProviders, getProviderById, reloadProviders } from '../../executors/providers.js';
 import { resetCodexModelCatalogForTests } from '../../services/codex-model-capabilities.service.js';
+import { ExecutionPermissionService } from '../../services/execution-permission.service.js';
+import * as claudeCapabilities from '../../services/claude-cli-capabilities.service.js';
+import * as codexCapabilities from '../../services/codex-cli-capabilities.service.js';
 import {
   AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
   AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
@@ -87,6 +90,169 @@ async function startLoopback(
 }
 
 describe('provider routes', () => {
+  it('resolves the current draft and lets an ASK-only deployment repair an imported invalid ASK Provider', async () => {
+    const nativeSupport = claudeCapabilities.cachedClaudeCliAskSupport;
+    // Host-build verification is covered separately; retain the real override check.
+    const refresh = vi.spyOn(claudeCapabilities, 'refreshClaudeCliAskSupport').mockResolvedValue({ supported: true });
+    const support = vi.spyOn(claudeCapabilities, 'cachedClaudeCliAskSupport').mockImplementation(provider => {
+      const actual = nativeSupport(provider);
+      return actual.message?.startsWith('Claude router,') ? actual : { supported: true };
+    });
+    const app = Fastify();
+    await app.register(providerRoutes, { prefix: '/api', executionPermissions: new ExecutionPermissionService({ getAllowedModes: () => ['ASK'] }) });
+    const providerId = 'imported-claude-router';
+    const secret = 'private-capability-sentinel';
+    try {
+      const imported = await app.inject({ method: 'POST', url: '/api/providers/import', payload: {
+        version: 2, kind: 'provider-backup', mode: 'full', exportedAt: new Date().toISOString(),
+        providers: [{ id: providerId, name: 'Imported ASK', agentType: AgentType.CLAUDE_CODE, runtimeType: RuntimeType.CLI, executionPermission: 'ASK', config: { claudeCodeRouter: true }, env: { ANTHROPIC_API_KEY: secret } }],
+      } });
+      expect(imported.statusCode).toBe(200);
+      const ask = (response: Awaited<ReturnType<typeof app.inject>>) => response.json().CLAUDE_CODE.executionPermissionOptions.CLI.find((option: { mode: string }) => option.mode === 'ASK');
+      const saved = await app.inject({ method: 'GET', url: `/api/providers/capabilities?providerId=${providerId}` });
+      expect(ask(saved).selectable).toBe(false);
+      for (const config of [{}, { claudeCodeRouter: true }, { cmd: { baseCommandOverride: 'wrapper' } }, { cmd: { additionalParams: ['--extra'] } }, {}]) {
+        const response = await app.inject({ method: 'POST', url: '/api/providers/capabilities', payload: { providerId, agentType: AgentType.CLAUDE_CODE, runtimeType: RuntimeType.CLI, config } });
+        expect(response.statusCode).toBe(200);
+        expect(ask(response)).toMatchObject({ selectable: Object.keys(config).length === 0, authorized: true });
+        expect(response.json().CLAUDE_CODE.executionPermissionOptions.CLI.find((option: { mode: string }) => option.mode === 'FULL_ACCESS')).toMatchObject({ authorized: false, selectable: false });
+        expect(response.body).not.toContain(secret);
+        expect(response.json().CLAUDE_CODE).not.toHaveProperty('env');
+        expect(response.json().CLAUDE_CODE).not.toHaveProperty('config');
+        expect(response.json().CLAUDE_CODE).not.toHaveProperty('settings');
+      }
+      // Capability resolution is read-only; persisted invalid state remains until save.
+      expect(ask(await app.inject({ method: 'GET', url: `/api/providers/capabilities?providerId=${providerId}` })).selectable).toBe(false);
+      const fixed = await app.inject({ method: 'PUT', url: `/api/providers/${providerId}`, payload: { config: {}, executionPermission: 'ASK' } });
+      expect(fixed.statusCode).toBe(200); expect(fixed.json().executionPermission).toBe('ASK');
+      const rejected = await app.inject({ method: 'PUT', url: `/api/providers/${providerId}`, payload: { config: { cmd: { baseCommandOverride: 'wrapper' } }, executionPermission: 'ASK' } });
+      expect(rejected.statusCode).toBe(400); expect(rejected.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'CAPABILITY_UNVERIFIED' })]));
+    } finally { await app.close(); refresh.mockRestore(); support.mockRestore(); }
+  });
+  it('uses the injected allowed-mode policy for capability UI, save and test', async () => {
+    const app = Fastify();
+    const executionPermissions = new ExecutionPermissionService({ getAllowedModes: () => ['ASK', 'AUTO_SANDBOX'] });
+    await app.register(providerRoutes, { prefix: '/api', executionPermissions });
+    const capabilities = (await app.inject({ method: 'GET', url: '/api/providers/capabilities' })).json();
+    expect(capabilities.CODEX.executionPermissionOptions.ACP).toEqual(expect.arrayContaining([
+      expect.objectContaining({ mode: 'FULL_ACCESS', supported: true, authorized: false, selectable: false }),
+    ]));
+    expect(capabilities.PI_CODING_AGENT.executionPermissionOptions.ACP.every((option: { selectable: boolean }) => !option.selectable)).toBe(true);
+    for (const url of ['/api/providers', '/api/providers/test']) {
+      const response = await app.inject({ method: 'POST', url, payload: {
+        name: 'Restricted', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP, executionPermission: 'FULL_ACCESS',
+      } });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'POLICY_MODE_DENIED' })]));
+    }
+    await app.close();
+  });
+  it('keeps the deployment boundary for Codex CLI auto-review across draft models', async () => {
+    const refresh = vi.spyOn(codexCapabilities, 'refreshCodexCliSupport').mockResolvedValue({ supported: true });
+    const support = vi.spyOn(codexCapabilities, 'cachedCodexCliSupport').mockReturnValue({ supported: true });
+    const app = Fastify();
+    await app.register(providerRoutes, { prefix: '/api', executionPermissions: new ExecutionPermissionService({ getAllowedModes: () => ['ASK', 'AUTO_SANDBOX'] }) });
+    try {
+      const option = (response: Awaited<ReturnType<typeof app.inject>>) => response.json().CODEX.executionPermissionOptions.CLI.find((item: { mode: string }) => item.mode === 'AUTO_SANDBOX');
+      for (const config of [{}, { model: 'gpt-6.1-sol' }]) {
+        const restricted = await app.inject({ method: 'POST', url: '/api/providers/capabilities', payload: { agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI, config } });
+        expect(option(restricted)).toMatchObject({ supported: true, authorized: false, selectable: false, reasons: [{ code: 'POLICY_ENFORCEMENT_UNAVAILABLE' }] });
+        expect(restricted.body).not.toContain('model_providers');
+        for (const url of ['/api/providers', '/api/providers/test']) {
+          const response = await app.inject({ method: 'POST', url, payload: {
+            name: 'Restricted auto-review', agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI,
+            executionPermission: 'AUTO_SANDBOX', config,
+          } });
+          expect(response.statusCode, response.body).toBe(403);
+          expect(response.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'POLICY_ENFORCEMENT_UNAVAILABLE' })]));
+        }
+      }
+      const backup = { version: 2, kind: 'provider-backup', mode: 'full', exportedAt: new Date().toISOString(), providers: [{
+        id: 'restricted-auto-review', name: 'Restricted auto-review', agentType: AgentType.CODEX,
+        runtimeType: RuntimeType.CLI, executionPermission: 'AUTO_SANDBOX', config: { model: 'gpt-6-sol' }, env: {},
+      }] };
+      for (const url of ['/api/providers/import/preview', '/api/providers/import']) {
+        const response = await app.inject({ method: 'POST', url, payload: backup });
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'POLICY_ENFORCEMENT_UNAVAILABLE' })]));
+      }
+    } finally { await app.close(); refresh.mockRestore(); support.mockRestore(); }
+  });
+
+  it.each([{}, { model: 'gpt-6.1-sol' }])('accepts Codex CLI AUTO_SANDBOX drafts, saves and tests with config %j', async config => {
+    const refresh = vi.spyOn(codexCapabilities, 'refreshCodexCliSupport').mockResolvedValue({ supported: true });
+    const support = vi.spyOn(codexCapabilities, 'cachedCodexCliSupport').mockReturnValue({ supported: true });
+    const app = await createApp();
+    try {
+      const draft = { name: 'Codex AUTO', agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI,
+        executionPermission: 'AUTO_SANDBOX' as const, config };
+      const capabilities = await app.inject({ method: 'POST', url: '/api/providers/capabilities', payload: draft });
+      expect(capabilities.json().CODEX.executionPermissionOptions.CLI.find((option: { mode: string }) => option.mode === 'AUTO_SANDBOX'))
+        .toMatchObject({ supported: true, authorized: true, selectable: true, reasons: [] });
+      const created = await app.inject({ method: 'POST', url: '/api/providers', payload: draft });
+      expect(created.statusCode, created.body).toBe(201);
+      expect(created.json().executionPermission).toBe('AUTO_SANDBOX');
+      const saved = await app.inject({ method: 'GET', url: `/api/providers/capabilities?providerId=${created.json().id}` });
+      expect(saved.json().CODEX.executionPermissionOptions.CLI.find((option: { mode: string }) => option.mode === 'AUTO_SANDBOX'))
+        .toMatchObject({ supported: true, authorized: true, selectable: true, reasons: [] });
+      const tested = await app.inject({ method: 'POST', url: '/api/providers/test', payload: draft });
+      expect(tested.statusCode, tested.body).toBe(200);
+      expect(tested.json().diagnostics ?? []).not.toEqual(expect.arrayContaining([expect.objectContaining({ field: 'executionPermission' })]));
+    } finally { await app.close(); refresh.mockRestore(); support.mockRestore(); }
+  });
+
+  it('rejects Codex CLI AUTO_SANDBOX advanced sandbox overrides in draft, save, test and import', async () => {
+    const refresh = vi.spyOn(codexCapabilities, 'refreshCodexCliSupport').mockResolvedValue({ supported: true });
+    const support = vi.spyOn(codexCapabilities, 'cachedCodexCliSupport').mockReturnValue({ supported: true });
+    const app = await createApp();
+    const providerId = 'codex-auto-safe';
+    const settings = '[sandbox_workspace_write]\nwritable_roots=["/outside"]\nnetwork_access=true';
+    try {
+      const draft = { name: 'Codex AUTO', agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI,
+        executionPermission: 'AUTO_SANDBOX' as const, config: { model: 'gpt-6-sol' }, settings };
+      const option = (response: Awaited<ReturnType<typeof app.inject>>) => response.json().CODEX.executionPermissionOptions.CLI.find((item: { mode: string }) => item.mode === 'AUTO_SANDBOX');
+      const capabilities = await app.inject({ method: 'POST', url: '/api/providers/capabilities', payload: { ...draft, model: 'gpt-6-sol' } });
+      expect(option(capabilities)).toMatchObject({ supported: false, selectable: false, reasons: [{ code: 'CONFLICT' }] });
+      expect(option(await app.inject({ method: 'POST', url: '/api/providers/capabilities', payload: { ...draft, model: 'gpt-6-sol', settings: '' } })))
+        .toMatchObject({ supported: true, selectable: true });
+      for (const url of ['/api/providers', '/api/providers/test']) {
+        const response = await app.inject({ method: 'POST', url, payload: draft });
+        expect(response.statusCode, response.body).toBe(url === '/api/providers/test' ? 200 : 400);
+        if (url === '/api/providers/test') expect(response.json()).toMatchObject({ ok: false, stage: 'validation' });
+        expect(response.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'CONFLICT' })]));
+      }
+      const created = await app.inject({ method: 'POST', url: '/api/providers', payload: { ...draft, settings: '' } });
+      expect(created.statusCode, created.body).toBe(201);
+      const savedId = created.json().id as string;
+      const update = await app.inject({ method: 'PUT', url: `/api/providers/${savedId}`, payload: { settings } });
+      expect(update.statusCode, update.body).toBe(400);
+      expect(update.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'CONFLICT' })]));
+      const backup = { version: 2, kind: 'provider-backup', mode: 'full', exportedAt: new Date().toISOString(),
+        providers: [{ ...draft, id: providerId, env: {}, isDefault: false }] };
+      for (const url of ['/api/providers/import/preview', '/api/providers/import']) {
+        const response = await app.inject({ method: 'POST', url, payload: backup });
+        expect(response.statusCode, response.body).toBe(400);
+        expect(response.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'CONFLICT' })]));
+      }
+      expect(getProviderById(providerId)).toBeNull();
+    } finally { await app.close(); refresh.mockRestore(); support.mockRestore(); }
+  });
+
+  it('defaults fresh Providers to ASK, blocks unsupported selections and never upgrades them', async () => {
+    const app = Fastify();
+    await app.register(providerRoutes, { prefix: '/api' });
+    const created = await app.inject({ method: 'POST', url: '/api/providers', payload: {
+      name: 'New Codex ACP', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP,
+    } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().executionPermission).toBe('ASK');
+    const blocked = await app.inject({ method: 'POST', url: '/api/providers', payload: {
+      name: 'New Pi', agentType: AgentType.PI_CODING_AGENT, runtimeType: RuntimeType.ACP,
+    } });
+    expect(blocked.statusCode).toBe(400);
+    expect(blocked.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'AGENT_MODE_UNSUPPORTED' })]));
+    await app.close();
+  });
   beforeEach(() => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-provider-routes-'));
     process.env.AGENT_TOWER_DATA_DIR = dataDir;
@@ -173,6 +339,7 @@ describe('provider routes', () => {
           payload: {
             name: `${model} ${runtimeType}`,
             agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
             runtimeType,
             simplified: { model, reasoningEffort: effort },
           },
@@ -192,6 +359,7 @@ describe('provider routes', () => {
       payload: {
         name: 'Luna Ultra',
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         runtimeType: RuntimeType.ACP,
         simplified: { model: 'gpt-6-luna', reasoningEffort: 'ultra' },
       },
@@ -228,9 +396,10 @@ describe('provider routes', () => {
       payload: {
         name: 'Codex ACP Custom',
         agentType: AgentType.CODEX,
+        executionPermission: 'ASK',
         runtimeType: RuntimeType.ACP,
         env: { OPENAI_API_KEY: { action: 'replace', value: 'acp-route-secret' } },
-        config: { permissionMode: 'ASK' },
+        config: {},
         simplified: {
           apiBaseUrl: 'https://proxy.example/v1',
           model: 'gpt-acp',
@@ -243,7 +412,8 @@ describe('provider routes', () => {
     expect(created.json()).toMatchObject({
       agentType: AgentType.CODEX,
       runtimeType: RuntimeType.ACP,
-      config: { model: 'gpt-acp', permissionMode: 'ASK' },
+      executionPermission: 'ASK',
+      config: { model: 'gpt-acp' },
       redactedEnv: { OPENAI_API_KEY: { configured: true, sensitive: true } },
     });
     const providerId = created.json().id as string;
@@ -266,6 +436,7 @@ describe('provider routes', () => {
     {
       name: 'Claude Code ACP Custom',
       agentType: AgentType.CLAUDE_CODE,
+        executionPermission: 'FULL_ACCESS',
       secretKey: 'ANTHROPIC_API_KEY',
       secret: 'claude-acp-route-secret',
       apiBaseUrl: 'https://anthropic-gateway.example/v1',
@@ -309,7 +480,8 @@ describe('provider routes', () => {
     expect(created.json()).toMatchObject({
       agentType,
       runtimeType: RuntimeType.ACP,
-      config: { model, permissionMode: 'UNRESTRICTED' },
+      executionPermission: 'FULL_ACCESS',
+      config: { model },
       redactedEnv: { [secretKey]: { configured: true, sensitive: true } },
       simplified: {
         apiBaseUrl,
@@ -321,7 +493,7 @@ describe('provider routes', () => {
     await app.close();
   });
 
-  it('migrates the legacy ACP AUTO_APPROVE value to UNRESTRICTED', async () => {
+  it('migrates the legacy ACP AUTO_APPROVE value to FULL_ACCESS', async () => {
     const app = await createApp();
     const created = await app.inject({
       method: 'POST',
@@ -336,12 +508,13 @@ describe('provider routes', () => {
 
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({
-      config: { permissionMode: 'UNRESTRICTED' },
+      executionPermission: 'FULL_ACCESS',
+      config: {},
     });
     await app.close();
   });
 
-  it('migrates legacy Agent permission flags without overriding an explicit ASK mode', async () => {
+  it('migrates dangerous flags and rejects conflicting legacy ASK fields', async () => {
     const app = await createApp();
     const legacyFlag = await app.inject({
       method: 'POST',
@@ -354,7 +527,8 @@ describe('provider routes', () => {
       },
     });
     expect(legacyFlag.statusCode).toBe(201);
-    expect(legacyFlag.json().config).toEqual({ permissionMode: 'UNRESTRICTED' });
+    expect(legacyFlag.json().config).toEqual({});
+    expect(legacyFlag.json().executionPermission).toBe('FULL_ACCESS');
 
     const explicitAsk = await app.inject({
       method: 'POST',
@@ -366,8 +540,8 @@ describe('provider routes', () => {
         config: { permissionMode: 'ASK', yolo: true },
       },
     });
-    expect(explicitAsk.statusCode).toBe(201);
-    expect(explicitAsk.json().config).toEqual({ permissionMode: 'ASK' });
+    expect(explicitAsk.statusCode).toBe(400);
+    expect(explicitAsk.json().diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ field: 'executionPermission', code: 'CONFLICT' })]));
     await app.close();
   });
 
@@ -412,6 +586,7 @@ describe('provider routes', () => {
       const payload = {
         name: `Invalid URL ${index}`,
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         simplified: { apiBaseUrl },
       };
       const created = await app.inject({ method: 'POST', url: '/api/providers', payload });
@@ -436,6 +611,7 @@ describe('provider routes', () => {
         payload: {
           name: `Valid URL ${index}`,
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           simplified: { apiBaseUrl },
         },
       });
@@ -453,6 +629,7 @@ describe('provider routes', () => {
       payload: {
         name: 'Gemini Custom',
         agentType: AgentType.GEMINI_CLI,
+        executionPermission: 'FULL_ACCESS',
         env: { GEMINI_API_KEY: { action: 'replace', value: 'gemini-route-secret' } },
         simplified: { model: 'gemini-test' },
       },
@@ -504,6 +681,7 @@ describe('provider routes', () => {
       payload: {
         name: 'Codex Proxy',
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         env: { OPENAI_API_KEY: { action: 'replace', value: secret } },
         simplified: {
           apiBaseUrl: 'https://proxy.example/v1',
@@ -550,6 +728,7 @@ describe('provider routes', () => {
       payload: {
         name: 'Codex Dynamic Credential',
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         env: { PROXY_ACCESS: { action: 'replace', value: secret } },
         settings: [
           'model_provider = "proxy"',
@@ -595,6 +774,7 @@ describe('provider routes', () => {
         id: providerId,
         name: 'Imported Spaced Credential',
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         env: Object.fromEntries([
           ...aliasKeys.map((key, index) => [key, importedSentinels[index]!]),
           ['UNKNOWN_ENV', unknownSentinel],
@@ -716,6 +896,7 @@ describe('provider routes', () => {
       const payload = {
         name: 'Codex Protected Credential',
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         env: { [envKey]: { action: 'replace' as const, value: secret } },
         settings: [
           'model_provider = "proxy"',
@@ -758,6 +939,7 @@ describe('provider routes', () => {
       payload: {
         name: 'Unsaved Claude',
         agentType: AgentType.CLAUDE_CODE,
+        executionPermission: 'FULL_ACCESS',
         env: { ANTHROPIC_API_KEY: { action: 'replace', value: secret } },
         config: {},
         settings: '{"env":{"ANTHROPIC_API_KEY":"settings-secret"}}',
@@ -777,6 +959,7 @@ describe('provider routes', () => {
       const payload = {
         name: `Native ${modelProviderId}`,
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         env: { NATIVE_PROVIDER_OPTION: { action: 'replace' as const, value: 'native-value' } },
         settings: `model_provider = "${modelProviderId}"\n`,
       };
@@ -820,6 +1003,7 @@ describe('provider routes', () => {
         payload: {
           name: 'Unsaved Codex A',
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           env: { OPENAI_API_KEY: { action: 'replace', value: expectedKey } },
           simplified: { apiBaseUrl: `${loopback.baseUrl}/draft-a` },
         },
@@ -834,6 +1018,7 @@ describe('provider routes', () => {
         payload: {
           name: 'Unsaved Codex B',
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           env: { OPENAI_API_KEY: { action: 'replace', value: expectedKey } },
           simplified: { apiBaseUrl: `${loopback.baseUrl}/draft-b` },
         },
@@ -855,6 +1040,7 @@ describe('provider routes', () => {
     {
       name: 'Claude ACP gateway',
       agentType: AgentType.CLAUDE_CODE,
+        executionPermission: 'FULL_ACCESS',
       secretKey: 'ANTHROPIC_API_KEY',
       expectedHeader: 'x-api-key',
     },
@@ -927,6 +1113,7 @@ describe('provider routes', () => {
         payload: {
           name: 'Codex without CLI',
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           simplified: { apiBaseUrl: loopback.baseUrl },
         },
       });
@@ -969,6 +1156,7 @@ describe('provider routes', () => {
         payload: {
           name: 'Saved Codex',
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           env: { OPENAI_API_KEY: { action: 'replace', value: expectedKey } },
           simplified: { apiBaseUrl: `${loopback.baseUrl}/saved-a` },
         },
@@ -982,6 +1170,7 @@ describe('provider routes', () => {
           providerId,
           name: 'Saved Codex',
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           env: { OPENAI_API_KEY: { action: 'keep' } },
         },
       });
@@ -994,6 +1183,7 @@ describe('provider routes', () => {
           providerId,
           name: 'Saved Codex',
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           env: { OPENAI_API_KEY: { action: 'keep' } },
           simplified: { apiBaseUrl: `${loopback.baseUrl}/saved-b` },
         },
@@ -1008,6 +1198,7 @@ describe('provider routes', () => {
           providerId,
           name: 'Saved Codex',
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           env: { OPENAI_API_KEY: { action: 'replace', value: expectedKey } },
         },
       });
@@ -1047,6 +1238,7 @@ describe('provider routes', () => {
         payload: {
           name: `Codex ${status}`,
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           env: { OPENAI_API_KEY: { action: 'replace', value: secret } },
           simplified: { apiBaseUrl: loopback.baseUrl },
         },
@@ -1069,6 +1261,7 @@ describe('provider routes', () => {
         payload: {
           name: 'Codex timeout',
           agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
           simplified: { apiBaseUrl: loopback.baseUrl },
         },
       });
@@ -1088,6 +1281,7 @@ describe('provider routes', () => {
       payload: {
         name: 'Broken Codex',
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         settings: `api_key = "${secret}"\nbroken = [toml`,
       },
     });
@@ -1167,6 +1361,7 @@ describe('provider routes', () => {
       payload: {
         name: 'Codex HTTP transport',
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         config: { disableResponsesWebsocket: true, unknown: { keep: true } },
       },
     });
@@ -1191,6 +1386,7 @@ describe('provider routes', () => {
     const payload = {
       name: 'Codex reserved alias collision',
       agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
       config: { disableResponsesWebsocket: true },
       settings: [
         'model_provider = "openai"',
@@ -1240,6 +1436,7 @@ describe('provider routes', () => {
         id: providerId,
         name: 'Invalid imported permission',
         agentType: AgentType.CODEX,
+        executionPermission: 'FULL_ACCESS',
         env: { OPENAI_API_KEY: secret },
         config: { dangerouslyBypassApprovalsAndSandbox: invalidValue },
         isDefault: false,
@@ -1290,9 +1487,9 @@ describe('provider routes', () => {
       payload: backup,
     });
     expect(preview.statusCode).toBe(200);
-    expect(preview.json().items.map((item: { incoming: { config: Record<string, unknown> } }) => (
-      item.incoming.config.dangerouslyBypassApprovalsAndSandbox
-    ))).toEqual([true, false]);
+    expect(preview.json().items.map((item: { incoming: { executionPermission: string } }) => (
+      item.incoming.executionPermission
+    ))).toEqual(['FULL_ACCESS', 'ASK']);
 
     const imported = await app.inject({
       method: 'POST',
@@ -1302,8 +1499,8 @@ describe('provider routes', () => {
     expect(imported.statusCode).toBe(200);
     reloadProviders();
     expect(backup.providers.map(item => (
-      getProviderById(item.id)?.config.dangerouslyBypassApprovalsAndSandbox
-    ))).toEqual([true, false]);
+      getProviderById(item.id)?.executionPermission
+    ))).toEqual(['FULL_ACCESS', 'ASK']);
 
     for (const response of [preview, imported]) {
       for (const secret of secrets) expect(response.body).not.toContain(secret);
@@ -1329,6 +1526,7 @@ describe('provider routes', () => {
         id: 'structured-secret-provider',
         name: 'Structured Secret Provider',
         agentType: AgentType.CLAUDE_CODE,
+        executionPermission: 'FULL_ACCESS',
         env: { ANTHROPIC_API_KEY: secrets[0] },
         config: { auth_token: { nested: secrets[1] } },
         settings: JSON.stringify({

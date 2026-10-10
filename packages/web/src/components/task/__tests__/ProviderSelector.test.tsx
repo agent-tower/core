@@ -7,7 +7,7 @@ import type { ProviderWithAvailability } from '@/hooks/use-providers'
 import { ProviderSelector } from '../ProviderSelector'
 
 vi.mock('@/lib/i18n', () => ({
-  useI18n: () => ({ t: (source: string) => source }),
+  useI18n: () => ({ t: (source: string, params?: Record<string, string>) => source.replace(/\{(\w+)\}/g, (match, key: string) => params?.[key] ?? match) }),
 }))
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -32,6 +32,101 @@ afterEach(() => {
 })
 
 describe('ProviderSelector', () => {
+  it('shows only the server reason when the only Provider is blocked', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const blocked = provider('blocked', RuntimeType.CLI)
+    blocked.provider.executionPermission = 'AUTO_SANDBOX'
+    blocked.provider.executionPermissionOptions = [{
+      mode: 'AUTO_SANDBOX', supported: false, authorized: true, selectable: false,
+      reasons: [{ code: 'CONFLICT', message: 'Sandbox no longer available' }],
+    }]
+    act(() => root.render(
+      <ProviderSelector providers={[blocked]} currentProviderId="blocked"
+        agentType={AgentType.CODEX} runtimeType={RuntimeType.CLI} onSelect={vi.fn()} />,
+    ))
+    expect(container.textContent).not.toContain('Required permission:')
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Sandbox no longer available')
+    expect(container.querySelector('button')).toBeNull()
+    act(() => root.unmount())
+  })
+
+  it('keeps available Provider selectors to one row until the menu opens', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const ready = provider('ready', RuntimeType.CLI)
+    ready.provider.executionPermission = 'ASK'
+    const other = provider('other', RuntimeType.CLI)
+    other.provider.executionPermission = 'AUTO_SANDBOX'
+
+    act(() => root.render(
+      <ProviderSelector providers={[ready]} currentProviderId="ready"
+        agentType={AgentType.CODEX} runtimeType={RuntimeType.CLI} onSelect={vi.fn()} />,
+    ))
+    expect(container.textContent).not.toContain('Required permission:')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(container.firstElementChild?.children).toHaveLength(1)
+
+    act(() => root.render(
+      <ProviderSelector providers={[ready, other]} currentProviderId="ready"
+        agentType={AgentType.CODEX} runtimeType={RuntimeType.CLI} onSelect={vi.fn()} />,
+    ))
+    expect(container.textContent).not.toContain('Required permission:')
+    expect(container.firstElementChild?.children).toHaveLength(1)
+    act(() => root.unmount())
+  })
+
+  it('allows choosing the sole remaining Provider when the former selection disappeared', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const onSelect = vi.fn()
+    act(() => root.render(
+      <ProviderSelector providers={[provider('remaining', RuntimeType.CLI)]} currentProviderId="removed"
+        agentType={AgentType.CODEX} runtimeType={RuntimeType.CLI} onSelect={onSelect} />,
+    ))
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Selected Provider is unavailable.')
+    act(() => container.querySelector('button')!.click())
+    act(() => [...container.querySelectorAll('button')].find(button => button.textContent?.includes('remaining'))!.click())
+    expect(onSelect).toHaveBeenCalledWith('remaining')
+    act(() => root.unmount())
+  })
+
+  it('keeps an invalid Provider visible with its server reason and blocks switching', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const onSelect = vi.fn()
+    const blocked = provider('blocked', RuntimeType.ACP)
+    blocked.provider.executionPermission = 'AUTO_SANDBOX'
+    blocked.provider.executionPermissionOptions = [{
+      mode: 'AUTO_SANDBOX', supported: false, authorized: true, selectable: false,
+      reasons: [{ code: 'CONFLICT', message: 'Remove sandbox_workspace_write' }],
+    }]
+    act(() => root.render(
+      <ProviderSelector providers={[provider('ready', RuntimeType.ACP), blocked]}
+        currentProviderId="ready" agentType={AgentType.CODEX} runtimeType={RuntimeType.ACP} onSelect={onSelect} />,
+    ))
+    act(() => container.querySelector<HTMLButtonElement>('button')!.click())
+    const blockedOption = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('blocked'))!
+    expect(blockedOption.disabled).toBe(true)
+    expect(blockedOption.textContent).toContain('Remove sandbox_workspace_write')
+    const help = blockedOption.parentElement!
+    expect(help.tabIndex).toBe(0)
+    expect(help.getAttribute('aria-label')).toContain('Remove sandbox_workspace_write')
+    act(() => {
+      help.focus()
+      blockedOption.click()
+      help.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(document.activeElement).toBe(help)
+    expect(onSelect).not.toHaveBeenCalled()
+    act(() => root.unmount())
+  })
+
   it('only offers Providers matching the active Session runtime', () => {
     const container = document.createElement('div')
     document.body.appendChild(container)

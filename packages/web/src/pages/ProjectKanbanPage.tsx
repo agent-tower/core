@@ -25,6 +25,7 @@ import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
 import { CreateProjectModal } from '@/components/project/CreateProjectModal'
 import { BrandLockup } from '@/components/BrandLogo'
 import { CreateTaskInput } from '@/components/task/CreateTaskInput'
+import { getProviderStartIssue } from '@/components/provider/provider-draft'
 import { cn } from '@/lib/utils'
 import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 import { sortProjectsByActivity } from '@/lib/project-activity'
@@ -587,12 +588,17 @@ export function ProjectKanbanPage() {
   )
 
   const createTaskProviderOptions = useMemo(() =>
-    sortedProviders.map(({ provider, availability }) => ({
-      id: provider.id,
-      name: provider.name,
-      agentType: provider.agentType,
-      available: availability.type !== 'NOT_FOUND',
-    })),
+    sortedProviders.map(item => {
+      const reason = getProviderStartIssue(item)
+      return {
+        id: item.provider.id,
+        name: item.provider.name,
+        agentType: item.provider.agentType,
+        available: !reason,
+        permissionMode: item.provider.executionPermission,
+        reason,
+      }
+    }),
     [sortedProviders],
   )
 
@@ -621,8 +627,8 @@ export function ProjectKanbanPage() {
 
   const defaultProviderId = useMemo(() => {
     const lastProviderId = localStorage.getItem('lastSelectedProviderId')
-    if (lastProviderId && sortedProviders.find(p => p.provider.id === lastProviderId && p.availability.type !== 'NOT_FOUND')) return lastProviderId
-    const available = sortedProviders.find(p => p.availability.type !== 'NOT_FOUND')
+    if (lastProviderId && sortedProviders.find(p => p.provider.id === lastProviderId && !getProviderStartIssue(p))) return lastProviderId
+    const available = sortedProviders.find(p => !getProviderStartIssue(p))
     return available?.provider.id ?? ''
   }, [sortedProviders])
 

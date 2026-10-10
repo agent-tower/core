@@ -50,6 +50,7 @@ import { StartAgentDialog } from './StartAgentDialog'
 import { getSessionTokenUsage, SessionReadonlyMeta } from './SessionReadonlyMeta'
 import { CreateTeamRunDialog } from '@/components/team/CreateTeamRunDialog'
 import { ProviderSelector } from './ProviderSelector'
+import { getSelectedProviderStartIssue } from '@/components/provider/provider-draft'
 import { SlashCommandPopover } from './SlashCommandPopover'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
@@ -427,6 +428,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
 
   const { data: providers } = useProviders()
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
+  const selectedProviderIssue = activeSession
+    ? getSelectedProviderStartIssue(providers, selectedProviderId ?? activeSession.providerId)
+    : undefined
 
   // 当 session 的 providerId 变化时，同步 selectedProviderId
   useEffect(() => {
@@ -791,6 +795,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
       || stopSession.isPending
       || isSessionCancelling
       || isUploading
+      || selectedProviderIssue
     ) return
     sendingRef.current = true
 
@@ -821,7 +826,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
         },
       }
     )
-  }, [input, logSessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId, stopSession.isPending, isSessionCancelling])
+  }, [input, logSessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId, selectedProviderIssue, stopSession.isPending, isSessionCancelling])
 
   const handleStop = useCallback(() => {
     if (!logSessionId || stopSession.isPending) return
@@ -1426,6 +1431,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                         || sendMessageMutation.isPending
                         || stopSession.isPending
                         || isSessionCancelling
+                        || !!selectedProviderIssue
                       }
                       className={`p-2 rounded-lg transition-all duration-200 ${
                         (input.trim() || hasAttachments)
@@ -1433,6 +1439,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                           && !sendMessageMutation.isPending
                           && !stopSession.isPending
                           && !isSessionCancelling
+                          && !selectedProviderIssue
                           ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                           : 'bg-transparent text-muted-foreground/50 cursor-not-allowed'
                       }`}

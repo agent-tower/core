@@ -2,9 +2,9 @@ import { parse as parseToml } from 'smol-toml';
 import type * as acp from '@agentclientprotocol/sdk';
 import {
   AgentType,
-  normalizeRuntimePermissionMode,
+  resolveProviderExecutionPermission,
   type Provider,
-  type RuntimePermissionMode,
+  type ExecutionPermissionMode,
 } from '@agent-tower/shared';
 import { CODEX_HTTP_ONLY_OPENAI_PROVIDER_ID } from '../../executors/codex.executor.js';
 import {
@@ -17,7 +17,7 @@ const DEFAULT_MODEL_CONTEXT_WINDOW = 800_000;
 
 export interface CodexAcpProviderProjection {
   environment: Record<string, string>;
-  permissionMode: RuntimePermissionMode;
+  permissionMode: ExecutionPermissionMode;
   authenticationRequest?: acp.AuthenticateRequest;
   appendPrompt?: string;
   fastMode?: boolean;
@@ -171,16 +171,18 @@ export function projectCodexAcpProvider(
     environment.CODEX_CONFIG = JSON.stringify(codexConfig);
   }
 
-  const configuredMode = provider.config.permissionMode ?? provider.config.acpPermissionMode;
   const appendPrompt = typeof provider.config.appendPrompt === 'string' && provider.config.appendPrompt
     ? provider.config.appendPrompt
     : undefined;
   const fastMode = typeof provider.config.fastMode === 'boolean'
     ? provider.config.fastMode
     : undefined;
-  const permissionMode = configuredMode === undefined && provider.config.dangerouslyBypassApprovalsAndSandbox === true
-    ? 'UNRESTRICTED'
-    : normalizeRuntimePermissionMode(configuredMode);
+  const permission = resolveProviderExecutionPermission(provider);
+  if (permission.diagnostics.length) {
+    throw new AgentRuntimeError(permission.diagnostics[0]!.code, 'provider_config',
+      permission.diagnostics.map(item => item.message).join('; '), false);
+  }
+  const permissionMode = permission.mode;
   return {
     environment,
     permissionMode,

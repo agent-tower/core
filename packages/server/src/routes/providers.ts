@@ -6,6 +6,7 @@ import {
   RuntimeType,
   USER_VISIBLE_AGENT_TYPES,
   isUserVisibleAgentType,
+  type ProviderConfigDiagnostic,
   type ProviderDraftInput,
 } from '@agent-tower/shared';
 import {
@@ -22,6 +23,7 @@ import {
   smokeTestProviderConfiguration,
 } from '../executors/index.js';
 import { AgentType } from '../types/index.js';
+import { executionPermissionService, type ExecutionPermissionService } from '../services/execution-permission.service.js';
 import {
   getProviderSecretValues,
   normalizeProviderDraft,
@@ -40,7 +42,14 @@ import {
 
 export interface ProviderRoutesOptions {
   connectionProbe?: ProviderConnectionProbeOptions;
+  executionPermissions?: ExecutionPermissionService;
 }
+
+const isPolicyDenial = (item: ProviderConfigDiagnostic) => item.code === 'POLICY_MODE_DENIED' || item.code === 'POLICY_ENFORCEMENT_UNAVAILABLE';
+const importPermissionDiagnostics = (provider: Parameters<ExecutionPermissionService['diagnostics']>[0], permissions: ExecutionPermissionService) =>
+  permissions.diagnostics(provider).filter(item => isPolicyDenial(item)
+    || (provider.agentType === SharedAgentType.CODEX && provider.runtimeType === RuntimeType.CLI
+      && provider.executionPermission === 'AUTO_SANDBOX' && item.code === 'CONFLICT'));
 
 const secretWriteSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('keep') }),
@@ -67,6 +76,7 @@ const createProviderSchema = z.object({
   name: z.string(),
   agentType: z.nativeEnum(AgentType).refine(isUserVisibleAgentType, 'Agent type is not available'),
   runtimeType: z.nativeEnum(RuntimeType).default(RuntimeType.CLI),
+  executionPermission: z.enum(['ASK', 'AUTO_SANDBOX', 'FULL_ACCESS']).optional(),
   env: z.record(secretWriteSchema).default({}),
   config: z.record(z.unknown()).default({}),
   settings: z.string().optional(),
@@ -76,6 +86,7 @@ const createProviderSchema = z.object({
 });
 
 const updateProviderSchema = z.object({
+  executionPermission: z.enum(['ASK', 'AUTO_SANDBOX', 'FULL_ACCESS']).optional(),
   name: z.string().optional(),
   env: z.record(secretWriteSchema).optional(),
   config: z.record(z.unknown()).optional(),
@@ -92,6 +103,14 @@ const testProviderSchema = createProviderSchema.extend({
 const capabilitiesQuerySchema = z.object({
   agentType: z.nativeEnum(SharedAgentType).optional(),
   model: z.string().optional(),
+  providerId: z.string().optional(),
+  runtimeType: z.nativeEnum(RuntimeType).optional(),
+});
+// Draft config replaces persisted config, including an explicit empty object.
+// Do not send credentials through query strings or return Provider internals.
+const capabilitiesDraftSchema = capabilitiesQuerySchema.extend({
+  config: z.record(z.unknown()),
+  settings: z.string().optional(),
 });
 
 const backupProviderSchema = z.object({
@@ -99,6 +118,8 @@ const backupProviderSchema = z.object({
   name: z.string().min(1),
   agentType: z.nativeEnum(AgentType),
   runtimeType: z.nativeEnum(RuntimeType).optional().default(RuntimeType.CLI),
+  executionPermission: z.enum(['ASK', 'AUTO_SANDBOX', 'FULL_ACCESS']).optional(),
+  executionPermissionReviewRequired: z.boolean().optional(),
   env: z.record(z.string()).default({}),
   config: z.record(z.unknown()).default({}),
   settings: z.string().optional(),
@@ -107,7 +128,7 @@ const backupProviderSchema = z.object({
 });
 
 const providerBackupSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   kind: z.literal('provider-backup'),
   exportedAt: z.string().min(1),
   mode: z.literal('full'),
@@ -150,18 +171,40 @@ function draftSecrets(input: ProviderDraftInput): string[] {
 }
 
 export async function providerRoutes(app: FastifyInstance, options: ProviderRoutesOptions = {}) {
+  const permissions = options.executionPermissions ?? executionPermissionService;
+  const readProvider = async (provider: Parameters<typeof redactProvider>[0], deletable?: boolean) => {
+    await permissions.prepare();
+    const redacted = redactProvider(provider, deletable);
+    return { ...redacted, executionPermissionOptions: permissions.options({ agentType: provider.agentType, runtimeType: provider.runtimeType ?? RuntimeType.CLI, providerId: provider.id, provider }),
+      diagnostics: [...redacted.diagnostics ?? [], ...permissions.diagnostics(provider)] };
+  };
   app.get('/providers', async () => {
     const providersWithAvailability = await getAllProvidersAvailability();
-    return providersWithAvailability.map(item => ({
+    return Promise.all(providersWithAvailability.map(async item => ({
       ...item,
-      provider: redactProvider(item.provider, canDeleteProvider(item.provider)),
-    }));
+      provider: await readProvider(item.provider, canDeleteProvider(item.provider)),
+    })));
   });
 
-  app.get('/providers/capabilities', async (request) => {
-    const query = capabilitiesQuerySchema.parse(request.query ?? {});
+  const resolveCapabilities = async (query: z.infer<typeof capabilitiesQuerySchema> & { config?: Record<string, unknown>; settings?: string }) => {
+    await permissions.prepare();
+    const saved = query.providerId ? getProviderById(query.providerId) ?? undefined : undefined;
+    const providerDraft = query.config !== undefined ? {
+      ...saved, id: query.providerId ?? '', name: saved?.name ?? '',
+      agentType: query.agentType ?? saved?.agentType ?? SharedAgentType.CLAUDE_CODE,
+      runtimeType: query.runtimeType ?? saved?.runtimeType ?? RuntimeType.CLI,
+      config: query.config, settings: query.settings ?? saved?.settings, env: saved?.env ?? {}, isDefault: saved?.isDefault ?? false,
+    } : saved;
+    const provider = providerDraft && query.model?.trim()
+      ? { ...providerDraft, config: { ...providerDraft.config, model: query.model.trim() } }
+      : providerDraft;
     const capabilities = Object.fromEntries(
-      USER_VISIBLE_AGENT_TYPES.map(agentType => [agentType, PROVIDER_CAPABILITIES[agentType]]),
+      USER_VISIBLE_AGENT_TYPES.map(agentType => [agentType, { ...PROVIDER_CAPABILITIES[agentType],
+        executionPermissionOptions: {
+          CLI: permissions.options({ agentType, runtimeType: RuntimeType.CLI, providerId: query.providerId, provider }),
+          ACP: permissions.options({ agentType, runtimeType: RuntimeType.ACP, providerId: query.providerId, provider }),
+        },
+      }]),
     ) as typeof PROVIDER_CAPABILITIES;
     if (query.agentType === SharedAgentType.CODEX && query.model?.trim()) {
       const reasoningEffort = capabilities[SharedAgentType.CODEX].reasoningEffort;
@@ -174,7 +217,9 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
       }
     }
     return capabilities;
-  });
+  };
+  app.get('/providers/capabilities', async request => resolveCapabilities(capabilitiesQuerySchema.parse(request.query ?? {})));
+  app.post('/providers/capabilities', async request => resolveCapabilities(capabilitiesDraftSchema.parse(request.body)));
 
   app.post('/providers/test', async (request, reply) => {
     const parsed = testProviderSchema.safeParse(request.body);
@@ -190,13 +235,14 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
     }
     const normalized = normalizeProviderDraft(input, existing);
     const provider = normalized.provider;
-    const diagnostics = [
-      ...normalized.diagnostics,
-    ];
+    await permissions.prepare();
+    const diagnostics = [...new Map([...normalized.diagnostics, ...(normalized.diagnostics.length ? [] : permissions.diagnostics(normalized.provider))]
+      .map(item => [`${item.field}:${item.code}:${item.message}`, item])).values()];
     if (!diagnostics.some(diagnostic => diagnostic.field === 'reasoningEffort')) {
       diagnostics.push(...await validateCodexReasoningEffort(provider));
     }
     if (diagnostics.length > 0) {
+      if (diagnostics.some(isPolicyDenial)) reply.code(403);
       return { ok: false, stage: 'validation', summary: 'Configuration validation failed', diagnostics };
     }
     const connection = resolveEffectiveProviderConnection(provider);
@@ -246,19 +292,20 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
   app.post('/providers/import/preview', async (request, reply) => {
     try {
       const backup = parseBackupPayload(request.body);
-      const diagnostics = validateProviderBackupDrafts(backup);
+      await permissions.prepare();
+      const diagnostics = [...validateProviderBackupDrafts(backup), ...backup.providers.flatMap(provider => importPermissionDiagnostics(provider, permissions))];
       if (diagnostics.length > 0) {
-        reply.code(400);
+        reply.code(diagnostics.some(isPolicyDenial) ? 403 : 400);
         return { message: 'Invalid provider backup', diagnostics };
       }
       const preview = previewProviderImport(backup);
       return {
         ...preview,
-        items: preview.items.map(item => ({
+        items: await Promise.all(preview.items.map(async item => ({
           ...item,
-          incoming: redactProvider(item.incoming),
-          existing: item.existing ? redactProvider(item.existing) : item.existing,
-        })),
+          incoming: await readProvider(item.incoming),
+          existing: item.existing ? await readProvider(item.existing) : item.existing,
+        }))),
       };
     } catch (error) {
       reply.code(400);
@@ -269,17 +316,18 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
   app.post('/providers/import', async (request, reply) => {
     try {
       const backup = parseBackupPayload(request.body);
-      const diagnostics = validateProviderBackupDrafts(backup);
+      await permissions.prepare();
+      const diagnostics = [...validateProviderBackupDrafts(backup), ...backup.providers.flatMap(provider => importPermissionDiagnostics(provider, permissions))];
       if (diagnostics.length > 0) {
-        reply.code(400);
+        reply.code(diagnostics.some(isPolicyDenial) ? 403 : 400);
         return { message: 'Invalid provider backup', diagnostics };
       }
       const result = importProvidersFromBackup(backup);
       return {
         ...result,
-        providers: result.providers
+        providers: await Promise.all(result.providers
           .filter(provider => isUserVisibleAgentType(provider.agentType))
-          .map(provider => redactProvider(provider)),
+          .map(provider => readProvider(provider))),
       };
     } catch (error) {
       reply.code(400);
@@ -293,7 +341,7 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
       reply.code(404);
       return { error: `Provider not found: ${request.params.id}` };
     }
-    return redactProvider(provider, canDeleteProvider(provider));
+    return readProvider(provider, canDeleteProvider(provider));
   });
 
   app.post('/providers', async (request, reply) => {
@@ -304,20 +352,20 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
     }
     const input = parsed.data as ProviderDraftInput;
     const normalized = normalizeProviderDraft(input);
-    const diagnostics = [
-      ...normalized.diagnostics,
-    ];
+    await permissions.prepare();
+    const diagnostics = [...new Map([...normalized.diagnostics, ...(normalized.diagnostics.length ? [] : permissions.diagnostics(normalized.provider))]
+      .map(item => [`${item.field}:${item.code}:${item.message}`, item])).values()];
     if (!diagnostics.some(diagnostic => diagnostic.field === 'reasoningEffort')) {
       diagnostics.push(...await validateCodexReasoningEffort(normalized.provider));
     }
     if (diagnostics.length > 0) {
-      reply.code(400);
+      reply.code(diagnostics.some(isPolicyDenial) ? 403 : 400);
       return { error: 'Invalid provider configuration', diagnostics };
     }
     try {
       const provider = createProvider(persistedData(normalized.provider));
       reply.code(201);
-      return redactProvider(provider, canDeleteProvider(provider));
+      return readProvider(provider, canDeleteProvider(provider));
     } catch (error) {
       reply.code(400);
       return { error: redactError(error, draftSecrets(input)) };
@@ -342,19 +390,19 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
       agentType: existing.agentType as SharedAgentType,
     };
     const normalized = normalizeProviderDraft(input, existing);
-    const diagnostics = [
-      ...normalized.diagnostics,
-    ];
+    await permissions.prepare();
+    const diagnostics = [...new Map([...normalized.diagnostics, ...(normalized.diagnostics.length ? [] : permissions.diagnostics(normalized.provider))]
+      .map(item => [`${item.field}:${item.code}:${item.message}`, item])).values()];
     if (!diagnostics.some(diagnostic => diagnostic.field === 'reasoningEffort')) {
       diagnostics.push(...await validateCodexReasoningEffort(normalized.provider));
     }
     if (diagnostics.length > 0) {
-      reply.code(400);
+      reply.code(diagnostics.some(isPolicyDenial) ? 403 : 400);
       return { error: 'Invalid provider configuration', diagnostics };
     }
     try {
       const provider = updateProvider(existing.id, persistedData(normalized.provider));
-      return provider ? redactProvider(provider, canDeleteProvider(provider)) : null;
+      return provider ? readProvider(provider, canDeleteProvider(provider)) : null;
     } catch (error) {
       reply.code(400);
       return { error: redactError(error, draftSecrets(input)) };
@@ -377,8 +425,8 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
 
   app.post('/providers/reload', async () => ({
     success: true,
-    providers: reloadProviders()
+    providers: await Promise.all(reloadProviders()
       .filter(provider => isUserVisibleAgentType(provider.agentType))
-      .map(provider => redactProvider(provider)),
+      .map(provider => readProvider(provider))),
   }));
 }

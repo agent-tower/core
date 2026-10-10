@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentType, RuntimeType, type ProviderDraftTestResult } from '@agent-tower/shared'
+import { AgentType, RuntimeType, PROVIDER_CAPABILITIES, type ProviderDraftTestResult } from '@agent-tower/shared'
 import {
   ProviderFormModal,
   type ProviderFormData,
@@ -15,7 +15,12 @@ const hookMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/use-providers', () => ({
-  useProviderCapabilities: () => ({ data: undefined }),
+  useProviderCapabilities: () => ({ data: Object.fromEntries(Object.entries(PROVIDER_CAPABILITIES).map(([agent, capability]) => [agent, {
+    ...capability, executionPermissionOptions: {
+      CLI: [{ mode: 'ASK', supported: false, authorized: true, selectable: false, reasons: [{ code: 'RUNTIME_MODE_UNSUPPORTED', message: 'Use ACP for approval' }] }, { mode: 'AUTO_SANDBOX', supported: false, authorized: true, selectable: false, reasons: [{ code: 'CAPABILITY_UNVERIFIED', message: 'Sandbox not verified' }] }, { mode: 'FULL_ACCESS', supported: true, authorized: true, selectable: true, reasons: [] }],
+      ACP: ['ASK', 'AUTO_SANDBOX', 'FULL_ACCESS'].map(mode => ({ mode, supported: true, authorized: true, selectable: true, reasons: [] })),
+    },
+  }])) }),
   useTestProviderDraft: () => ({ mutate: hookMocks.mutate, isPending: false }),
 }))
 
@@ -40,6 +45,7 @@ function initialCodexData(overrides: Partial<ProviderFormData> = {}): ProviderFo
     name: 'Codex Test',
     agentType: AgentType.CODEX,
     runtimeType: RuntimeType.CLI,
+    executionPermission: 'FULL_ACCESS',
     config: {},
     settings: '',
     env: [],
@@ -72,6 +78,15 @@ function findButton(label: string): HTMLButtonElement {
     .find(item => item.textContent?.trim() === label)
   if (!button) throw new Error(`Button not found: ${label}`)
   return button
+}
+
+function selectExecutionPermission(label: string) {
+  const trigger = document.querySelector('fieldset button[aria-expanded]') as HTMLButtonElement
+  act(() => trigger.click())
+  const option = [...document.querySelectorAll<HTMLButtonElement>('fieldset button[aria-pressed]')]
+    .find(button => button.textContent?.includes(label))
+  if (!option) throw new Error(`Permission option not found: ${label}`)
+  act(() => option.click())
 }
 
 function changeTextInput(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
@@ -129,18 +144,19 @@ describe('ProviderFormModal draft test invalidation', () => {
     expect([...document.querySelectorAll('button')].some(button => button.textContent?.trim() === 'CLI')).toBe(false)
     expect([...document.querySelectorAll('button')].some(button => button.textContent?.trim() === 'ACP')).toBe(false)
 
-    act(() => findButton('每次询问').click())
-    act(() => findButton('无限制').click())
+    selectExecutionPermission('Ask for approval')
+    selectExecutionPermission('Auto approve (full access)')
 
     expect(window.confirm).not.toHaveBeenCalled()
-    expect(document.body.textContent).toContain('Agent 将拥有完全访问电脑的权限')
+    expect(document.body.textContent).toContain('Use native broad approval and disable the configurable sandbox. Upstream rules still apply.')
 
     act(() => findButton('保存 Provider').click())
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       agentType: AgentType.CODEX,
       runtimeType: RuntimeType.ACP,
-      config: expect.objectContaining({ permissionMode: 'UNRESTRICTED' }),
+      executionPermission: 'FULL_ACCESS',
+      config: {},
     }))
   })
 
@@ -169,7 +185,8 @@ describe('ProviderFormModal draft test invalidation', () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       agentType: AgentType.QWEN_CODE,
       runtimeType: RuntimeType.ACP,
-      config: { permissionMode: 'ASK' },
+      executionPermission: 'ASK',
+      config: {},
     }))
   })
 
@@ -186,8 +203,8 @@ describe('ProviderFormModal draft test invalidation', () => {
       isDefault: false,
     })
 
-    expect(findButton('无限制')).not.toBeNull()
-    expect(document.body.textContent).toContain('Agent 将拥有完全访问电脑的权限')
+    expect(findButton('Auto approve (full access)')).not.toBeNull()
+    expect(document.body.textContent).toContain('Use native broad approval and disable the configurable sandbox. Upstream rules still apply.')
   })
 
   it('does not restore an old response after a structured field changes', () => {
@@ -201,6 +218,7 @@ describe('ProviderFormModal draft test invalidation', () => {
 
   it('does not restore an old response after the Agent type changes', () => {
     renderModal()
+    selectExecutionPermission('Auto approve (full access)')
     const request = beginTest()
     act(() => findButton('Claude Code').click())
     act(() => findButton('Codex').click())
@@ -251,7 +269,6 @@ describe('ProviderFormModal draft test invalidation', () => {
     renderModal(initialCodexData({
       config: {
         model: 'gpt-old',
-        dangerouslyBypassApprovalsAndSandbox: false,
         unknownConfig: { keep: true },
       },
       settings: [
@@ -283,7 +300,6 @@ describe('ProviderFormModal draft test invalidation', () => {
     const [configInput, settingsInput] = document.querySelectorAll('textarea')
     expect(JSON.parse((configInput as HTMLTextAreaElement).value)).toEqual({
       model: 'gpt-new',
-      dangerouslyBypassApprovalsAndSandbox: false,
       unknownConfig: { keep: true },
     })
     expect((settingsInput as HTMLTextAreaElement).value)
@@ -376,24 +392,27 @@ describe('ProviderFormModal draft test invalidation', () => {
     expect(onSave.mock.calls[0]![0].config).toEqual({ fastMode: false, unknown: 'keep' })
   })
 
-  it('hides execution permission controls while keeping Advanced bypass config editable', () => {
+  it('shows unified permission choices and removes legacy flags on explicit reselection', () => {
     const onSave = vi.fn()
-    renderModal(initialCodexData({
-      config: { dangerouslyBypassApprovalsAndSandbox: true },
-    }), onSave)
-
+    renderModal(initialCodexData({ config: { dangerouslyBypassApprovalsAndSandbox: true } }), onSave)
     expect(document.querySelector('[role="switch"][aria-label="跳过所有确认和沙盒"]')).toBeNull()
-    expect(document.body.textContent).not.toContain('执行权限')
-    expect(document.body.textContent).not.toContain('权限已开启')
-
-    act(() => findButton('高级配置').click())
-    const configInput = document.querySelector('textarea') as HTMLTextAreaElement
-    expect(JSON.parse(configInput.value)).toEqual({ dangerouslyBypassApprovalsAndSandbox: true })
-
-    changeTextInput(configInput, JSON.stringify({ dangerouslyBypassApprovalsAndSandbox: false }, null, 2))
+    expect(document.body.textContent).toContain('Execution permission')
+    selectExecutionPermission('Auto approve (full access)')
     act(() => findButton('保存 Provider').click())
-    expect(onSave).toHaveBeenCalledTimes(1)
-    expect(onSave.mock.calls[0]![0].config).toEqual({ dangerouslyBypassApprovalsAndSandbox: false })
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ executionPermission: 'FULL_ACCESS', config: {} }))
+  })
+
+  it('keeps migrated Codex ACP ASK blocked until the user explicitly reselects ASK', () => {
+    const onSave = vi.fn()
+    renderModal(initialCodexData({ runtimeType: RuntimeType.ACP, executionPermission: 'ASK', executionPermissionReviewRequired: true, config: {} }), onSave)
+    expect(document.body.textContent).toContain('Legacy Codex permissions did not establish an explicit reviewer policy.')
+    expect(findButton('保存 Provider').disabled).toBe(true)
+    expect(findButton('测试配置').disabled).toBe(true)
+    selectExecutionPermission('Ask for approval')
+    expect(document.body.textContent).not.toContain('Legacy Codex permissions did not establish an explicit reviewer policy.')
+    expect(findButton('保存 Provider').disabled).toBe(false)
+    act(() => findButton('保存 Provider').click())
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ executionPermission: 'ASK', config: {} }))
   })
 
   it('blocks Advanced save and test when Codex permission is not boolean', () => {
@@ -402,7 +421,7 @@ describe('ProviderFormModal draft test invalidation', () => {
     const configInput = document.querySelector('textarea') as HTMLTextAreaElement
     changeTextInput(configInput, JSON.stringify({ dangerouslyBypassApprovalsAndSandbox: 'true' }))
 
-    expect(document.body.textContent).toContain('执行权限字段必须为 true 或 false')
+    expect(document.body.textContent).toContain('dangerouslyBypassApprovalsAndSandbox must be true or false')
     expect(findButton('测试配置').disabled).toBe(true)
     expect(findButton('保存 Provider').disabled).toBe(true)
   })
@@ -413,7 +432,7 @@ describe('ProviderFormModal draft test invalidation', () => {
     }))
 
     expect(findButton('高级配置').getAttribute('aria-expanded')).toBe('true')
-    expect(document.body.textContent).toContain('执行权限字段必须为 true 或 false')
+    expect(document.body.textContent).toContain('dangerouslyBypassApprovalsAndSandbox must be true or false')
     expect((document.querySelector('textarea') as HTMLTextAreaElement).value)
       .toContain('dangerouslyBypassApprovalsAndSandbox')
     expect(findButton('测试配置').disabled).toBe(true)

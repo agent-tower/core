@@ -8,6 +8,7 @@ import { TokenUsageIndicator } from './TokenUsageBar'
 import { RuntimePermissionPrompt } from './RuntimePermissionPrompt'
 import { LogViewBoundary } from '@/components/errors'
 import { ProviderSelector } from '@/components/task/ProviderSelector'
+import { getSelectedProviderStartIssue } from '@/components/provider/provider-draft'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { useAttachments } from '@/hooks/use-attachments'
 import type { ProviderWithAvailability } from '@/hooks/use-providers'
@@ -66,6 +67,7 @@ export function AgentSessionPanel({
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [selectedProviderId, setSelectedProviderId] = useState(providerId ?? '')
+  const selectedProviderIssue = getSelectedProviderStartIssue(providers, selectedProviderId || providerId)
   const [isDragOver, setIsDragOver] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -145,6 +147,7 @@ export function AgentSessionPanel({
       || isStopping
       || isSessionCancelling
       || isUploading
+      || selectedProviderIssue
     ) return
     sendingRef.current = true
 
@@ -184,6 +187,7 @@ export function AgentSessionPanel({
     resetTextareaHeight,
     onSend,
     selectedProviderId,
+    selectedProviderIssue,
     attach,
     scrollToBottom,
     t,
@@ -376,6 +380,7 @@ export function AgentSessionPanel({
                       || isSending
                       || isStopping
                       || isSessionCancelling
+                      || !!selectedProviderIssue
                     }
                     className={cn(
                       'rounded-lg p-2 transition-all duration-200',
@@ -384,6 +389,7 @@ export function AgentSessionPanel({
                         && !isSending
                         && !isStopping
                         && !isSessionCancelling
+                        && !selectedProviderIssue
                         ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                         : 'cursor-not-allowed bg-transparent text-muted-foreground/50',
                     )}

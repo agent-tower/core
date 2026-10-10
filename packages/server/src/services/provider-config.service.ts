@@ -2,6 +2,8 @@ import { parse as parseToml } from 'smol-toml';
 import {
   AgentType,
   RuntimeType,
+  resolveProviderExecutionPermission,
+  withoutLegacyPermissionConfig,
   getProviderCapability,
   supportsAgentRuntime,
   type Provider,
@@ -923,6 +925,7 @@ export function normalizeProviderDraft(
     config: incomingConfig,
     settings: restoredSettings,
     isDefault: input.isDefault ?? base.isDefault,
+    ...(input.executionPermission !== undefined ? { executionPermission: input.executionPermission, executionPermissionReviewRequired: undefined } : {}),
   };
   const diagnostics: ProviderConfigDiagnostic[] = [];
   const runtimeType = provider.runtimeType ?? RuntimeType.CLI;
@@ -936,32 +939,19 @@ export function normalizeProviderDraft(
     });
   }
   const capability = getProviderCapability(input.agentType);
-  const legacyPermissionPath = capability?.executionPermission.path;
-  const legacyPermissionValue = legacyPermissionPath ? provider.config[legacyPermissionPath] : undefined;
-  const rawAcpPermissionMode = provider.config.permissionMode
-    ?? provider.config.acpPermissionMode
-    ?? (typeof legacyPermissionValue === 'boolean'
-      ? legacyPermissionValue ? 'UNRESTRICTED' : 'ASK'
-      : undefined);
-  if (runtimeType === RuntimeType.ACP && rawAcpPermissionMode !== undefined) {
-    if (
-      rawAcpPermissionMode !== 'ASK'
-      && rawAcpPermissionMode !== 'UNRESTRICTED'
-      && rawAcpPermissionMode !== 'AUTO_APPROVE'
-    ) {
-      diagnostics.push({
-        field: 'executionPermission',
-        code: 'INVALID_ENUM',
-        message: 'ACP permissionMode must be ASK or UNRESTRICTED',
-      });
-    } else {
-      const config = { ...provider.config };
-      config.permissionMode = rawAcpPermissionMode === 'AUTO_APPROVE' ? 'UNRESTRICTED' : rawAcpPermissionMode;
-      delete config.acpPermissionMode;
-      if (legacyPermissionPath) delete config[legacyPermissionPath];
-      provider = { ...provider, config };
-    }
-  }
+  const hasLegacyPermission = provider.config.permissionMode !== undefined || provider.config.acpPermissionMode !== undefined
+    || (getProviderCapability(provider.agentType)?.executionPermission.path
+      && provider.config[getProviderCapability(provider.agentType)!.executionPermission.path!] !== undefined);
+  if (!existing && input.executionPermission === undefined && !hasLegacyPermission) provider.executionPermission = 'ASK';
+  const permission = resolveProviderExecutionPermission(provider);
+  diagnostics.push(...permission.diagnostics);
+  provider = {
+    ...provider,
+    executionPermission: permission.mode,
+    ...(permission.diagnostics.some(item => item.code === 'LEGACY_PERMISSION_REVIEW_REQUIRED')
+      ? { executionPermissionReviewRequired: true } : {}),
+    config: permission.diagnostics.length ? provider.config : withoutLegacyPermissionConfig(provider.agentType, provider.config),
+  };
   for (const [key, write] of Object.entries(input.env ?? {})) {
     if (write.action === 'replace' && !write.value.trim()) {
       diagnostics.push({ field: 'env', code: 'REQUIRED', message: `Environment value is required for ${key}` });
@@ -1034,7 +1024,7 @@ export function normalizeProviderDraft(
     ))
   )));
 
-  return { provider, diagnostics };
+  return { provider, diagnostics: [...new Map(diagnostics.map(item => [`${item.field}:${item.code}:${item.message}`, item])).values()] };
 }
 
 export type ProviderBackupDiagnostic = ProviderConfigDiagnostic & {
@@ -1063,6 +1053,7 @@ export function validateProviderBackupDrafts(
       name: incoming.name,
       agentType: incoming.agentType,
       runtimeType: incoming.runtimeType,
+      executionPermission: incoming.executionPermission,
       env: Object.fromEntries(Object.entries(incoming.env ?? {}).map(([key, value]) => [
         key,
         { action: 'replace' as const, value },
@@ -1072,7 +1063,7 @@ export function validateProviderBackupDrafts(
       isDefault: incoming.isDefault,
     });
 
-    return diagnostics.map(diagnostic => ({
+    return diagnostics.filter(diagnostic => diagnostic.code !== 'LEGACY_PERMISSION_REVIEW_REQUIRED').map(diagnostic => ({
       ...diagnostic,
       providerIndex,
       providerId: incoming.id,

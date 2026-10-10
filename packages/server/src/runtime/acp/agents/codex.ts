@@ -102,18 +102,20 @@ export const codexAcpAgentDefinition: AcpAgentDefinition = {
   },
 
   async configureSession(context, sessionId, response, profile) {
-    if (profile.permissionMode === 'UNRESTRICTED' && response.modes?.currentModeId !== 'agent-full-access') {
-      if (!response.modes?.availableModes.some(mode => mode.id === 'agent-full-access')) {
+    const modeId = { ASK: 'read-only', AUTO_SANDBOX: 'agent', FULL_ACCESS: 'agent-full-access' }[profile.permissionMode];
+    if (!response.modes?.availableModes.some(mode => mode.id === modeId)) {
         throw new AgentRuntimeError(
           'permission_mode_unsupported',
           'session',
-          'Codex did not advertise agent-full-access',
+          `Codex did not advertise the '${modeId}' permission mode`,
           false,
         );
-      }
+    }
+    // Apply on new, resume and load; an old native session may retain another mode.
+    if (response.modes.currentModeId !== modeId) {
       await context.request(acp.methods.agent.session.setMode, {
         sessionId,
-        modeId: 'agent-full-access',
+        modeId,
       });
     }
     if (profile.fastMode === undefined) return;

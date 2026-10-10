@@ -9,6 +9,7 @@ import {
   type ProviderSimplifiedConfig,
   type RedactedProvider,
 } from '@agent-tower/shared'
+import type { ProviderWithAvailability } from '@/hooks/use-providers'
 
 export interface ProviderEnvDraftRow {
   key: string
@@ -712,4 +713,31 @@ export function resolveProviderDraftConflict<T extends {
   }
 
   return { ...draft, config, env, simplified }
+}
+
+/** Same server-owned availability used by start and Provider pickers. */
+export function getProviderPermissionIssue(provider: RedactedProvider): string | undefined {
+  const diagnostic = provider.diagnostics?.find(item => item.field === 'executionPermission')
+  if (diagnostic) return diagnostic.message
+  const selected = provider.executionPermissionOptions?.find(item => item.mode === provider.executionPermission)
+  return selected && !selected.selectable
+    ? selected.reasons[0]?.message ?? 'This Agent has no available execution permission mode.'
+    : undefined
+}
+
+export function getProviderStartIssue(item: ProviderWithAvailability): string | undefined {
+  const permissionIssue = getProviderPermissionIssue(item.provider)
+  if (permissionIssue) return permissionIssue
+  if (item.availability.type === 'NOT_FOUND') {
+    return item.availability.error || 'Agent executable is unavailable.'
+  }
+  return undefined
+}
+
+export function getSelectedProviderStartIssue(
+  providers: ProviderWithAvailability[] | undefined,
+  providerId: string | null | undefined,
+): string | undefined {
+  const selected = providers?.find(item => item.provider.id === providerId)
+  return selected ? getProviderStartIssue(selected) : 'Selected Provider is unavailable.'
 }

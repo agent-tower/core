@@ -28,19 +28,70 @@ Provider 的 `runtimeType` 有两种选择：
 
 | Runtime | 行为 | 当前 Agent 支持 |
 | --- | --- | --- |
-| `CLI` | 启动本机 CLI，通过 PTY、Parser 和 MsgStore 处理输出 | Claude Code、Gemini CLI、Cursor Agent、Codex |
+| `CLI` | 启动本机 CLI，通过受管进程、PTY 或双向管道、Parser 和 MsgStore 处理输出 | Claude Code、Gemini CLI、Cursor Agent、Codex |
 | `ACP` | 通过 Agent Client Protocol 双向通信，支持能力协商、session 恢复和权限请求 | Claude Code、Gemini CLI、Cursor Agent、Codex、Qwen Code、Kiro CLI、OpenCode、Pi Coding Agent、Grok Build、DeepSeek Harness |
 
 旧 Provider 和旧备份没有 `runtimeType` 时按 `CLI` 读取，因此升级不会改变已有配置。同一 Agent 的 CLI 与 ACP 是两个独立默认项；设置其中一个不会取消另一个的默认状态。
 
 Provider 页面不会使用 CLI/ACP Tab。创建配置时，Agent 下拉会直接显示 `Claude Code`、`Claude Code (ACP)`、`Codex`、`Codex (ACP)` 和 `Qwen Code (ACP)` 等可用组合。系统内部仍分别保存 `AgentType + RuntimeType`，Runtime 不会变成独立的顶层配置视图。
 
-ACP Provider 可以选择权限策略：
+## 三档执行权限
 
-- `ASK`：Agent 请求工具权限时，在 Session 面板中等待用户选择 Agent 提供的选项。
-- `UNRESTRICTED`：关闭 Agent 的沙盒或受限执行模式，并使用 Agent 原生的 full access、bypass、yolo 或 force 能力；没有原生全权限模式的 Agent 才由 Agent Tower 自动响应剩余的工具权限请求。
+CLI 与 ACP 使用同一组选择，保存到 Provider 顶层 `executionPermission`：
 
-旧 Provider 中的 `AUTO_APPROVE` 按 `UNRESTRICTED` 兼容读取，并在下次保存时迁移为新值。无限制只跳过工具执行权限；登录、表单提问和其他需要用户输入的交互仍会正常显示。
+| 值 | 名称 | 行为 |
+| --- | --- | --- |
+| `ASK` | 请求批准 | 遵循原生人工审批；原生已允许的操作可以直接执行，不保证每次工具调用都询问。 |
+| `AUTO_SANDBOX` | 自动同意（沙箱） | 使用已适配的原生沙箱与自动审阅，保留风险判断、升权及剩余人工请求。 |
+| `FULL_ACCESS` | 自动同意（完全访问） | 使用原生广泛批准模式，关闭可控制的沙箱；上游强制规则仍有效。 |
+
+三个选项始终可见。不支持或未核实的项置灰并显示理由；保存、测试和实际启动均校验。新建 Provider 默认 ASK，ASK 不可用时必须手动选择。失效历史值保持可见，不会自动变成完全访问。
+
+权限修改在**新进程或 ACP transport 启动**时生效。复用存活的 ACP 连接保留启动权限，Session 面板显示其启动模式。重启或断线后新启动应用当前选择，恢复原生会话也须显式配置。Cursor、Kiro、Grok 当前接入无法可靠重设恢复会话的权限，新 transport 的 resume/load 会报不支持，需要创建新会话。
+
+如果同 ID 导入把 Provider 的 Agent 或 CLI/ACP 接入方式改了，旧 Session 的新启动会明确拒绝。请用更新后的 Provider 创建新 Session；活动 ACP 连接仍使用已经确认的启动快照。
+
+首版矩阵如下。“支持”表示 Tower 已实现相应原生接口；安装版本仍须接受参数并广告所需 ACP 模式，否则启动报错。尚未完成所有 Agent 的真实模型 smoke。
+
+| Agent / Runtime | 请求批准 | 沙箱自动同意 | 完全访问 |
+| --- | --- | --- | --- |
+| Claude CLI | 条件支持：已验收的原生构建；其余组合置灰 | 置灰：接入链路未核实 | 支持 |
+| Codex CLI | 条件支持：已验收的原生 app-server 构建；其余组合置灰 | 条件支持：已验收的原生 app-server 构建；模型可留空使用 Codex 默认值或选择其他模型 | 支持：原有 exec 接入 |
+| Gemini / Cursor CLI | 置灰：非交互接入不能转发原生审批 | 置灰：接入链路未核实 | 支持 |
+| Codex ACP | 支持 | 支持：原生 `auto_review` | 支持 |
+| Claude / Gemini / Qwen / Grok ACP | 支持 | 置灰：原生条件与接入链路未核实 | 支持 |
+| OpenCode ACP | 支持：显式 `ask` | 置灰：无原生沙箱档 | 支持：原生 `allow`，保留显式 deny |
+| DeepSeek Harness ACP | 支持：工作区内执行，按需升权 | 置灰：独立自动审阅档未核实 | 支持 |
+| Kiro ACP | 支持：原生请求 | 置灰：信任规则不等于沙箱 | 置灰：V2/V3 信任配置未核实 |
+| Cursor ACP | 置灰：单次 allowlist 配置未核实 | 置灰：沙箱自动审阅未核实 | 支持 |
+| Pi ACP | 置灰：普通工具无完整审批门 | 置灰：无原生沙箱档 | 支持：原生默认权限 |
+| 历史 Minion ACP | 支持 | 置灰：无原生沙箱档 | 支持；继续隐藏创建入口 |
+
+Codex ACP 历史 ID `read-only` 在当前适配器中实际对应 `workspace-write + on-request + 人工 reviewer`；`agent` 对应 `workspace-write + on-request + auto_review`；`agent-full-access` 对应原生 bypass，不能从 ID 推断沙箱。原生沙箱覆盖范围以 Agent 为准，不承诺隔离全部宿主、MCP 或客户端代理工具。
+
+剩余原生审批始终转发，即使完全访问也不会由通用 Driver 无条件答复允许。计划确认、登录和用户问答继续按原协议处理。
+
+Claude CLI 的「请求批准」会把原生需要审批的动作显示为卡片，提供「本次批准」「本次拒绝」。卡片展示有界、脱敏的命令或路径；批准不会添加永久允许规则。刷新页面可恢复本轮仍有效的请求，停止或原生取消后旧按钮失效。原生已有允许规则的操作仍可直接执行。
+
+当前仅开放已验收的 Darwin arm64 / Claude Code 2.1.293 原生构建，并检查实际可执行文件、构建摘要和版本。未知构建、其他版本/平台、Electron、router 或自定义启动命令/附加参数显示 `CAPABILITY_UNVERIFIED`；缺 CLI 显示 `RUNTIME_MODE_UNSUPPORTED`。保存、测试和实际启动共用检测结果，启动时仍必须完成原生初始化及 `default` 模式确认，失败会结束执行，不会自动更换权限。
+
+这里的支持门槛验证原生审批控制通道，不代表每个模型组合都完成实测。Tower 在发送任务前完成初始化和 `default` 确认，审批消息由本机 CLI 处理，因此当前门槛不按模型名称筛选。真实批准、拒绝和 resume smoke 仅使用兼容 Anthropic 协议的 `deepseek-v4-pro`；官方 Anthropic 模型及其他模型尚未完成该 smoke，不能据此承诺其全部工具行为。编辑运行配置时，选项按当前草稿重新判断；移除不支持的启动覆盖即可修复失效 ASK 配置，无需先改成完全访问。
+
+Claude CLI 每轮使用新进程，续聊通过原生 resume，并在发送任务前重新确认 `default`，包括从历史完全访问会话恢复。收到最终结果后关闭 stdin；根进程退出时开始清理后代，正常收尾另需等待输出 EOF 和服务端消费确认，超时按传输失败处理。该通道不接收任意终端输入；本阶段不开放 AskUserQuestion、计划确认或 Codex app-server 问答。「完全访问」不会替用户回答问题。权限模式仍不等同于主机或多用户资源隔离。
+
+Codex CLI 的「请求批准」通过原生 [app-server](https://learn.chatgpt.com/docs/app-server#approvals) 接入工具执行审批。每轮新建进程，先完成初始化及 `thread/start` 或 `thread/resume`，确认 `on-request + user reviewer + workspace-write` 后才发送任务。续聊再次确认，包括从旧完全访问的 exec 会话恢复。原生请求的命令、终端输入或文件修改可通过现有卡片本次批准/拒绝；批准不保存命令规则或目录授权。页面刷新恢复本轮有效请求，取消、停止和旧轮答复会失效。ASK 是按需人工批准，原生沙箱及已有规则已允许的操作仍可直接执行。
+
+Codex CLI 的「自动同意（沙箱）」复用同一条原生 app-server 通道，每轮新进程及恢复原生 thread 时显式要求并确认 `on-request + auto_review + workspace-write`，确认前不会发送任务。Tower 还固定基础沙箱的额外可写根为空、网络访问关闭，并从原生 thread 响应核对实际值；Provider 高级 TOML 中的 `sandbox_workspace_write` 会被拒绝，继承的原生配置无法绕过启动前的边界校验。若恢复旧 thread 时原生不能确认这两个基础值，本轮会拒绝执行，需要重新建立可确认的会话。它与「请求批准」使用相同的 `workspace-write` 沙箱类型，越界请求交由 Codex 原生自动审阅；原生若仍交给人的命令/文件请求会显示原有审批卡片，并在答复时复核服务端授权。**危险操作没有必定弹出人工审批卡片的保证。**问答、计划、MCP elicitation、独立资源授权及持久目录 grant 仍是独立交互，不能视为执行审批。参见 OpenAI 官方[自动审阅说明](https://learn.chatgpt.com/docs/sandboxing/auto-review)与[权限模式](https://learn.chatgpt.com/docs/permission-modes)。
+
+当前开放 Darwin arm64 / Codex CLI 0.161.0 的已验收构建，服务端检查实际原生文件及摘要，固定到该原生路径启动。未知文件、版本、平台、Electron、自定义启动命令、附加参数或 Provider 的 PATH/PATHEXT 覆盖保持置灰；不自动改为完全访问。实际模型 smoke 使用 `gpt-6-sol` 的 OpenAI-compatible 连接，覆盖命令和越界文件的批准/拒绝、usage、原生会话 ID、exec→ASK 恢复，以及等待审批/执行中取消后立即续聊。构建门槛验证原生协议，不按模型名白名单筛选；其他模型与官方认证路径尚未完成同样的 smoke，模型连接失败也不能算审批验收。
+
+自动审阅档不按 Provider 模型名筛选；模型留空或选择其他模型时，Tower 仍按原生构建、Provider 配置和部署授权检查可用性。每次启动或恢复都会在发送任务前要求 Codex 确认 `auto_review` 及沙箱边界；原生拒绝或不能确认时停止本轮，不切换权限。本机真实验证仅覆盖上述 `gpt-6-sol` 兼容连接，不保证其他账号或模型连接可用。真实 Driver 验证了沙箱内命令无需人工审批、一次临时工作区外写入由原生自动审阅批准、一次临时本机回环网络请求成功、ASK→AUTO_SANDBOX 与 AUTO_SANDBOX→FULL_ACCESS 的原生 thread 恢复、usage，以及 AUTO 执行中取消后旧进程树先清理再启动替换轮次。页面验收另观察到原生自动审阅批准了一次工作区外测试目录的破坏性删除，全程没有人工审批卡片；工作区外写入与本机回环网络请求也没有弹卡。带危险继承配置的 FULL_ACCESS→AUTO_SANDBOX 恢复被启动前校验拒绝。Codex 自动审阅**可能批准含破坏性删除的沙箱外动作**，所以受限部署必须另有可执行的外层资源边界；未明确声明该边界时，即使策略允许此档也返回 `POLICY_ENFORCEMENT_UNAVAILABLE`，不能仅靠禁用完全访问选项限制宿主资源。原生沙箱覆盖范围仍以 Codex 工具为准，不等于整个宿主或 MCP 的隔离。
+
+Codex ASK 原生控制帧不进入终端/日志，普通终端输入不能注入协议。原生 turn 完成后结束 stdin，继续消费尾部输出，再经已有整树清理确认关闭；下一轮等待旧 launch 的真实清理和持久事件确认。本阶段不开放独立问答、计划确认、MCP elicitation、独立资源 grant 或持久目录授权；遇到未支持的请求会明确结束本轮，不自动答复。完全访问仍使用原有 exec 入口，不由通用 Driver 代答问题。
+
+旧 `UNRESTRICTED`、`AUTO_APPROVE`、危险布尔 `true` 读取为 `FULL_ACCESS`。仅有旧权限字段或缺省的 Codex CLI/ACP ASK 必须明确重选（`LEGACY_PERMISSION_REVIEW_REQUIRED`）：旧 CLI 未启用人工审批通道，旧 ACP 未设置 mode、使用 adapter 默认 Agent/自动审阅，无法据旧 ASK 标签确认生效策略。升级保留原选择和诊断，不自动换成沙箱档或完全访问；明确选择新的 `executionPermission=ASK` 才启用人工审阅。其他 Agent 的旧 ACP ASK 保留，Pi 的旧 ASK 不可运行。备份输出版本 2，兼容导入版本 1；首次写旧配置保留 `providers.json.permission-v1.bak`。非法/冲突值返回诊断，规范选择与原生危险覆盖冲突时须移除覆盖。
+
+服务端 `ExecutionPermissionPolicy` 可限制允许档位，默认本地 owner 允许全部支持项；受限策略不能直接启动完全访问 Provider，Pi 禁止完全访问时无可用项。此接口用于后续部署扩展，首版没有用户库、RBAC、跨租户隔离或即时撤权系统。
 
 ACP Provider 沿用对应 Agent 的认证与模型配置，而不是使用一套 ACP 专属密钥：
 
@@ -55,7 +106,7 @@ ACP Provider 沿用对应 Agent 的认证与模型配置，而不是使用一套
 | OpenCode (ACP) | OpenCode 登录状态，或 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和模型 |
 | Pi Coding Agent (ACP) | 内置 Pi Runtime；配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、模型和思考强度，或 Pi 支持的环境变量认证 |
 | Grok Build (ACP) | `OPENAI_API_KEY` 会映射为 `XAI_API_KEY`，并支持 API 地址、模型和权限策略 |
-| DeepSeek Harness (ACP) | 需要本机可执行的 `dsh`；配置 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、模型和思考强度，权限固定为 `ASK` |
+| DeepSeek Harness (ACP) | 需要本机可执行的 `dsh`；配置 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、模型、思考强度及 ASK/FULL_ACCESS |
 
 启动时，通用 ACP Driver 会按 Agent Definition 将 Provider 配置投影为对应 adapter 或原生 ACP CLI 的启动参数、环境变量和 Session 配置。
 
@@ -70,7 +121,7 @@ DeepSeek Harness（`dsh`）通过官方 automation profile 启动：`dsh --profi
 - **思考强度**：使用 Harness 自己的 `off`、`low`、`high`、`max` 档位，与 Claude/Kiro 的档位不同，不要混用。
 - **权限**：Harness 不暴露权限绕过开关，也不提供 ACP mode 选择器，因此权限策略通过启动变量 `DSH_PERMISSION_MODE` 映射到 Harness 自己的权限预设：
   - `ASK` → `workspace-write`：命令被限制在工作区内，工作区外的文件操作会被沙箱直接拒绝；模型可以在同一次失败后用更宽权限重试一次，该重试会以权限请求的形式弹给你确认，同意后才执行。
-  - `UNRESTRICTED` → `danger-full-access`：不再限制工作区，也不再询问。
+  - `FULL_ACCESS` → `danger-full-access`：使用原生全访问预设。
   也就是说，「询问」不是对每条命令都提问，而是「默认限制在工作区，越权时按需申请」。
 - **数据目录**：Agent Tower 会把 `DSH_HOME` 指向 `~/.agent-tower/deepseek-harness/<providerId>/`（受 `AGENT_TOWER_DATA_DIR` 影响），因此 Harness 的会话、storage 与 profile 按 Provider 隔离并跨启动保留，同时不会改动你自己的 `~/.dsh`。该目录是持久状态，停止 Session 时不会被删除。
 - **首次启动**：Agent Tower 会预先写好 `acp` profile 骨架，避免每次启动重新引导；如果 Harness 需要补齐依赖，首次启动会明显变慢，ACP 初始化超时因此放宽到 3 分钟。

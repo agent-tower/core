@@ -10,7 +10,7 @@ import { CreateTaskInput, type CreateTaskInputProps } from '../CreateTaskInput'
 const catalogRequests: Array<{ agentType?: string | null; workingDir?: string }> = []
 
 vi.mock('@/lib/i18n', () => ({
-  useI18n: () => ({ t: (source: string) => source }),
+  useI18n: () => ({ t: (source: string, params?: Record<string, string>) => source.replace(/\{(\w+)\}/g, (match, key: string) => params?.[key] ?? match) }),
 }))
 
 vi.mock('@/hooks/use-attachments', () => ({
@@ -79,31 +79,22 @@ function render(props: Partial<CreateTaskInputProps> = {}) {
   document.body.appendChild(container)
   root = createRoot(container)
   const onSubmit = vi.fn(async () => undefined)
+  const baseProps: CreateTaskInputProps = {
+    projects: [{ id: 'project-1', name: 'Project 1', repoPath: '/repos/project-1' }],
+    providers: [{ id: 'provider-1', name: 'Provider 1', agentType: AgentType.CODEX, available: true }],
+    onSubmit,
+    defaultProjectId: 'project-1',
+    defaultProviderId: 'provider-1',
+    createStep: 'idle',
+    ...props,
+  }
+  const rerender = (nextProps: Partial<CreateTaskInputProps> = {}) => {
+    act(() => root!.render(<CreateTaskInput {...baseProps} {...nextProps} />))
+  }
 
-  act(() => {
-    root!.render(
-      <CreateTaskInput
-        projects={[{
-          id: 'project-1',
-          name: 'Project 1',
-          repoPath: '/repos/project-1',
-        }]}
-        providers={[{
-          id: 'provider-1',
-          name: 'Provider 1',
-          agentType: AgentType.CODEX,
-          available: true,
-        }]}
-        onSubmit={onSubmit}
-        defaultProjectId="project-1"
-        defaultProviderId="provider-1"
-        createStep="idle"
-        {...props}
-      />,
-    )
-  })
+  rerender()
 
-  return { onSubmit }
+  return { onSubmit, rerender }
 }
 
 async function setTextareaValue(value: string) {
@@ -135,6 +126,59 @@ afterEach(() => {
 
 beforeEach(() => {
   catalogRequests.length = 0
+})
+
+describe('CreateTaskInput Provider availability', () => {
+  it.each(['task', 'conversation'] as const)('shows blocked %s Providers and prevents keyboard selection or submission', async variant => {
+    const reason = 'Remove sandbox_workspace_write from Codex advanced settings before using automatic sandbox approval.'
+    const { onSubmit, rerender } = render({
+      variant,
+      defaultProviderId: 'ready',
+      providers: [
+        { id: 'ready', name: 'Ready Codex', agentType: AgentType.CODEX, available: true, permissionMode: 'ASK' },
+        { id: 'blocked', name: 'Blocked Codex', agentType: AgentType.CODEX, available: false, permissionMode: 'AUTO_SANDBOX', reason },
+      ],
+    })
+    const textarea = await setTextareaValue('Review this change')
+    const providerTrigger = [...container!.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('Ready Codex'))!
+    act(() => providerTrigger.click())
+
+    const blocked = [...container!.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('Blocked Codex'))!
+    expect(blocked.disabled).toBe(true)
+    expect(blocked.textContent).toContain('Auto approve (sandbox)')
+    expect(blocked.textContent).toContain(reason)
+    const help = blocked.parentElement!
+    expect(help.tabIndex).toBe(0)
+    act(() => {
+      help.focus()
+      blocked.click()
+      help.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(document.activeElement).toBe(help)
+    expect(providerTrigger.textContent).toContain('Ready Codex')
+
+    rerender({
+      defaultProviderId: 'blocked',
+      providers: [
+        { id: 'ready', name: 'Ready Codex', agentType: AgentType.CODEX, available: false, permissionMode: 'ASK', reason: 'Native approval unavailable' },
+        { id: 'blocked', name: 'Blocked Codex', agentType: AgentType.CODEX, available: true, permissionMode: 'AUTO_SANDBOX' },
+      ],
+    })
+    const submit = container!.querySelector<HTMLButtonElement>('button[title="Create & Start"]')!
+    expect(submit.disabled).toBe(true)
+    await pressEnter(textarea)
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(providerTrigger.textContent).toContain('Ready Codex')
+
+    const nowReady = [...container!.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('Blocked Codex'))!
+    act(() => nowReady.click())
+    expect(submit.disabled).toBe(false)
+    await pressEnter(textarea)
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'blocked' }))
+  })
 })
 
 describe('CreateTaskInput slash commands', () => {

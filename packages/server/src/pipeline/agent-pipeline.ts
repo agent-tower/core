@@ -2,6 +2,7 @@ import type { IPty } from '@shitiandmw/node-pty';
 import type { MsgStore } from '../output/msg-store.js';
 import type { EventBus } from '../core/event-bus.js';
 import type { EarlyPtyEvent } from '../executors/base.executor.js';
+import type { CliDuplexIO, CliDuplexEvent } from '../utils/cli-duplex-channel.js';
 import { writeErrorLog } from '../utils/error-log.js';
 
 export interface OutputParser {
@@ -26,13 +27,18 @@ export class AgentPipeline {
   private logicalCompletionEmitted = false;
   private logicalFailureEmitted = false;
   private storeFinished = false;
+  private outputEnded = false;
+  private pendingExitCode?: number;
+  private outputDeadline?: NodeJS.Timeout;
   constructor(
     private readonly sessionId: string,
     private readonly pty: IPty,
     private readonly parser: OutputParser | null,
     private readonly msgStore: MsgStore,
     private readonly eventBus: EventBus,
-    earlyEvents?: EarlyPtyEvent[]
+    earlyEvents?: EarlyPtyEvent[],
+    private readonly duplex?: CliDuplexIO,
+    onDuplexEvent?: (event: CliDuplexEvent) => void,
   ) {
     this.offPatch = this.msgStore.onPatch((patch, seq) => {
       this.eventBus.emit('session:patch', { sessionId: this.sessionId, patch, seq });
@@ -53,7 +59,19 @@ export class AgentPipeline {
       this.eventBus.emit('session:turn-failed', { sessionId: this.sessionId });
     });
 
-    this.offData = this.pty.onData((data) => this.handleData(data));
+    if (duplex) {
+      this.offData = { dispose: duplex.subscribe(event => {
+        if (event.type === 'stdout') this.handleData(event.data);
+        else {
+          if (event.type === 'eof' || event.type === 'disconnected') this.outputEnded = true;
+          if (event.type === 'eof') this.finishParser();
+          onDuplexEvent?.(event);
+          if (this.outputEnded && this.pendingExitCode !== undefined) this.handleExit(this.pendingExitCode);
+        }
+      }) };
+    } else {
+      this.offData = this.pty.onData(data => this.handleData(data));
+    }
     this.offExit = this.pty.onExit(({ exitCode }) => this.handleExit(exitCode));
 
     // Replay PTY events that fired between executor spawn and this attach
@@ -64,6 +82,7 @@ export class AgentPipeline {
       for (const event of earlyEvents) {
         if (this.destroyed) break;
         if (event.type === 'data') {
+          if (duplex) continue;
           this.handleData(event.data);
         } else {
           this.handleExit(event.exitCode);
@@ -74,8 +93,11 @@ export class AgentPipeline {
 
   private handleData(data: string): void {
     if (this.destroyed) return;
-    this.msgStore.pushStdout(data);
-    this.eventBus.emit('session:stdout', { sessionId: this.sessionId, data });
+    // Native control payloads can contain secrets. Duplex frames go only to the parser.
+    if (!this.duplex) {
+      this.msgStore.pushStdout(data);
+      this.eventBus.emit('session:stdout', { sessionId: this.sessionId, data });
+    }
     try {
       this.parser?.processData(data);
     } catch (error) {
@@ -94,6 +116,15 @@ export class AgentPipeline {
 
   private handleExit(exitCode: number): void {
     if (this.destroyed) return;
+    // PTY and IPC are independent transports. A root/wrapper exit cannot close
+    // the parser while its final output is still queued on the duplex reader.
+    if (this.duplex && !this.outputEnded) {
+      this.pendingExitCode = exitCode;
+      this.outputDeadline ??= setTimeout(() => {
+        this.duplex?.close(); // reports a transport failure, never a synthetic EOF
+      }, 10_000);
+      return;
+    }
     // finishParser must not prevent pushFinished/session:exit below —
     // otherwise the session would stay RUNNING forever on a parser bug.
     this.finishParser(exitCode);
@@ -149,6 +180,7 @@ export class AgentPipeline {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    if (this.outputDeadline) clearTimeout(this.outputDeadline);
     this.offData?.dispose();
     this.offExit?.dispose();
     // Flush the parser's residual buffer while the patch forwarder is still

@@ -1,3 +1,4 @@
+import { getProviderStartIssue } from '@/components/provider/provider-draft'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { ArrowLeft, LayoutList, MessageSquare, Search, Settings, SquarePen, Trash2 } from 'lucide-react'
@@ -356,17 +357,17 @@ export function ConversationPage() {
     ?? conversations.find((conversation) => conversation.id === conversationId)
     ?? null
 
-  const availableProviders = useMemo(
-    () => providersData.filter(({ availability }) => availability.type !== 'NOT_FOUND'),
-    [providersData],
-  )
-
-  const startProviderOptions = availableProviders.map(({ provider }) => ({
-    id: provider.id,
-    name: provider.name,
-    agentType: provider.agentType,
-    available: true,
-  }))
+  const startProviderOptions = useMemo(() => providersData.map(item => {
+    const reason = getProviderStartIssue(item)
+    return {
+      id: item.provider.id,
+      name: item.provider.name,
+      agentType: item.provider.agentType,
+      available: !reason,
+      permissionMode: item.provider.executionPermission,
+      reason,
+    }
+  }), [providersData])
   const isDetailRoute = Boolean(conversationId)
   const showMainOnMobile = isDetailRoute || isCreatingNew
 
@@ -443,10 +444,9 @@ export function ConversationPage() {
   }, [conversationReadTimes, unreadConversationIds])
 
   useEffect(() => {
-    if (!selectedProviderId && availableProviders.length > 0) {
-      setSelectedProviderId(availableProviders[0]!.provider.id)
-    }
-  }, [availableProviders, selectedProviderId])
+    if (activeConversation || selectedProviderId) return
+    setSelectedProviderId(startProviderOptions.find(option => option.available)?.id ?? '')
+  }, [activeConversation, selectedProviderId, startProviderOptions])
 
   useEffect(() => {
     if (activeConversation?.providerId) {
@@ -550,7 +550,9 @@ export function ConversationPage() {
   }
 
   const handleStop = async () => {
-    if (!activeConversation || !isRunning(activeConversation.status) || stopConversation.isPending) return
+    // AgentSessionPanel owns visibility via runtime activity. Conversation
+    // detail can still contain the message enqueue response from before RUNNING.
+    if (!activeConversation || stopConversation.isPending) return
     await stopConversation.mutateAsync(activeConversation.id)
   }
 

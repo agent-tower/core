@@ -72,6 +72,15 @@ export function useStopConversation() {
       queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.sessions.detail(conversation.sessionId) })
     },
+    onSettled: (conversation, _error, id) => {
+      const cached = queryClient.getQueryData<Conversation>(queryKeys.conversations.detail(id))
+      const sessionId = conversation?.sessionId ?? cached?.sessionId
+      queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detail(id) })
+      if (sessionId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessions.detail(sessionId) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessions.runtime(sessionId) })
+      }
+    },
   })
 }
 

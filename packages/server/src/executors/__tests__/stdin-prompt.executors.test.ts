@@ -8,6 +8,8 @@ import { CodexExecutor } from '../codex.executor.js';
 import { ClaudeCodeExecutor } from '../claude-code.executor.js';
 import { CursorAgentExecutor } from '../cursor-agent.executor.js';
 import { GeminiCliExecutor } from '../gemini-cli.executor.js';
+import { createExecutorFromProvider } from '../index.js';
+import { RuntimeType } from '@agent-tower/shared';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const whichMock = vi.hoisted(() => vi.fn<(command: string) => Promise<string | null>>(
@@ -269,6 +271,30 @@ describe('executor prompt stdin transport', () => {
     expect(args[args.indexOf('pipe-file') + 1]).toBe('/mock/bin/custom-gemini');
     expect(expectPromptOnlyInStdin()).toContain('--custom');
     expect(whichMock).not.toHaveBeenCalledWith('gemini');
+  });
+
+  it.each([{}, { yolo: true }])('Gemini Provider factory emits one approval policy for initial and follow-up launches (%j)', async (config) => {
+    const executor = createExecutorFromProvider({
+      id: 'gemini-full', name: 'Gemini Full', agentType: AgentType.GEMINI_CLI,
+      runtimeType: RuntimeType.CLI, executionPermission: 'FULL_ACCESS', config, env: {}, isDefault: false,
+    });
+    await executor.spawn(spawnConfig);
+    const initial = expectPromptOnlyInStdin();
+    await executor.spawnFollowUp(spawnConfig, 'latest');
+    const followUp = expectPromptOnlyInStdin();
+    expect(initial).toEqual(['--approval-mode', 'yolo', '--no-sandbox', '--output-format=stream-json', '-p', '']);
+    expect(followUp).toEqual([...initial, '--resume', 'latest']);
+    for (const args of [initial, followUp]) {
+      expect(args).not.toContain('--yolo');
+      expect(args.filter(arg => arg === '--approval-mode')).toHaveLength(1);
+    }
+  });
+
+  it('Gemini legacy yolo profile still emits a single legacy policy', async () => {
+    await new GeminiCliExecutor({ yolo: true }).spawn(spawnConfig);
+    const args = expectPromptOnlyInStdin();
+    expect(args).toContain('--yolo');
+    expect(args).not.toContain('--approval-mode');
   });
 });
 

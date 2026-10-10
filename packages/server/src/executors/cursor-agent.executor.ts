@@ -25,6 +25,7 @@ export interface CursorAgentConfig {
   appendPrompt?: string;
   /** 强制允许命令（除非明确拒绝） */
   force?: boolean;
+  executionPermission?: import('@agent-tower/shared').ExecutionPermissionMode;
   /** 模型 ID，与 `cursor-agent --model` 一致；留空则 CLI 默认 (auto)。可用 `cursor-agent --list-models` 查看 */
   model?: string;
   /** 命令覆盖 */
@@ -108,6 +109,8 @@ export class CursorAgentExecutor extends BaseExecutor {
 
     // Headless print 模式不传位置参数时从 stdin 读取 prompt。
     builder.setParams(['--print', '--output-format=stream-json']);
+
+    if (this.config.executionPermission === 'FULL_ACCESS') builder.extendParams(['--sandbox', 'disabled', '--approve-mcps']);
 
     // 强制模式
     if (this.config.force) {

@@ -91,42 +91,49 @@ export function Select({
             <div className="px-3 py-2 text-sm text-neutral-400">{t('No options')}</div>
           ) : (
             options.map(option => (
-              <button
+              <div
                 key={option.value}
-                type="button"
-                disabled={option.disabled}
-                onClick={() => {
-                  onChange(option.value)
-                  setOpen(false)
-                }}
-                className={cn(
-                  "flex items-start w-full px-3 py-1.5 text-sm text-left transition-colors",
-                  "hover:bg-neutral-50",
-                  option.value === value
-                    ? "text-neutral-900 font-medium"
-                    : "text-neutral-600",
-                  option.disabled && "opacity-40 cursor-not-allowed",
-                )}
+                tabIndex={option.disabled && option.description ? 0 : undefined}
+                role={option.disabled && option.description ? 'group' : undefined}
+                aria-label={option.disabled && option.description ? `${option.label}: ${option.description}` : undefined}
+                className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               >
-                <Check
-                  size={14}
+                <button
+                  type="button"
+                  disabled={option.disabled}
+                  onClick={() => {
+                    onChange(option.value)
+                    setOpen(false)
+                  }}
                   className={cn(
-                    "mr-2 mt-0.5 shrink-0",
-                    option.value === value ? "opacity-100" : "opacity-0"
+                    "flex items-start w-full px-3 py-1.5 text-sm text-left transition-colors",
+                    "hover:bg-neutral-50",
+                    option.value === value
+                      ? "text-neutral-900 font-medium"
+                      : "text-neutral-600",
+                    option.disabled && "cursor-not-allowed bg-neutral-50 text-neutral-500",
                   )}
-                />
-                {option.icon ? (
-                  <span className="mr-2 mt-0.5 flex shrink-0 items-center">{option.icon}</span>
-                ) : null}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{option.label}</span>
-                  {option.description ? (
-                    <span className="mt-0.5 block whitespace-normal text-xs font-normal leading-snug text-neutral-400">
-                      {option.description}
-                    </span>
+                >
+                  <Check
+                    size={14}
+                    className={cn(
+                      "mr-2 mt-0.5 shrink-0",
+                      option.value === value ? "opacity-100" : "opacity-0"
+                    )}
+                  />
+                  {option.icon ? (
+                    <span className="mr-2 mt-0.5 flex shrink-0 items-center">{option.icon}</span>
                   ) : null}
-                </span>
-              </button>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{option.label}</span>
+                    {option.description ? (
+                      <span className={cn("mt-0.5 block whitespace-normal text-xs font-normal leading-snug", option.disabled ? "text-neutral-600" : "text-neutral-400")}>
+                        {option.description}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              </div>
             ))
           )}
         </div>

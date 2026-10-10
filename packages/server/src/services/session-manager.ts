@@ -36,6 +36,8 @@ import {
 } from '../utils/agent-api-credential.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { RuntimeType, supportsAgentRuntime, type RuntimeStateDto } from '@agent-tower/shared';
+import { getVariantConfig } from '../executors/profiles.js';
+import { executionPermissionService, type ExecutionPermissionService } from './execution-permission.service.js';
 import { getProviderRuntimeType } from '../executors/providers.js';
 import { appendAgentOutputIntentInstructions } from '../prompts/agent-output-intents.js';
 import { AgentArtifactService } from './agent-artifact.service.js';
@@ -242,6 +244,7 @@ export class SessionManager {
     private readonly eventBus: EventBus,
     teamReconciler?: TeamReconcilerService,
     runtimeRegistry?: RuntimeRegistry,
+    private readonly executionPermissions: ExecutionPermissionService = executionPermissionService,
   ) {
     this.teamReconciler = teamReconciler ?? new TeamReconcilerService({
       eventBus,
@@ -605,7 +608,15 @@ export class SessionManager {
   }
 
   async resolveRuntimePermission(sessionId: string, requestId: string, optionId: string): Promise<void> {
-    await this.runtimeCoordinator.resolvePermission(sessionId, requestId, optionId);
+    const session = await prisma.session.findUnique({ where: { id: sessionId }, select: { agentType: true, runtimeType: true, providerId: true } });
+    if (!session) throw new NotFoundError('Session', sessionId);
+    const state = this.runtimeCoordinator.getState(sessionId, this.normalizeRuntimeType(session.runtimeType));
+    if (!state.executionPermission) throw new ServiceError('Permission request is no longer active', 'PERMISSION_NOT_FOUND', 409);
+    const authorizeDelivery = () => this.executionPermissions.authorizeMode(state.executionPermission!, {
+      sessionId, agentType: session.agentType, runtimeType: state.runtimeType, providerId: session.providerId ?? undefined,
+    });
+    authorizeDelivery();
+    await this.runtimeCoordinator.resolvePermission(sessionId, requestId, optionId, authorizeDelivery);
   }
 
   async create(workspaceId: string, agentType: AgentType, prompt: string, variant: string = 'DEFAULT', providerId?: string) {
@@ -1263,12 +1274,37 @@ export class SessionManager {
           if (advanceGeneration) this.invalidateSessionGeneration(session.id);
           this.beginSessionExecution(session.id);
 
-          const env = ExecutionEnv.default(workingDir);
-          if (providerId) {
-            const provider = getProviderById(providerId);
-            if (provider && Object.keys(provider.env).length > 0) {
-              env.merge(filterAgentSubprocessExternalEnv(provider.env));
+          const runtimeType = this.normalizeRuntimeType(session.runtimeType);
+          const selectedProvider = providerId ? getProviderById(providerId) : null;
+          if (providerId && !selectedProvider) throw markPreChildProcessFailure(new ValidationError(`Provider not found: ${providerId}`));
+          const legacyProfile = selectedProvider ? {} : getVariantConfig(session.agentType, session.variant ?? 'DEFAULT') ?? {};
+          const providerSnapshot = structuredClone(selectedProvider ?? {
+            id: '', name: 'Legacy profile', agentType: session.agentType, runtimeType,
+            config: legacyProfile, env: {}, isDefault: false,
+            ...(typeof legacyProfile.settings === 'string' ? { settings: legacyProfile.settings } : {}),
+            ...(legacyProfile.executionPermission ? { executionPermission: legacyProfile.executionPermission as import('@agent-tower/shared').ExecutionPermissionMode } : {}),
+          });
+          const current = this.runtimeCoordinator.getState(session.id, runtimeType);
+          let executionPermission = current.runtimeType === RuntimeType.ACP && current.turnState !== 'DISPOSED'
+            ? current.executionPermission : undefined;
+          if (executionPermission) {
+            this.executionPermissions.authorizeMode(executionPermission, { agentType: session.agentType, runtimeType, sessionId: session.id, providerId: providerId ?? undefined });
+          } else {
+            if (providerSnapshot.agentType !== session.agentType || getProviderRuntimeType(providerSnapshot) !== runtimeType) {
+              throw markPreChildProcessFailure(new ServiceError(
+                'The Provider Agent or runtime changed. Create a new Session with this Provider.',
+                'PROVIDER_EXECUTION_MISMATCH',
+                400,
+              ));
             }
+            await this.executionPermissions.prepare();
+            this.assertPreChildAdmission(admission, session);
+            executionPermission = this.executionPermissions.authorize(providerSnapshot, session.id);
+            providerSnapshot.executionPermission = executionPermission;
+          }
+          const env = ExecutionEnv.default(workingDir);
+          if (Object.keys(providerSnapshot.env).length > 0) {
+            env.merge(filterAgentSubprocessExternalEnv(providerSnapshot.env));
           }
           if (!this.isConversationSession(session)) {
             await this.injectTeamRunInvocationEnv(session.id, env);
@@ -1305,6 +1341,8 @@ export class SessionManager {
             runtimeType: this.normalizeRuntimeType(session.runtimeType),
             variant: session.variant ?? 'DEFAULT',
             providerId,
+            providerSnapshot,
+            executionPermission,
             workingDir,
             env,
             externalSessionId: session.externalSessionId,

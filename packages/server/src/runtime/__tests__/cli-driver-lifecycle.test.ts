@@ -13,6 +13,34 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    { agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP },
+    { agentType: AgentType.GEMINI_CLI, runtimeType: RuntimeType.CLI },
+  ])('rejects mismatching Provider snapshots on open and on a later new CLI process (%j)', async (identity) => {
+    const input = {
+      towerSessionId: 'mismatched-cli', agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI,
+      variant: 'DEFAULT', workingDir: process.cwd(), env: ExecutionEnv.default(process.cwd()),
+    };
+    const provider = { id: 'changed', name: 'Changed', ...identity,
+      executionPermission: 'FULL_ACCESS' as const, config: {}, env: {}, isDefault: false };
+    const factory = vi.spyOn(executors, 'createExecutorFromProvider');
+    const driver = new CliRuntimeDriver();
+    await expect(driver.open({ ...input, providerSnapshot: provider })).rejects.toMatchObject({ code: 'provider_config_invalid' });
+    const session = await driver.open(input);
+    const sink: RuntimeDriverEventSink = { stream: vi.fn(), process: vi.fn(async () => undefined) };
+    await expect(session.runTurn({ turnId: 'new-process', prompt: 'hello', msgStore: new MsgStore(), providerSnapshot: provider }, sink))
+      .rejects.toMatchObject({ code: 'provider_config_invalid' });
+    expect(factory).not.toHaveBeenCalled();
+    expect(sink.process).not.toHaveBeenCalled();
+    await session.close();
+    vi.spyOn(executors, 'getProviderById').mockReturnValue(provider);
+    const legacyInput = await driver.open({ ...input, providerId: provider.id });
+    await expect(legacyInput.runTurn({ turnId: 'legacy-input', prompt: 'hello', msgStore: new MsgStore() }, sink))
+      .rejects.toMatchObject({ code: 'provider_config_invalid' });
+    expect(factory).not.toHaveBeenCalled();
+    await legacyInput.close();
+  });
+
   it('does not confirm a second close before the real PTY tree exit', async () => {
     vi.useFakeTimers();
     const exitListeners: Array<(event: { exitCode: number; signal?: string | null }) => void> = [];

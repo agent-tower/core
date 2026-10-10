@@ -32,10 +32,12 @@ interface ActiveTurn {
 
 interface ManagedRuntimeSession {
   runtimeType: RuntimeType;
+  executionPermission?: RuntimeStateDto['executionPermission'];
   driverSession: DriverSession;
   turnState: RuntimeTurnState;
   activeTurn?: ActiveTurn;
   pendingPermissions: Map<string, RuntimePermissionRequest>;
+  respondingPermissions: Set<string>;
   lastActivityAt: string;
   /** Process ownership claim for this runtime instance generation. ACP
    * follow-up turns reuse the same instance and therefore retain its claim. */
@@ -110,12 +112,14 @@ export class RuntimeCoordinator {
     delete session.error;
     this.touch(input.towerSessionId, session);
 
-    const sink = this.createSink(input.towerSessionId, session, active);
+    const sink = this.createSink(input.towerSessionId, session, active, input.executionPermission);
     const runtimeInstanceBeforeTurn = session.driverSession.runtimeInstanceId;
     try {
       this.assertStartAdmission(input.towerSessionId, input.admission);
       const driverTurn = await session.driverSession.runTurn({
         turnId,
+        providerSnapshot: input.providerSnapshot,
+        executionPermission: input.executionPermission,
         prompt: input.prompt,
         msgStore: input.msgStore,
         resumeExternalSessionId: input.resumeExternalSessionId,
@@ -124,6 +128,10 @@ export class RuntimeCoordinator {
         launchClaimNumber: input.launchClaimNumber,
         admissionSignal: input.admission.signal,
       }, sink);
+      if (session.runtimeType === RuntimeType.CLI || session.driverSession.runtimeInstanceId !== runtimeInstanceBeforeTurn) {
+        session.executionPermission = input.executionPermission;
+        this.touch(input.towerSessionId, session);
+      }
       if (
         session.driverSession.runtimeInstanceId !== runtimeInstanceBeforeTurn
         && input.launchClaimNumber != null
@@ -284,11 +292,11 @@ export class RuntimeCoordinator {
     }
   }
 
-  async resolvePermission(towerSessionId: string, requestId: string, optionId: string): Promise<void> {
+  async resolvePermission(towerSessionId: string, requestId: string, optionId: string, authorizeDelivery?: () => void): Promise<void> {
     const session = this.sessions.get(towerSessionId);
     const active = session?.activeTurn;
     const request = session?.pendingPermissions.get(requestId);
-    if (!session || !active || !request || request.turnId !== active.id) {
+    if (!session || !active || !request || active.terminal || request.turnId !== active.id || session.respondingPermissions.has(requestId)) {
       throw new AgentRuntimeError('permission_not_found', 'permission', 'Permission request is no longer active', false);
     }
     if (!request.options.some((option) => option.optionId === optionId)) {
@@ -297,7 +305,15 @@ export class RuntimeCoordinator {
     if (!session.driverSession.resolvePermission) {
       throw new AgentRuntimeError('permission_not_supported', 'permission', 'Runtime cannot resolve permissions', false);
     }
-    await session.driverSession.resolvePermission(requestId, optionId);
+    authorizeDelivery?.();
+    session.respondingPermissions.add(requestId);
+    try {
+      if (authorizeDelivery) await session.driverSession.resolvePermission(requestId, optionId, authorizeDelivery);
+      else await session.driverSession.resolvePermission(requestId, optionId);
+    }
+    finally { session.respondingPermissions.delete(requestId); }
+    if (this.sessions.get(towerSessionId) !== session || session.activeTurn !== active || active.terminal
+      || session.pendingPermissions.get(requestId) !== request) return;
     session.pendingPermissions.delete(requestId);
     if (session.pendingPermissions.size === 0 && session.activeTurn?.id === active.id) {
       session.turnState = 'RUNNING';
@@ -644,6 +660,8 @@ export class RuntimeCoordinator {
       runtimeType: input.runtimeType,
       variant: input.variant,
       providerId: input.providerId,
+      providerSnapshot: input.providerSnapshot,
+      executionPermission: input.executionPermission,
       workingDir: input.workingDir,
       env: input.env,
       externalSessionId: input.externalSessionId,
@@ -653,8 +671,10 @@ export class RuntimeCoordinator {
     const session: ManagedRuntimeSession = {
       runtimeType: input.runtimeType,
       driverSession,
+      executionPermission: input.executionPermission,
       turnState: 'IDLE',
       pendingPermissions: new Map(),
+      respondingPermissions: new Set(),
       lastActivityAt: new Date().toISOString(),
       launchClaimNumber: input.launchClaimNumber,
     };
@@ -676,12 +696,21 @@ export class RuntimeCoordinator {
     towerSessionId: string,
     session: ManagedRuntimeSession,
     active: ActiveTurn,
+    authorizedPermission?: RuntimeStateDto['executionPermission'],
   ): RuntimeDriverEventSink {
     return {
       stream: (event) => {
         if (!this.isCurrentTurn(session, active) || active.terminal) return;
+        if (event.type === 'execution_permission_applied') {
+          if (event.mode !== authorizedPermission) return;
+          session.executionPermission = event.mode;
+          this.touch(towerSessionId, session);
+          return;
+        }
         if (event.type === 'permission_requested') {
-          if (event.request.sessionId !== towerSessionId || event.request.turnId !== active.id) return;
+          if (session.turnState === 'CANCELLING') return;
+          if (event.request.sessionId !== towerSessionId || event.request.turnId !== active.id
+            || (event.request.runtimeInstanceId && event.request.runtimeInstanceId !== session.driverSession.runtimeInstanceId)) return;
           session.pendingPermissions.set(event.request.requestId, event.request);
           session.turnState = 'AWAITING_PERMISSION';
         } else if (event.type === 'permission_invalidated') {
@@ -760,6 +789,7 @@ export class RuntimeCoordinator {
     return {
       sessionId: towerSessionId,
       runtimeType: session.runtimeType,
+      executionPermission: session.driverSession.hasActiveTransport === false ? undefined : session.executionPermission,
       turnState: session.turnState,
       ...(session.activeTurn ? { turnId: session.activeTurn.id } : {}),
       capabilities: session.driverSession.capabilities,

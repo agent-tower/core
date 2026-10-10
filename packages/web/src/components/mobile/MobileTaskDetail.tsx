@@ -30,6 +30,7 @@ import { StartAgentDialog } from '@/components/task/StartAgentDialog'
 import { TaskStartProgress, type TaskStartProgressState } from '@/components/task/TaskStartProgress'
 import { getSessionTokenUsage, SessionReadonlyMeta } from '@/components/task/SessionReadonlyMeta'
 import { ProviderSelector } from '@/components/task/ProviderSelector'
+import { getSelectedProviderStartIssue } from '@/components/provider/provider-draft'
 import { SlashCommandPopover } from '@/components/task/SlashCommandPopover'
 import { DeleteTaskConfirmDialog } from '@/components/task/DeleteTaskConfirmDialog'
 import { EditableTaskTitle } from '@/components/task/EditableTaskTitle'
@@ -430,6 +431,9 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
   const selectedProviderId = selectedProviderOverride?.sessionId === sessionId
     ? selectedProviderOverride.providerId
     : activeSession?.providerId ?? null
+  const selectedProviderIssue = activeSession
+    ? getSelectedProviderStartIssue(providers, selectedProviderId)
+    : undefined
   const handleSelectProvider = useCallback((providerId: string | null) => {
     setSelectedProviderOverride({ sessionId, providerId })
   }, [sessionId])
@@ -520,6 +524,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
       || stopSession.isPending
       || isSessionCancelling
       || isUploading
+      || selectedProviderIssue
     ) return
     sendingRef.current = true
 
@@ -538,7 +543,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
         onSettled: () => { sendingRef.current = false },
       }
     )
-  }, [input, sessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId, stopSession.isPending, isSessionCancelling])
+  }, [input, sessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId, selectedProviderIssue, stopSession.isPending, isSessionCancelling])
 
   const handleStop = useCallback(() => {
     if (!sessionId || stopSession.isPending) return
@@ -1071,6 +1076,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                           || sendMessageMutation.isPending
                           || stopSession.isPending
                           || isSessionCancelling
+                          || !!selectedProviderIssue
                         }
                         className={`p-1.5 rounded-lg transition-colors ${
                           (input.trim() || hasAttachments)
@@ -1078,6 +1084,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                             && !sendMessageMutation.isPending
                             && !stopSession.isPending
                             && !isSessionCancelling
+                            && !selectedProviderIssue
                             ? 'bg-neutral-900 text-white active:bg-black'
                             : 'bg-transparent text-neutral-300'
                         }`}

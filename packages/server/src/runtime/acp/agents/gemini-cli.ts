@@ -10,4 +10,5 @@ export const geminiCliAcpAgentDefinition = createNativeAcpAgentDefinition({
   permissionConfigKeys: ['yolo'],
   configureSessionModel: false,
   unrestrictedModeId: 'yolo',
+  askModeId: 'default',
 });

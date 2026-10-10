@@ -67,3 +67,7 @@
 | 文件 / 交付 | `packages/server/src/routes/__tests__/files.test.ts`、`filesystem.test.ts`、`attachments.test.ts`、`sessions-visualizations.test.ts`，以及 `packages/server/src/services/__tests__/agent-artifact.service.test.ts` |
 
 真实 Git、DB、listener 和 process 测试使用隔离目录、可用临时端口及显式 teardown，不连接用户正在使用的 app data dir。
+
+## 执行权限档位
+
+Provider 保存选择，SessionManager admission 通过 ExecutionPermissionService 校验支持性与可注入允许档位策略，并传递快照给 runtime。LocalOwnerExecutionPolicy 是当前单用户部署的默认实现；禁止 FULL_ACCESS 仅是档位资格限制，不代表工作区/网络/MCP/宿主资源已隔离。首版不持久化跨任务主体、不实现 RBAC 或即时撤权。未来扩展主体与资源限制时沿此 Service 边界接入，不能把 agent/internal credential 当作用户的完全访问资格，不能在 Definition 中写死角色。

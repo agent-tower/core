@@ -11,9 +11,10 @@ export function createCliParser(
   agentType: AgentType,
   workingDir: string,
   msgStore: MsgStore,
+  control?: { message(value: unknown): void; failed(error: unknown): void },
 ): OutputParser | null {
   if (agentType === AgentType.CLAUDE_CODE) {
-    return createClaudeCodeParser(msgStore);
+    return createClaudeCodeParser(msgStore, control);
   }
   if (agentType === AgentType.CURSOR_AGENT) {
     return createCursorAgentParser(msgStore, workingDir);

@@ -341,6 +341,20 @@ async function testViewport(url, viewport) {
   assertRectWithin(listMeasurements.selected, viewportBoundary, listScenario, 'button[aria-current="true"]')
   assertRectWithin(listMeasurements.list, viewportBoundary, listScenario, 'selected-provider-list')
   assertLayout(listMeasurements.listDisplay !== 'none', listScenario, 'provider-list-visible', 'selected-provider-list', listMeasurements)
+  const blockedListItem = await evaluate(`(() => {
+    const list = document.querySelector('button[aria-current="true"]')?.parentElement
+    const item = [...list.querySelectorAll('button')]
+      .find(button => button.textContent.includes('Blocked Codex'))
+    const dot = item?.querySelector('span[title]')
+    return { text: item?.textContent, status: dot?.getAttribute('title') }
+  })()`, listScenario, 'blocked-provider-list-item')
+  assertLayout(
+    blockedListItem?.status?.includes('不可用') && blockedListItem?.text?.includes('sandbox_workspace_write'),
+    listScenario,
+    'blocked-provider-reason-visible',
+    'blocked-provider-list-item',
+    blockedListItem,
+  )
   if (viewport.width < 1024) {
     assertLayout(listMeasurements.detailDisplay === 'none', listScenario, 'mobile-detail-hidden', 'provider-detail', listMeasurements)
   }
@@ -507,6 +521,75 @@ async function testViewport(url, viewport) {
   )
 }
 
+async function testStartViewport(url, viewport) {
+  const scenario = `${viewport.width}x${viewport.height}:start-provider`
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: viewport.width,
+    height: viewport.height,
+    deviceScaleFactor: 1,
+    mobile: viewport.width < 600,
+  })
+  await cdp.send('Page.navigate', { url: `${url}?start` })
+  await waitFor(
+    `window.__PROVIDER_LAYOUT_FIXTURE_READY__ === true
+      && [...document.querySelectorAll('main button')].some(button => button.textContent.includes('Codex Provider With'))`,
+    scenario,
+    'ready-provider-trigger',
+  )
+  await evaluate(`([...document.querySelectorAll('main button')]
+    .find(button => button.textContent.includes('Codex Provider With'))).click()`, scenario, 'ready-provider-trigger')
+  await waitFor(
+    `[...document.querySelectorAll('main button')].some(button => button.textContent.includes('Blocked Codex'))`,
+    scenario,
+    'blocked-provider-option',
+  )
+  const initial = await evaluate(`(() => {
+    const rect = ${rectFunction}
+    const blocked = [...document.querySelectorAll('main button')]
+      .find(button => button.textContent.includes('Blocked Codex'))
+    const menu = blocked.parentElement.parentElement
+    const group = blocked.parentElement
+    group.focus()
+    group.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    return {
+      document: ${measureDocumentExpression},
+      menu: rect(menu),
+      option: rect(blocked),
+      disabled: blocked.disabled,
+      text: blocked.textContent,
+      focusableReason: group.tabIndex === 0 && document.activeElement === group,
+      selected: [...document.querySelectorAll('main button')]
+        .find(button => button.textContent.includes('Codex Provider With'))?.textContent,
+    }
+  })()`, scenario, 'blocked-provider-option')
+  assertNoDocumentOverflow(initial.document, scenario)
+  assertRectWithin(initial.menu, { left: 0, right: viewport.width }, scenario, 'provider-menu')
+  assertRectWithin(initial.option, initial.menu, scenario, 'blocked-provider-option')
+  assertLayout(initial.disabled && initial.focusableReason
+    && initial.text.includes('自动同意（沙箱）')
+    && initial.text.includes('sandbox_workspace_write')
+    && initial.selected.includes('Codex Provider With'),
+  scenario, 'blocked-option-keyboard-and-reason', 'blocked-provider-option', initial)
+
+  await evaluate(`window.__SET_START_PROVIDER_CAPABILITY__(true)`, scenario, 'capability-refresh')
+  await waitFor(
+    `[...document.querySelectorAll('main [role="alert"]')].some(item => item.textContent.includes('Native approval unavailable after refresh'))`,
+    scenario,
+    'selected-provider-blocked-after-refresh',
+  )
+  const refreshed = await evaluate(`(() => ({
+    document: ${measureDocumentExpression},
+    selected: [...document.querySelectorAll('main button')]
+      .find(button => button.textContent.includes('Codex Provider With'))?.textContent,
+    submitDisabled: [...document.querySelectorAll('main button')]
+      .find(button => button.querySelector('svg.lucide-arrow-up'))?.disabled,
+  }))()`, scenario, 'capability-refresh')
+  assertNoDocumentOverflow(refreshed.document, scenario)
+  assertLayout(refreshed.selected?.includes('Codex Provider With') && refreshed.submitDisabled,
+    scenario, 'refresh-preserves-blocked-choice', 'start-input', refreshed)
+  console.log(`[provider-settings-layout] viewport=${viewport.width}x${viewport.height} startProvider=passed`)
+}
+
 async function runHarness() {
   const vitePort = await freePort()
   const chromePort = await freePort()
@@ -566,6 +649,7 @@ async function runHarness() {
     { width: 1440, height: 900 },
   ]) {
     await testViewport(fixtureUrl, viewport)
+    await testStartViewport(fixtureUrl, viewport)
   }
 }
 

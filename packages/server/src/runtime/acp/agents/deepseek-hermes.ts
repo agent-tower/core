@@ -33,14 +33,14 @@ function resolveProviderRoute(environment: Record<string, string>): string {
  * Map Tower's ACP permission modes onto the harness permission presets defined
  * by `dsh-base`, which bind the sandbox scope and the approval policy together:
  *
- *   workspace-write    → sandbox confined to the workspace, every tool call asks
+ *   workspace-write    → sandbox confined to the workspace, escalation asks
  *   danger-full-access → unrestricted sandbox, approvals never prompt
  *
  * `DSH_PERMISSION_MODE` drives both rows, so one variable covers the whole
- * preset. Anything other than an explicit `UNRESTRICTED` stays confined.
+ * preset. Anything other than an explicit `FULL_ACCESS` stays confined.
  */
 function resolvePermissionMode(mode: AcpAgentProfile['permissionMode']): string {
-  return mode === 'UNRESTRICTED' ? 'danger-full-access' : 'workspace-write';
+  return mode === 'FULL_ACCESS' ? 'danger-full-access' : 'workspace-write';
 }
 
 /**

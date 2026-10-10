@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import path from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
-import { normalizeRuntimePermissionMode, type AgentType } from '@agent-tower/shared';
+import { resolveProviderExecutionPermission, RuntimeType, type AgentType } from '@agent-tower/shared';
 import { which } from '../../../utils/index.js';
 import { AgentRuntimeError } from '../../errors.js';
 import type { RuntimeOpenInput } from '../../contracts.js';
@@ -23,6 +23,7 @@ type NativeArguments = (
 interface NativeAgentOptions {
   agentType: AgentType;
   displayName: string;
+  supportsPermissionRestore?: boolean;
   executableCandidates: string[];
   executableEnvKeys: string[];
   arguments: string[] | NativeArguments;
@@ -39,6 +40,7 @@ interface NativeAgentOptions {
   configureSessionModel?: boolean;
   sessionModelValue?: (profile: AcpAgentProfile) => string | undefined;
   unrestrictedModeId?: string;
+  askModeId?: string;
   buildEnvironment?: (profile: AcpAgentProfile) => Record<string, string>;
   prepareLaunch?: (
     input: RuntimeOpenInput,
@@ -60,11 +62,7 @@ export function createNativeAcpAgentDefinition(options: NativeAgentOptions): Acp
     const model = readNonEmptyString(provider?.config.model);
     const effort = readNonEmptyString(provider?.config.effort);
     const appendPrompt = readNonEmptyString(provider?.config.appendPrompt);
-    const configuredMode = provider?.config.permissionMode ?? provider?.config.acpPermissionMode;
-    const permissionEnabled = options.permissionConfigKeys?.some(key => provider?.config[key] === true) ?? false;
-    const permissionMode = configuredMode === undefined
-      ? permissionEnabled ? 'UNRESTRICTED' : 'ASK'
-      : normalizeRuntimePermissionMode(configuredMode);
+    const permissionMode = resolveProviderExecutionPermission(provider ?? { agentType: options.agentType, runtimeType: RuntimeType.ACP }).mode;
 
     return {
       agentType: options.agentType,
@@ -80,6 +78,7 @@ export function createNativeAcpAgentDefinition(options: NativeAgentOptions): Acp
   return {
     agentType: options.agentType,
     displayName: options.displayName,
+    supportsPermissionRestore: options.supportsPermissionRestore,
     ...(options.initializeTimeoutMs ? { initializeTimeoutMs: options.initializeTimeoutMs } : {}),
     ...(options.maxStdoutFrameBytes ? { maxStdoutFrameBytes: options.maxStdoutFrameBytes } : {}),
     ...(options.transformStdoutFrame ? { transformStdoutFrame: options.transformStdoutFrame } : {}),
@@ -129,23 +128,14 @@ export function createNativeAcpAgentDefinition(options: NativeAgentOptions): Acp
           value: sessionModel,
         });
       }
-      if (
-        profile.permissionMode === 'UNRESTRICTED'
-        && options.unrestrictedModeId
-        && response.modes?.currentModeId !== options.unrestrictedModeId
-      ) {
-        if (!response.modes?.availableModes.some(mode => mode.id === options.unrestrictedModeId)) {
-          throw new AgentRuntimeError(
-            'permission_mode_unsupported',
-            'session',
-            `${options.displayName} did not advertise its unrestricted mode`,
-            false,
-          );
+      const modeId = profile.permissionMode === 'FULL_ACCESS' ? options.unrestrictedModeId : options.askModeId;
+      if (modeId) {
+        if (!response.modes?.availableModes.some(mode => mode.id === modeId)) {
+          throw new AgentRuntimeError('permission_mode_unsupported', 'session', `${options.displayName} did not advertise '${modeId}'`, false);
         }
-        await context.request(acp.methods.agent.session.setMode, {
-          sessionId,
-          modeId: options.unrestrictedModeId,
-        });
+        if (response.modes.currentModeId !== modeId) {
+          await context.request(acp.methods.agent.session.setMode, { sessionId, modeId });
+        }
       }
     },
   };
@@ -161,7 +151,8 @@ export async function geminiAcpArguments(
   return [
     acpFlag,
     ...(profile.model ? ['--model', profile.model] : []),
-    ...(profile.permissionMode === 'UNRESTRICTED' ? ['--no-sandbox', '--approval-mode', 'yolo'] : []),
+    '--approval-mode', profile.permissionMode === 'FULL_ACCESS' ? 'yolo' : 'default',
+    ...(profile.permissionMode === 'FULL_ACCESS' ? ['--no-sandbox'] : []),
   ];
 }
 

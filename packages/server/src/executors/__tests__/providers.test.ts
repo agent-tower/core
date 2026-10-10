@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RuntimeType, type ProviderBackupFile } from '@agent-tower/shared';
+import { RuntimeType, resolveProviderExecutionPermission, type ProviderBackupFile } from '@agent-tower/shared';
 import { AgentType } from '../../types/index.js';
 import {
   canDeleteProvider,
@@ -15,7 +15,10 @@ import {
   importProvidersFromBackup,
   previewProviderImport,
   reloadProviders,
+  updateProvider,
 } from '../providers.js';
+import { normalizeProviderDraft } from '../../services/provider-config.service.js';
+import { ExecutionPermissionService } from '../../services/execution-permission.service.js';
 
 const originalDataDir = process.env.AGENT_TOWER_DATA_DIR;
 
@@ -30,6 +33,73 @@ function writeUserProviders(providers: unknown[]) {
 }
 
 describe('providers backup/import', () => {
+  it('backs up the original file once, persists review markers and keeps migration idempotent', () => {
+    writeUserProviders([
+      { id: 'legacy-safe', name: 'Legacy CLI', agentType: AgentType.CODEX, env: {}, config: { dangerouslyBypassApprovalsAndSandbox: false }, isDefault: false },
+      { id: 'legacy-full', name: 'Legacy Full', agentType: AgentType.CLAUDE_CODE, env: {}, config: { dangerouslySkipPermissions: true }, isDefault: false },
+      { id: 'legacy-acp-ask', name: 'Legacy ACP', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP, env: {}, config: { permissionMode: 'ASK' }, isDefault: false },
+    ]);
+    const original = fs.readFileSync(path.join(tempDataDir, 'providers.json'), 'utf-8');
+    reloadProviders();
+    createProvider({ name: 'New', agentType: AgentType.CLAUDE_CODE, executionPermission: 'FULL_ACCESS', env: {}, config: {}, isDefault: false });
+    const backupPath = path.join(tempDataDir, 'providers.json.permission-v1.bak');
+    expect(fs.readFileSync(backupPath, 'utf-8')).toBe(original);
+    reloadProviders();
+    const backup = createProviderBackup();
+    expect(backup.version).toBe(2);
+    expect(backup.providers.find(item => item.id === 'legacy-safe')).toMatchObject({ executionPermission: 'ASK', executionPermissionReviewRequired: true });
+    expect(resolveProviderExecutionPermission(backup.providers.find(item => item.id === 'legacy-safe')!).diagnostics[0]?.code).toBe('LEGACY_PERMISSION_REVIEW_REQUIRED');
+    expect(backup.providers.find(item => item.id === 'legacy-full')).toMatchObject({ executionPermission: 'FULL_ACCESS', config: {} });
+    expect(backup.providers.find(item => item.id === 'legacy-acp-ask')).toMatchObject({ executionPermission: 'ASK', executionPermissionReviewRequired: true, config: {} });
+    expect(previewProviderImport(backup).items.every(item => item.action === 'SKIP')).toBe(true);
+    importProvidersFromBackup(backup);
+    expect(fs.readFileSync(backupPath, 'utf-8')).toBe(original);
+  });
+
+  it.each([{}, { permissionMode: 'ASK' }, { acpPermissionMode: 'ASK' }])('keeps old Codex ACP %j blocked through migration, backup/import and reload until explicit reselection', config => {
+    const permissions = new ExecutionPermissionService();
+    writeUserProviders([{ id: 'legacy-acp', name: 'Legacy ACP', agentType: AgentType.CODEX,
+      runtimeType: RuntimeType.ACP, config, env: {}, isDefault: false }]);
+    const original = fs.readFileSync(path.join(tempDataDir, 'providers.json'), 'utf-8');
+    const assertBlocked = () => {
+      const legacy = getAllProviders().find(item => item.id === 'legacy-acp')!;
+      expect(legacy).toMatchObject({ executionPermission: 'ASK', executionPermissionReviewRequired: true });
+      expect(() => permissions.authorize(legacy)).toThrow(expect.objectContaining({ code: 'LEGACY_PERMISSION_REVIEW_REQUIRED' }));
+      return legacy;
+    };
+    reloadProviders();
+    assertBlocked();
+    createProvider({ name: 'Force migration write', agentType: AgentType.CLAUDE_CODE,
+      executionPermission: 'FULL_ACCESS', config: {}, env: {}, isDefault: false });
+    const backup = createProviderBackup();
+    backup.providers = backup.providers.filter(item => item.id === 'legacy-acp');
+    writeUserProviders([]);
+    reloadProviders();
+    expect(importProvidersFromBackup(backup).summary.create).toBe(1);
+    reloadProviders();
+    const legacy = assertBlocked();
+    expect(fs.readFileSync(path.join(tempDataDir, 'providers.json.permission-v1.bak'), 'utf-8')).toBe(original);
+    const metadataOnly = normalizeProviderDraft({ name: 'Renamed', agentType: AgentType.CODEX }, legacy);
+    expect(metadataOnly.diagnostics).toContainEqual(expect.objectContaining({ code: 'LEGACY_PERMISSION_REVIEW_REQUIRED' }));
+    const reselected = normalizeProviderDraft({ name: legacy.name, agentType: AgentType.CODEX, executionPermission: 'ASK' }, legacy);
+    expect(reselected.diagnostics).toEqual([]);
+    expect(permissions.authorize(reselected.provider)).toBe('ASK');
+    updateProvider(legacy.id, reselected.provider);
+    reloadProviders();
+    const reloaded = getAllProviders().find(item => item.id === legacy.id)!;
+    expect(reloaded.executionPermissionReviewRequired).toBeUndefined();
+    expect(permissions.authorize(reloaded)).toBe('ASK');
+    expect(resolveProviderExecutionPermission(createProviderBackup().providers.find(item => item.id === legacy.id)!).diagnostics).toEqual([]);
+  });
+
+  it('retains invalid canonical values through reload so they cannot become valid defaults', () => {
+    writeUserProviders([{ id: 'invalid', name: 'Invalid', agentType: AgentType.CODEX, executionPermission: null,
+      env: {}, config: { dangerouslyBypassApprovalsAndSandbox: true }, isDefault: false }]);
+    reloadProviders();
+    const invalid = getAllProviders().find(item => item.id === 'invalid')!;
+    expect(invalid.executionPermission).toBeNull();
+    expect(resolveProviderExecutionPermission(invalid).diagnostics[0]?.code).toBe('INVALID_ENUM');
+  });
   beforeEach(() => {
     tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-providers-'));
     process.env.AGENT_TOWER_DATA_DIR = tempDataDir;

@@ -179,7 +179,7 @@ export class ClaudeCodeParser {
   private turnCompletedListeners = new Set<() => void>()
   private turnFailedListeners = new Set<() => void>()
 
-  constructor(msgStore: MsgStore) {
+  constructor(msgStore: MsgStore, private readonly control?: { message(value: unknown): void; failed(error: unknown): void }) {
     this.msgStore = msgStore
   }
 
@@ -212,6 +212,7 @@ export class ClaudeCodeParser {
     // stream that would corrupt JSON parsing.
     const cleaned = stripAnsiSequences(data)
     this.buffer += cleaned
+    if (this.control && this.buffer.length > 8 * 1024 * 1024) { this.buffer = ''; this.control.failed(new Error('Claude output frame exceeded its limit')); return }
     const lines = this.buffer.split('\n')
     this.buffer = lines.pop() || ''
 
@@ -237,8 +238,11 @@ export class ClaudeCodeParser {
         console.log(`[Parser:parseLine] t=${now} type=${msg.type} subtype=${msg.subtype || '-'}`);
       }
       this.hasValidMessages = true
+      if (msg.type.startsWith('control_')) { this.control?.message(msg); return }
+      this.control?.message(msg)
       this.handleMessage(msg)
     } catch {
+      if (this.control) { this.control.failed(new Error('Invalid Claude JSON output')); return }
       // 非 JSON 行 — 剥离 ANSI 转义序列后收集，用于进程异常退出时展示
       const stripped = stripAnsiSequences(line).trim();
       // 过滤掉 PTY 初始化残留的单字符噪音（如 `u` 来自 \x1b[?u 键盘协议查询被分块传输）
@@ -862,6 +866,6 @@ export class ClaudeCodeParser {
 /**
  * 创建解析器并连接到 PTY
  */
-export function createClaudeCodeParser(msgStore: MsgStore): ClaudeCodeParser {
-  return new ClaudeCodeParser(msgStore)
+export function createClaudeCodeParser(msgStore: MsgStore, control?: { message(value: unknown): void; failed(error: unknown): void }): ClaudeCodeParser {
+  return new ClaudeCodeParser(msgStore, control)
 }

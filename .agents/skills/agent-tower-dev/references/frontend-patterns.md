@@ -29,6 +29,7 @@ App 管理单例 `lib/socket/manager.ts` 的连接生命周期；hook 可调用 
 - Runtime UI 的入口是 `hooks/use-sessions.ts` 中的 `useRuntimeState`/`useSessionActivity`。持久化 Session status 与 runtime turn state 是两层状态；活动判断包含 `PENDING`/`RUNNING` 和 `RUNNING`/`AWAITING_PERMISSION`/`CANCELLING`，不能只凭 Session 是否完成决定停止按钮或输入状态。
 - Runtime permissions 使用后端给出的 request/option id；runtime state 事件可更新 cache，permission 事件与重连触发权威重查。停止成功或失败都刷新 session detail/runtime、workspaces、tasks；失败不能让 UI 永久卡在 cancelling。
 - 任务中已运行和已完成的 Session 共用 `useSendMessage`；独立对话在 `pages/ConversationPage.tsx` 使用 `hooks/use-conversations.ts` 的 `useSendConversationMessage`。HTTP 返回表示消息接受/入队，不表示 Agent 回合完成。修改任务的发送/停止互斥和失败恢复时，同时检查 `components/task/TaskDetail.tsx` 与 `components/mobile/MobileTaskDetail.tsx`，避免覆盖用户在等待期间新写的草稿；独立对话另核对其持久队列语义。
+- 独立对话停止按钮由 AgentSessionPanel 的 runtime activity 决定可见性；父页面不再以可能落后的 Conversation status 阻止调用幂等 stop 入口。stop 成功/失败均重查 Conversation、Session detail/runtime，保证无 Socket 通知时也可恢复审批卡片状态。
 
 ## Provider 与 Agent 环境
 
@@ -68,3 +69,7 @@ pnpm --filter web build
 ```
 
 Provider 设置的入口是 `pnpm test:provider-settings`，它组合 happy-dom 行为测试和独立 Chromium 布局 fixture（390/1440 宽）；需要可执行 Chrome，可用 `CHROME_PATH` 指定。这不等于真实后端 E2E，其他交互也不能以 happy-dom 通过替代桌面/移动浏览器验证。
+
+## Provider 执行权限
+
+CLI/ACP 共用 ExecutionPermissionSelector，固定三项并消费服务端 options，禁用原因有独立可聚焦说明；失效已选值保留且禁止保存/启动，不自动改档。编辑页使用 POST `/providers/capabilities` 提交当前 config 草稿（空对象明确替换已存 config），普通读取保留 GET；响应只含能力矩阵，不返回 Provider 的凭据或内部配置。Provider capability cache 区分 Agent、模型、Provider、Runtime 和草稿 config，router/cmd/args 改变隔离查询；账号/策略接入后也须失效该缓存。保存与启动仍由服务端复核。启动选择器消费 Provider 权限诊断与 options。RuntimePermissionPrompt 仅展示待处理的运行时审批请求，无请求时不占布局空间；权限修改只在新进程/transport 生效。

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
-import { AgentType, normalizeRuntimePermissionMode } from '@agent-tower/shared';
+import { AgentType, resolveProviderExecutionPermission } from '@agent-tower/shared';
 import { which } from '../../../utils/index.js';
 import { AgentRuntimeError } from '../../errors.js';
 import type { AcpAgentDefinition, AcpAgentProfile } from './types.js';
@@ -16,13 +16,10 @@ function projectQwenProvider(
   const model = typeof provider?.config.model === 'string' && provider.config.model.trim()
     ? provider.config.model.trim()
     : undefined;
-  const configuredMode = provider?.config.permissionMode ?? provider?.config.acpPermissionMode;
   const appendPrompt = typeof provider?.config.appendPrompt === 'string' && provider.config.appendPrompt
     ? provider.config.appendPrompt
     : undefined;
-  const permissionMode = configuredMode === undefined && provider?.config.yolo === true
-    ? 'UNRESTRICTED'
-    : normalizeRuntimePermissionMode(configuredMode);
+  const permissionMode = resolveProviderExecutionPermission(provider ?? { agentType: AgentType.QWEN_CODE }).mode;
   return {
     agentType: AgentType.QWEN_CODE,
     environment,
@@ -54,7 +51,8 @@ export const qwenCodeAcpAgentDefinition: AcpAgentDefinition = {
       args: [
         '--acp',
         '--experimental-skills',
-        ...(profile.permissionMode === 'UNRESTRICTED' ? ['--no-sandbox'] : []),
+        '--approval-mode', profile.permissionMode === 'FULL_ACCESS' ? 'yolo' : 'default',
+        ...(profile.permissionMode === 'FULL_ACCESS' ? ['--no-sandbox'] : []),
         ...(profile.model ? ['--model', profile.model] : []),
         ...(profile.environment.OPENAI_API_KEY ? ['--auth-type=openai'] : []),
       ],
@@ -71,19 +69,17 @@ export const qwenCodeAcpAgentDefinition: AcpAgentDefinition = {
   },
 
   async configureSession(context, sessionId, response, profile) {
-    if (
-      profile.permissionMode === 'UNRESTRICTED'
-      && response.modes?.currentModeId !== 'yolo'
-    ) {
-      if (!response.modes?.availableModes.some(mode => mode.id === 'yolo')) {
+    const modeId = profile.permissionMode === 'FULL_ACCESS' ? 'yolo' : 'default';
+    if (response.modes?.currentModeId !== modeId) {
+      if (!response.modes?.availableModes.some(mode => mode.id === modeId)) {
         throw new AgentRuntimeError(
           'permission_mode_unsupported',
           'session',
-          'Qwen Code did not advertise its unrestricted mode',
+          `Qwen Code did not advertise '${modeId}'`,
           false,
         );
       }
-      await context.request(acp.methods.agent.session.setMode, { sessionId, modeId: 'yolo' });
+      await context.request(acp.methods.agent.session.setMode, { sessionId, modeId });
     }
   },
 };

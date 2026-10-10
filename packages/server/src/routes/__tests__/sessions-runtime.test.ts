@@ -141,6 +141,16 @@ describe('session runtime routes', () => {
     await app.close();
   });
 
+  it('preserves policy-denied approval as 403 rather than a stale-request 409', async () => {
+    const app = await buildTestApp();
+    findSession.mockResolvedValue({ id: 'session-1' });
+    resolveRuntimePermission.mockRejectedValue(new ServiceError('Deployment revoked this mode', 'POLICY_MODE_DENIED', 403));
+    const response = await app.inject({ method: 'POST', url: '/api/sessions/session-1/permissions/request/resolve', payload: { optionId: 'allow_once' } });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: 'Deployment revoked this mode', code: 'POLICY_MODE_DENIED' });
+    await app.close();
+  });
+
   it('routes direct session stop through the TeamRun scheduler admission boundary', async () => {
     const app = await buildTestApp();
     stopSession.mockResolvedValue({ id: 'session-1' });

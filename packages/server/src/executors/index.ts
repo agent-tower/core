@@ -19,7 +19,8 @@ import {
   type Provider,
 } from './providers.js';
 import { resolveEffectiveProviderConnection } from '../services/provider-effective-connection.service.js';
-import { isUserVisibleAgentType, RuntimeType } from '@agent-tower/shared';
+import type { CmdOverrides } from './command-builder.js';
+import { isUserVisibleAgentType, RuntimeType, resolveProviderExecutionPermission, getProviderCapability } from '@agent-tower/shared';
 
 // ─── Executor Factory ────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ export function getExecutorByAgentType(agentType: AgentType): BaseExecutor | und
 /**
  * 从 Provider 创建 executor 实例
  */
-function createExecutorFromProvider(provider: Provider): BaseExecutor {
+export function createExecutorFromProvider(provider: Provider): BaseExecutor {
   const agentType = provider.agentType as AgentType;
   const env = { ...provider.env };
   const unsetEnv: string[] = [];
@@ -145,12 +146,21 @@ function createExecutorFromProvider(provider: Provider): BaseExecutor {
       };
     }
   }
+  const permission = resolveProviderExecutionPermission(provider);
+  if (permission.diagnostics.length) throw new Error(permission.diagnostics.map(item => item.message).join('; '));
+  const permissionPath = getProviderCapability(agentType)?.executionPermission.path;
+  // An empty id identifies SessionManager's legacy profile snapshot. Preserve its command/environment overrides.
+  const legacyCmd = !provider.id && provider.config.cmd && typeof provider.config.cmd === 'object'
+    ? provider.config.cmd as CmdOverrides : undefined;
   const config: VariantConfig = {
     ...provider.config,
+    executionPermission: permission.mode,
+    ...(permissionPath ? { [permissionPath]: permission.mode === 'FULL_ACCESS' } : {}),
     // 将 provider.env 注入到 cmd.env，这样会在 spawnInternal 时通过 withProfile 合并到环境变量
     cmd: {
-      env,
-      unsetEnv,
+      ...legacyCmd,
+      env: { ...legacyCmd?.env, ...env },
+      unsetEnv: [...legacyCmd?.unsetEnv ?? [], ...unsetEnv],
     },
     // CLI Driver 投影 Agent 原生配置（如 Claude Code 的 settings.json 覆盖）
     settings: provider.settings,

@@ -1,5 +1,7 @@
 import type {
   AgentType,
+  ExecutionPermissionMode,
+  Provider,
   RuntimeCapabilities,
   RuntimeErrorDto,
   RuntimePermissionRequest,
@@ -15,7 +17,8 @@ export type RuntimeStreamEvent =
   | { type: 'external_session_id'; externalSessionId: string }
   | { type: 'permission_requested'; request: RuntimePermissionRequest }
   | { type: 'permission_invalidated'; requestId: string }
-  | { type: 'progress' };
+  | { type: 'progress' }
+  | { type: 'execution_permission_applied'; mode: ExecutionPermissionMode };
 
 export type RuntimeTerminalEvent =
   | { type: 'completed'; outcome?: RuntimeTurnOutcome }
@@ -79,6 +82,9 @@ export interface RuntimeOpenInput {
   runtimeType: RuntimeType;
   variant: string;
   providerId?: string | null;
+  /** Authorized immutable launch configuration; a changed Provider is not reread by the driver. */
+  providerSnapshot?: Provider;
+  executionPermission?: ExecutionPermissionMode;
   workingDir: string;
   env: ExecutionEnv;
   externalSessionId?: string | null;
@@ -92,6 +98,8 @@ export type RuntimeResumeMode = 'load' | 'resume';
 
 export interface RuntimeRunTurnInput {
   turnId: string;
+  providerSnapshot?: Provider;
+  executionPermission?: ExecutionPermissionMode;
   prompt: string;
   msgStore: MsgStore;
   resumeExternalSessionId?: string | null;
@@ -120,11 +128,13 @@ export interface DriverTurn {
 
 export interface DriverSession {
   readonly runtimeInstanceId: string;
+  /** ACP launch settings can be retained only while the native transport is alive. */
+  readonly hasActiveTransport?: boolean;
   readonly capabilities: RuntimeCapabilities;
   readonly externalSessionId?: string;
   runTurn(input: RuntimeRunTurnInput, sink: RuntimeDriverEventSink): Promise<DriverTurn>;
   cancelTurn(turnId: string): Promise<void>;
-  resolvePermission?(requestId: string, optionId: string): Promise<void>;
+  resolvePermission?(requestId: string, optionId: string, authorizeDelivery?: () => void): Promise<void>;
   writeInput?(data: string): void;
   resize?(cols: number, rows: number): void;
   close(): Promise<void>;

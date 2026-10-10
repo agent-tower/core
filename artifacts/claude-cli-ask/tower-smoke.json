@@ -1,0 +1,32 @@
+{
+  "kind": "Tower Executor/owned wrapper/Driver/Coordinator native smoke",
+  "runs": [
+    {
+      "choice": "reject_once",
+      "resume": false,
+      "approvalRequests": 1,
+      "completed": true,
+      "fileExists": false,
+      "restRecoveryView": true
+    },
+    {
+      "choice": "allow_once",
+      "resume": true,
+      "approvalRequests": 1,
+      "completed": true,
+      "fileExists": true,
+      "restRecoveryView": true
+    },
+    {
+      "choice": "reject_once",
+      "resume": true,
+      "fullToAsk": true,
+      "approvalRequests": 1,
+      "completed": true,
+      "fileExists": false,
+      "restRecoveryView": true
+    }
+  ],
+  "cleanupConfirmed": true,
+  "passed": true
+}

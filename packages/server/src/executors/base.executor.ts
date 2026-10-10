@@ -18,6 +18,7 @@ import { stripAnsiSequences } from '../output/utils/ansi.js';
 import {
   buildPtyCommand,
   buildPtyCommandWithStdin,
+  buildPtyCommandWithDuplex,
   buildPtyWrapperEnv,
   getPtyLogFilePath,
   PTY_WRAPPER_EXIT_TIMEOUT_MS,
@@ -33,6 +34,8 @@ import {
   type SpawnCleanupOwner,
 } from './start-error.js';
 import { createTreeCleanupChannel, type TreeCleanupChannel } from '../utils/tree-cleanup-channel.js';
+
+import { createCliDuplexChannel, type CliDuplexIO } from '../utils/cli-duplex-channel.js';
 
 const PTY_LOG_FILE = getPtyLogFilePath();
 const OUTPUT_BUFFER_LIMIT = 8000;
@@ -274,6 +277,9 @@ export interface SpawnedChild {
   processGroupId: string;
   birthMarker: string;
   ownershipToken: string;
+  /** Optional native protocol transport; never exposed as terminal input. */
+  duplex?: CliDuplexIO;
+  initialInput?: string;
   /** PTY 实例 */
   pty: IPty;
   /** Executor -> Container: 执行器想要退出时发出信号 */
@@ -651,7 +657,8 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
   protected async spawnWithStdin(
     config: ExecutorSpawnConfig,
     commandParts: CommandParts,
-    stdinData: string
+    stdinData: string,
+    duplex?: CliDuplexIO & { configFile: string },
   ): Promise<SpawnedChild> {
     let resolved: Awaited<ReturnType<typeof resolveCommandParts>>;
     try {
@@ -670,12 +677,14 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     // 使用临时文件传递 stdin 数据，避免命令行参数长度限制
     const tmpFile = path.join(os.tmpdir(), `agent-tower-stdin-${Date.now()}-${randomUUID()}.txt`);
     try {
-      await fs.writeFile(tmpFile, stdinData, { encoding: 'utf-8', mode: 0o600 });
+      if (!duplex) await fs.writeFile(tmpFile, stdinData, { encoding: 'utf-8', mode: 0o600 });
     } catch (error) {
       throw markPreChildProcessFailure(error);
     }
-    ptyLog(0, `Spawning with stdin: ${programPath} ${redactArgsForLog(fullArgs)} <stdin ${summarizeStdinForLog(stdinData)} file=${path.basename(tmpFile)}>`);
-    const invocation = buildPtyCommandWithStdin(programPath, fullArgs, tmpFile);
+    ptyLog(0, duplex
+      ? `Spawning with duplex: ${programPath} ${redactArgsForLog(fullArgs)}`
+      : `Spawning with stdin: ${programPath} ${redactArgsForLog(fullArgs)} <stdin ${summarizeStdinForLog(stdinData)} file=${path.basename(tmpFile)}>`);
+    const invocation = duplex ? buildPtyCommandWithDuplex(programPath, fullArgs, duplex.configFile) : buildPtyCommandWithStdin(programPath, fullArgs, tmpFile);
 
     const fullEnv = env.getFullEnv();
     const ownershipToken = randomUUID();
@@ -788,10 +797,11 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
         pid: spawnedShell.pid,
         ...identity,
         pty: spawnedShell,
+        duplex,
         cancel,
         takeEarlyEvents,
         verifyTreeCleanup: verifyCleanup,
-        disposeTreeCleanupChannel: cleanupChannel.close,
+        disposeTreeCleanupChannel: () => { duplex?.close(); cleanupChannel.close(); },
       };
     } catch (error) {
       writeErrorLog({
@@ -846,6 +856,12 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       if (!shell) cleanupChannel.close();
       throw shell ? error : markPreChildProcessFailure(error);
     }
+  }
+
+  protected async spawnWithDuplex(config: ExecutorSpawnConfig, parts: CommandParts): Promise<SpawnedChild> {
+    const duplex = await createCliDuplexChannel().catch(error => { throw markPreChildProcessFailure(error); });
+    try { return await this.spawnWithStdin(config, parts, '', duplex); }
+    catch (error) { duplex.close(); throw error; }
   }
 
   /**

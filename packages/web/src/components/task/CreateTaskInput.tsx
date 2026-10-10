@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users, Info } from 'lucide-react'
-import { TaskPriority, WorkspaceKind, type AgentType, type ProjectGitCapability, type TeamRunMode } from '@agent-tower/shared'
+import { TaskPriority, WorkspaceKind, type AgentType, type ExecutionPermissionMode, type ProjectGitCapability, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useAttachments } from '@/hooks/use-attachments'
@@ -8,6 +8,7 @@ import { useRefreshProjectGitCapability } from '@/hooks/use-projects'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
 import { AgentLogo } from '@/components/agent'
+import { EXECUTION_PERMISSION_LABELS } from '@/components/provider/ExecutionPermissionSelector'
 import { Tooltip } from '@/components/ui/tooltip'
 import { SlashCommandPopover } from './SlashCommandPopover'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
@@ -33,6 +34,8 @@ interface ProviderOption {
   name: string
   agentType?: AgentType | string | null
   available: boolean
+  permissionMode?: ExecutionPermissionMode
+  reason?: string
 }
 
 export interface CreateTaskInputProps {
@@ -91,7 +94,8 @@ export function CreateTaskInput({
   const { t } = useI18n()
   const [title, setTitle] = useState('')
   const [projectId, setProjectId] = useState(defaultProjectId)
-  const [providerId, setProviderId] = useState(defaultProviderId)
+  const [providerChoiceId, setProviderId] = useState(defaultProviderId)
+  const providerId = providerChoiceId || defaultProviderId
   const [mode, setMode] = useState<CreateTaskMode>('SOLO')
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(WorkspaceKind.WORKTREE)
   const [priority, setPriority] = useState<TaskPriority>(TaskPriority.NORMAL)
@@ -119,11 +123,11 @@ export function CreateTaskInput({
   const effectiveSubmitLabel = submitLabel ?? (isConversationMode ? t('开始') : t('创建'))
 
   useEffect(() => {
+    // Existing project selection follows the parent default when it changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProjectId(defaultProjectId)
     onProjectChange?.(defaultProjectId)
   }, [defaultProjectId, onProjectChange])
-  useEffect(() => { setProviderId(defaultProviderId) }, [defaultProviderId])
-
   useEffect(() => {
     if (!showProjectMenu) return
     const handler = (e: MouseEvent) => {
@@ -192,11 +196,12 @@ export function CreateTaskInput({
     && !isUploading
     && title.trim().length > 0
     && (isConversationMode
-      ? !!providerId
-      : !!projectId && (effectiveCreateMode === 'SOLO' ? !!providerId : hasTeamMembers))
+      ? selectedProvider?.available === true
+      : !!projectId && (effectiveCreateMode === 'SOLO' ? selectedProvider?.available === true : hasTeamMembers))
 
   useEffect(() => {
     if (!localProjectOnly) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMode('SOLO')
     setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY)
     setShowTeamConfig(false)
@@ -205,6 +210,7 @@ export function CreateTaskInput({
 
   useEffect(() => {
     if (localProjectOnly || isConversationMode) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setWorkspaceMode(WorkspaceKind.WORKTREE)
   }, [isConversationMode, localProjectOnly, selectedProject?.id])
 
@@ -499,24 +505,31 @@ export function CreateTaskInput({
             </button>
 
             {showProviderMenu && (
-              <div className="absolute top-full left-0 mt-1.5 w-56 bg-popover border border-border rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.06)] py-1 max-h-[240px] overflow-y-auto z-50">
+              <div className="absolute top-full left-0 z-50 mt-1.5 max-h-[min(60vh,320px)] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-border bg-popover py-1 shadow-[0_4px_12px_rgba(0,0,0,0.06)] sm:w-80">
                 {providers.map(p => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    disabled={!p.available}
-                    onClick={() => { setProviderId(p.id); setShowProviderMenu(false) }}
-                    className={cn(
-                      'flex items-center w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors',
-                      !p.available && 'opacity-40 cursor-not-allowed',
-                    )}
-                  >
-                    <Check size={14} className={cn('mr-2 shrink-0 text-foreground', p.id === providerId ? 'opacity-100' : 'opacity-0')} />
-                    <AgentLogo agentType={p.agentType} className="mr-2 size-3.5" />
-                    <span className={cn('min-w-0 truncate', p.id === providerId ? 'text-foreground font-medium' : 'text-muted-foreground')}>
-                      {p.name}{!p.available ? t(' (unavailable)') : ''}
-                    </span>
-                  </button>
+                  <div key={p.id} tabIndex={!p.available ? 0 : undefined} role={!p.available ? 'group' : undefined}
+                    aria-label={!p.available ? `${p.name}: ${t(p.reason || 'Agent executable is unavailable.')}` : undefined}
+                    className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                    <button
+                      type="button"
+                      disabled={!p.available}
+                      onClick={() => { setProviderId(p.id); setShowProviderMenu(false) }}
+                      className={cn(
+                        'flex w-full items-start px-3 py-2 text-left text-xs transition-colors hover:bg-accent',
+                        !p.available && 'cursor-not-allowed',
+                      )}
+                    >
+                      <Check size={14} className={cn('mr-2 mt-0.5 shrink-0 text-foreground', p.id === providerId ? 'opacity-100' : 'opacity-0')} />
+                      <AgentLogo agentType={p.agentType} className="mr-2 mt-0.5 size-3.5 shrink-0" />
+                      <span className="min-w-0 flex-1">
+                        <span className={cn('block break-words', p.id === providerId ? 'font-medium text-foreground' : 'text-muted-foreground')}>
+                          {p.name}{!p.available ? t(' (unavailable)') : ''}
+                        </span>
+                        {p.permissionMode ? <span className="mt-0.5 block text-[11px] text-muted-foreground">{t('Required permission: {mode}', { mode: t(EXECUTION_PERMISSION_LABELS[p.permissionMode]) })}</span> : null}
+                        {p.reason ? <span className="mt-0.5 block break-words text-[11px] leading-snug text-destructive">{t(p.reason)}</span> : null}
+                      </span>
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -683,6 +696,12 @@ export function CreateTaskInput({
           </Tooltip>
         )}
       </div>
+
+      {selectedProvider && !selectedProvider.available ? (
+        <p role="alert" className="mt-2 break-words px-2 text-xs leading-snug text-destructive">
+          {selectedProvider.reason ? t(selectedProvider.reason) : t('Agent executable is unavailable.')}
+        </p>
+      ) : null}
 
       {/* TeamRun configuration panel — muted secondary area below input */}
       {!isConversationMode && effectiveCreateMode === 'TEAM' && showTeamConfig && (

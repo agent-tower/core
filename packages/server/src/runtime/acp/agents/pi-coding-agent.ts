@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
-import { AgentType, normalizeRuntimePermissionMode, type McpConfigResponse } from '@agent-tower/shared';
+import { AgentType, resolveProviderExecutionPermission, type McpConfigResponse } from '@agent-tower/shared';
 import { which } from '../../../utils/index.js';
 import { buildMcpConfigResponse } from '../../../services/mcp-config.service.js';
 import { AgentRuntimeError } from '../../errors.js';
@@ -26,10 +26,7 @@ export const piCodingAgentAcpAgentDefinition: AcpAgentDefinition = {
     const model = readNonEmptyString(provider?.config.model);
     const effort = readNonEmptyString(provider?.config.effort);
     const appendPrompt = readNonEmptyString(provider?.config.appendPrompt);
-    const configuredMode = provider?.config.permissionMode ?? provider?.config.acpPermissionMode;
-    const permissionMode = configuredMode === undefined
-      ? provider?.config.autoApprove === true ? 'UNRESTRICTED' : 'ASK'
-      : normalizeRuntimePermissionMode(configuredMode);
+      const permissionMode = resolveProviderExecutionPermission(provider ?? { agentType: AgentType.PI_CODING_AGENT }).mode;
     const supportsImages = provider?.config.supportsImages === true;
     return {
       agentType: AgentType.PI_CODING_AGENT,

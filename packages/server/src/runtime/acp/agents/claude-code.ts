@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
-import { AgentType, normalizeRuntimePermissionMode } from '@agent-tower/shared';
+import { AgentType, resolveProviderExecutionPermission } from '@agent-tower/shared';
 import { which } from '../../../utils/index.js';
 import { AgentRuntimeError } from '../../errors.js';
 import { isExecutableFile, resolveBundledClaudeExecutable } from './executable-resolution.js';
@@ -53,13 +53,10 @@ function projectClaudeProvider(
     ? provider.config.effort.trim()
     : undefined;
   if (model) environment.ANTHROPIC_MODEL = model;
-  const configuredMode = provider?.config.permissionMode ?? provider?.config.acpPermissionMode;
   const appendPrompt = typeof provider?.config.appendPrompt === 'string' && provider.config.appendPrompt
     ? provider.config.appendPrompt
     : undefined;
-  const permissionMode = configuredMode === undefined && provider?.config.dangerouslySkipPermissions === true
-    ? 'UNRESTRICTED'
-    : normalizeRuntimePermissionMode(configuredMode);
+  const permissionMode = resolveProviderExecutionPermission(provider ?? { agentType: AgentType.CLAUDE_CODE }).mode;
   return {
     agentType: AgentType.CLAUDE_CODE,
     environment,
@@ -135,9 +132,10 @@ export const claudeCodeAcpAgentDefinition: AcpAgentDefinition = {
 
   sessionMetadata(profile) {
     const settings = structuredClone(profile.settings ?? {});
+    settings.permissions = { ...(settings.permissions as Record<string, unknown> ?? {}), defaultMode: profile.permissionMode === 'FULL_ACCESS' ? 'bypassPermissions' : 'default' };
     if (profile.model) settings.model = profile.model;
     if (profile.effort) settings.effortLevel = profile.effort;
-    if (profile.permissionMode === 'UNRESTRICTED') {
+    if (profile.permissionMode === 'FULL_ACCESS') {
       const configuredSandbox = settings.sandbox;
       settings.sandbox = {
         ...(configuredSandbox && typeof configuredSandbox === 'object' && !Array.isArray(configuredSandbox)
@@ -166,18 +164,15 @@ export const claudeCodeAcpAgentDefinition: AcpAgentDefinition = {
         value: profile.effort,
       });
     }
-    const desiredMode = profile.permissionMode === 'UNRESTRICTED' ? 'bypassPermissions' : 'default';
+    const desiredMode = profile.permissionMode === 'FULL_ACCESS' ? 'bypassPermissions' : 'default';
     if (response.modes?.currentModeId === desiredMode) return;
     if (!response.modes?.availableModes.some(mode => mode.id === desiredMode)) {
-      if (profile.permissionMode === 'UNRESTRICTED') {
         throw new AgentRuntimeError(
           'permission_mode_unsupported',
           'session',
-          'Claude Code did not advertise bypassPermissions',
+          `Claude Code did not advertise '${desiredMode}'`,
           false,
         );
-      }
-      return;
     }
     await context.request(acp.methods.agent.session.setMode, { sessionId, modeId: desiredMode });
   },

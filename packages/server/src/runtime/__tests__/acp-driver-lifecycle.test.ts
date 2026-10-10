@@ -80,6 +80,7 @@ const providerState = vi.hoisted(() => ({
     name: string;
     agentType: string;
     runtimeType: string;
+    executionPermission?: import('@agent-tower/shared').ExecutionPermissionMode;
     env: Record<string, string>;
     config: Record<string, unknown>;
     isDefault: boolean;
@@ -131,9 +132,10 @@ vi.mock('@agentclientprotocol/sdk', () => {
       for (const params of acpState.loadUpdates) {
         await acpState.notificationHandler?.({ params });
       }
-      return {};
+      return { modes: { currentModeId: 'agent', availableModes: [{ id: 'read-only' }, { id: 'agent' }, { id: 'agent-full-access' }] } };
     }
-    if (method === methods.agent.session.new) return { sessionId: 'external-new' };
+    if (method === methods.agent.session.new) return { sessionId: 'external-new', modes: { currentModeId: 'agent', availableModes: [{ id: 'read-only' }, { id: 'agent' }, { id: 'agent-full-access' }] } };
+    if (method === methods.agent.session.resume) return { modes: { currentModeId: 'agent', availableModes: [{ id: 'read-only' }, { id: 'agent' }, { id: 'agent-full-access' }] } };
     if (method === methods.agent.session.prompt) return acpState.prompt?.promise;
     return {};
   });
@@ -251,20 +253,37 @@ describe('AcpRuntimeDriver lifecycle', () => {
     });
   }
 
-  it('uses non-persistent permission approval as the unrestricted fallback', async () => {
+  it('rejects restoring a native session when its Definition cannot reapply permissions', async () => {
+    const definition = acpRegistry.getAcpAgentDefinition(AgentType.CODEX);
+    const definitionSpy = vi.spyOn(acpRegistry, 'getAcpAgentDefinition').mockReturnValue({ ...definition, supportsPermissionRestore: false });
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    try {
+      await expect(session.runTurn({ turnId: 'restore', prompt: 'continue', msgStore: new MsgStore(), resumeExternalSessionId: 'external-1' }, sink))
+        .rejects.toMatchObject({ code: 'permission_mode_unsupported' });
+      expect(acpState.request.mock.calls.some(([method]) => method === 'session/load' || method === 'session/resume')).toBe(false);
+    } finally {
+      await session.close();
+      definitionSpy.mockRestore();
+    }
+  });
+
+  it.each(['FULL_ACCESS', 'AUTO_SANDBOX'] as const)('forwards remaining native approval requests under %s', async executionPermission => {
     providerState.provider = {
       id: 'opencode-acp-unrestricted',
       name: 'OpenCode ACP Unrestricted',
-      agentType: AgentType.OPENCODE,
+      agentType: AgentType.CODEX,
       runtimeType: RuntimeType.ACP,
       env: { OPENCODE_PATH: process.execPath },
-      config: { permissionMode: 'UNRESTRICTED' },
+      config: {},
       isDefault: false,
     };
     const { sink, input } = setup();
     const session = await new AcpRuntimeDriver().open({
       ...input,
-      agentType: AgentType.OPENCODE,
+      agentType: AgentType.CODEX,
+      providerSnapshot: { ...providerState.provider, agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP, executionPermission },
+      executionPermission,
       providerId: providerState.provider.id,
       env: input.env.set('OPENCODE_PATH', process.execPath),
     }, sink);
@@ -275,7 +294,7 @@ describe('AcpRuntimeDriver lifecycle', () => {
       resumeExternalSessionId: 'external-1',
     }, sink);
 
-    const response = await acpState.permissionHandler?.({
+    const responsePromise = acpState.permissionHandler?.({
       params: {
         sessionId: 'external-1',
         options: [
@@ -287,8 +306,11 @@ describe('AcpRuntimeDriver lifecycle', () => {
       signal: new AbortController().signal,
     });
 
-    expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'once' } });
-    expect(vi.mocked(sink.stream).mock.calls.map(([event]) => event.type)).not.toContain('permission_requested');
+    const requestEvent = vi.mocked(sink.stream).mock.calls.map(([event]) => event).find(event => event.type === 'permission_requested');
+    expect(requestEvent?.type).toBe('permission_requested');
+    if (requestEvent?.type !== 'permission_requested') throw new Error('Missing permission request');
+    await session.resolvePermission?.(requestEvent.request.requestId, 'once');
+    expect(await responsePromise).toEqual({ outcome: { outcome: 'selected', optionId: 'once' } });
 
     await session.cancelTurn('turn-unrestricted');
     await turn.completion;
@@ -300,6 +322,7 @@ describe('AcpRuntimeDriver lifecycle', () => {
     providerState.provider = {
       id: 'codex-acp-gateway',
       name: 'Codex ACP Gateway',
+      executionPermission: 'ASK',
       agentType: AgentType.CODEX,
       runtimeType: RuntimeType.ACP,
       env: {
@@ -339,6 +362,7 @@ describe('AcpRuntimeDriver lifecycle', () => {
     providerState.provider = {
       id: 'codex-acp-auth',
       name: 'Codex ACP Auth',
+      executionPermission: 'ASK',
       agentType: AgentType.CODEX,
       runtimeType: RuntimeType.ACP,
       env: { OPENAI_API_KEY: 'lifecycle-provider-secret' },
@@ -358,10 +382,11 @@ describe('AcpRuntimeDriver lifecycle', () => {
     }, sink);
 
     const methods = vi.mocked(acpState.request).mock.calls.map(([method]) => method);
-    expect(methods.slice(0, 4)).toEqual([
+    expect(methods.slice(0, 5)).toEqual([
       'initialize',
       'authenticate',
       'session/new',
+      'session/set_mode',
       'session/prompt',
     ]);
     expect(acpState.request).toHaveBeenCalledWith('authenticate', { methodId: 'api-key' });
@@ -913,10 +938,15 @@ describe('AcpRuntimeDriver lifecycle', () => {
     await expect(first.completion).rejects.toMatchObject({ code: 'protocol_violation' });
     expect(acpState.processStarts).toBe(1);
     expect(acpState.processStops).toBe(1);
+    expect(session.hasActiveTransport).toBe(false);
 
     acpState.prompt = deferred<{ stopReason?: string }>();
+    acpState.request.mockClear();
     const second = await session.runTurn({
       turnId: 'turn-reconnected',
+      executionPermission: 'FULL_ACCESS',
+      providerSnapshot: { id: 'same-provider', name: 'Updated', agentType: AgentType.CODEX,
+        runtimeType: RuntimeType.ACP, executionPermission: 'FULL_ACCESS', env: {}, config: {}, isDefault: false },
       prompt: 'continue',
       msgStore: new MsgStore(),
       resumeExternalSessionId: 'external-1',
@@ -926,10 +956,54 @@ describe('AcpRuntimeDriver lifecycle', () => {
 
     const methods = vi.mocked(acpState.request).mock.calls.map(([method]) => method);
     expect(acpState.processStarts).toBe(2);
-    expect(methods.filter((method) => method === 'initialize')).toHaveLength(2);
-    expect(methods.filter((method) => method === 'session/load')).toHaveLength(2);
+    expect(methods.filter((method) => method === 'initialize')).toHaveLength(1);
+    expect(methods.filter((method) => method === 'session/load')).toHaveLength(1);
+    expect(acpState.request).toHaveBeenCalledWith('session/set_mode', expect.objectContaining({ modeId: 'agent-full-access' }));
+    expect(session.hasActiveTransport).toBe(true);
     await session.close();
     expect(acpState.processStops).toBe(2);
+  });
+
+  it('keeps an active ACP transport on its launch snapshot after the Provider identity changes', async () => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const first = await session.runTurn({ turnId: 'initial', prompt: 'hello', msgStore: new MsgStore() }, sink);
+    acpState.prompt?.resolve({ stopReason: 'end_turn' });
+    await first.completion;
+    acpState.prompt = deferred<{ stopReason?: string }>();
+    acpState.request.mockClear();
+    const followUp = await session.runTurn({
+      turnId: 'active-follow-up', prompt: 'continue', msgStore: new MsgStore(),
+      providerSnapshot: { id: 'changed', name: 'Changed', agentType: AgentType.GEMINI_CLI,
+        runtimeType: RuntimeType.CLI, executionPermission: 'FULL_ACCESS', env: {}, config: {}, isDefault: false },
+    }, sink);
+    acpState.prompt.resolve({ stopReason: 'end_turn' });
+    await followUp.completion;
+    expect(acpState.processStarts).toBe(1);
+    expect(acpState.request.mock.calls.map(([method]) => method)).toEqual(['session/prompt']);
+    await session.close();
+  });
+
+  it.each([
+    { agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI },
+    { agentType: AgentType.GEMINI_CLI, runtimeType: RuntimeType.ACP },
+  ])('rejects a changed Provider identity before reconnecting an ACP transport (%j)', async identity => {
+    const { sink, input } = setup();
+    const session = await new AcpRuntimeDriver().open(input, sink);
+    const first = await session.runTurn({ turnId: 'disconnect', prompt: 'hello', msgStore: new MsgStore() }, sink);
+    acpState.prompt?.reject(new AgentRuntimeError('protocol_violation', 'protocol', 'test disconnect', false));
+    await expect(first.completion).rejects.toMatchObject({ code: 'protocol_violation' });
+    expect(session.hasActiveTransport).toBe(false);
+    const starts = acpState.processStarts;
+    acpState.request.mockClear();
+    await expect(session.runTurn({
+      turnId: 'reconnect', prompt: 'continue', msgStore: new MsgStore(),
+      providerSnapshot: { id: 'changed', name: 'Changed', ...identity,
+        executionPermission: 'ASK', env: {}, config: {}, isDefault: false },
+    }, sink)).rejects.toMatchObject({ code: 'provider_config_invalid' });
+    expect(acpState.processStarts).toBe(starts);
+    expect(acpState.request).not.toHaveBeenCalled();
+    await session.close();
   });
 
   it('surfaces the adapter exit reason when the ACP process dies mid-turn', async () => {

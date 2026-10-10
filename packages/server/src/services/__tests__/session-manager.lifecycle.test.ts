@@ -59,6 +59,11 @@ const {
   };
 });
 
+vi.mock('../../executors/profiles.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../executors/profiles.js')>();
+  return { ...actual, getVariantConfig: (agent: string, variant: string) => ({ ...actual.getVariantConfig(agent, variant), executionPermission: 'FULL_ACCESS' }) };
+});
+
 vi.mock('../../executors/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../executors/index.js')>();
   getExecutorByProviderMock.mockImplementation(createMockExecutor);
@@ -66,6 +71,7 @@ vi.mock('../../executors/index.js', async (importOriginal) => {
     ...actual,
     getExecutor: vi.fn(createMockExecutor),
     getExecutorByProvider: getExecutorByProviderMock,
+    createExecutorFromProvider: getExecutorByProviderMock,
     getProviderById: getProviderByIdMock,
   };
 });
@@ -188,6 +194,7 @@ async function createRetryableAcpStopFixture(closeFailureMessages: string[]) {
     name: 'Cleanup Retry ACP Provider',
     agentType: AgentType.CODEX,
     runtimeType: RuntimeType.ACP,
+    executionPermission: 'FULL_ACCESS' as const,
     env: {},
     config: {},
     isDefault: false,
@@ -307,6 +314,44 @@ async function getPersistedCleanupInput(sessionId: string, runtimeInstanceId: st
 }
 
 describe('SessionManager session status vs real process state', () => {
+  it('rejects direct FULL_ACCESS startup under an injected restricted policy before opening a driver', async () => {
+    const { ExecutionPermissionService } = await import('../execution-permission.service.js');
+    const provider = { id: 'restricted-provider', name: 'Restricted', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP,
+      executionPermission: 'FULL_ACCESS' as const, env: {}, config: {}, isDefault: false };
+    getProviderByIdMock.mockReturnValue(provider);
+    const { session } = await createSessionFixture({ providerId: provider.id });
+    await prisma.session.update({ where: { id: session.id }, data: { runtimeType: RuntimeType.ACP } });
+    const driver: RuntimeDriver = { type: RuntimeType.ACP, open: vi.fn() };
+    const manager = new SessionManager(new EventBus(), undefined, new StaticRuntimeRegistry([driver]),
+      new ExecutionPermissionService({ getAllowedModes: () => ['ASK', 'AUTO_SANDBOX'] }));
+    await expect(manager.start(session.id)).rejects.toMatchObject({ code: 'POLICY_MODE_DENIED', statusCode: 403 });
+    expect(driver.open).not.toHaveBeenCalled();
+    expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(0);
+    await manager.destroyAll();
+  });
+  it('checks approval against the launch snapshot after Provider edits and rejects deployment revocation', async () => {
+    const { ExecutionPermissionService } = await import('../execution-permission.service.js');
+    const provider = { id: 'approval-provider', name: 'Approval', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP,
+      executionPermission: 'FULL_ACCESS' as const, env: {}, config: {}, isDefault: false };
+    getProviderByIdMock.mockReturnValue(provider);
+    const { session } = await createSessionFixture({ providerId: provider.id });
+    await prisma.session.update({ where: { id: session.id }, data: { runtimeType: RuntimeType.ACP } });
+    let allowed = true;
+    const manager = new SessionManager(new EventBus(), undefined, new StaticRuntimeRegistry([]),
+      new ExecutionPermissionService({ getAllowedModes: () => allowed ? ['FULL_ACCESS'] : ['ASK'] }));
+    const coordinator = (manager as unknown as { runtimeCoordinator: { getState(): unknown; resolvePermission(...args: unknown[]): Promise<void> } }).runtimeCoordinator;
+    vi.spyOn(coordinator, 'getState').mockReturnValue({ executionPermission: 'FULL_ACCESS', runtimeType: RuntimeType.ACP });
+    const resolve = vi.spyOn(coordinator, 'resolvePermission').mockResolvedValue(undefined);
+    getProviderByIdMock.mockReturnValue({ ...provider, executionPermission: 'ASK' });
+    await manager.resolveRuntimePermission(session.id, 'request', 'allow_once');
+    expect(resolve).toHaveBeenCalledWith(session.id, 'request', 'allow_once', expect.any(Function));
+    const recheck = resolve.mock.calls[0]![3] as () => void;
+    allowed = false;
+    expect(recheck).toThrow(expect.objectContaining({ code: 'POLICY_MODE_DENIED', statusCode: 403 }));
+    await expect(manager.resolveRuntimePermission(session.id, 'request', 'allow_once')).rejects.toMatchObject({ code: 'POLICY_MODE_DENIED', statusCode: 403 });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    await manager.destroyAll();
+  });
   beforeAll(async () => {
     fs.closeSync(fs.openSync(dbPath, 'a'));
     execFileSync(
@@ -362,6 +407,7 @@ describe('SessionManager session status vs real process state', () => {
       name: 'Qwen Code ACP',
       agentType: AgentType.QWEN_CODE,
       runtimeType: 'ACP',
+      executionPermission: 'FULL_ACCESS' as const,
       env: {},
       config: {},
       isDefault: false,
@@ -379,6 +425,48 @@ describe('SessionManager session status vs real process state', () => {
       runtimeType: 'ACP',
       providerId: 'qwen-acp-provider',
     });
+  });
+
+  it.each([
+    ['start', 'ASK'], ['start', 'AUTO_SANDBOX'],
+    ['startFollowUp', 'ASK'], ['startFollowUp', 'AUTO_SANDBOX'],
+  ] as const)('rejects %s of an old CLI Session after a real same-ID import to ACP %s', async (method, executionPermission) => {
+    const providers = await import('../../executors/providers.js');
+    const originalDataDir = process.env.AGENT_TOWER_DATA_DIR;
+    const importDir = fs.mkdtempSync(path.join(testDir, 'provider-import-'));
+    const driver: RuntimeDriver = { type: RuntimeType.CLI, open: vi.fn() };
+    const manager = new SessionManager(new EventBus(), undefined, new StaticRuntimeRegistry([driver]));
+    try {
+      process.env.AGENT_TOWER_DATA_DIR = importDir;
+      providers.reloadProviders();
+      const provider = providers.createProvider({
+        name: 'Original CLI', agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI,
+        executionPermission: 'FULL_ACCESS', env: {}, config: {}, isDefault: false,
+      });
+      getProviderByIdMock.mockImplementation(providers.getProviderById);
+      const { workspace, session } = await createSessionFixture({ providerId: provider.id });
+      const resumeSource = await prisma.session.create({ data: {
+        workspaceId: workspace.id, agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI,
+        prompt: 'previous turn', status: SessionStatus.COMPLETED, externalSessionId: 'previous-native-session',
+      } });
+      const backup = providers.createProviderBackup();
+      backup.providers = [{ ...backup.providers.find(item => item.id === provider.id)!, runtimeType: RuntimeType.ACP, executionPermission }];
+      expect(providers.importProvidersFromBackup(backup).summary.overwrite).toBe(1);
+      providers.reloadProviders();
+      expect(providers.getProviderById(provider.id)).toMatchObject({ runtimeType: RuntimeType.ACP, executionPermission });
+      const starting = method === 'start' ? manager.start(session.id) : manager.startFollowUp(session.id, resumeSource.id);
+      await expect(starting).rejects.toMatchObject({ code: 'PROVIDER_EXECUTION_MISMATCH', statusCode: 400 });
+      expect(driver.open).not.toHaveBeenCalled();
+      expect(getExecutorByProviderMock).not.toHaveBeenCalled();
+      expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(0);
+      expect(await prisma.session.findUniqueOrThrow({ where: { id: session.id } })).toMatchObject({ runtimeType: RuntimeType.CLI });
+    } finally {
+      await manager.destroyAll();
+      if (originalDataDir === undefined) delete process.env.AGENT_TOWER_DATA_DIR;
+      else process.env.AGENT_TOWER_DATA_DIR = originalDataDir;
+      providers.reloadProviders();
+      fs.rmSync(importDir, { recursive: true, force: true });
+    }
   });
 
   it.each(['resource-cleanup', 'task-soft-deleted'] as const)(
@@ -420,6 +508,7 @@ describe('SessionManager session status vs real process state', () => {
       id: 'provider-snapshot',
       name: 'Provider Snapshot',
       agentType: AgentType.CODEX,
+      executionPermission: 'FULL_ACCESS' as const,
       env: {},
       config: { disableResponsesWebsocket: false },
       isDefault: false,
@@ -440,8 +529,8 @@ describe('SessionManager session status vs real process state', () => {
     provider.config.disableResponsesWebsocket = true;
     await manager.start(second.session.id);
 
-    expect(getExecutorByProviderMock).toHaveBeenNthCalledWith(1, 'provider-snapshot');
-    expect(getExecutorByProviderMock).toHaveBeenNthCalledWith(2, 'provider-snapshot');
+    expect(getExecutorByProviderMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'provider-snapshot', executionPermission: 'FULL_ACCESS' }));
+    expect(getExecutorByProviderMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: 'provider-snapshot', executionPermission: 'FULL_ACCESS' }));
     expect(executorSnapshots).toEqual([false, true]);
     await manager.destroyAll();
   });
@@ -451,6 +540,7 @@ describe('SessionManager session status vs real process state', () => {
       id: 'provider-follow-up-snapshot',
       name: 'Provider Follow-up Snapshot',
       agentType: AgentType.CODEX,
+      executionPermission: 'FULL_ACCESS' as const,
       env: {},
       config: { disableResponsesWebsocket: true },
       isDefault: false,
@@ -534,6 +624,7 @@ describe('SessionManager session status vs real process state', () => {
       name: 'Reused ACP Provider',
       agentType: AgentType.CODEX,
       runtimeType: 'ACP',
+      executionPermission: 'FULL_ACCESS' as const,
       env: {},
       config: {},
       isDefault: false,
@@ -587,6 +678,7 @@ describe('SessionManager session status vs real process state', () => {
     });
     const runtimeCoordinator = {
       hasActiveTurn,
+      getState: vi.fn(() => ({ runtimeType: RuntimeType.ACP, turnState: 'IDLE' })),
       withStartAdmission: vi.fn(withStartAdmission),
       retryDisposedSessionCleanup: vi.fn(async () => undefined),
       startTurn: vi.fn(async (_input: StartRuntimeTurnInput) => ({ turnId: 'turn-2', completion })),
@@ -673,6 +765,7 @@ describe('SessionManager session status vs real process state', () => {
       name: 'Interrupted ACP Provider',
       agentType: AgentType.CODEX,
       runtimeType: RuntimeType.ACP,
+      executionPermission: 'FULL_ACCESS' as const,
       env: {},
       config: {},
       isDefault: false,
@@ -705,6 +798,7 @@ describe('SessionManager session status vs real process state', () => {
     });
     const runtimeCoordinator = {
       hasActiveTurn: vi.fn(() => false),
+      getState: vi.fn(() => ({ runtimeType: RuntimeType.ACP, turnState: 'IDLE' })),
       withStartAdmission: vi.fn(withStartAdmission),
       retryDisposedSessionCleanup: vi.fn(async () => undefined),
       startTurn: vi.fn(async (_input: StartRuntimeTurnInput) => ({ turnId: 'turn-2', completion })),
@@ -1477,6 +1571,7 @@ describe('SessionManager session status vs real process state', () => {
       id: 'same-provider',
       name: 'Same provider',
       agentType: AgentType.CODEX,
+      executionPermission: 'FULL_ACCESS' as const,
       env: {},
       config: {},
       isDefault: false,
@@ -1543,6 +1638,10 @@ describe('SessionManager session status vs real process state', () => {
   });
 
   it('keeps completed-turn post-processing alive when the session provider was deleted and omitted', async () => {
+    getProviderByIdMock.mockReturnValue({
+      id: 'deleted-provider', name: 'Deleted provider', agentType: AgentType.CODEX,
+      executionPermission: 'FULL_ACCESS', env: {}, config: {}, isDefault: false,
+    });
     const { task, workspace, session } = await createSessionFixture({ providerId: 'deleted-provider' });
     const pty = new ControlledPty();
     const executor = {
@@ -1572,6 +1671,7 @@ describe('SessionManager session status vs real process state', () => {
     pty.emitData(JSON.stringify({ type: 'turn.completed' }) + '\n');
     await completed;
 
+    getProviderByIdMock.mockReturnValue(null);
     await expect(manager.sendMessage(session.id, 'follow-up')).rejects
       .toThrow('Provider not found: deleted-provider');
     await vi.waitFor(() => expect(autoCommitSpy).toHaveBeenCalledTimes(1));
@@ -1591,6 +1691,7 @@ describe('SessionManager session status vs real process state', () => {
       id: 'delayed-provider',
       name: 'Delayed provider',
       agentType: AgentType.CODEX,
+      executionPermission: 'FULL_ACCESS' as const,
       env: {},
       config: {},
       isDefault: false,

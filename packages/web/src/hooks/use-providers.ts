@@ -10,6 +10,7 @@ import type {
   ProviderImportPreview,
   ProviderImportResult,
   RedactedProvider,
+  RuntimeType,
 } from '@agent-tower/shared'
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -45,14 +46,22 @@ export function useProvider(id: string) {
   })
 }
 
-export function useProviderCapabilities(agentType?: AgentType | string, model?: string) {
+export function useProviderCapabilities(agentType?: AgentType | string, model?: string, context?: { providerId?: string; runtimeType?: RuntimeType; config?: Record<string, unknown>; settings?: string }) {
   const normalizedModel = model?.trim() || undefined
   return useQuery({
-    queryKey: queryKeys.providers.capabilities(agentType, normalizedModel),
+    queryKey: queryKeys.providers.capabilities(agentType, normalizedModel, context?.providerId, context?.runtimeType, context?.config, context?.settings),
     queryFn: () => {
+      if (context?.config !== undefined) {
+        return apiClient.post<Partial<ProviderCapabilityMatrix>>('/providers/capabilities', {
+          agentType, model: normalizedModel, providerId: context.providerId,
+          runtimeType: context.runtimeType, config: context.config, settings: context.settings,
+        })
+      }
       const params = new URLSearchParams()
       if (agentType) params.set('agentType', agentType)
       if (normalizedModel) params.set('model', normalizedModel)
+      if (context?.providerId) params.set('providerId', context.providerId)
+      if (context?.runtimeType) params.set('runtimeType', context.runtimeType)
       const suffix = params.toString()
       return apiClient.get<Partial<ProviderCapabilityMatrix>>(`/providers/capabilities${suffix ? `?${suffix}` : ''}`)
     },

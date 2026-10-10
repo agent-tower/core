@@ -55,6 +55,7 @@ export async function which(
   options: {
     platform?: NodeJS.Platform
     env?: NodeJS.ProcessEnv
+    timeoutMs?: number
   } = {}
 ): Promise<string | null> {
   try {
@@ -64,6 +65,7 @@ export async function which(
     const { stdout } = await execFileAsync(lookupCommand, [command], {
       encoding: 'utf-8',
       windowsHide: true,
+      timeout: options.timeoutMs,
       env: platform === 'win32'
         ? withWindowsUserPathFallbacks(env)
         : platform === 'darwin' || platform === 'linux'

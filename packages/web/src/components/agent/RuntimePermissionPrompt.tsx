@@ -35,6 +35,7 @@ export function RuntimePermissionPrompt({ sessionId, compact = false }: RuntimeP
           <div className="mt-0.5 break-words text-xs text-muted-foreground">
             {permission.toolSummary || permission.toolName || t('The agent needs approval to continue.')}
           </div>
+          {permission.actionDetails ? <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs">{permission.actionDetails}</pre> : null}
           <div className="mt-2 flex flex-wrap gap-2">
             {permission.options.map((option) => (
               <button
@@ -58,7 +59,7 @@ export function RuntimePermissionPrompt({ sessionId, compact = false }: RuntimeP
                   && resolvePermission.variables.optionId === option.optionId
                   ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
                   : null}
-                {option.name}
+                {t(option.name)}
               </button>
             ))}
           </div>

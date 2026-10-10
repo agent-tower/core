@@ -68,6 +68,10 @@ export class AcpRuntimeDriver implements RuntimeDriver {
   readonly type = RuntimeType.ACP;
 
   async open(input: RuntimeOpenInput, sink: RuntimeDriverEventSink): Promise<DriverSession> {
+    if (input.runtimeType !== RuntimeType.ACP) {
+      throw markPreChildProcessFailure(new AgentRuntimeError('provider_config_invalid', 'provider_config',
+        'The Session runtime does not match the ACP Driver.', false));
+    }
     return AcpDriverSession.open(input, sink);
   }
 }
@@ -102,13 +106,13 @@ class AcpDriverSession implements DriverSession {
   private constructor(
     private readonly input: RuntimeOpenInput,
     private readonly definition: AcpAgentDefinition,
-    private readonly providerProfile: AcpAgentProfile,
+    private providerProfile: AcpAgentProfile,
   ) {
     this.currentExternalSessionId = input.externalSessionId ?? undefined;
   }
 
   static async open(input: RuntimeOpenInput, sink: RuntimeDriverEventSink): Promise<AcpDriverSession> {
-    const provider = input.providerId ? getProviderById(input.providerId) : null;
+    const provider = input.providerSnapshot ?? (input.providerId ? getProviderById(input.providerId) : null);
     if (input.providerId && !provider) {
       throw markPreChildProcessFailure(new AgentRuntimeError(
         'provider_config_invalid',
@@ -138,6 +142,10 @@ class AcpDriverSession implements DriverSession {
     try {
       definition = getAcpAgentDefinition(input.agentType);
       profile = definition.projectProvider(provider, input.env.getFullEnv());
+      if (input.executionPermission && profile.permissionMode !== input.executionPermission) {
+        throw new AgentRuntimeError('provider_config_invalid', 'provider_config',
+          'Native permission projection does not match the authorized execution mode.', false);
+      }
     } catch (error) {
       throw markPreChildProcessFailure(error);
     }
@@ -158,11 +166,29 @@ class AcpDriverSession implements DriverSession {
     return this.currentExternalSessionId;
   }
 
+  get hasActiveTransport(): boolean {
+    return !this.closed && this.connection !== undefined;
+  }
+
   async runTurn(turn: RuntimeRunTurnInput, sink: RuntimeDriverEventSink): Promise<DriverTurn> {
     if (this.closed) {
       throw new AgentRuntimeError('connection_closed', 'prompt', 'ACP connection is closed', true);
     }
     if (!this.connection) {
+      if (turn.providerSnapshot) {
+        if (turn.providerSnapshot.agentType !== this.input.agentType || getProviderRuntimeType(turn.providerSnapshot) !== RuntimeType.ACP) {
+          throw markPreChildProcessFailure(new AgentRuntimeError('provider_config_invalid', 'provider_config',
+            'The Provider Agent or runtime does not match this ACP Session. Create a new Session with this Provider.', false));
+        }
+        const profile = this.definition.projectProvider(turn.providerSnapshot, this.input.env.getFullEnv());
+        if (turn.executionPermission && profile.permissionMode !== turn.executionPermission) {
+          throw markPreChildProcessFailure(new AgentRuntimeError('permission_mode_unsupported', 'provider_config',
+            'The ACP transport closed while permissions were being prepared. Retry to apply the current Provider permissions.', true));
+        }
+        this.providerProfile = profile;
+        this.input.providerSnapshot = turn.providerSnapshot;
+        this.input.executionPermission = turn.executionPermission;
+      }
       await this.connect(sink, turn.launchClaimNumber ?? 1, turn.admissionSignal);
     }
     this.assertAdmissionActive(turn.admissionSignal, 'prompt');
@@ -235,7 +261,7 @@ class AcpDriverSession implements DriverSession {
     });
   }
 
-  async resolvePermission(requestId: string, optionId: string): Promise<void> {
+  async resolvePermission(requestId: string, optionId: string, authorizeDelivery?: () => void): Promise<void> {
     const pending = this.pendingPermissions.get(requestId);
     if (!pending) {
       throw new AgentRuntimeError('permission_not_found', 'permission', 'Permission request is no longer active', false);
@@ -243,6 +269,7 @@ class AcpDriverSession implements DriverSession {
     if (!pending.optionIds.has(optionId)) {
       throw new AgentRuntimeError('permission_option_invalid', 'permission', 'Permission option was not offered', false);
     }
+    authorizeDelivery?.();
     this.pendingPermissions.delete(requestId);
     pending.signal.removeEventListener('abort', pending.onAbort);
     pending.resolve({ outcome: { outcome: 'selected', optionId } });
@@ -688,6 +715,9 @@ class AcpDriverSession implements DriverSession {
     const generation = this.transportGeneration;
     this.assertTransportCurrent(generation, connection, turn.admissionSignal, 'session');
     const requestedExternalId = turn.resumeExternalSessionId ?? this.currentExternalSessionId;
+    if (requestedExternalId && this.definition.supportsPermissionRestore === false) {
+      throw new AgentRuntimeError('permission_mode_unsupported', 'session', `${this.definition.displayName} cannot reliably reapply the selected permissions to a restored native session. Start a new session.`, false);
+    }
     const mcpServers = buildAcpMcpServers(this.input.env);
     const sessionMetadata = this.definition.sessionMetadata?.(this.providerProfile) ?? {};
     const bootstrapUpdates: SessionNotification[] = [];
@@ -826,13 +856,7 @@ class AcpDriverSession implements DriverSession {
       kind: normalizePermissionKind(option.kind),
     }));
     if (options.length === 0) return Promise.resolve({ outcome: { outcome: 'cancelled' } });
-    if (this.providerProfile.permissionMode === 'UNRESTRICTED') {
-      const selected = options.find((option) => option.kind === 'allow_once')
-        ?? options.find((option) => option.kind === 'allow_always');
-      return Promise.resolve(selected
-        ? { outcome: { outcome: 'selected', optionId: selected.optionId } }
-        : { outcome: { outcome: 'cancelled' } });
-    }
+
 
     const requestId = randomUUID();
     return new Promise((resolve) => {

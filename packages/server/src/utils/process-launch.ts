@@ -110,6 +110,9 @@ const trackedWindowsMembers = new Map();
 let identityIncomplete = false;
 let childExited = false;
 let lastProcessProbeFailure = null;
+// Tree cleanup starts at root exit; duplex output completion is an independent
+// barrier. The parent acknowledges only after consuming every output frame.
+let finishOutput = null;
 
 function getChildEnv() {
   const env = { ...process.env };
@@ -522,9 +525,14 @@ async function exitWithChildResult(code, signal) {
   // 否则 PTY owner 会把 wrapper exit 误判为进程树已清空。
   killTree('SIGHUP');
   const exitCode = typeof code === 'number' ? code : signal ? 1 : 0;
+  const finishExit = () => {
+    if (!finishOutput) { process.exit(exitCode); return; }
+    return finishOutput().then(outputComplete => process.exit(outputComplete ? exitCode : 1));
+  };
   const initialState = isWin ? windowsTreeState() : unixIdentityAdapter.groupState();
   if (initialState === 'CLEAN_EMPTY') {
-    process.exit(exitCode);
+    await finishExit();
+    return;
   }
 
   scheduleForceKill();
@@ -538,7 +546,7 @@ async function exitWithChildResult(code, signal) {
     if (state === 'CLEAN_EMPTY') {
       if (forceKillTimer) clearTimeout(forceKillTimer);
       forceKillTimer = null;
-      process.exit(exitCode);
+      await finishExit();
       return;
     }
     killTree(attempt >= 5 ? 'SIGKILL' : 'SIGHUP');
@@ -604,7 +612,86 @@ function spawnChild(args, stdioOpt) {
   });
 });
 
-if (mode === 'pipe-file') {
+if (mode === 'pipe-duplex') {
+  const [configFile, ...args] = rest;
+  let config;
+  try { config = JSON.parse(require('node:fs').readFileSync(configFile, 'utf8')); unlinkSync(configFile); }
+  catch (error) { exitWithError(error); }
+  const socket = require('node:net').connect(config.endpoint);
+  let buffer = '';
+  let writes = Promise.resolve();
+  let connected = false;
+  let connectionFailed = false;
+  let outputComplete = false;
+  let completeOutput;
+  const outputCompletion = new Promise(resolve => { completeOutput = resolve; });
+  // Bound transport failure/absent readers without mistaking a timeout for EOF.
+  finishOutput = () => new Promise(resolve => {
+    const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 10000);
+    outputCompletion.then(success => { clearTimeout(timer); resolve(success); });
+  });
+  const send = (frame) => socket.write(JSON.stringify(frame) + '\n');
+  const fail = () => {
+    if (connectionFailed) return;
+    connectionFailed = true;
+    completeOutput(false);
+    killTree('SIGTERM'); scheduleForceKill();
+    // The actual root exit starts cleanup; do not mark a still-running root
+    // exited or race a second cleanup state machine against its exit event.
+    if (!child) exitWithError(new Error('CLI duplex connection failed'));
+    else if (child.exitCode !== null || child.signalCode !== null || !child.pid) void exitWithChildResult(1);
+  };
+  const connectTimer = setTimeout(fail, 10000);
+  socket.setEncoding('utf8');
+  socket.on('error', fail);
+  socket.on('close', () => { if (!outputComplete) fail(); });
+  socket.on('connect', () => {
+    clearTimeout(connectTimer); connected = true;
+    send({ type: 'hello', secret: config.secret });
+    child = isCmdBat ? spawnCmd(args, ['pipe', 'pipe', 'pipe']) : spawnChild(args, ['pipe', 'pipe', 'pipe']);
+    scheduleProcessGroupIdentityCapture();
+    child.stdin.on('error', fail);
+    for (const type of ['stdout', 'stderr']) {
+      child[type].setEncoding('utf8');
+      child[type].on('data', data => { if (!send({ type, data })) child[type].pause(); });
+    }
+    socket.on('drain', () => { child.stdout.resume(); child.stderr.resume(); });
+    child.stdout.on('end', () => send({ type: 'eof' }));
+    let streamsEnded = 0;
+    for (const type of ['stdout', 'stderr']) {
+      child[type].on('end', () => {
+        if (++streamsEnded === 2) send({ type: 'output_complete' });
+      });
+    }
+    child.on('error', fail);
+    // Do not wait for close: a descendant can retain stdout indefinitely.
+    // Cleanup releases those fds; final exit separately waits for EOF + consumption.
+    child.on('exit', exitWithChildResult);
+  });
+  socket.on('data', data => {
+    buffer += data;
+    if (buffer.length > 16 * 1024 * 1024) { fail(); return; }
+    let newline;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+      let frame;
+      try { frame = JSON.parse(line); } catch { fail(); return; }
+      if (connected && frame.type === 'output_consumed') {
+        outputComplete = true; completeOutput(true); continue;
+      }
+      if (!connected || !Number.isSafeInteger(frame.id) || !['write', 'end'].includes(frame.type)
+        || (frame.type === 'write' && typeof frame.data !== 'string')) { fail(); return; }
+      writes = writes.then(() => new Promise(resolve => {
+        if (childExited || !child.stdin || child.stdin.destroyed || child.stdin.writableEnded) {
+          send({ type: 'ack', id: frame.id, error: frame.type !== 'end' }); resolve(); return;
+        }
+        const done = error => { send({ type: 'ack', id: frame.id, error: !!error }); resolve(); };
+        if (frame.type === 'end') child.stdin.end(done);
+        else child.stdin.write(frame.data, done);
+      })).catch(fail);
+    }
+  });
+} else if (mode === 'pipe-file') {
   const [stdinFile, ...args] = rest;
   cleanupTarget = stdinFile;
   let stdinStream = null;
@@ -903,4 +990,8 @@ export function normalizeCommandLookupOutput(
   }
 
   return lines[0];
+}
+
+export function buildPtyCommandWithDuplex(programPath: string, args: string[], configFile: string): CommandInvocation {
+  return { command: getNodeRuntimeCommand(), args: ['-e', PTY_WRAPPER_SCRIPT, 'pipe-duplex', programPath, configFile, ...args] };
 }
