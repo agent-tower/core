@@ -156,7 +156,7 @@ function DraggableTaskCard({
         onTouchMove={clearLongPress}
         title={projectLabel}
         aria-label={projectLabel ? `${task.title} — ${projectLabel}` : task.title}
-        className={`flex items-center gap-2.5 ml-4 mr-2 px-2 py-2 rounded-md text-sm text-left transition-colors group animate-task-enter
+        className={`task-row flex items-center gap-2.5 ml-4 mr-2 px-2 py-2 rounded-md text-sm text-left transition-colors group animate-task-enter
           ${isDragging ? 'opacity-30' : ''}
           ${isSelected ? 'bg-accent' : 'hover:bg-accent/50'}`}
         {...(dragDisabled ? {} : listeners)}
@@ -186,15 +186,19 @@ function DraggableTaskCard({
             {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
           </span>
         )}
-        {task.updatedAt && (
-          <span
-            className="shrink-0 text-[11px] text-muted-foreground/50 tabular-nums"
-          >
-            {timeAgo(task.updatedAt)}
+        {(task.updatedAt || project) && (
+          <span className="task-row-meta">
+            {project && (
+              <span className="task-project-name inline-flex shrink-0 items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold leading-none text-muted-foreground">
+                {project.name}
+              </span>
+            )}
+            {task.updatedAt && (
+              <span className="shrink-0 text-[11px] text-muted-foreground/50 tabular-nums">
+                {timeAgo(task.updatedAt)}
+              </span>
+            )}
           </span>
-        )}
-        {project && (
-          <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${project.color.replace('text-', 'bg-')}`} />
         )}
       </button>
 
