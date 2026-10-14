@@ -122,23 +122,6 @@ function ProjectSwitcher({
   )
 }
 
-/** 任务列表加载骨架：结构与真实列表行一致，避免加载完成后跳动 */
-function TaskListSkeleton() {
-  return (
-    <div className="px-4 pt-6 space-y-5 animate-pulse" aria-hidden>
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="flex items-start gap-3">
-          <div className="w-4 h-4 rounded-full bg-muted shrink-0 mt-0.5" />
-          <div className="flex-1 space-y-2">
-            <div className="h-3 rounded bg-muted" style={{ width: `${70 - (i % 3) * 12}%` }} />
-            <div className="h-2.5 rounded bg-muted/70" style={{ width: `${45 + (i % 2) * 18}%` }} />
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 // === 拖拽 resize 的常量配置 ===
 const MIN_SIDEBAR_WIDTH = 260
 const MAX_SIDEBAR_WIDTH = 600
@@ -726,23 +709,20 @@ export function ProjectKanbanPage() {
             </div>
           </header>
 
-          {isLoading && uiTasks.length === 0 ? (
-            <div className="flex-1 overflow-hidden"><TaskListSkeleton /></div>
-          ) : (
-            <TaskList
-              tasks={uiTasks}
-              projects={uiProjects}
-              selectedTaskId={null}
-              onSelectTask={setSelectedTaskId}
-              filterProjectId={effectiveFilterProjectId}
-              setFilterProjectId={setFilterProjectId}
-              width="100%"
-              onCreateTask={handleMobileCreateTask}
-              onCreateProject={handleCreateProject}
-              onTaskStatusChange={handleTaskStatusChange}
-              onTaskPriorityChange={handleTaskPriorityChange}
-            />
-          )}
+          <TaskList
+            tasks={uiTasks}
+            projects={uiProjects}
+            selectedTaskId={null}
+            onSelectTask={setSelectedTaskId}
+            filterProjectId={effectiveFilterProjectId}
+            setFilterProjectId={setFilterProjectId}
+            width="100%"
+            onCreateTask={handleMobileCreateTask}
+            onCreateProject={handleCreateProject}
+            onTaskStatusChange={handleTaskStatusChange}
+            onTaskPriorityChange={handleTaskPriorityChange}
+            isLoading={isLoading && uiTasks.length === 0}
+          />
         </div>
         <CreateProjectModal
           isOpen={isCreateProjectOpen}
@@ -798,30 +778,22 @@ export function ProjectKanbanPage() {
       {/* === 主体双栏区域 === */}
       <div className="flex-1 flex overflow-hidden">
         {/* 左侧: TaskList */}
-        {isLoading && uiTasks.length === 0 ? (
-          <div
-            className="h-full overflow-hidden flex-shrink-0"
-            style={{ width: sidebarWidth }}
-          >
-            <TaskListSkeleton />
-          </div>
-        ) : (
-          <TaskList
-            tasks={uiTasks}
-            projects={uiProjects}
-            selectedTaskId={effectiveSelectedTaskId}
-            onSelectTask={setSelectedTaskId}
-            filterProjectId={effectiveFilterProjectId}
-            setFilterProjectId={setFilterProjectId}
-            width={sidebarWidth}
-            onCreateTask={handleCreateTask}
-            onCreateProject={handleCreateProject}
-            isCreateActive={!effectiveSelectedTaskId}
-            onTaskStatusChange={handleTaskStatusChange}
-            onDeleteTask={handleDeleteTask}
-            onTaskPriorityChange={handleTaskPriorityChange}
-          />
-        )}
+        <TaskList
+          tasks={uiTasks}
+          projects={uiProjects}
+          selectedTaskId={effectiveSelectedTaskId}
+          onSelectTask={setSelectedTaskId}
+          filterProjectId={effectiveFilterProjectId}
+          setFilterProjectId={setFilterProjectId}
+          width={sidebarWidth}
+          onCreateTask={handleCreateTask}
+          onCreateProject={handleCreateProject}
+          isCreateActive={!effectiveSelectedTaskId}
+          onTaskStatusChange={handleTaskStatusChange}
+          onDeleteTask={handleDeleteTask}
+          onTaskPriorityChange={handleTaskPriorityChange}
+          isLoading={isLoading && uiTasks.length === 0}
+        />
 
         {/* 拖拽分隔线 */}
         <div

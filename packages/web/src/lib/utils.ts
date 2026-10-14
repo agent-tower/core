@@ -62,3 +62,24 @@ export function truncateMiddle(str: string, maxWidth: number): string {
 
   return head + '…' + tail
 }
+
+/**
+ * Truncate a string at the end when its visual width exceeds maxWidth.
+ * Keeps the head within maxWidth minus the marker's width, then appends the marker.
+ * CJK characters count as width 2.
+ */
+export function truncateEnd(str: string, maxWidth: number, marker = '…'): string {
+  if (getVisualWidth(str) <= maxWidth) return str
+
+  const budget = maxWidth - getVisualWidth(marker)
+  let head = ''
+  let headW = 0
+  for (const char of str) {
+    const w = getVisualWidth(char)
+    if (headW + w > budget) break
+    head += char
+    headW += w
+  }
+
+  return head + marker
+}

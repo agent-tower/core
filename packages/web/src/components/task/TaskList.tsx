@@ -9,9 +9,12 @@ import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 import { TaskGroup, FlipContext } from './TaskGroup'
 import type { FlipHandle } from './TaskGroup'
 import { TaskSearchModal } from './TaskSearchModal'
+import { STATUS_STYLES } from './status-styles'
+import { sidebarRowClass } from './sidebar-styles'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
 import { TaskPriority } from '@agent-tower/shared'
+import { cn } from '@/lib/utils'
 
 const GHOST_DURATION = 260
 const GHOST_FALLBACK_DURATION = 220
@@ -35,6 +38,8 @@ interface TaskListProps {
   onDeleteTask?: (taskId: string) => void
   /** 修改任务优先级回调 */
   onTaskPriorityChange?: (taskId: string, priority: TaskPriority) => void
+  /** 首屏数据加载中：顶部菜单照常可用，列表区显示骨架 */
+  isLoading?: boolean
 }
 
 /**
@@ -70,6 +75,28 @@ const TASK_GROUP_CONFIG = [
   { status: UITaskStatus.Cancelled, title: 'Cancelled', defaultOpen: false },
 ] as const
 
+/** 列表加载骨架：几何与真实分组标题 / 任务行一致，加载完成时不跳动 */
+function TaskRowsSkeleton() {
+  return (
+    <div className="flex-1 overflow-hidden px-2 pt-3 motion-safe:animate-pulse" aria-hidden>
+      {[3, 4].map((rows, group) => (
+        <div key={group} className="mb-2">
+          <div className="flex h-7 items-center px-2">
+            <div className="h-2.5 w-12 rounded-full bg-foreground/[0.06]" />
+          </div>
+          {Array.from({ length: rows }).map((_, i) => (
+            <div key={i} className="flex h-8 items-center gap-2.5 px-2 pointer-coarse:h-10">
+              <div className="size-4 shrink-0 rounded-full bg-foreground/[0.06]" />
+              <div className="h-3 rounded-full bg-foreground/[0.06]" style={{ width: `${64 - ((i + group) % 3) * 14}%` }} />
+              <div className="ml-auto h-2.5 w-8 shrink-0 rounded-full bg-foreground/[0.05]" />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function TaskList({
   tasks = [],
   projects = [],
@@ -84,6 +111,7 @@ export function TaskList({
   onTaskStatusChange,
   onDeleteTask,
   onTaskPriorityChange,
+  isLoading = false,
 }: TaskListProps) {
   const { t } = useI18n()
   const { preserveDesktopSearch } = useDesktopTitlebar()
@@ -118,7 +146,7 @@ export function TaskList({
     const rect = (header ?? group).getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return null
 
-    return new DOMRect(rect.left + 8, rect.bottom + 4, fromRect.width, fromRect.height)
+    return new DOMRect(rect.left, rect.bottom + 2, fromRect.width, fromRect.height)
   }, [])
 
   const createStatusMoveGhost = useCallback((fromRect: DOMRect, toRect: DOMRect, html: string, isFallbackTarget = false) => {
@@ -135,9 +163,9 @@ export function TaskList({
       inner.style.width = `${fromRect.width}px`
       inner.style.height = `${fromRect.height}px`
       inner.style.margin = '0'
-      inner.style.backgroundColor = 'var(--sidebar-accent)'
-      inner.style.borderRadius = '0.375rem'
-      inner.style.boxShadow = '0 6px 16px rgba(15, 23, 42, 0.10), 0 1px 3px rgba(15, 23, 42, 0.08)'
+      inner.style.backgroundColor = 'var(--background)'
+      inner.style.borderRadius = '0.5rem'
+      inner.style.boxShadow = '0 4px 6px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--border)'
       inner.style.opacity = '0.96'
       inner.style.transition = 'none'
       inner.setAttribute('tabindex', '-1')
@@ -272,64 +300,67 @@ export function TaskList({
 
   // 单次遍历分组
   const grouped = groupTasksByStatus(filteredTasks)
+  const dragStatus = activeDragTask ? STATUS_STYLES[activeDragTask.status] : null
+
+  // ↑/↓ 在侧栏可聚焦项（菜单、分组标题、任务行）之间移动焦点，Enter/空格沿用按钮默认行为
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+    const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-sidebar-item]:not(:disabled)'))
+    const index = items.indexOf(e.target as HTMLElement)
+    if (index === -1) return
+    e.preventDefault()
+    items[index + (e.key === 'ArrowDown' ? 1 : -1)]?.focus()
+  }, [])
 
   return (
     <div
-      className="h-full flex flex-col flex-shrink-0"
+      className="@container h-full flex flex-col flex-shrink-0"
       style={{ width }}
+      onKeyDown={handleKeyDown}
     >
-      {/* 顶部菜单组（Codex 侧栏式）：新项目 / 新任务 / 搜索 */}
-      <div className="px-2 pt-2 pb-1 flex-shrink-0">
+      {/* 顶部菜单组（Codex 侧栏式）：新项目 / 新任务 / 搜索 / 对话 */}
+      <div className="px-2 pt-2 pb-1 flex flex-col gap-px flex-shrink-0">
         {onCreateProject && (
-          <button
-            onClick={onCreateProject}
-            className="w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm text-foreground/80 hover:bg-accent/50 transition-colors"
-            title={t('New Project')}
-          >
-            <FolderPlus size={16} className="text-muted-foreground" />
-            <span>{t('New Project')}</span>
+          <button type="button" onClick={onCreateProject} data-sidebar-item="" className={sidebarRowClass(false)}>
+            <FolderPlus size={16} className="shrink-0 text-muted-foreground" />
+            <span className="truncate">{t('New Project')}</span>
           </button>
         )}
         <button
+          type="button"
           onClick={onCreateTask}
           disabled={!canCreateTask}
-          className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm transition-colors disabled:opacity-30 disabled:cursor-not-allowed
-            ${isCreateActive
-              ? 'bg-accent text-foreground'
-              : 'text-foreground/80 hover:bg-accent/50'
-            }`}
-          title={canCreateTask ? t('New Task') : t('Deleted projects are read-only')}
+          aria-current={isCreateActive || undefined}
+          data-sidebar-item=""
+          className={cn(sidebarRowClass(Boolean(isCreateActive)), 'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent')}
+          title={canCreateTask ? undefined : t('Deleted projects are read-only')}
         >
-          <SquarePen size={16} className="text-muted-foreground" />
-          <span>{t('New Task')}</span>
+          <SquarePen size={16} className="shrink-0 text-muted-foreground" />
+          <span className="truncate">{t('New Task')}</span>
         </button>
-        <button
-          onClick={() => setIsSearchOpen(true)}
-          className="w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm text-foreground/80 hover:bg-accent/50 transition-colors"
-          title={t('Search')}
-        >
-          <Search size={16} className="text-muted-foreground" />
-          <span>{t('Search')}</span>
+        <button type="button" onClick={() => setIsSearchOpen(true)} data-sidebar-item="" className={sidebarRowClass(false)}>
+          <Search size={16} className="shrink-0 text-muted-foreground" />
+          <span className="truncate">{t('Search')}</span>
         </button>
-        <Link
-          to={preserveDesktopSearch('/conversations')}
-          className="w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm text-foreground/80 hover:bg-accent/50 transition-colors"
-          title={t('对话')}
-        >
-          <MessageSquare size={16} className="text-muted-foreground" />
-          <span>{t('对话')}</span>
+        <Link to={preserveDesktopSearch('/conversations')} data-sidebar-item="" className={sidebarRowClass(false)}>
+          <MessageSquare size={16} className="shrink-0 text-muted-foreground" />
+          <span className="truncate">{t('对话')}</span>
         </Link>
       </div>
 
-      {/* 空状态：当前视图下没有任何任务 */}
-      {filteredTasks.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center select-none">
+      {isLoading ? (
+        <TaskRowsSkeleton />
+      ) : filteredTasks.length === 0 ? (
+        /* 空状态：当前视图下没有任何任务（略高于几何中心，视觉上更居中） */
+        <div className="flex-1 flex flex-col items-center justify-center px-6 pb-[10vh] text-center select-none">
           <Layers size={36} className="text-muted-foreground/40 mb-3" strokeWidth={1.5} />
           <p className="text-sm text-muted-foreground mb-4">{t('No tasks')}</p>
           {canCreateTask && onCreateTask ? (
             <button
+              type="button"
               onClick={onCreateTask}
-              className="px-3.5 py-1.5 rounded-md bg-brand text-brand-foreground text-xs font-medium hover:bg-brand/90 transition-colors"
+              className="px-3.5 py-1.5 rounded-md bg-brand text-brand-foreground text-xs font-medium hover:bg-brand/90 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2"
             >
               {t('New Task')}
             </button>
@@ -349,6 +380,7 @@ export function TaskList({
               selectedTaskId={selectedTaskId}
               onSelectTask={onSelectTask}
               projects={projects}
+              showProject={!filterProjectId}
               isDragging={activeDragTask !== null}
               dragFromStatus={activeDragFromStatus}
               onTaskStatusChange={onTaskStatusChange}
@@ -359,12 +391,12 @@ export function TaskList({
           ))}
         </div>
 
+        {/* 拖拽浮层：与选中态同材质的白卡，Level 3 阴影表达「被拿起」 */}
         <DragOverlay dropAnimation={null}>
-          {activeDragTask ? (
-            <div className="bg-popover shadow-lg rounded-md border border-border px-4 py-2 text-sm max-w-[280px] opacity-90">
-              <span className="block truncate font-medium text-foreground/80" title={activeDragTask.title}>
-                {activeDragTask.title}
-              </span>
+          {activeDragTask && dragStatus ? (
+            <div className="flex h-8 w-fit max-w-[280px] items-center gap-2.5 rounded-md bg-background px-2 text-sm text-foreground shadow-[0_12px_16px_-4px_rgba(36,36,36,0.08)] ring-1 ring-border/80">
+              <dragStatus.icon className={cn('shrink-0', dragStatus.iconClass)} />
+              <span className="truncate" title={activeDragTask.title}>{activeDragTask.title}</span>
             </div>
           ) : null}
         </DragOverlay>
@@ -373,21 +405,18 @@ export function TaskList({
       )}
 
       {/* Footer */}
-      {filteredTasks.length > 0 ? (
-        <div className="px-4 py-3 border-t border-border/60 text-xs text-muted-foreground/70 flex items-center justify-between">
-          <span>{t('{count} tasks', { count: filteredTasks.length })}</span>
+      {!isLoading && (
+        <div className="h-9 px-4 flex flex-shrink-0 items-center justify-between border-t border-border/60 text-xs text-muted-foreground">
+          <span className="tabular-nums">{t('{count} tasks', { count: filteredTasks.length })}</span>
           {filterProjectId ? (
             <button
+              type="button"
               onClick={() => setFilterProjectId(null)}
-              className="hover:text-foreground underline decoration-border underline-offset-2"
+              className="rounded-sm hover:text-foreground underline decoration-border underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
             >
               {t('Clear filter')}
             </button>
           ) : null}
-        </div>
-      ) : (
-        <div className="px-4 py-3 border-t border-border/60 text-xs text-muted-foreground/70 flex items-center justify-between">
-          <span>{t('{count} tasks', { count: 0 })}</span>
         </div>
       )}
 
