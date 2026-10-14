@@ -6,7 +6,7 @@ on:
       - 'verify/npm-*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
