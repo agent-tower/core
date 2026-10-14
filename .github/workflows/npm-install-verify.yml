@@ -1,0 +1,80 @@
+name: Verify npm package
+
+on:
+  push:
+    branches:
+      - 'verify/npm-*'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Install and boot ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+          - name: macOS arm64
+            os: macos-latest
+          - name: Windows x64
+            os: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+
+      - name: Download candidate tarball
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./packages/server/package.json').version")
+          mkdir -p tarball
+          gh release download "verify-tmp-${version}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "agent-tower-${version}.tgz" \
+            --dir tarball
+          sha256sum "tarball/agent-tower-${version}.tgz"
+
+      - name: Report platform
+        run: |
+          node --version
+          npm --version
+          node -p "process.platform + ' ' + process.arch"
+
+      - name: Install and boot candidate
+        shell: bash
+        run: |
+          version=$(node -p "require('./packages/server/package.json').version")
+          node scripts/smoke-publish-install.mjs \
+            --tarball "./tarball/agent-tower-${version}.tgz"
+
+      - name: Verify first Cloudflared download
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          version=$(node -p "require('./packages/server/package.json').version")
+          scratch=$(mktemp -d)
+          tar -xzf "tarball/agent-tower-${version}.tgz" -C "$scratch"
+          AGENT_TOWER_DATA_DIR="$scratch/data" PACKAGE_ROOT="$scratch/package" node --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            import { statSync } from "node:fs";
+            import { pathToFileURL } from "node:url";
+            const moduleUrl = pathToFileURL(`${process.env.PACKAGE_ROOT}/dist/services/cloudflared-runtime.js`);
+            const { ensureCloudflaredBinary, getCloudflaredBinaryPath } = await import(moduleUrl);
+            await ensureCloudflaredBinary();
+            const binary = getCloudflaredBinaryPath();
+            console.log(JSON.stringify({
+              bytes: statSync(binary).size,
+              version: execFileSync(binary, ["--version"], { encoding: "utf8" }).trim(),
+            }));
+          '
