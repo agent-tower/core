@@ -110,7 +110,7 @@ export function TaskSearchModal({ isOpen, onClose, tasks, projects, onSelectTask
                     className={`w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors
                       ${index === activeIndex ? 'bg-accent' : ''}`}
                   >
-                    <StatusIcon className={`${iconClass} shrink-0`} />
+                    <StatusIcon className={`${iconClass} size-4 shrink-0`} />
                     <span className="flex-1 min-w-0 truncate text-sm text-foreground/90" title={task.title}>
                       {task.title}
                     </span>

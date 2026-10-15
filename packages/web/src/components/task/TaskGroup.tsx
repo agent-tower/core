@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useRef, useEffect, useLayoutEffect, useContext, createContext } from 'react'
+import { memo, useState, useCallback, useRef, useEffect, useLayoutEffect, useContext, useId, createContext } from 'react'
 import { Check, ChevronRight, Trash2 } from 'lucide-react'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
@@ -195,7 +195,7 @@ function DraggableTaskCard({
   const projectLabel = project ? project.name : undefined
   const projectTag = showProject ? project : undefined
   const updatedLabel = task.updatedAt ? formatUpdatedAt(task.updatedAt, t, locale) : null
-  const { icon: StatusIcon, iconClass } = STATUS_STYLES[status]
+  const { titleClass } = STATUS_STYLES[status]
 
   return (
     <>
@@ -215,11 +215,8 @@ function DraggableTaskCard({
         {...(dragDisabled ? {} : listeners)}
         {...(dragDisabled ? {} : attributes)}
       >
-        <StatusIcon
-          className={cn('shrink-0', iconClass, status === UITaskStatus.Running && 'motion-safe:animate-pulse')}
-        />
-
-        <span className="min-w-0 flex-1 truncate">{task.title}</span>
+        {/* 行首不放状态图标，宽度全部留给标题；状态由分组标题表达，标题样式只区分「多需要你介入」 */}
+        <span className={cn('min-w-0 flex-1 truncate', titleClass)}>{task.title}</span>
 
         {task.priority !== undefined && task.priority !== TaskPriority.NORMAL && (
           <TaskPriorityIndicator priority={task.priority} />
@@ -363,15 +360,20 @@ export const TaskGroup = memo(function TaskGroup({
 
   const isReview = status === UITaskStatus.Review
   const translatedTitle = t(title)
+  const { icon: StatusIcon, accentClass } = STATUS_STYLES[status]
+  const labelId = useId()
 
   // 来源分组：保持原样展示（拖走的卡片会半透明）
   // 目标分组：折叠为紧凑 drop zone
   // 非拖拽状态：正常展开/折叠
   const shouldShowContent = isGlobalDragging ? isSourceGroup : isOpen
+  const showRows = shouldShowContent && !isTargetGroup && !isEmpty
 
   return (
-    <div className="mb-2" data-task-group-status={status}>
-      <div className="px-2">
+    // 展开的分组下方留 16px（组内行距 1px），只靠间距就能看出分组边界
+    <div className={showRows ? 'mb-4' : 'mb-2'} data-task-group-status={status}>
+      {/* 分组标题吸顶：任务行不再带状态图标，滚动长列表时靠它知道当前在哪个分组 */}
+      <div className="sticky top-0 z-10 bg-sidebar px-2">
         <button
           type="button"
           onClick={() => !isGlobalDragging && setIsOpen(prev => !prev)}
@@ -379,7 +381,9 @@ export const TaskGroup = memo(function TaskGroup({
           data-sidebar-item=""
           className="group/header flex h-7 w-full items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
-          <span className="truncate">{translatedTitle}</span>
+          {/* 状态图标每组只出现一次，与右键「移动到」菜单同一套图标；左缘与任务标题同在 16px 线上 */}
+          <StatusIcon className={cn('mr-0.5 size-3.5 shrink-0', accentClass)} />
+          <span id={labelId} className="truncate">{translatedTitle}</span>
           <ChevronRight
             size={12}
             aria-hidden
@@ -413,9 +417,11 @@ export const TaskGroup = memo(function TaskGroup({
       )}
 
       {/* 来源分组 / 正常状态：展示任务列表；空分组只保留标题与计数 0 */}
-      {shouldShowContent && !isTargetGroup && !isEmpty && (
+      {showRows && (
         <div
           ref={isSourceGroup ? undefined : setNodeRef}
+          role="group"
+          aria-labelledby={labelId}
           className="mt-0.5 flex flex-col gap-px px-2"
         >
           {tasks.map(task => {

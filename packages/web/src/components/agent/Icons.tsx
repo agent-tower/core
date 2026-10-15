@@ -3,13 +3,6 @@
  * 来自 design/agent-tower/components/Icons.tsx
  */
 
-export const IconReview = ({ className }: { className?: string }) => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
-    <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1z" stroke="currentColor" strokeWidth="1.5" />
-    <path d="M8 1a7 7 0 0 0 0 14V1z" fill="currentColor" />
-  </svg>
-)
-
 export const IconRunning = ({ className }: { className?: string }) => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
     <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" opacity="0.4" />
@@ -26,13 +19,6 @@ export const IconPending = ({ className }: { className?: string }) => (
 export const IconDone = ({ className }: { className?: string }) => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
     <path d="M13.5 4.5L6.5 11.5L2.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-  </svg>
-)
-
-export const IconCancelled = ({ className }: { className?: string }) => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
-    <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" />
-    <path d="M5.5 5.5L10.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 )
 

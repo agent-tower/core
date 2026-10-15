@@ -65,6 +65,8 @@ Agent Tower 是 AI Agent 任务看板 + 终端编排工具。设计目标是「�
 
 规则：同一语义在徽章、图标、下拉菜单、详情页中必须使用同一色相；禁止新增第二种「进行中」颜色。
 
+状态图标统一用 lucide 线性图标（与侧栏菜单同一套笔触，不用实心块面）：待审查 `Eye`、进行中 `LoaderCircle`、待开始 `CircleDashed`、已完成 `CircleCheck`、已取消 `CircleSlash`；映射见 `status-styles.ts`。
+
 ### 2.5 项目标识色（哈希分配池）
 
 `indigo-600 / emerald-600 / rose-600 / amber-600 / cyan-600 / violet-600 / teal-600 / pink-600`

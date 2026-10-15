@@ -80,13 +80,13 @@ function TaskRowsSkeleton() {
   return (
     <div className="flex-1 overflow-hidden px-2 pt-3 motion-safe:animate-pulse" aria-hidden>
       {[3, 4].map((rows, group) => (
-        <div key={group} className="mb-2">
-          <div className="flex h-7 items-center px-2">
+        <div key={group} className="mb-4">
+          <div className="flex h-7 items-center gap-1.5 px-2">
+            <div className="size-3.5 shrink-0 rounded-full bg-foreground/[0.06]" />
             <div className="h-2.5 w-12 rounded-full bg-foreground/[0.06]" />
           </div>
           {Array.from({ length: rows }).map((_, i) => (
             <div key={i} className="flex h-8 items-center gap-2.5 px-2 pointer-coarse:h-10">
-              <div className="size-4 shrink-0 rounded-full bg-foreground/[0.06]" />
               <div className="h-3 rounded-full bg-foreground/[0.06]" style={{ width: `${64 - ((i + group) % 3) * 14}%` }} />
               <div className="ml-auto h-2.5 w-8 shrink-0 rounded-full bg-foreground/[0.05]" />
             </div>
@@ -369,33 +369,37 @@ export function TaskList({
       ) : (
       <FlipContext.Provider value={flipHandle}>
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-        <div className="flex-1 overflow-y-auto scrollbar-app-thin pt-3 pb-4 relative">
-          {TASK_GROUP_CONFIG.map(({ status, title, defaultOpen }) => (
-            <TaskGroup
-              key={status}
-              title={title}
-              tasks={grouped[status]}
-              status={status}
-              defaultOpen={defaultOpen}
-              selectedTaskId={selectedTaskId}
-              onSelectTask={onSelectTask}
-              projects={projects}
-              showProject={!filterProjectId}
-              isDragging={activeDragTask !== null}
-              dragFromStatus={activeDragFromStatus}
-              onTaskStatusChange={onTaskStatusChange}
-              onDeleteTask={onDeleteTask}
-              onTaskPriorityChange={onTaskPriorityChange}
-              disableDrag={isMobile}
-            />
-          ))}
+        {/* scroll-pt 让出吸顶分组标题的高度，↑/↓ 聚焦的任务行不会被标题盖住 */}
+        <div className="flex-1 overflow-y-auto scrollbar-app-thin scroll-pt-8 relative">
+          {/* 上下留白放在内层：sticky 会避让滚动容器自身的 padding，吸顶标题上方会漏出滚过去的任务行 */}
+          <div className="pt-3 pb-4">
+            {TASK_GROUP_CONFIG.map(({ status, title, defaultOpen }) => (
+              <TaskGroup
+                key={status}
+                title={title}
+                tasks={grouped[status]}
+                status={status}
+                defaultOpen={defaultOpen}
+                selectedTaskId={selectedTaskId}
+                onSelectTask={onSelectTask}
+                projects={projects}
+                showProject={!filterProjectId}
+                isDragging={activeDragTask !== null}
+                dragFromStatus={activeDragFromStatus}
+                onTaskStatusChange={onTaskStatusChange}
+                onDeleteTask={onDeleteTask}
+                onTaskPriorityChange={onTaskPriorityChange}
+                disableDrag={isMobile}
+              />
+            ))}
+          </div>
         </div>
 
         {/* 拖拽浮层：与选中态同材质的白卡，Level 3 阴影表达「被拿起」 */}
         <DragOverlay dropAnimation={null}>
           {activeDragTask && dragStatus ? (
             <div className="flex h-8 w-fit max-w-[280px] items-center gap-2.5 rounded-md bg-background px-2 text-sm text-foreground shadow-[0_12px_16px_-4px_rgba(36,36,36,0.08)] ring-1 ring-border/80">
-              <dragStatus.icon className={cn('shrink-0', dragStatus.iconClass)} />
+              <dragStatus.icon className={cn('size-4 shrink-0', dragStatus.iconClass)} />
               <span className="truncate" title={activeDragTask.title}>{activeDragTask.title}</span>
             </div>
           ) : null}

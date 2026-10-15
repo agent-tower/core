@@ -16,7 +16,6 @@ import { LogViewBoundary } from '@/components/errors'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { RuntimePermissionPrompt } from '@/components/agent'
-import { IconRunning, IconReview, IconPending, IconDone, IconCancelled } from '@/components/agent'
 import { Paperclip, ArrowUp, ArrowDown, ArrowLeft, Play, Square, Code2, Trash2, MoreVertical, RotateCcw, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
@@ -61,6 +60,7 @@ import { type ConflictDetails } from '@/components/workspace/GitOperationsDialog
 import { TaskStartProgress, type TaskStartProgressState } from './TaskStartProgress'
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
+import { STATUS_STYLES } from './status-styles'
 import { TaskPrioritySelect } from './TaskPrioritySelect'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
 import { useSkillMentionMenu } from './useSkillMentionMenu'
@@ -152,13 +152,18 @@ function EmptyState() {
 
 // ============ Status Badge Helper ============
 
-// 状态色语义统一见 .design/DESIGN.md §2.4 与 status-styles.ts
+// 状态色语义与图标统一见 .design/DESIGN.md §2.4 与 status-styles.ts
+function statusIcon(status: UITaskStatus) {
+  const Icon = STATUS_STYLES[status].icon
+  return <Icon className="size-3" />
+}
+
 const STATUS_OPTIONS = [
-  { status: UITaskStatus.Review, className: 'bg-warning/10 text-warning', hoverClass: 'hover:bg-warning/15', icon: <IconReview className="w-3 h-3" /> },
-  { status: UITaskStatus.Running, className: 'bg-info/10 text-info', hoverClass: 'hover:bg-info/15', icon: <IconRunning className="w-3 h-3" /> },
-  { status: UITaskStatus.Pending, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-muted', icon: <IconPending className="w-3 h-3" /> },
-  { status: UITaskStatus.Done, className: 'bg-success/10 text-success', hoverClass: 'hover:bg-success/15', icon: <IconDone className="w-3 h-3" /> },
-  { status: UITaskStatus.Cancelled, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-border', icon: <IconCancelled className="w-3 h-3" /> },
+  { status: UITaskStatus.Review, className: 'bg-warning/10 text-warning', hoverClass: 'hover:bg-warning/15', icon: statusIcon(UITaskStatus.Review) },
+  { status: UITaskStatus.Running, className: 'bg-info/10 text-info', hoverClass: 'hover:bg-info/15', icon: statusIcon(UITaskStatus.Running) },
+  { status: UITaskStatus.Pending, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-muted', icon: statusIcon(UITaskStatus.Pending) },
+  { status: UITaskStatus.Done, className: 'bg-success/10 text-success', hoverClass: 'hover:bg-success/15', icon: statusIcon(UITaskStatus.Done) },
+  { status: UITaskStatus.Cancelled, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-border', icon: statusIcon(UITaskStatus.Cancelled) },
 ] as const
 
 function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChangeStatus?: (newStatus: UITaskStatus) => void }) {
