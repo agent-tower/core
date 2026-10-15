@@ -7,6 +7,25 @@ import {
 } from '../hooks/useWorkspaceGitRealtimeSync'
 
 describe('syncVisibleWorkspaceGitQueries', () => {
+  it('refreshes saved workspace metadata and cached file diffs when the base branch changes in another client', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } })
+    const affectedKeys = [
+      queryKeys.workspaces.detail('workspace-1'), queryKeys.workspaces.list('task-1'),
+      queryKeys.workspaces.projectBranches('project-1'), queryKeys.tasks.detail('task-1'),
+      queryKeys.workspaces.diff('workspace-1'), queryKeys.git.diff('/tmp/workspace-1', 'file.txt', 'committed'),
+    ]
+    for (const key of affectedKeys) queryClient.setQueryData(key, { old: true })
+    const unrelatedKey = queryKeys.workspaces.detail('workspace-2')
+    queryClient.setQueryData(unrelatedKey, { old: true })
+    syncVisibleWorkspaceGitQueries(queryClient, {
+      workspaceId: 'workspace-1', taskId: 'task-1', projectId: 'project-1',
+      workingDir: '/tmp/workspace-1', reason: 'base-branch',
+    }, null)
+    for (const key of affectedKeys) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(unrelatedKey)?.isInvalidated).toBe(false)
+    queryClient.clear()
+  })
+
   it('invalidates only changes/status when the changed workspace is visible on the Changes tab', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity } },

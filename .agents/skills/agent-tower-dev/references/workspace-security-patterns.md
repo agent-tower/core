@@ -6,6 +6,7 @@
 
 - `services/workspace.service.ts` 组合 workspace 业务，`git/worktree.manager.ts` / `git/git-cli.ts` 封装 Git，`services/workspace-kind.ts` 统一目录语义。复用这些入口，不在 Route 或前端拼接 branch/worktree 路径。
 - `WORKTREE` 使用独立分支和目录；`MAIN_DIRECTORY` 直接使用项目目录并支持非 Git Solo。Agent、文件、终端和 preview 使用 DTO 的 `workingDir`，操作前判断 Git capability 与 workspace kind。不能把回收 worktree 的删除逻辑套到项目主目录。
+- 项目设置通过 `GET /projects/:projectId/workspace-branches` 读取本地分支与紧凑根 workspace 列表，`PATCH /workspaces/:id/base-branch` 更新 ACTIVE WORKTREE 根 workspace 的基础分支。修改带原值校验、复用 lifecycle barrier，与 rebase/merge 串行；拒绝托管 Agent、成员子 workspace、运行中的 Session/Invocation、未结束 Git 操作及无共同历史的分支。更新只写元数据并清空旧提交消息；`workspace:git_changed` 的 `base-branch` reason 同步失效 workspace/任务及 Git 缓存，重连补读元数据。不要将此字段误认为只影响合并目标，它也控制 diff 和 rebase。
 - 一个 Task 可有主 workspace、成员 workspace 和目标提交执行 workspace；hibernate/reactivate 与 merge/archive/delete 是不同操作。修改路径、清理或主 workspace 选择时检查子 workspace、watcher、session 和后台服务，沿既有生命周期入口处理。
 - `services/workspace-lifecycle-barrier.ts` 的 app 级 barrier 协调同一 workspace 的 start/restart、merge、hibernate、archive/delete 和 task/project cleanup。停止资源、文件系统操作和终态写入需在相同 barrier 内；多 workspace 通过 `withWorkspaces()` 排序获取，避免锁顺序不一致。
 - 删除、归档、休眠及周期清理通过 `session-resource-cleanup.ts` 对所有关联 Session 执行 stop 和 cleanup gate，包括已完成的 ACP 会话；未确认清理时保留目录与数据库身份。Task cleanup 快照也包含所有 Session，执行旧快照时合并当前关联 Session，不能按业务状态筛掉 runtime owner。

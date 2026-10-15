@@ -120,7 +120,7 @@ export function getWorkspaceMergeTargetBranch(
   workspaces: Workspace[] | undefined,
   projectMainBranch: string,
 ) {
-  if (!workspace?.parentWorkspaceId) return projectMainBranch
+  if (!workspace?.parentWorkspaceId) return workspace?.baseBranch || projectMainBranch
   const parent = workspaces?.find((item) => item.id === workspace.parentWorkspaceId)
   return parent?.branchName ?? workspace.baseBranch ?? projectMainBranch
 }

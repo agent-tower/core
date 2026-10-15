@@ -1,11 +1,34 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Workspace, GitOperationStatus, WorkspaceKind } from '@agent-tower/shared'
+import type { Workspace, GitOperationStatus, WorkspaceKind, ProjectWorkspaceBranches, UpdateWorkspaceBaseBranchInput } from '@agent-tower/shared'
 import { apiClient } from '../lib/api-client'
 import { getGitStatusRefreshInterval } from '../lib/git-refresh-policy'
 import { useGitVisibilityStore } from '../stores/git-visibility-store'
 import { queryKeys } from './query-keys'
 
 // ============ Queries ============
+
+export function useProjectWorkspaceBranches(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.workspaces.projectBranches(projectId),
+    queryFn: () => apiClient.get<ProjectWorkspaceBranches>(`/projects/${projectId}/workspace-branches`),
+    enabled: !!projectId,
+  })
+}
+
+export function useUpdateWorkspaceBaseBranch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateWorkspaceBaseBranchInput & { id: string }) =>
+      apiClient.patch<{ id: string; baseBranch: string }>(`/workspaces/${id}/base-branch`, input),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.git.all }),
+      ])
+    },
+  })
+}
 
 /** 获取某个 task 下的所有 workspaces */
 export function useWorkspaces(taskId: string) {

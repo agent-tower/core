@@ -222,6 +222,7 @@ export interface WorkspaceHibernatedPayload {
 }
 
 export type WorkspaceGitChangeReason =
+  | 'base-branch'
   | 'worktree'
   | 'git-dir'
   | 'refresh'
@@ -232,7 +233,7 @@ export interface WorkspaceGitChangedPayload {
   taskId: string;
   projectId: string;
   workingDir: string;
-  /** Lightweight filesystem/git metadata signal; the watcher does not verify that Git state changed. */
+  /** Invalidation signal; base-branch also invalidates workspace metadata. Watcher signals do not verify Git changes. */
   reason: WorkspaceGitChangeReason;
 }
 

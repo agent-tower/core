@@ -43,6 +43,8 @@ Socket.IO 命名空间是 `/events`。
 | `workspace:git_changed` | server -> client | workspace Git/文件变化轻量信号 |
 | `team-run:invalidated` | server -> client | TeamRun 相关缓存失效信号 |
 
+`workspace:git_changed` 的 `reason: 'base-branch'` 表示基础分支设置已更新；客户端需重读 workspace、任务及差异数据。其他 reason 仍为轻量 Git/文件变化信号。断线重连后也会重新查询 workspace 元数据，以恢复错过的设置修改。
+
 `session:subscribed` 和 `session:unsubscribed` 仍是 shared 包中的保留常量，但当前 SocketGateway 不会发出这两个事件。客户端订阅 session topic 时应以 `subscribe` / `unsubscribe` ack 作为确认。
 
 ## 常见 payload

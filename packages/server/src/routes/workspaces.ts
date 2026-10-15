@@ -124,6 +124,25 @@ export async function workspaceRoutes(app: FastifyInstance) {
 
   // ── 创建工作空间 ────────────────────────────────────────────────────────────
 
+  app.get<{ Params: { projectId: string } }>(
+    '/projects/:projectId/workspace-branches',
+    async (request) => workspaceService.getProjectWorkspaceBranches(request.params.projectId),
+  );
+
+  app.patch<{ Params: { id: string } }>(
+    '/workspaces/:id/base-branch',
+    async (request) => {
+      if (request.agentTowerAuthKind === 'agent') {
+        throw new ServiceError('Workspace base branch is managed in project settings', 'WORKSPACE_BASE_BRANCH_USER_ONLY', 403);
+      }
+      const body = z.object({
+        baseBranch: z.string().trim().min(1).max(255),
+        expectedBaseBranch: z.string().nullable(),
+      }).strict().parse(request.body);
+      return workspaceService.updateBaseBranch(request.params.id, body);
+    },
+  );
+
   app.post<{ Params: { taskId: string } }>(
     '/tasks/:taskId/workspaces',
     async (request, reply) => {

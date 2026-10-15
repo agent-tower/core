@@ -42,6 +42,15 @@ export function syncVisibleWorkspaceGitQueries(
     return
   }
 
+  if (payload.reason === 'base-branch') {
+    queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.detail(payload.workspaceId) })
+    if (payload.taskId) queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(payload.taskId) })
+    if (payload.projectId) queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.projectBranches(payload.projectId) })
+    queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+    queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.diff(payload.workspaceId) })
+    queryClient.invalidateQueries({ queryKey: ['git', 'diff', payload.workingDir] })
+  }
+
   if (
     !visibleContext
     || visibleContext.workspaceId !== payload.workspaceId
@@ -81,6 +90,9 @@ export function useWorkspaceGitRealtimeSync() {
 
     const handleConnect = () => {
       invalidateAllGitRealtimeQueries(queryClient)
+      for (const key of ['list', 'detail', 'project-branches']) {
+        queryClient.invalidateQueries({ queryKey: ['workspaces', key] })
+      }
       if (visibleContext) {
         syncVisibleWorkspaceGitQueries(queryClient, {
           workspaceId: visibleContext.workspaceId,

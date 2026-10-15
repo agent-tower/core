@@ -29,6 +29,14 @@ git worktree 让每个任务有自己的工作目录和分支。agent 可以像�
 5. 执行 `setupScript`
 6. 记录 workspace 状态和路径
 
+## 修改基础分支
+
+在 **设置 → 项目配置 → 选择项目 → Workspace 基础分支** 中，选择已有 workspace 和目标本地分支，点击“保存基础分支”。此设置决定该 workspace 的差异比较、rebase 更新基准，以及根 workspace 的合并目标。
+
+仅活跃的工作树根 workspace 支持修改；主目录模式、已休眠或已合并的 workspace 不提供此入口。TeamRun 成员子 workspace 的目标由父 workspace 管理。所选分支必须已在本地存在、与 workspace 分支不同且具有共同提交历史；运行中的 Agent 或未结束的 Git 操作会阻止保存。
+
+保存只更新所选 workspace 的基础分支，不移动已有提交、不执行 rebase，也不修改项目默认分支或其他 workspace。保存后请重新审查差异；如果落后于新的基础分支，先在任务中执行更新，再提交变更。
+
 ## Workspace 状态
 
 | 状态 | 说明 |

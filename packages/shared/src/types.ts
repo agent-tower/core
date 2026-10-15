@@ -600,7 +600,7 @@ export interface Workspace {
   ownerMemberId?: string | null
   /** 分支名称 (对应 Prisma branchName) */
   branchName: string
-  /** 创建 workspace 时记录的基准分支 */
+  /** 基础分支，创建时记录，可通过项目设置修改根工作区的值 */
   baseBranch?: string | null
   /** worktree 路径 (对应 Prisma worktreePath) */
   worktreePath: string
@@ -619,6 +619,26 @@ export interface Workspace {
   sessions?: Session[]
   createdAt?: string
   updatedAt?: string
+}
+
+export interface WorkspaceBaseBranchOption {
+  id: string
+  taskId: string
+  taskTitle: string
+  branchName: string
+  baseBranch: string | null
+}
+
+export interface ProjectWorkspaceBranches {
+  mainBranch: string
+  branches: string[]
+  workspaces: WorkspaceBaseBranchOption[]
+}
+
+export interface UpdateWorkspaceBaseBranchInput {
+  baseBranch: string
+  /** Reject saves based on a stale selection, including the legacy null fallback. */
+  expectedBaseBranch: string | null
 }
 
 export type WorkspaceBackgroundServiceDesiredState = 'RUNNING' | 'STOPPED'

@@ -145,4 +145,10 @@ describe('team workspace view helpers', () => {
     expect(canRunWorkspaceGitOperations(extraRootWorkspace, null)).toBe(true)
     expect(canRunWorkspaceGitOperations(mainDirectoryWorkspace, null)).toBe(false)
   })
+
+  it('uses the selected root workspace base branch instead of another active workspace or project fallback', () => {
+    const mainWorkspace = workspace({ id: 'main-ws', branchName: 'at/team/main', baseBranch: 'develop' })
+    expect(getWorkspaceMergeTargetBranch(mainWorkspace, [mainWorkspace], 'main')).toBe('develop')
+    expect(getWorkspaceMergeTargetBranch(workspace({ id: 'old-ws', branchName: 'at/old' }), [], 'main')).toBe('main')
+  })
 })

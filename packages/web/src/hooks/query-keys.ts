@@ -26,6 +26,7 @@ export const queryKeys = {
 
   workspaces: {
     all: ['workspaces'] as const,
+    projectBranches: (projectId: string) => ['workspaces', 'project-branches', projectId] as const,
     list: (taskId: string) => ['workspaces', 'list', taskId] as const,
     setupProgress: (taskId: string) => ['workspaces', 'setup-progress', taskId] as const,
     detail: (id: string) => ['workspaces', 'detail', id] as const,

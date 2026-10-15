@@ -16,6 +16,9 @@ import type { Prisma } from '@prisma/client';
 import type { EventBus } from '../core/event-bus.js';
 import type {
   GitOperationStatus,
+  ProjectWorkspaceBranches,
+  RuntimeType,
+  UpdateWorkspaceBaseBranchInput,
   MergeableWorkspaceItem,
   MergeableWorkspacesResponse,
   MergeReadinessBlocker,
@@ -429,6 +432,111 @@ export class WorkspaceService {
   }
 
   // ── Queries ──────────────────────────────────────────────────────────────────
+
+  async getProjectWorkspaceBranches(projectId: string): Promise<ProjectWorkspaceBranches> {
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) throw new NotFoundError('Project', projectId);
+    ensureProjectIsMutable(project, 'configure workspace base branches');
+    await ensureProjectSupportsWorktrees(project, 'configure workspace base branches');
+
+    const [branchOutput, workspaces] = await Promise.all([
+      execGit(project.repoPath, ['for-each-ref', '--format=%(refname:lstrip=2)', '--sort=refname', 'refs/heads/']),
+      prisma.workspace.findMany({
+        where: {
+          task: { projectId, deletedAt: null },
+          workspaceKind: WorkspaceKind.WORKTREE,
+          status: WorkspaceStatus.ACTIVE,
+          parentWorkspaceId: null,
+          ownerMemberId: null,
+        },
+        select: {
+          id: true, taskId: true, branchName: true, baseBranch: true,
+          task: { select: { title: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+    return {
+      mainBranch: project.mainBranch,
+      branches: branchOutput.trim().split('\n').filter(Boolean),
+      workspaces: workspaces.map(({ task, ...workspace }) => ({ ...workspace, taskTitle: task.title })),
+    };
+  }
+
+  async updateBaseBranch(id: string, input: UpdateWorkspaceBaseBranchInput) {
+    return defaultWorkspaceLifecycleBarrier.withWorkspace(id, async () => {
+      const workspace = await prisma.workspace.findUnique({
+        where: { id },
+        include: { task: { include: { project: true } } },
+      });
+      if (!workspace) throw new NotFoundError('Workspace', id);
+      ensureTaskNotDeleted(workspace.task);
+      ensureProjectIsMutable(workspace.task.project, 'change workspace base branch');
+      this.assertWorktreeWorkspace(workspace);
+      if (workspace.status !== WorkspaceStatus.ACTIVE) {
+        throw new ServiceError('Only active workspaces can change base branch', 'INVALID_WORKSPACE_STATE', 409);
+      }
+      if (workspace.parentWorkspaceId || workspace.ownerMemberId) {
+        throw new ServiceError('TeamRun member base branches are managed by their parent workspace', 'WORKSPACE_BASE_BRANCH_MANAGED', 409);
+      }
+      if (workspace.baseBranch !== input.expectedBaseBranch) {
+        throw new ServiceError('Base branch changed. Refresh and try again.', 'WORKSPACE_BASE_BRANCH_CHANGED', 409);
+      }
+
+      const baseBranch = input.baseBranch.trim();
+      if (!baseBranch || baseBranch === workspace.branchName) {
+        throw new ServiceError('Choose a base branch different from the workspace branch', 'INVALID_BASE_BRANCH', 400);
+      }
+      const project = workspace.task.project;
+      await ensureProjectSupportsWorktrees(project, 'change workspace base branch');
+      try {
+        await execGit(project.repoPath, ['check-ref-format', `refs/heads/${baseBranch}`]);
+        await execGit(project.repoPath, ['show-ref', '--verify', '--quiet', `refs/heads/${baseBranch}`]);
+      } catch {
+        throw new ServiceError('Base branch must be an existing local branch', 'INVALID_BASE_BRANCH', 400);
+      }
+
+      const sessions = await prisma.session.findMany({
+        where: { workspaceId: id },
+        select: { id: true, status: true, runtimeType: true },
+      });
+      const activeSession = sessions.some((session) =>
+        activeSessionStatuses.includes(session.status as SessionStatus)
+        || ['RUNNING', 'AWAITING_PERMISSION', 'CANCELLING'].includes(
+          this.sessionService.getRuntimeState(session.id, session.runtimeType as RuntimeType).turnState,
+        ),
+      );
+      const activeInvocation = await prisma.agentInvocation.findFirst({
+        where: { workspaceId: id, status: { in: activeInvocationStatuses } },
+        select: { id: true },
+      });
+      if (activeSession || activeInvocation) {
+        throw new ServiceError('Wait for active Agent work to finish before changing base branch', 'WORKSPACE_BASE_BRANCH_BUSY', 409);
+      }
+      const status = await new WorktreeManager(project.repoPath).getGitOperationStatus(workspace.worktreePath, baseBranch);
+      if (status.operation !== 'idle' || status.conflictedFiles.length > 0) {
+        throw new ServiceError('Finish the current Git operation before changing base branch', 'WORKSPACE_GIT_OPERATION_IN_PROGRESS', 409);
+      }
+      try {
+        await execGit(project.repoPath, ['merge-base', `refs/heads/${workspace.branchName}`, `refs/heads/${baseBranch}`]);
+      } catch {
+        throw new ServiceError('The workspace and base branch must share commit history', 'BASE_BRANCH_UNRELATED', 400);
+      }
+
+      const result = await prisma.workspace.updateMany({
+        where: { id, baseBranch: input.expectedBaseBranch, status: WorkspaceStatus.ACTIVE, task: { deletedAt: null, project: { archivedAt: null } } },
+        data: { baseBranch, commitMessage: null },
+      });
+      if (result.count !== 1) {
+        throw new ServiceError('Workspace changed. Refresh and try again.', 'WORKSPACE_BASE_BRANCH_CHANGED', 409);
+      }
+      this.eventBus.emit('workspace:git_changed', {
+        workspaceId: id, taskId: workspace.taskId, projectId: project.id,
+        workingDir: getWorkspaceWorkingDir(workspace), reason: 'base-branch',
+      });
+      return { id, baseBranch };
+    });
+  }
 
   async findById(id: string) {
     const workspace = await prisma.workspace.findUnique({
@@ -1907,6 +2015,10 @@ export class WorkspaceService {
    * Rebase 工作空间分支到最新的基础分支
    */
   async rebase(id: string): Promise<void> {
+    return defaultWorkspaceLifecycleBarrier.withWorkspace(id, () => this.rebaseWithLifecycle(id));
+  }
+
+  private async rebaseWithLifecycle(id: string): Promise<void> {
     const workspace = await prisma.workspace.findUnique({
       where: { id },
       include: { task: { include: { project: true } } },
