@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "./design-system/styles.css";
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
@@ -51,6 +52,28 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  /* 设计系统扩展 token（src/design-system）：状态文字色、反色面、图表墨阶、层级与缓动 */
+  --color-success-ink: var(--success-ink);
+  --color-warning-ink: var(--warning-ink);
+  --color-info-ink: var(--info-ink);
+  --color-destructive-ink: var(--destructive-ink);
+  --color-inverse: var(--inverse);
+  --color-inverse-foreground: var(--inverse-foreground);
+  --color-inverse-muted: var(--inverse-muted);
+  --color-viz-0: var(--viz-0);
+  --color-viz-1: var(--viz-1);
+  --color-viz-2: var(--viz-2);
+  --color-viz-3: var(--viz-3);
+  --color-viz-4: var(--viz-4);
+  --color-viz-5: var(--viz-5);
+  --color-viz-6: var(--viz-6);
+  --color-viz-grid: var(--viz-grid);
+  --color-viz-axis: var(--viz-axis);
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.05);
+  --shadow-popover: 0 4px 12px rgb(0 0 0 / 0.06);
+  --shadow-overlay: 0 12px 16px -4px rgb(36 36 36 / 0.08), 0 4px 6px -2px rgb(36 36 36 / 0.03);
+  --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-move: cubic-bezier(0.2, 0, 0, 1);
 }
 
 :root {
@@ -104,6 +127,27 @@
   --scrollbar-track: transparent;
   --scrollbar-thumb: oklch(0.84 0.004 264);
   --scrollbar-thumb-hover: oklch(0.708 0.008 264);
+  /* 状态文字色：--success / --warning 作文字只有约 3.2:1，文字一律用 *-ink（白底与 ≤15% 着色底上 ≥ 4.5:1）；
+     图标、圆点、图形标记仍用基础状态色。 */
+  --success-ink: oklch(0.5 0.14 150);
+  --warning-ink: oklch(0.52 0.14 52);
+  --info-ink: oklch(0.5 0.21 263);
+  --destructive-ink: oklch(0.51 0.21 27);
+  /* 反色面：Tooltip / Toast 等浮在内容之上的深色小面 */
+  --inverse: oklch(0.235 0.015 252);
+  --inverse-foreground: oklch(0.985 0.002 264);
+  --inverse-muted: oklch(0.74 0.012 258);
+  /* 图表墨阶：与 Charcoal 同色相的单色阶梯。序列量级用 0–6（0 = 空/零值），
+     序数（漏斗阶段、分桶）只用 2–6：浅端 2 在白底上 2.48:1，已通过 ordinal 校验。 */
+  --viz-0: oklch(0.955 0.004 264);
+  --viz-1: oklch(0.86 0.008 260);
+  --viz-2: oklch(0.72 0.012 258);
+  --viz-3: oklch(0.6 0.014 256);
+  --viz-4: oklch(0.47 0.015 254);
+  --viz-5: oklch(0.34 0.015 253);
+  --viz-6: oklch(0.235 0.015 252);
+  --viz-grid: oklch(0.94 0.005 264);
+  --viz-axis: oklch(0.82 0.009 260);
 }
 
 .dark {
@@ -149,6 +193,22 @@
   --sidebar-ring: oklch(0.556 0 0);
   --scrollbar-thumb: oklch(0.439 0 0);
   --scrollbar-thumb-hover: oklch(0.556 0 0);
+  --success-ink: oklch(0.765 0.177 163.223);
+  --warning-ink: oklch(0.828 0.189 84.429);
+  --info-ink: oklch(0.707 0.165 254.624);
+  --destructive-ink: oklch(0.704 0.191 22.216);
+  --inverse: oklch(0.985 0 0);
+  --inverse-foreground: oklch(0.205 0 0);
+  --inverse-muted: oklch(0.556 0 0);
+  --viz-0: oklch(0.269 0 0);
+  --viz-1: oklch(0.371 0 0);
+  --viz-2: oklch(0.48 0 0);
+  --viz-3: oklch(0.6 0 0);
+  --viz-4: oklch(0.72 0 0);
+  --viz-5: oklch(0.84 0 0);
+  --viz-6: oklch(0.96 0 0);
+  --viz-grid: oklch(1 0 0 / 8%);
+  --viz-axis: oklch(1 0 0 / 18%);
 }
 
 @layer base {

@@ -11,6 +11,7 @@ const ConversationPage = lazy(() => import('@/pages/ConversationPage').then(m =>
 const DemoPage = lazy(() => import('@/pages/DemoPage').then(m => ({ default: m.DemoPage })))
 const AgentDemoPage = lazy(() => import('@/pages/AgentDemoPage').then(m => ({ default: m.AgentDemoPage })))
 const LoadingPreviewPage = lazy(() => import('@/pages/LoadingPreviewPage').then(m => ({ default: m.LoadingPreviewPage })))
+const DesignSystemPage = lazy(() => import('@/pages/DesignSystemPage').then(m => ({ default: m.DesignSystemPage })))
 
 /**
  * Production route tree.
@@ -80,6 +81,14 @@ export const appRoutes: RouteObject[] = [
             element: (
               <Suspense fallback={<FullscreenLoading />}>
                 <LoadingPreviewPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: 'design-system',
+            element: (
+              <Suspense fallback={<FullscreenLoading />}>
+                <DesignSystemPage />
               </Suspense>
             ),
           },

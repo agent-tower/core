@@ -1,0 +1,166 @@
+/*
+ * Agent Tower 设计系统 — 组件库专用样式
+ *
+ * 颜色 / 阴影 / 缓动等 token 统一定义在 src/index.css（:root + @theme inline），这里只放
+ * Tailwind 单个类名表达不了的东西：斜纹填充、拓扑树连线、少量关键帧。
+ */
+
+/* 斜纹 = 「虚」：计划量、剩余量、预期区间。45° 稀疏细线，颜色取 currentColor，
+   底色由使用方给（通常 bg-viz-0 + text-viz-3）。只用于表达语义，不做装饰。 */
+@utility hatch {
+  background-image: repeating-linear-gradient(135deg, currentColor 0 1px, transparent 1px 5px);
+}
+
+@layer components {
+  /* 拓扑树（TopologyTree）：父子之间的折线连接，纯 CSS 绘制，节点宽度自适应。 */
+  .ds-org-tree,
+  .ds-org-tree ul {
+    display: flex;
+    justify-content: center;
+    position: relative;
+    padding-top: 20px;
+  }
+
+  .ds-org-tree {
+    padding-top: 0;
+  }
+
+  .ds-org-tree li {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px 6px 0;
+  }
+
+  .ds-org-tree > li {
+    padding-top: 0;
+  }
+
+  /* 每个子节点上方：左右两段横线 + 中间竖线，拼出 ┬ 形连接 */
+  .ds-org-tree li::before,
+  .ds-org-tree li::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    width: 50%;
+    height: 20px;
+    border-top: 1px solid var(--viz-axis);
+  }
+
+  .ds-org-tree li::before {
+    right: 50%;
+  }
+
+  .ds-org-tree li::after {
+    left: 50%;
+    border-left: 1px solid var(--viz-axis);
+  }
+
+  .ds-org-tree li:only-child::before,
+  .ds-org-tree li:only-child::after,
+  .ds-org-tree > li::before,
+  .ds-org-tree > li::after {
+    display: none;
+  }
+
+  .ds-org-tree li:only-child {
+    padding-top: 20px;
+  }
+
+  .ds-org-tree > li:only-child {
+    padding-top: 0;
+  }
+
+  .ds-org-tree li:only-child::after {
+    display: block;
+    left: 50%;
+    width: 0;
+    border-top: 0;
+  }
+
+  .ds-org-tree li:first-child::before,
+  .ds-org-tree li:last-child::after {
+    border-top: 0;
+  }
+
+  .ds-org-tree li:last-child::before {
+    border-right: 1px solid var(--viz-axis);
+    border-top-right-radius: 6px;
+  }
+
+  .ds-org-tree li:first-child::after {
+    border-top-left-radius: 6px;
+  }
+
+  /* 父节点下方的竖线 */
+  .ds-org-tree ul::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    height: 20px;
+    border-left: 1px solid var(--viz-axis);
+  }
+}
+
+@layer utilities {
+  /* 完成对勾：描边从 0 画到满，用于「任务完成」这类一次性的确认时刻 */
+  .ds-check-draw {
+    stroke-dasharray: 24;
+    stroke-dashoffset: 24;
+    animation: ds-check-draw 360ms var(--ease-enter) 120ms forwards;
+  }
+
+  .ds-ring-burst {
+    animation: ds-ring-burst 520ms var(--ease-enter) forwards;
+  }
+
+  .ds-pop-in {
+    animation: ds-pop-in 260ms var(--ease-enter) both;
+  }
+
+  @keyframes ds-check-draw {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  @keyframes ds-ring-burst {
+    from {
+      opacity: 0.5;
+      transform: scale(0.6);
+    }
+    to {
+      opacity: 0;
+      transform: scale(1.6);
+    }
+  }
+
+  @keyframes ds-pop-in {
+    from {
+      opacity: 0;
+      transform: scale(0.85);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ds-check-draw {
+      animation: none;
+      stroke-dashoffset: 0;
+    }
+
+    .ds-ring-burst {
+      animation: none;
+      opacity: 0;
+    }
+
+    .ds-pop-in {
+      animation: none;
+    }
+  }
+}
