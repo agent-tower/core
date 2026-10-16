@@ -62,7 +62,8 @@ WorkRequest 的主链是 `PENDING_APPROVAL -> QUEUED -> STARTED -> COMPLETED/FAI
 - REST `sessions/:id/message`、MCP `sessions.send_message` 与 `SessionManager.sendMessage` 的 TeamRun follow-up 需要当前未撤销 invocation，并在 barrier 内复查 Session 与 ACTIVE member。普通 conversation Session 的终态 follow-up 语义不同。
 - 初次启动和 `resume_last` 都需经 Session `PENDING -> RUNNING` CAS 与新鲜的 invocation admission 检查。Session 已创建而 invocation 尚未创建的窗口仍可能发生直接 stop，之后不能 spawn。
 - invocation 可以先记录逻辑终态；这不证明进程已退出。`session-runtime-cleanup-gate.ts` 检查全部 launch claim、ExecutionProcess generation cleanup 和当前 owner；确认后，`WorkRequest STARTED -> terminal` 的唯一 durable winner 才能释放锁、推进队列及正常 after-terminal review。cleanup 未确认时继续阻塞该成员。
-- 每次可能 spawn 前先持久化 launch claim。空 ExecutionProcess 集合仅在证明未启动或安全的 pre-child failure 时可视为已清理；未闭合 claim、缺少进程记录或不完整 ownership 必须持久 quarantine 并保留恢复诊断，不能按 Session.status、内存无 pipeline 或裸 PID 推断安全。
+- 每次可能 spawn 前先持久化 launch claim。空 ExecutionProcess 集合仅在证明未启动、安全的 pre-child failure 或父进程已确认失败启动的整树退出时可视为已清理；未闭合 claim、缺少进程记录或不完整 ownership 必须持久 quarantine 并保留恢复诊断，不能按 Session.status、内存无 pipeline 或裸 PID 推断安全。
+- 启动身份采集失败后的迟到清理使用 `launch_cleanup_completed` 持久证据将当前 claim 收口为 `CLEANED_START_FAILURE`；仅父进程持有的失败启动 owner 确认整树退出后可发送。心跳 cleanup 阶段同时重试 DISPOSED runtime，覆盖尚无 ExecutionProcess 行的 owner；随后仍通过统一 cleanup gate 收口 revoked invocation 并推进队列。历史隔离记录不能仅因重启或没有进程行就自动清除。
 - 人工 stop、session exit、heartbeat/startup recovery 和重复 reconcile 复用同一 cleanup gate。旧 runtime generation 的退出/清理不能撤销新 owner，终态副作用必须可重复调用而不重复执行。
 
 ## 身份、权限与可见性

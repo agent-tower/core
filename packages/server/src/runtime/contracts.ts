@@ -62,10 +62,19 @@ export interface RuntimeProcessTreeCleanupCompletedEvent {
   launchClaimNumber?: number;
 }
 
+/** A parent-owned failed-spawn handle confirmed tree exit before a started row existed. */
+export interface RuntimeLaunchCleanupCompletedEvent {
+  type: 'launch_cleanup_completed';
+  towerSessionId: string;
+  runtimeInstanceId: string;
+  launchClaimNumber: number;
+}
+
 export type RuntimeProcessEvent =
   | RuntimeProcessStartedEvent
   | RuntimeProcessExitedEvent
-  | RuntimeProcessTreeCleanupCompletedEvent;
+  | RuntimeProcessTreeCleanupCompletedEvent
+  | RuntimeLaunchCleanupCompletedEvent;
 
 export interface RuntimeDriverEventSink {
   stream(event: RuntimeStreamEvent): void;
@@ -73,6 +82,7 @@ export interface RuntimeDriverEventSink {
     | Omit<RuntimeProcessStartedEvent, 'towerSessionId'>
     | Omit<RuntimeProcessExitedEvent, 'towerSessionId'>
     | Omit<RuntimeProcessTreeCleanupCompletedEvent, 'towerSessionId'>
+    | Omit<RuntimeLaunchCleanupCompletedEvent, 'towerSessionId'>
   ): Promise<void>;
 }
 

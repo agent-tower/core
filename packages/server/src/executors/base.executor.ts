@@ -155,6 +155,8 @@ export type EarlyPtyEvent =
   | { type: 'data'; data: string }
   | { type: 'exit'; exitCode: number; signal?: number };
 
+type EarlyPtyEventBuffer = (() => EarlyPtyEvent[]) & { hasExited(): boolean };
+
 function isTrustedWrapperExit(event: { exitCode?: number; signal?: number | null }): boolean {
   // A wrapper that is externally killed can report a root exit while leaving
   // detached descendants behind. Only a normal wrapper exit is allowed to
@@ -433,16 +435,18 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
    * 缓存 spawn 返回后、AgentPipeline attach 前的 PTY 事件。
    * 返回一次性的取走函数（取走即停止缓存并解除监听）。
    */
-  private collectEarlyPtyEvents(shell: IPty): () => EarlyPtyEvent[] {
+  private collectEarlyPtyEvents(shell: IPty): EarlyPtyEventBuffer {
     let events: EarlyPtyEvent[] = [];
     let handedOff = false;
+    let exited = false;
     const offData = shell.onData((data) => {
       if (!handedOff) events.push({ type: 'data', data });
     });
     const offExit = shell.onExit(({ exitCode, signal }) => {
+      exited = true;
       if (!handedOff) events.push({ type: 'exit', exitCode, signal });
     });
-    return () => {
+    const take = () => {
       if (handedOff) return [];
       handedOff = true;
       offData.dispose();
@@ -451,6 +455,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       events = [];
       return taken;
     };
+    return Object.assign(take, { hasExited: () => exited });
   }
 
   /**
@@ -524,7 +529,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
 
     ptyLog(shell.pid, `Process spawned`);
 
-    let takeEarlyEvents: (() => EarlyPtyEvent[]) | undefined;
+    let takeEarlyEvents: EarlyPtyEventBuffer | undefined;
     let cleanupOwner: SpawnCleanupOwner | undefined;
     let cleanupAttempted = false;
     try {
@@ -532,7 +537,8 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       let identity: SpawnedProcessIdentity | null = null;
       let identityError: unknown;
       try {
-        identity = await captureSpawnedProcessIdentity(shell.pid, ownershipToken);
+        identity = await captureSpawnedProcessIdentity(shell.pid, ownershipToken, process.platform,
+          () => !takeEarlyEvents!.hasExited());
         if (!identity) {
           throw new Error(`Could not persist a verifiable process identity for ${this.displayName}`);
         }
@@ -703,7 +709,7 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
 
     let shell: IPty | undefined;
     let identity: SpawnedProcessIdentity | null = null;
-    let takeEarlyEvents: (() => EarlyPtyEvent[]) | undefined;
+    let takeEarlyEvents: EarlyPtyEventBuffer | undefined;
     let offData: { dispose(): void } | undefined;
     let offExit: { dispose(): void } | undefined;
     let cleanupOwner: SpawnCleanupOwner | undefined;
@@ -725,7 +731,8 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
       takeEarlyEvents = this.collectEarlyPtyEvents(spawnedShell);
       let identityError: unknown;
       try {
-        identity = await captureSpawnedProcessIdentity(spawnedShell.pid, ownershipToken);
+        identity = await captureSpawnedProcessIdentity(spawnedShell.pid, ownershipToken, process.platform,
+          () => !takeEarlyEvents!.hasExited());
         if (!identity) {
           throw new Error(`Could not persist a verifiable process identity for ${this.displayName}`);
         }

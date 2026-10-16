@@ -727,6 +727,37 @@ describe('TeamReconcilerService', () => {
     expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
   });
 
+  it('releases a failed-spawn member after the in-memory owner resolves its unrecorded launch', async () => {
+    const { workspace, teamRun, members } = await createFixture();
+    const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });
+    const invocation = await createRunningInvocation({
+      teamRunId: teamRun.id, workRequestId: request.id, memberId: members[0]!.id,
+      workspaceId: workspace.id, status: 'RUNNING',
+    });
+    await prisma.session.update({ where: { id: invocation.sessionId! }, data: {
+      status: 'RUNNING', runtimeLaunchState: 'QUARANTINED', runtimeLaunchClaimCount: 1,
+    } });
+    await prisma.agentInvocation.update({ where: { id: invocation.id }, data: { dispatchRevokedAt: new Date() } });
+    const retryFailedRuntimeDisposals = vi.fn(async () => {
+      await prisma.session.update({ where: { id: invocation.sessionId! }, data: {
+        runtimeLaunchState: 'CLEANED_START_FAILURE', runtimeLaunchResolvedCount: 1,
+      } });
+    });
+    const cleanupService = new TeamReconcilerService({
+      scheduler, scheduleReminders: false,
+      sessionMessenger: { sendMessage: vi.fn(async () => null), retryFailedRuntimeDisposals,
+        hasActiveTurn: () => false, hasRuntimeProcessOwner: () => false },
+    });
+    expect(await prisma.executionProcess.count({ where: { sessionId: invocation.sessionId! } })).toBe(0);
+    await cleanupService.reconcilePendingRuntimeCleanup();
+    expect(retryFailedRuntimeDisposals).toHaveBeenCalledWith(50);
+    await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } }))
+      .resolves.toMatchObject({ status: 'CANCELLED' });
+    await expect(prisma.workRequest.findUniqueOrThrow({ where: { id: request.id } }))
+      .resolves.toMatchObject({ status: 'CANCELLED' });
+    expect(scheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
+  });
+
   it('terminalizes a revoked active invocation after confirmed cleanup when DB recovery previously failed', async () => {
     const { workspace, teamRun, members } = await createFixture();
     const request = await createWorkRequest({ teamRunId: teamRun.id, targetMemberId: members[0]!.id });

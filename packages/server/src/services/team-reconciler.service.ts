@@ -89,6 +89,7 @@ export interface TeamReconcilerSessionMessenger {
   ): Promise<unknown>;
   stop?(sessionId: string, options?: { skipTeamRunReconcile?: boolean }): Promise<unknown>;
   disposeRuntimeSession?(sessionId: string, expectedRuntimeInstanceId?: string): Promise<void>;
+  retryFailedRuntimeDisposals?(limit: number): Promise<void>;
   retryRuntimeProcessCleanup?(input: {
     sessionId: string;
     runtimeInstanceId: string;
@@ -576,6 +577,7 @@ export class TeamReconcilerService {
   }
 
   async reconcilePendingRuntimeCleanup(limit = 50): Promise<number> {
+    await this.sessionMessenger?.retryFailedRuntimeDisposals?.(limit);
     const now = this.now();
     const quarantineCount = await reportDueRuntimeCleanupQuarantines(limit, now);
     const retryable = this.sessionMessenger?.retryRuntimeProcessCleanup

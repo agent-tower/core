@@ -6,11 +6,48 @@ import { MsgStore } from '../../output/msg-store.js';
 import type { RuntimeDriverEventSink } from '../contracts.js';
 import { CliRuntimeDriver } from '../cli-driver.js';
 import { PTY_WRAPPER_EXIT_TIMEOUT_MS, PTY_WRAPPER_FORCE_KILL_GRACE_MS } from '../../utils/process-launch.js';
+import { attachSpawnCleanupOwner } from '../../executors/start-error.js';
 
 describe('CliRuntimeDriver cleanup lifecycle', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it('persists late failed-spawn cleanup and retains the owner until its event is acknowledged', async () => {
+    let confirmExit!: () => void;
+    const owner = {
+      processExit: new Promise<void>((resolve) => { confirmExit = resolve; }),
+      requestStop: vi.fn(), cleanup: vi.fn(async () => undefined),
+      dispose: vi.fn(), disposeTreeCleanupChannel: vi.fn(),
+    };
+    vi.spyOn(executors, 'getExecutor').mockReturnValue({
+      spawn: vi.fn(async () => { throw attachSpawnCleanupOwner(new Error('identity unavailable'), owner); }),
+    } as never);
+    let canPersist = false;
+    const sink: RuntimeDriverEventSink = {
+      stream: vi.fn(), process: vi.fn(async () => { if (!canPersist) throw new Error('database unavailable'); }),
+    };
+    const session = await new CliRuntimeDriver().open({
+      towerSessionId: 'failed-spawn', agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI,
+      variant: 'DEFAULT', workingDir: process.cwd(), env: ExecutionEnv.default(process.cwd()),
+    });
+    const previousRuntime = session.runtimeInstanceId;
+    await expect(session.runTurn({ turnId: 'failed', prompt: 'hello', msgStore: new MsgStore(), launchClaimNumber: 2 }, sink))
+      .rejects.toThrow('identity unavailable');
+    expect(session.runtimeInstanceId).not.toBe(previousRuntime);
+    expect(sink.process).not.toHaveBeenCalled();
+    confirmExit();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sink.process).toHaveBeenCalledWith({
+      type: 'launch_cleanup_completed', runtimeInstanceId: session.runtimeInstanceId, launchClaimNumber: 2,
+    });
+    await expect(session.close()).rejects.toMatchObject({ code: 'runtime_cleanup_pending' });
+    expect(owner.dispose).not.toHaveBeenCalled();
+    canPersist = true;
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(owner.dispose).toHaveBeenCalledTimes(1);
+    expect(owner.disposeTreeCleanupChannel).toHaveBeenCalledTimes(1);
   });
 
   it.each([

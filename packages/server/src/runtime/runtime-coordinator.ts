@@ -461,6 +461,18 @@ export class RuntimeCoordinator {
     }
   }
 
+  /** Retry failed owners, including launches without a durable process row. */
+  async retryFailedDisposals(limit = 50): Promise<void> {
+    const candidates = [...this.sessions.entries()]
+      .filter(([, session]) => session.turnState === 'DISPOSED')
+      .slice(0, limit);
+    // Each session has a bounded disposal wait. Independent owners must not
+    // multiply that wait and starve the heartbeat's other recovery stages.
+    await Promise.allSettled(candidates.map(([sessionId, session]) =>
+      this.retryDisposedSessionCleanup(sessionId, session.driverSession.runtimeInstanceId)));
+    // disposeSession retains and reports every failed owner for the next tick.
+  }
+
   /** Retry a previously failed disposal without closing a healthy idle session. */
   async retryDisposedSessionCleanup(
     towerSessionId: string,

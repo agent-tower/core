@@ -180,14 +180,28 @@ class CliDriverSession implements DriverSession {
     } catch (error) {
       const owner = getSpawnCleanupOwner(error);
       if (owner) {
-        const pending = createActiveTurn(input.turnId, randomUUID(), input.launchClaimNumber);
+        this.currentRuntimeInstanceId = randomUUID();
+        const pending = createActiveTurn(input.turnId, this.currentRuntimeInstanceId, input.launchClaimNumber);
         pending.spawnCleanupOwner = owner;
         pending.requestProcessStop = owner.requestStop;
+        pending.disposeTreeCleanupChannel = owner.disposeTreeCleanupChannel;
+        pending.processEventSink = sink;
+        pending.processEventsReleased = true;
         owner.processExit.then(() => {
+          pending.processExitObserved = true;
+          pending.treeCleanupConfirmed = true;
           pending.processExited = true;
+          // Do not lose the durable launch claim when identity capture failed
+          // before `started`. Retain this event/owner until the host ACKs it.
+          if (input.launchClaimNumber != null) {
+            pending.processEvents.push({
+              type: 'launch_cleanup_completed',
+              runtimeInstanceId: pending.runtimeInstanceId,
+              launchClaimNumber: input.launchClaimNumber,
+            });
+          }
           pending.resolveProcessExit();
-          owner.dispose();
-          owner.disposeTreeCleanupChannel?.();
+          void this.flushProcessEvents(pending, sink);
         }).catch(() => undefined);
         void pending.completion.catch(() => undefined);
         this.active = pending;

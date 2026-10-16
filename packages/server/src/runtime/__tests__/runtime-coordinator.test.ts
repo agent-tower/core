@@ -345,6 +345,20 @@ describe('RuntimeCoordinator', () => {
     expect(session.close).toHaveBeenCalledTimes(2);
   });
 
+  it('periodically retries failed owners without disposing a healthy idle runtime', async () => {
+    const { coordinator, input, session, turns } = setup();
+    const turn = await coordinator.startTurn(input);
+    turns[0]!.resolve({});
+    await turn.completion;
+    await coordinator.retryFailedDisposals();
+    expect(session.close).not.toHaveBeenCalled();
+    vi.mocked(session.close).mockRejectedValueOnce(new Error('cleanup pending'));
+    await expect(coordinator.disposeSession(input.towerSessionId)).rejects.toThrow('cleanup pending');
+    await coordinator.retryFailedDisposals();
+    expect(session.close).toHaveBeenCalledTimes(2);
+    expect(coordinator.hasRuntimeInstance(input.towerSessionId, 'runtime-1')).toBe(false);
+  });
+
   it('rejects failed disposal and allows a later destroy attempt to finish cleanup', async () => {
     const { coordinator, input, session } = setup();
     await coordinator.startTurn(input);

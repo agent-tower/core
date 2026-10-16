@@ -14,9 +14,17 @@ export async function captureSpawnedProcessIdentity(
   pid: number,
   ownershipToken: string,
   platform: NodeJS.Platform = process.platform,
+  isCurrent?: () => boolean,
 ): Promise<SpawnedProcessIdentity | null> {
+  if (isCurrent && !isCurrent()) return null;
   if (platform !== 'win32') {
-    const identity = await createUnixProcessIdentityAdapter(platform).captureProcess(pid, ownershipToken);
+    const adapter = createUnixProcessIdentityAdapter(platform);
+    // Only a caller holding the fresh child/PTY handle may use parentage as
+    // launch evidence. ps can observe the spawn helper before exec exposes the
+    // wrapper's environment, so requiring its marker here races startup.
+    const identity = isCurrent
+      ? await adapter.captureChildProcess!(pid, ownershipToken, isCurrent)
+      : await adapter.captureProcess(pid, ownershipToken);
     return identity ? {
       processGroupId: String(identity.pgid),
       birthMarker: identity.birthIdentity,
@@ -36,7 +44,7 @@ export async function captureSpawnedProcessIdentity(
       script,
     ], { encoding: 'utf8', windowsHide: true });
     const birthMarker = stdout.trim();
-    return birthMarker ? {
+    return birthMarker && (!isCurrent || isCurrent()) ? {
       processGroupId: String(pid),
       birthMarker,
       ownershipToken,

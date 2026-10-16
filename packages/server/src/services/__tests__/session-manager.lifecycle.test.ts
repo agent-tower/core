@@ -1965,6 +1965,75 @@ describe('SessionManager session status vs real process state', () => {
     }
   }, 15_000);
 
+  it('recovers a failed CLI launch after late parent-owned cleanup without an ExecutionProcess row', async () => {
+    const { attachSpawnCleanupOwner } = await import('../../executors/start-error.js');
+    const { session } = await createSessionFixture();
+    const cleanup = deferred<void>();
+    const owner = {
+      processExit: cleanup.promise, requestStop: vi.fn(), cleanup: vi.fn(async () => undefined),
+      dispose: vi.fn(), disposeTreeCleanupChannel: vi.fn(),
+    };
+    spawnMock.mockRejectedValueOnce(attachSpawnCleanupOwner(new Error('identity capture failed'), owner));
+    const manager = new SessionManager(new EventBus());
+    try {
+      await expect(manager.start(session.id)).rejects.toThrow('identity capture failed');
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+        status: 'RUNNING', runtimeLaunchState: 'QUARANTINED', runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 0, runtimeLaunchProcessCount: 0,
+      });
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(false);
+      expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(0);
+      cleanup.resolve();
+      // The heartbeat recovery must retry the in-memory failed owner even
+      // though the persisted process scan has no candidates.
+      await manager.retryFailedRuntimeDisposals();
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(true);
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+        runtimeLaunchState: 'CLEANED_START_FAILURE', runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 1, runtimeLaunchProcessCount: 0,
+      });
+      await manager.stop(session.id);
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } }))
+        .resolves.toMatchObject({ status: 'CANCELLED' });
+      expect(owner.dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup.resolve();
+      await manager.destroyAll();
+    }
+  }, 20_000);
+
+  it('binds failed-launch cleanup to the unresolved claim and cannot bypass recorded process cleanup', async () => {
+    const { session } = await createSessionFixture();
+    const manager = new SessionManager(new EventBus());
+    const handle = (manager as unknown as {
+      handleRuntimeProcessEvent(event: Record<string, unknown>): Promise<void>;
+    }).handleRuntimeProcessEvent.bind(manager);
+    const event = { type: 'launch_cleanup_completed', towerSessionId: session.id, runtimeInstanceId: 'failed-runtime', launchClaimNumber: 2 };
+    try {
+      await prisma.session.update({ where: { id: session.id }, data: {
+        runtimeLaunchState: 'QUARANTINED', runtimeLaunchClaimCount: 2, runtimeLaunchResolvedCount: 1,
+      } });
+      await handle({ ...event, launchClaimNumber: 1 });
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(false);
+      await handle(event);
+      await handle(event);
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(true);
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } }))
+        .resolves.toMatchObject({ runtimeLaunchResolvedCount: 2 });
+      await prisma.session.update({ where: { id: session.id }, data: {
+        runtimeLaunchState: 'CLAIMED', runtimeLaunchClaimCount: 3,
+      } });
+      await handle(event);
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(false);
+      await handle({ ...event, type: 'started', launchClaimNumber: 3, runtimeInstanceId: 'recorded-runtime',
+        pid: 123, processGroupId: '123', birthMarker: 'birth', ownershipToken: 'token' });
+      await expect(handle({ ...event, launchClaimNumber: 3 })).rejects.toMatchObject({ code: 'RUNTIME_LAUNCH_CLAIM_MISMATCH' });
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(false);
+    } finally {
+      await manager.destroyAll();
+    }
+  });
+
   it('does not confirm ACP tree cleanup on root exit or let a late old cleanup overwrite a new runtime', async () => {
     const { session } = await createSessionFixture();
     const manager = new SessionManager(new EventBus());

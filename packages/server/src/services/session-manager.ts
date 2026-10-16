@@ -297,13 +297,14 @@ export class SessionManager {
             ]);
           const processConfirmed = process?.cleanupState === 'CONFIRMED'
             && !this.hasRuntimeProcessOwner(runtimeInstanceId, sessionId, resolvedClaim);
-          const safelyNeverStarted = process == null
-            && launch?.runtimeLaunchState === RUNTIME_LAUNCH_STATES.SAFE_PRE_CHILD_FAILURE
+          const safelyFailedLaunch = process == null
+            && (launch?.runtimeLaunchState === RUNTIME_LAUNCH_STATES.SAFE_PRE_CHILD_FAILURE
+              || launch?.runtimeLaunchState === RUNTIME_LAUNCH_STATES.CLEANED_START_FAILURE)
             && launch.runtimeLaunchClaimCount === resolvedClaim
             && launch.runtimeLaunchResolvedCount === resolvedClaim;
           if (
             !processConfirmed
-            && !safelyNeverStarted
+            && !safelyFailedLaunch
           ) {
             throw new AgentRuntimeError(
               'runtime_cleanup_pending',
@@ -483,6 +484,10 @@ export class SessionManager {
   /** Dispose a TeamRun-owned runtime after its invocation reaches a terminal state. */
   async disposeRuntimeSession(sessionId: string, expectedRuntimeInstanceId?: string): Promise<void> {
     await this.runtimeCoordinator.disposeSession(sessionId, expectedRuntimeInstanceId);
+  }
+
+  async retryFailedRuntimeDisposals(limit = 50): Promise<void> {
+    await this.runtimeCoordinator.retryFailedDisposals(limit);
   }
 
   async retryRuntimeProcessCleanup(input: PersistedAcpProcessIdentity & {
@@ -1687,6 +1692,37 @@ export class SessionManager {
     const launchClaimNumber = Number.isInteger(event.launchClaimNumber) && event.launchClaimNumber! > 0
       ? event.launchClaimNumber!
       : null;
+    if (event.type === 'launch_cleanup_completed') {
+      if (launchClaimNumber == null || !event.runtimeInstanceId) {
+        throw new ServiceError('Failed launch cleanup is missing its generation', 'RUNTIME_LAUNCH_CLAIM_MISMATCH', 409);
+      }
+      await prisma.$transaction(async (tx) => {
+        const process = await tx.executionProcess.findFirst({
+          where: { sessionId: event.towerSessionId, launchClaimNumber },
+          select: { id: true },
+        });
+        if (process) {
+          throw new ServiceError('Recorded processes require process tree cleanup evidence', 'RUNTIME_LAUNCH_CLAIM_MISMATCH', 409);
+        }
+        // CAS makes retries idempotent and prevents a late old generation from
+        // resolving a newer launch. A normal process event cannot take this path.
+        await tx.session.updateMany({
+          where: {
+            id: event.towerSessionId,
+            runtimeLaunchClaimCount: launchClaimNumber,
+            runtimeLaunchResolvedCount: launchClaimNumber - 1,
+            runtimeLaunchState: { in: [RUNTIME_LAUNCH_STATES.CLAIMED, RUNTIME_LAUNCH_STATES.QUARANTINED] },
+          },
+          data: {
+            runtimeLaunchState: RUNTIME_LAUNCH_STATES.CLEANED_START_FAILURE,
+            runtimeLaunchResolvedCount: { increment: 1 },
+            runtimeLaunchDiagnostic: 'Parent-owned failed launch confirmed complete process tree cleanup',
+            runtimeLaunchNextDiagnosticAt: null,
+          },
+        });
+      });
+      return;
+    }
     if (event.type === 'started') {
       let processRecord: { id: string; cleanupState: string };
       try {

@@ -6,6 +6,7 @@ export const RUNTIME_LAUNCH_STATES = {
   PROCESS_RECORDED: 'PROCESS_RECORDED',
   REUSED: 'REUSED',
   SAFE_PRE_CHILD_FAILURE: 'SAFE_PRE_CHILD_FAILURE',
+  CLEANED_START_FAILURE: 'CLEANED_START_FAILURE',
   QUARANTINED: 'QUARANTINED',
 } as const;
 
@@ -265,9 +266,10 @@ async function evaluateSessionRuntimeCleanupAttempt(
   if (processes.length === 0) {
     const explicitNeverStarted = session.runtimeLaunchClaimCount === 0
       && session.runtimeLaunchState === RUNTIME_LAUNCH_STATES.NOT_STARTED;
-    const safePreChildFailure = session.runtimeLaunchClaimCount > 0
-      && session.runtimeLaunchState === RUNTIME_LAUNCH_STATES.SAFE_PRE_CHILD_FAILURE;
-    if (explicitNeverStarted || safePreChildFailure) {
+    const safeFailedLaunch = session.runtimeLaunchClaimCount > 0
+      && (session.runtimeLaunchState === RUNTIME_LAUNCH_STATES.SAFE_PRE_CHILD_FAILURE
+        || session.runtimeLaunchState === RUNTIME_LAUNCH_STATES.CLEANED_START_FAILURE);
+    if (explicitNeverStarted || safeFailedLaunch) {
       return { confirmed: true, reason: 'confirmed' };
     }
     const quarantined = await quarantineSessionLaunch(

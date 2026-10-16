@@ -42,8 +42,19 @@ const { spawnMock, spawnFollowUpMock } = vi.hoisted(() => ({
   spawnFollowUpMock: vi.fn(),
 }));
 
+vi.mock('../../executors/profiles.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../executors/profiles.js')>();
+  return { ...actual, getVariantConfig: (agent: string, variant: string) => ({
+    ...actual.getVariantConfig(agent, variant), executionPermission: 'FULL_ACCESS',
+  }) };
+});
+
 vi.mock('../../executors/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../executors/index.js')>();
+  const getExecutorByProvider = vi.fn(() => ({
+    agentType: 'CODEX', displayName: 'Mock Codex', getAvailabilityInfo: vi.fn(),
+    getCapabilities: vi.fn(() => []), spawn: spawnMock, spawnFollowUp: spawnFollowUpMock,
+  }));
   return {
     ...actual,
       getExecutor: vi.fn(() => ({
@@ -54,18 +65,13 @@ vi.mock('../../executors/index.js', async (importOriginal) => {
         spawn: spawnMock,
         spawnFollowUp: spawnFollowUpMock,
       })),
-      getExecutorByProvider: vi.fn(() => ({
-        agentType: 'CODEX',
-        displayName: 'Mock Codex',
-        getAvailabilityInfo: vi.fn(),
-        getCapabilities: vi.fn(() => []),
-        spawn: spawnMock,
-        spawnFollowUp: spawnFollowUpMock,
-      })),
+    getExecutorByProvider,
+    createExecutorFromProvider: getExecutorByProvider,
     getProviderById: vi.fn(() => ({
       id: 'codex-default',
       name: 'Codex',
       agentType: 'CODEX',
+      executionPermission: 'FULL_ACCESS',
       env: {
         DATABASE_URL: 'file:/provider/database-url.db',
         AGENT_TOWER_DATABASE_URL: 'file:/provider/agent-tower.db',
@@ -100,6 +106,17 @@ let CommandBuildError: typeof import('../../executors/command-builder.js').Comma
 let CodexExecutor: typeof import('../../executors/codex.executor.js').CodexExecutor;
 let ClaudeCodeExecutor: typeof import('../../executors/claude-code.executor.js').ClaudeCodeExecutor;
 let TeamSchedulerService: typeof import('../team-scheduler.service.js').TeamSchedulerService;
+
+function failStartedPersistence(manager: InstanceType<typeof SessionManager>): void {
+  const processHost = manager as unknown as {
+    handleRuntimeProcessEvent(event: import('../../runtime/contracts.js').RuntimeProcessEvent): Promise<void>;
+  };
+  const original = processHost.handleRuntimeProcessEvent.bind(manager);
+  vi.spyOn(processHost, 'handleRuntimeProcessEvent').mockImplementation(async (event) => {
+    if (event.type === 'started') throw new Error('Process persistence unavailable');
+    await original(event);
+  });
+}
 
 function seedServiceEnv(): void {
   process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
@@ -632,15 +649,12 @@ describe('SessionManager TeamRun env injection', () => {
   });
 
   it('quarantines a spawned process when its process row cannot be written during session start', async () => {
-    const { task, workspace } = await createWorkspace();
+    const { workspace } = await createWorkspace();
     const pty = createPty();
-    spawnMock.mockImplementationOnce(async () => {
-      await prisma.task.update({
-        where: { id: task.id },
-        data: { deletedAt: new Date() },
-      });
-      return spawnResult(22345, pty);
-    });
+    spawnMock.mockResolvedValueOnce(spawnResult(22345, pty));
+    // Task deletion no longer prevents recording an already spawned child.
+    // Inject failure at the actual process persistence boundary instead.
+    failStartedPersistence(manager);
     const session = await prisma.session.create({
       data: {
         workspaceId: workspace.id,
@@ -651,10 +665,7 @@ describe('SessionManager TeamRun env injection', () => {
       },
     });
 
-    await expect(manager.start(session.id)).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-      statusCode: 404,
-    });
+    await expect(manager.start(session.id)).rejects.toThrow('Process persistence unavailable');
 
     expect(pty.kill).toHaveBeenCalled();
     await expect(prisma.executionProcess.count({ where: { sessionId: session.id } })).resolves.toBe(0);
@@ -778,14 +789,17 @@ describe('SessionManager TeamRun env injection', () => {
       },
     });
     vi.mocked(getExecutorByProvider).mockReturnValueOnce(executor);
-    vi.mocked(getProviderById).mockReturnValueOnce({
+    const previousProviderLookup = vi.mocked(getProviderById).getMockImplementation()!;
+    const provider = {
       id: providerId,
       name: `${agentType} invalid settings`,
       agentType,
+      executionPermission: 'FULL_ACCESS' as const,
       env: {},
       config: {},
       isDefault: false,
-    });
+    };
+    vi.mocked(getProviderById).mockImplementation((id) => id === providerId ? provider : previousProviderLookup(id));
     const scheduler = new TeamSchedulerService(new TeamLockService(), {
       workspaceService: { create: vi.fn(async () => workspace) },
       sessionManager: manager,
@@ -1021,7 +1035,7 @@ describe('SessionManager TeamRun env injection', () => {
   });
 
   it('quarantines a spawned follow-up when its process row cannot be written', async () => {
-    const { task, workspace } = await createWorkspace();
+    const { workspace } = await createWorkspace();
     const previousSession = await prisma.session.create({
       data: {
         workspaceId: workspace.id,
@@ -1042,18 +1056,10 @@ describe('SessionManager TeamRun env injection', () => {
       },
     });
     const pty = createPty();
-    spawnFollowUpMock.mockImplementationOnce(async () => {
-      await prisma.task.update({
-        where: { id: task.id },
-        data: { deletedAt: new Date() },
-      });
-      return spawnResult(32345, pty);
-    });
+    spawnFollowUpMock.mockResolvedValueOnce(spawnResult(32345, pty));
+    failStartedPersistence(manager);
 
-    await expect(manager.startFollowUp(nextSession.id, previousSession.id)).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-      statusCode: 404,
-    });
+    await expect(manager.startFollowUp(nextSession.id, previousSession.id)).rejects.toThrow('Process persistence unavailable');
 
     expect(spawnFollowUpMock).toHaveBeenCalledTimes(1);
     expect(pty.kill).toHaveBeenCalled();
@@ -1067,7 +1073,7 @@ describe('SessionManager TeamRun env injection', () => {
   });
 
   it('quarantines a spawned reply process when its process row cannot be written', async () => {
-    const { task, workspace } = await createWorkspace();
+    const { workspace } = await createWorkspace();
     const session = await prisma.session.create({
       data: {
         workspaceId: workspace.id,
@@ -1078,18 +1084,10 @@ describe('SessionManager TeamRun env injection', () => {
       },
     });
     const pty = createPty();
-    spawnMock.mockImplementationOnce(async () => {
-      await prisma.task.update({
-        where: { id: task.id },
-        data: { deletedAt: new Date() },
-      });
-      return spawnResult(42345, pty);
-    });
+    spawnMock.mockResolvedValueOnce(spawnResult(42345, pty));
+    failStartedPersistence(manager);
 
-    await expect(manager.sendMessage(session.id, 'continue')).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-      statusCode: 404,
-    });
+    await expect(manager.sendMessage(session.id, 'continue')).rejects.toThrow('Process persistence unavailable');
 
     expect(pty.kill).toHaveBeenCalled();
     await expect(prisma.executionProcess.count({ where: { sessionId: session.id } })).resolves.toBe(0);
