@@ -348,6 +348,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
           {activeTab === "review" && (
             <ReviewView
+              projectId={projectId}
               workingDir={workingDir}
               workspaceId={workspaceId}
               branchName={gitProps?.branchName}

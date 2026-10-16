@@ -2,6 +2,22 @@ import type { AppLocale } from '@agent-tower/shared'
 
 export const messages: Record<AppLocale, Record<string, string>> = {
   'zh-CN': {
+    'Search branches': '搜索分支',
+    'No matching branches': '没有匹配的分支',
+    'Refreshing branches': '正在刷新分支',
+    '{count} local branches': '共 {count} 个本地分支',
+    '{shown} of {total} local branches': '{shown} / {total} 个本地分支',
+    'Default base branch': '默认基础分支',
+    'New task and TeamRun main workspaces start from this branch. Existing workspaces keep their base branch.': '新建任务工作区和 TeamRun 主工作区将从此分支创建，已有工作区保留各自的基础分支。',
+    'Could not load branches. Refresh to try again.': '无法加载分支，请刷新重试。',
+    'Default base branch saved': '默认基础分支已保存',
+    'Save default base branch': '保存默认基础分支',
+    'Could not save the default base branch. Refresh and choose an existing local branch.': '默认基础分支保存失败，请刷新并选择已存在的本地分支。',
+    'Base branch for this workspace': '当前工作区的基础分支',
+    'Changing this base branch updates the comparison, update and merge target for this workspace only. Save and review the changes before merging.': '仅修改当前工作区的差异比较、更新及合并目标。保存后请重新审查变更，再确认合并。',
+    'Save base branch and review changes': '保存基础分支并审查变更',
+    'Workspace base branch saved. Review the changes before merging.': '工作区基础分支已保存，请重新审查变更后合并。',
+    'Review the changes and sync the base branch before submitting.': '请先审查变更、同步基础分支更新，再提交。',
     'Workspace base branch': 'Workspace 基础分支',
     'Choose the branch used for changes, updates and merges in an existing workspace.': '为已有 workspace 选择用于差异比较、更新和合并的基础分支。',
     'Could not load workspace branches. Refresh to try again.': '无法加载 workspace 分支，请刷新重试。',

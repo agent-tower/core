@@ -12,6 +12,7 @@ export function useProjectWorkspaceBranches(projectId: string) {
     queryKey: queryKeys.workspaces.projectBranches(projectId),
     queryFn: () => apiClient.get<ProjectWorkspaceBranches>(`/projects/${projectId}/workspace-branches`),
     enabled: !!projectId,
+    staleTime: 0,
   })
 }
 

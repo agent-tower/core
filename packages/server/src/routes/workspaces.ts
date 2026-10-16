@@ -133,7 +133,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
     '/workspaces/:id/base-branch',
     async (request) => {
       if (request.agentTowerAuthKind === 'agent') {
-        throw new ServiceError('Workspace base branch is managed in project settings', 'WORKSPACE_BASE_BRANCH_USER_ONLY', 403);
+        throw new ServiceError('Workspace base branch is managed in the task merge confirmation', 'WORKSPACE_BASE_BRANCH_USER_ONLY', 403);
       }
       const body = z.object({
         baseBranch: z.string().trim().min(1).max(255),

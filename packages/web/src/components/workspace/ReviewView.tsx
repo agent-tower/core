@@ -470,6 +470,7 @@ const CommitTimeline: React.FC<{
 // ============================================================
 
 export interface ReviewViewProps {
+  projectId?: string
   workingDir?: string
   workspaceId?: string
   branchName?: string
@@ -482,6 +483,7 @@ export interface ReviewViewProps {
 }
 
 export const ReviewView: React.FC<ReviewViewProps> = ({
+  projectId,
   workingDir,
   workspaceId,
   branchName,
@@ -628,13 +630,14 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
     )
   }
 
-  const showGitBar = canRunGitOperations && workspaceId && branchName && targetBranch
+  const showGitBar = canRunGitOperations && projectId && workspaceId && branchName && targetBranch
   const isLoadingMain = viewMode.kind === 'commit' ? commitFilesLoading : changesLoading
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-background">
       {showGitBar && onConflict && onResolveConflicts && (
         <GitStatusBar
+          projectId={projectId!}
           workspaceId={workspaceId}
           branchName={branchName}
           targetBranch={targetBranch}

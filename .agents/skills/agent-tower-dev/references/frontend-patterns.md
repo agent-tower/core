@@ -49,7 +49,7 @@ App 管理单例 `lib/socket/manager.ts` 的连接生命周期；hook 可调用 
 
 ## 组件与验证
 
-沿用 `@/` alias、邻近无分号格式、`components/ui`、lucide-react 和领域组件。用户文案使用 `useI18n().t()`/`translate` 并维护 `lib/i18n/messages.ts`。桌面和移动端 detail 目前分别实现；共享交互优先复用现有组件（如 `EditableTaskTitle`），并检查两端调用。终端、Monaco、日志视图复用 virtualize/auto-fit/scroll helper，保持稳定容器尺寸。
+沿用 `@/` alias、邻近无分号格式、lucide-react 和领域组件。新增业务控件优先从 `@/design-system` 统一出口组合，遵循 `design-system/README.md` 的令牌与浮层规则；现有 `components/ui` 仍有调用，不能将原生控件或旧封装误认为设计系统组件。用户文案使用 `useI18n().t()`/`translate` 并维护 `lib/i18n/messages.ts`。桌面和移动端 detail 目前分别实现；共享交互优先复用现有组件（如 `EditableTaskTitle`），并检查两端调用。终端、Monaco、日志视图复用 virtualize/auto-fit/scroll helper，保持稳定容器尺寸。
 
 会话日志（`components/agent/LogStream.tsx`）使用**单层扁平虚拟化**：turn、`已处理` 摘要、明细行被摊平成一维 row 列表，只挂载视口 + overscan 行，折叠的历史明细**根本不挂载**（不是隐藏）。因此：
 

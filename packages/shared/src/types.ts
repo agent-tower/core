@@ -493,7 +493,7 @@ export interface Project {
   reason?: ProjectGitCapabilityReason
   /** Last time Git capability was verified with the Git CLI. */
   gitCapabilityCheckedAt?: string | null
-  /** 主分支名称，默认 "main" */
+  /** 新建根 worktree 的默认基础分支；已有 workspace 保留自己的 baseBranch。 */
   mainBranch: string
   /** 逗号分隔的 glob/路径列表，worktree 创建后自动复制 */
   copyFiles?: string | null

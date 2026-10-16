@@ -966,6 +966,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
 
   const workspaceChangeSummaryBar = shouldLoadTaskDetailGitData && selectedWorkspaceOperationId ? (
     <WorkspaceChangeSummaryBar
+      projectId={task?.projectId ?? ''}
       workspaceId={selectedWorkspaceOperationId}
       branchName={selectedWorkspaceBranch}
       targetBranch={selectedWorkspaceMergeTargetBranch}

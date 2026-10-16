@@ -11,6 +11,7 @@ import {
   ensureProjectIsMutable,
   getStoredProjectGitCapability,
   hasGitMetadata,
+  ensureProjectSupportsWorktrees,
 } from './project-guards.js';
 import {
   TaskStatus,
@@ -415,9 +416,34 @@ export class ProjectService {
       }
     }
 
-    const updated = await prisma.project.update({
-      where: { id },
-      data: input,
+    const mainBranch = input.mainBranch?.trim();
+    if (mainBranch !== undefined) {
+      await ensureProjectSupportsWorktrees(project, 'change the default base branch');
+      try {
+        if (!mainBranch) throw new Error('Empty branch');
+        await execGit(project.repoPath, ['check-ref-format', `refs/heads/${mainBranch}`]);
+        await execGit(project.repoPath, ['show-ref', '--verify', '--quiet', `refs/heads/${mainBranch}`]);
+      } catch {
+        throw new ValidationError('Default base branch must be an existing local branch');
+      }
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      if (mainBranch !== undefined) {
+        const current = await tx.project.findUniqueOrThrow({ where: { id } });
+        // Legacy workspaces fall back to the project default. Pin that effective
+        // target before changing the default so existing work stays on its base.
+        if (mainBranch !== current.mainBranch) {
+          await tx.workspace.updateMany({
+            where: { task: { projectId: id }, OR: [{ baseBranch: null }, { baseBranch: '' }] },
+            data: { baseBranch: current.mainBranch },
+          });
+        }
+      }
+      return tx.project.update({
+        where: { id },
+        data: { ...input, ...(mainBranch !== undefined ? { mainBranch } : {}) },
+      });
     });
     return this.withGitMetadata(updated);
   }

@@ -137,6 +137,10 @@ export function useUpdateProject() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.projects.detail(variables.id),
       })
+      if (variables.mainBranch !== undefined) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      }
     },
   })
 }

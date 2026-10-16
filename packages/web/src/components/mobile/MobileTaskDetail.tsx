@@ -573,6 +573,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
 
   const workspaceChangeSummaryBar = shouldLoadGitData && selectedWorkspaceOperationId ? (
     <WorkspaceChangeSummaryBar
+      projectId={task?.projectId ?? ''}
       workspaceId={selectedWorkspaceOperationId}
       branchName={selectedWorkspaceBranch}
       targetBranch={selectedWorkspaceMergeTargetBranch}
@@ -1153,6 +1154,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
           {canRunGit && selectedWorkspaceOperationId && (
             <div className="shrink-0">
               <GitStatusBar
+                projectId={task.projectId}
                 workspaceId={selectedWorkspaceOperationId}
                 branchName={selectedWorkspaceBranch}
                 targetBranch={selectedWorkspaceMergeTargetBranch}

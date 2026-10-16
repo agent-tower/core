@@ -14,6 +14,7 @@ import { SubmitChangesDialog } from './SubmitChangesDialog'
 import { getConflictDetails, type ConflictDetails } from './GitOperationsDialog'
 
 interface WorkspaceChangeSummaryBarProps {
+  projectId: string
   workspaceId: string
   branchName: string
   targetBranch: string
@@ -55,6 +56,7 @@ function handleMutationError(
 }
 
 export function WorkspaceChangeSummaryBar({
+  projectId,
   workspaceId,
   branchName,
   targetBranch,
@@ -106,6 +108,7 @@ export function WorkspaceChangeSummaryBar({
     && !isOperationInProgress
     && !isDirty,
   )
+  const canOpenMerge = Boolean(canRunGitOperations && workspaceId && gitStatus && !hasConflicts && !isOperationInProgress && !isDirty)
 
   useEffect(() => {
     if (isSubmitDialogOpen) {
@@ -140,7 +143,7 @@ export function WorkspaceChangeSummaryBar({
   }
 
   const handleOpenSubmitDialog = () => {
-    if (!canMerge) return
+    if (!canOpenMerge) return
     setError(null)
     setIsSubmitDialogOpen(true)
   }
@@ -224,7 +227,7 @@ export function WorkspaceChangeSummaryBar({
             <button
               type="button"
               onClick={handleOpenSubmitDialog}
-              disabled={!canMerge || mergeWorkspace.isPending || isActionLoading}
+              disabled={!canOpenMerge || mergeWorkspace.isPending || isActionLoading}
               className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
               title={canMerge ? t('合并到 {target}', { target: targetBranch }) : t('提交变更')}
             >
@@ -241,8 +244,12 @@ export function WorkspaceChangeSummaryBar({
       </div>
 
       <SubmitChangesDialog
+        projectId={projectId}
+        workspaceId={workspaceId}
+        canMerge={canMerge}
         isOpen={isSubmitDialogOpen}
         onClose={handleCloseSubmitDialog}
+        onBaseBranchSaved={onOpenChanges}
         branchName={branchName}
         targetBranch={targetBranch}
         commitMessage={commitMessage}

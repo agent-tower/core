@@ -21,11 +21,13 @@ const schemaPath = path.join(serverRoot, 'prisma/schema.prisma');
 
 let prisma: PrismaClient;
 let workspaceRoutes: typeof import('../workspaces.js').workspaceRoutes;
+let projectRoutes: typeof import('../projects.js').projectRoutes;
 let WorkspaceService: typeof import('../../services/workspace.service.js').WorkspaceService;
 
 async function buildTestApp() {
   const app = Fastify();
   await app.register(workspaceRoutes, { prefix: '/api' });
+  await app.register(projectRoutes, { prefix: '/api/projects' });
   return app;
 }
 
@@ -77,6 +79,7 @@ describe('workspace routes', () => {
     const workspaceServiceModule = await import('../../services/workspace.service.js');
     const utilsModule = await import('../../utils/index.js');
     workspaceRoutes = routeModule.workspaceRoutes;
+    projectRoutes = (await import('../projects.js')).projectRoutes;
     WorkspaceService = workspaceServiceModule.WorkspaceService;
     prisma = utilsModule.prisma;
   });
@@ -91,6 +94,85 @@ describe('workspace routes', () => {
   afterAll(async () => {
     await prisma?.$disconnect();
     fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('changes the project default for new worktrees and preserves existing and legacy workspace targets', async () => {
+    const { project, task, workspace, git, worktreeGit, mainHead } = await createBranchSettingsFixture();
+    const legacyWorkspace = await prisma.workspace.create({ data: {
+      taskId: task.id, branchName: 'legacy-task', worktreePath: '', baseBranch: null, status: 'HIBERNATED',
+    } });
+    const app = await buildTestApp();
+    try {
+      const previousHead = worktreeGit('rev-parse', 'HEAD');
+      const response = await app.inject({ method: 'PUT', url: `/api/projects/${project.id}`, payload: { mainBranch: 'develop' } });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().mainBranch).toBe('develop');
+      expect((await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).baseBranch).toBe('main');
+      expect((await prisma.workspace.findUniqueOrThrow({ where: { id: legacyWorkspace.id } })).baseBranch).toBe('main');
+      expect(worktreeGit('rev-parse', 'HEAD')).toBe(previousHead);
+      expect(git('branch', '--show-current')).toBe('main');
+
+      const newTask = await prisma.task.create({ data: { projectId: project.id, title: 'Use the new default' } });
+      const created = await app.inject({ method: 'POST', url: `/api/tasks/${newTask.id}/workspaces`, payload: {} });
+      expect(created.statusCode, created.body).toBe(201);
+      expect(created.json().baseBranch).toBe('develop');
+      expect(git('rev-parse', created.json().branchName)).toBe(git('rev-parse', 'develop'));
+      expect(git('rev-parse', created.json().branchName)).not.toBe(mainHead);
+
+      // Member workspaces keep their explicit parent branch, independently of the project default.
+      const child = await new WorkspaceService().create(task.id, {
+        parentWorkspaceId: workspace.id, startPoint: workspace.branchName, reuseInactive: false,
+      });
+      expect(child.baseBranch).toBe(workspace.branchName);
+      expect(git('rev-parse', child.branchName)).toBe(previousHead);
+      const options = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/workspace-branches` });
+      expect(options.json().mainBranch).toBe('develop');
+      expect(options.json().workspaces.some((item: { id: string }) => item.id === child.id)).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns every local branch and sees newly created branches on the next request', async () => {
+    const { project, git, mainHead } = await createBranchSettingsFixture();
+    const branches = Array.from({ length: 1200 }, (_, index) => `feature/branch-${String(index).padStart(4, '0')}`);
+    execFileSync('git', ['update-ref', '--stdin'], {
+      cwd: project.repoPath, input: branches.map((branch) => `create refs/heads/${branch} ${mainHead}`).join('\n') + '\n', stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const app = await buildTestApp();
+    try {
+      const response = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/workspace-branches` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().branches).toEqual([...branches, 'develop', 'feature/settings', 'main'].sort());
+      git('branch', 'release/newest');
+      const refreshed = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/workspace-branches` });
+      expect(refreshed.json().branches).toHaveLength(branches.length + 4);
+      expect(refreshed.json().branches).toContain('release/newest');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects missing, remote-only and tag defaults without changing the saved default', async () => {
+    const { project, task, git, mainHead } = await createBranchSettingsFixture();
+    git('update-ref', 'refs/remotes/origin/remote-only', mainHead);
+    git('tag', 'tag-only');
+    const app = await buildTestApp();
+    try {
+      for (const mainBranch of ['', 'missing', 'origin/remote-only', 'tag-only', 'main~1']) {
+        const response = await app.inject({ method: 'PUT', url: `/api/projects/${project.id}`, payload: { mainBranch } });
+        expect(response.statusCode, response.body).toBe(400);
+      }
+      expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).mainBranch).toBe('main');
+      const count = await prisma.workspace.count();
+      await prisma.project.update({ where: { id: project.id }, data: { mainBranch: 'missing' } });
+      const created = await app.inject({ method: 'POST', url: `/api/tasks/${task.id}/workspaces`, payload: {} });
+      expect(created.statusCode).toBe(400);
+      expect(created.json().code).toBe('INVALID_BASE_BRANCH');
+      expect(await prisma.workspace.count()).toBe(count);
+    } finally {
+      await app.close();
+    }
   });
 
   it('changes the saved base branch without moving HEAD, then rebases and merges into the chosen branch', async () => {

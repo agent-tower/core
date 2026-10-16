@@ -14,6 +14,7 @@ import { SubmitChangesDialog } from './SubmitChangesDialog'
 import { getConflictDetails, type ConflictDetails } from './GitOperationsDialog'
 
 export interface GitStatusBarProps {
+  projectId: string
   workspaceId: string
   branchName: string
   targetBranch: string
@@ -39,6 +40,7 @@ function handleMutationError(
 }
 
 export function GitStatusBar({
+  projectId,
   workspaceId,
   branchName,
   targetBranch,
@@ -211,7 +213,7 @@ export function GitStatusBar({
                   <span className="text-xs text-muted-foreground">
                     {t('{count} 个文件变更，可以安全提交', { count: committedFileCount ?? gitStatus.ahead })}
                   </span>
-                  {gitStatus.behind === 0 && !isDirty ? (
+                  {!isDirty ? (
                     <button
                       onClick={handleOpenSubmitDialog}
                       disabled={mergeWorkspace.isPending}
@@ -239,6 +241,9 @@ export function GitStatusBar({
 
       {/* Submit confirmation dialog */}
       <SubmitChangesDialog
+        projectId={projectId}
+        workspaceId={workspaceId}
+        canMerge={canUpdate && gitStatus.ahead > 0 && gitStatus.behind === 0}
         isOpen={isSubmitDialogOpen}
         onClose={handleCloseSubmitDialog}
         branchName={branchName}

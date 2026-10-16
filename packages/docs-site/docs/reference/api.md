@@ -33,6 +33,8 @@ description: 当前代码库中公开的主要 REST 端点。
 
 `GET /api/projects` 的每个项目包含 `lastActivityAt`：取该项目最近一条未删除任务的创建时间；没有任务时使用项目创建时间。任务后续更新不会改变该值，客户端可据此按项目活跃度排序，无需加载任务列表。
 
+`PUT /api/projects/:id` 的 `mainBranch` 设置新建根 worktree 的默认基础分支，必须是已有本地分支。已有 workspace 保留自己的基础分支；旧记录的 `baseBranch` 为空时，服务端在同一事务内将其固定为修改前的默认值。新建根工作区从配置的分支创建并保存 `baseBranch`；显式指定起点的 TeamRun 成员工作区仍从父分支创建。
+
 ## Tasks
 
 | Method | Path | 说明 |

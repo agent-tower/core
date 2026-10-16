@@ -1377,24 +1377,24 @@ export class WorkspaceService {
       // 生成分支名：用户指定 or 自动生成 at/{shortId}
       const branch = branchFromOptions(workspace.id, options);
 
-      // 空仓库（无任何 commit）无法创建 worktree，提前报错
-      const startPoint = options.startPoint || null;
-      let baseBranch: string | null = startPoint;
-      if (!startPoint) {
+      // Root workspaces snapshot the project default; member workspaces supply
+      // their parent branch explicitly. Never derive the default from HEAD.
+      const baseBranch = options.startPoint || task.project.mainBranch;
+      if (!options.startPoint) {
         try {
-          const currentBranch = (
-            await execGit(task.project.repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])
-          ).trim();
-          baseBranch = currentBranch && currentBranch !== 'HEAD' ? currentBranch : null;
+          await execGit(task.project.repoPath, ['check-ref-format', `refs/heads/${baseBranch}`]);
+          await execGit(task.project.repoPath, ['show-ref', '--verify', '--quiet', `refs/heads/${baseBranch}`]);
         } catch {
-          throw new Error(
-            '仓库尚无任何提交记录，无法创建 Workspace。请重新编辑项目以触发自动初始化，或手动执行 git commit。'
+          throw new ServiceError(
+            'The default base branch is unavailable. Choose an existing local branch in project settings.',
+            'INVALID_BASE_BRANCH',
+            400,
           );
         }
       }
 
       // WorktreeManager.create 内部已做分支名合法性校验和重复检查
-      const worktreePath = await worktreeManager.create(branch, startPoint ?? undefined);
+      const worktreePath = await worktreeManager.create(branch, options.startPoint || `refs/heads/${baseBranch}`);
 
       const updateResult = await prisma.workspace.updateMany({
         where: { id: workspace.id, task: { deletedAt: null } },

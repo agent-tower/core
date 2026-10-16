@@ -18,7 +18,7 @@ import {
   SettingsSaveBar,
 } from '@/components/settings/SettingsSection'
 import { SettingsMasterDetail } from '@/components/settings/SettingsMasterDetail'
-import { WorkspaceBranchSettings } from '@/components/project/WorkspaceBranchSettings'
+import { ProjectBaseBranchSettings } from '@/components/project/ProjectBaseBranchSettings'
 
 interface FormState {
   copyFiles: string[]
@@ -289,7 +289,7 @@ export function ProjectSettingsPage() {
 
                   {/* Config sections */}
                   <div className="divide-y divide-border/60">
-                    {selectedSupportsGit && <WorkspaceBranchSettings key={project.id} projectId={project.id} />}
+                    {selectedSupportsGit && <ProjectBaseBranchSettings key={project.id} projectId={project.id} />}
                     {/* Copy Files */}
                     <div className="py-5 first:pt-0">
                       <div className="mb-3">
