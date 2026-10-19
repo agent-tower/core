@@ -7,6 +7,7 @@
 - `App.tsx` 先挂载 Query provider 和 `components/access/AccessGate.tsx`，访问认证通过后才挂载 Socket、全局同步和路由。新入口不要绕过此顺序。
 - `lib/api-client.ts` 统一处理 API base URL、same-origin credentials、204 和携带后端 details 的 `ApiError`。`lib/api-base-url.ts` 在开发环境把 loopback API/Socket 配置转回同源代理；`packages/web/vite.config.ts` 代理 `/api`、`/socket.io`、`/view` 并重写 HTTP/WS Origin。开发端口来自 shared `getDevPort(repoRoot)`，不能假设后端恒为 12580。
 - 活跃路由表在 `routes/app-routes.tsx`：首页是 `ProjectKanbanPage`，另有 conversations 和演示页。`routes/index.tsx` 只负责 `createBrowserRouter(appRoutes)` 并导出 `AppRouter`；路由表单独成模块，测试才能用 `createMemoryRouter(appRoutes, ...)` 挂载生产层级。Settings 是 `SettingsDialog` 加 `ui-store`，旧 `/settings/:tab` 由 `routes/SettingsRedirect.tsx` 打开 dialog 后跳回首页；新增 tab 同步类型、dialog 与 redirect mapping。不要仅因存在 `HomePage`/`SettingsLayout` 文件就将其视为当前入口。
+- `ProjectKanbanPage` 在选中任务后才动态导入当前布局的 `TaskDetail` 或 `MobileTaskDetail`；详情区自己的 Suspense 保留桌面任务列表。首页的 `TaskList`、`CreateTaskInput` 所用 `AgentLogo` 从具体文件导入，避免聚合出口把 Markdown、终端和 workspace 依赖带回首屏。验证时同时检查生产构建的实际加载资源；仅不挂载组件不能证明其模块未加载。
 - 渲染兜底按层级分工，改动时不要破坏依赖方向：路由 `errorElement` 用 `components/errors/RouteErrorPage.tsx`（pathless 分组保留 `RootLayout` 外壳，根路由兜 `RootLayout` 自身）；`AppRootBoundary` 兜路由外渲染错误（回退 UI 用 `useI18n`，必须在 `I18nProvider` 之内）；`AppShellBoundary` 高于全部 provider，回退 UI 只能用 `translate()` 等模块级能力，不能依赖 i18n/query/auth context。`ErrorBoundary` 只覆盖渲染阶段错误，事件处理器、异步回调与 observer 错误不会进入任何兜底。
 - 桌面导航沿用 `lib/desktop-titlebar.tsx` 的 provider、`useDesktopNavigate` 和 search 保留逻辑；macOS traffic lights、Windows window controls overlay 与普通浏览器的 header 留白不同。
 
@@ -51,6 +52,8 @@ App 管理单例 `lib/socket/manager.ts` 的连接生命周期；hook 可调用 
 
 沿用 `@/` alias、邻近无分号格式、lucide-react 和领域组件。新增业务控件优先从 `@/design-system` 统一出口组合，遵循 `design-system/README.md` 的令牌与浮层规则；现有 `components/ui` 仍有调用，不能将原生控件或旧封装误认为设计系统组件。用户文案使用 `useI18n().t()`/`translate` 并维护 `lib/i18n/messages.ts`。桌面和移动端 detail 目前分别实现；共享交互优先复用现有组件（如 `EditableTaskTitle`），并检查两端调用。终端、Monaco、日志视图复用 virtualize/auto-fit/scroll helper，保持稳定容器尺寸。
 
+任务行渐变由 `components/task/TaskGradientText.tsx` 保留 DOM 文字并绘制可见 Canvas；`task-text-visibility.ts` 共用 IntersectionObserver，离屏或页面隐藏时卸载画布并清理动画。不要重新加入整列表的 `background-clip:text` 渐变；绘制失败时保留普通文字，减少动态效果、选中和阅读状态停止扫光。`TaskList` 的移动 ghost 通过 HTML 快照复制，必须清除画布就绪标记并回退到 DOM 文字，不能依赖 HTML 复制 Canvas 像素。浏览器验证 fixture 为 `components/task/__tests__/task-gradient.fixture.html`。
+
 会话日志（`components/agent/LogStream.tsx`）使用**单层扁平虚拟化**：turn、`已处理` 摘要、明细行被摊平成一维 row 列表，只挂载视口 + overscan 行，折叠的历史明细**根本不挂载**（不是隐藏）。因此：
 
 - 调用方（`AgentSessionPanel`、`TaskDetail`、`MobileTaskDetail`）必须把 `useStickToBottom().scrollRef` 作为 `scrollElementRef` 传入；缺失时回退为向上查找可滚动祖先。
@@ -61,6 +64,8 @@ DOM 测试按邻近文件使用 happy-dom；测试配置和构建顺序见 [SKIL
 
 ```bash
 pnpm exec vitest run packages/web/src/hooks/__tests__/use-tasks-cache.test.ts
+pnpm exec vitest run packages/web/src/pages/__tests__/ProjectKanbanPage.lazy-detail.test.tsx
+pnpm exec vitest run packages/web/src/components/task/__tests__/task-text-visibility.test.ts packages/web/src/components/task/__tests__/task-text-fit.test.ts
 pnpm exec vitest run packages/web/src/hooks/__tests__/use-runtime-state.test.tsx
 pnpm exec vitest run packages/web/src/components/agent/__tests__/LogStream.test.tsx
 pnpm exec vitest run packages/web/src/lib/socket/__tests__/useNormalizedLogs.reconnect.test.tsx

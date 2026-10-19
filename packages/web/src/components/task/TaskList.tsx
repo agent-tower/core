@@ -153,6 +153,10 @@ export function TaskList({
     const ghost = document.createElement('div')
     ghost.setAttribute('aria-hidden', 'true')
     ghost.innerHTML = html
+    // HTML snapshots do not copy canvas pixels. Show the retained DOM text
+    // while a row flies between groups instead of cloning an empty overlay.
+    ghost.querySelectorAll('[data-gradient-ready]').forEach(element => element.removeAttribute('data-gradient-ready'))
+    ghost.querySelectorAll('.task-gradient-text__canvas').forEach(element => element.remove())
     const inner = ghost.firstElementChild as HTMLElement | null
     if (inner) {
       inner.style.cssText = ''

@@ -7,6 +7,8 @@ import { sidebarRowClass } from './sidebar-styles'
 import { TaskPriority } from '@agent-tower/shared'
 import { TaskPriorityIndicator } from './TaskPrioritySelect'
 import { TASK_PRIORITY_OPTIONS } from './task-priority'
+import { formatTaskUpdatedAt } from './task-time'
+import { TaskGradientText } from './TaskGradientText'
 import { useI18n } from '@/lib/i18n'
 import { cn, truncateEnd } from '@/lib/utils'
 import type { UITask, UIProject } from './types'
@@ -25,24 +27,6 @@ function useTick(interval = TICK_INTERVAL) {
     const id = setInterval(() => setTick(n => n + 1), interval)
     return () => clearInterval(id)
   }, [interval])
-}
-
-const MINUTE = 60
-const HOUR = 60 * MINUTE
-const DAY = 24 * HOUR
-
-/** 侧栏紧凑相对时间：刚刚 / 3 分钟 / 2 小时 / 5 天；超过一周显示数字日期（9/23），跨年只到月（2025/9） */
-function formatUpdatedAt(isoString: string, t: (source: string, values?: Record<string, number>) => string, locale: string): string {
-  const time = new Date(isoString)
-  const diff = Math.max(0, Math.floor((Date.now() - time.getTime()) / 1000))
-  if (diff < MINUTE) return t('now')
-  if (diff < HOUR) return t('{count}m', { count: Math.floor(diff / MINUTE) })
-  if (diff < DAY) return t('{count}h', { count: Math.floor(diff / HOUR) })
-  if (diff < 7 * DAY) return t('{count}d', { count: Math.floor(diff / DAY) })
-  const sameYear = time.getFullYear() === new Date().getFullYear()
-  return time.toLocaleDateString(locale, sameYear
-    ? { month: 'numeric', day: 'numeric' }
-    : { year: 'numeric', month: 'numeric' })
 }
 
 /** 项目标签只作提示：超过 9 个字宽（中文计 2）时截短并以「..」收尾，优先在连接符处断开（agent-tower → agent..） */
@@ -194,7 +178,7 @@ function DraggableTaskCard({
 
   const projectLabel = project ? project.name : undefined
   const projectTag = showProject ? project : undefined
-  const updatedLabel = task.updatedAt ? formatUpdatedAt(task.updatedAt, t, locale) : null
+  const updatedLabel = task.updatedAt ? formatTaskUpdatedAt(task.updatedAt, t, locale) : null
   const { titleClass } = STATUS_STYLES[status]
 
   return (
@@ -216,7 +200,11 @@ function DraggableTaskCard({
         {...(dragDisabled ? {} : attributes)}
       >
         {/* 行首不放状态图标，宽度全部留给标题；状态由分组标题表达，标题样式只区分「多需要你介入」 */}
-        <span className={cn('min-w-0 flex-1 truncate', titleClass)}>{task.title}</span>
+        {status === UITaskStatus.Running ? (
+          <TaskGradientText text={task.title} variant="running" animate={!isSelected} className={cn('min-w-0 flex-1 truncate', titleClass)} />
+        ) : (
+          <span className={cn('min-w-0 flex-1 truncate', titleClass)}>{task.title}</span>
+        )}
 
         {task.priority !== undefined && task.priority !== TaskPriority.NORMAL && (
           <TaskPriorityIndicator priority={task.priority} />
@@ -232,11 +220,9 @@ function DraggableTaskCard({
             <span className="flex items-center gap-1">
               {projectTag && (
                 // 项目名只作提示：JS 截短让标签贴合文字（完整名称见悬停提示）；侧栏过窄时隐藏，宽度优先留给标题。
-                // 文字从项目色渐变到灰色，不占额外宽度也能按颜色区分项目（currentColor 取自项目色类名）
+                // 仅为屏幕内的文字绘制渐变，避免长列表创建大量文字裁剪蒙版。
                 <span className="shrink-0 whitespace-nowrap rounded bg-foreground/[0.05] px-1 py-0.5 text-[10px] font-medium leading-none @max-[22rem]:hidden">
-                  <span className={cn(projectTag.color, 'bg-[linear-gradient(90deg,currentColor_0.6em,var(--muted-foreground)_2.6em)] bg-clip-text [-webkit-text-fill-color:transparent]')}>
-                    {shortenProjectName(projectTag.name)}
-                  </span>
+                  <TaskGradientText text={shortenProjectName(projectTag.name)} variant="project" className={projectTag.color} />
                 </span>
               )}
               {updatedLabel && (

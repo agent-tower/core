@@ -532,43 +532,37 @@
     transform: translateX(0.375rem);
   }
 
-  /* 进行中的任务标题：一道很淡的扫光表达「Agent 在干活」，与对话区「思考中」是同一种视觉语言。
-     渐变铺 250% 宽、默认位置只露出实色段，所以去掉动画就是普通文字：
-     悬停 / 键盘聚焦（在读标题）、选中（右侧已在显示实时日志）、减少动态效果时都停下。 */
-  .task-title-running {
-    background-image: linear-gradient(
-      90deg,
-      currentColor 40%,
-      color-mix(in oklab, currentColor 40%, transparent) 50%,
-      currentColor 60%
-    );
-    background-size: 250% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    animation: task-title-shimmer 4.2s linear infinite;
+  /* TaskGradientText 保留 DOM 文字用于布局、截断与无障碍。
+     仅在可见且绘制成功时展示小尺寸画布，不使用 background-clip:text。 */
+  .task-gradient-text {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    vertical-align: bottom;
   }
 
-  @media (hover: hover) {
-    .task-row:hover .task-title-running {
-      animation: none;
-    }
+  .task-gradient-text__text {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
-  .task-row:focus-visible .task-title-running,
-  .task-row[aria-current] .task-title-running {
-    animation: none;
+  .task-gradient-text__canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    visibility: hidden;
   }
 
-  /* 前 40% 从左扫到右，其余时间停在实色段 */
-  @keyframes task-title-shimmer {
-    0% {
-      background-position: 100% 0;
-    }
-    40%,
-    100% {
-      background-position: 0 0;
-    }
+  .task-gradient-text[data-gradient-ready] > .task-gradient-text__text {
+    color: transparent;
+  }
+
+  .task-gradient-text[data-gradient-ready] > .task-gradient-text__canvas {
+    visibility: visible;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -578,10 +572,6 @@
 
     .task-row-meta {
       transition: none;
-    }
-
-    .task-title-running {
-      animation: none;
     }
   }
 }

@@ -1,8 +1,7 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { lazy, Suspense, useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { TaskPriority, WorkspaceKind, type Task, type TaskBoardItem } from '@agent-tower/shared'
-import { TaskList } from '@/components/task'
-import { TaskDetail } from '@/components/task/TaskDetail'
+import { TaskList } from '@/components/task/TaskList'
 import type { TaskStartProgressState } from '@/components/task/TaskStartProgress'
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
@@ -16,7 +15,6 @@ import { queryKeys } from '@/hooks/query-keys'
 import { Settings, ChevronDown, Check, Layers as LayersIcon, Plus as PlusIcon } from 'lucide-react'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useUIStore } from '@/stores/ui-store'
-import { MobileTaskDetail } from '@/components/mobile'
 import { TunnelButton } from '@/components/TunnelButton'
 import { useProviders } from '@/hooks/use-providers'
 import { useI18n } from '@/lib/i18n'
@@ -29,6 +27,20 @@ import { getProviderStartIssue } from '@/components/provider/provider-draft'
 import { cn } from '@/lib/utils'
 import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 import { sortProjectsByActivity } from '@/lib/project-activity'
+
+// Keep detail renderers (Markdown, terminals and workspace tools) out of the
+// initial board load, especially on memory-constrained mobile browsers.
+const TaskDetail = lazy(() => import('@/components/task/TaskDetail').then(m => ({ default: m.TaskDetail })))
+const MobileTaskDetail = lazy(() => import('@/components/mobile/MobileTaskDetail').then(m => ({ default: m.MobileTaskDetail })))
+
+function TaskDetailLoading() {
+  const { t } = useI18n()
+  return (
+    <div role="status" className="flex flex-1 items-center justify-center bg-background p-4 text-sm text-muted-foreground">
+      {t('Loading...')}
+    </div>
+  )
+}
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
@@ -668,15 +680,17 @@ export function ProjectKanbanPage() {
     if (effectiveSelectedTaskId && taskDetailData) {
       return (
         <>
-          <MobileTaskDetail
-            task={taskDetailData}
-            onBack={() => setSelectedTaskId(null)}
-            onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
-            onTaskPriorityChange={taskDetailData.projectArchivedAt ? undefined : handleTaskPriorityChange}
-            isDeleting={deleteTask.isPending}
-            autoStartState={backgroundStarts[taskDetailData.id] ?? null}
-            onAutoStartRecovered={handleAutoStartRecovered}
-          />
+          <Suspense fallback={<div className="flex h-dvh"><TaskDetailLoading /></div>}>
+            <MobileTaskDetail
+              task={taskDetailData}
+              onBack={() => setSelectedTaskId(null)}
+              onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
+              onTaskPriorityChange={taskDetailData.projectArchivedAt ? undefined : handleTaskPriorityChange}
+              isDeleting={deleteTask.isPending}
+              autoStartState={backgroundStarts[taskDetailData.id] ?? null}
+              onAutoStartRecovered={handleAutoStartRecovered}
+            />
+          </Suspense>
           {/* Modals 在移动端也需要 */}
           <CreateProjectModal
             isOpen={isCreateProjectOpen}
@@ -805,15 +819,17 @@ export function ProjectKanbanPage() {
         {/* 右侧: 内容岛屿（圆角面板，四周边框一致） */}
         <div className="flex-1 flex min-w-0 mb-2 mr-2 rounded-xl border border-border/50 bg-background overflow-hidden">
           {effectiveSelectedTaskId && taskDetailData ? (
-            <TaskDetail
-              task={taskDetailData}
-              onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
-              isDeleting={deleteTask.isPending}
-              onTaskStatusChange={taskDetailData.projectArchivedAt ? undefined : handleTaskStatusChange}
-              onTaskPriorityChange={taskDetailData.projectArchivedAt ? undefined : handleTaskPriorityChange}
-              autoStartState={backgroundStarts[taskDetailData.id] ?? null}
-              onAutoStartRecovered={handleAutoStartRecovered}
-            />
+            <Suspense fallback={<TaskDetailLoading />}>
+              <TaskDetail
+                task={taskDetailData}
+                onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
+                isDeleting={deleteTask.isPending}
+                onTaskStatusChange={taskDetailData.projectArchivedAt ? undefined : handleTaskStatusChange}
+                onTaskPriorityChange={taskDetailData.projectArchivedAt ? undefined : handleTaskPriorityChange}
+                autoStartState={backgroundStarts[taskDetailData.id] ?? null}
+                onAutoStartRecovered={handleAutoStartRecovered}
+              />
+            </Suspense>
           ) : effectiveSelectedTaskId && !taskDetailData ? (
             <div className="flex-1 flex items-center justify-center bg-background min-w-0">
               <span className="text-sm text-muted-foreground/70">{t('Loading...')}</span>
