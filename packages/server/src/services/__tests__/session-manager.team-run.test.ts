@@ -414,7 +414,9 @@ describe('SessionManager TeamRun env injection', () => {
       },
     });
 
-    await manager.stop(session.id);
+    await expect(manager.stop(session.id)).rejects.toMatchObject({
+      code: 'RUNTIME_CLEANUP_PENDING', statusCode: 409,
+    });
 
     await expect(prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } })).resolves.toMatchObject({
       status: 'RUNNING',

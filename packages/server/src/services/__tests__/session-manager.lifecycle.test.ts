@@ -1965,6 +1965,78 @@ describe('SessionManager session status vs real process state', () => {
     }
   }, 15_000);
 
+  it('recovers a rolled-back CLI started transaction and persists tree cleanup before stop succeeds', async () => {
+    const { session } = await createSessionFixture();
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+    let rejectStartedWrite = true;
+    // Fail after ExecutionProcess.create inside the real SQLite transaction,
+    // matching the timeout that rolled back the owner's row in production.
+    prisma.$use(async (params, next) => {
+      if (rejectStartedWrite && params.model === 'Session' && params.action === 'updateMany'
+        && params.args.where?.id === session.id
+        && params.args.data?.runtimeLaunchState === 'PROCESS_RECORDED') {
+        throw new Error('P2028: started transaction expired');
+      }
+      return next(params);
+    });
+    const manager = new SessionManager(new EventBus());
+    try {
+      await expect(manager.start(session.id)).rejects.toThrow('P2028: started transaction expired');
+      expect(pty.killed).toBe(true);
+      expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(0);
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+        status: 'RUNNING', runtimeLaunchState: 'QUARANTINED', runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 0, runtimeLaunchProcessCount: 0,
+      });
+      await expect(manager.stop(session.id)).rejects.toMatchObject({ code: 'runtime_cleanup_pending' });
+
+      rejectStartedWrite = false;
+      await manager.retryFailedRuntimeDisposals();
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(true);
+      await expect(prisma.executionProcess.findMany({ where: { sessionId: session.id } })).resolves.toMatchObject([
+        { launchClaimNumber: 1, pid: pty.pid, exitCode: 0, cleanupState: 'CONFIRMED' },
+      ]);
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+        runtimeLaunchState: 'PROCESS_RECORDED', runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 1, runtimeLaunchProcessCount: 1,
+      });
+      await manager.stop(session.id);
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } }))
+        .resolves.toMatchObject({ status: 'CANCELLED' });
+      await manager.retryFailedRuntimeDisposals();
+      expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(1);
+    } finally {
+      rejectStartedWrite = false;
+      await manager.retryFailedRuntimeDisposals();
+      await manager.destroyAll();
+    }
+  });
+
+  it.each([SessionStatus.RUNNING, SessionStatus.COMPLETED])(
+    'does not report stop success for an unresolved %s launch after a server restart', async (status) => {
+      const { session } = await createSessionFixture();
+      await prisma.session.update({ where: { id: session.id }, data: {
+        status, runtimeLaunchState: 'QUARANTINED', runtimeLaunchClaimCount: 1,
+        runtimeLaunchResolvedCount: 0, runtimeLaunchProcessCount: 0,
+      } });
+      const eventBus = new EventBus();
+      const stopped = vi.fn();
+      eventBus.on('session:stopped', stopped);
+      const manager = new SessionManager(eventBus);
+      try {
+        await expect(manager.stop(session.id)).rejects.toMatchObject({
+          code: 'RUNTIME_CLEANUP_PENDING', statusCode: 409,
+        });
+        expect(stopped).not.toHaveBeenCalled();
+        await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } }))
+          .resolves.toMatchObject({ status, runtimeLaunchResolvedCount: 0 });
+      } finally {
+        await manager.destroyAll();
+      }
+    },
+  );
+
   it('recovers a failed CLI launch after late parent-owned cleanup without an ExecutionProcess row', async () => {
     const { attachSpawnCleanupOwner } = await import('../../executors/start-error.js');
     const { session } = await createSessionFixture();

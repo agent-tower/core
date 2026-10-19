@@ -210,7 +210,7 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
     }
   });
 
-  it('keeps the raw owner reachable when started persistence fails', async () => {
+  it('retries started persistence before acknowledging exit and releasing the owner', async () => {
     vi.useFakeTimers();
     const exitListeners: Array<(event: { exitCode: number; signal?: string | null }) => void> = [];
     const pty = {
@@ -234,10 +234,11 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
         takeEarlyEvents: () => [{ type: 'exit', exitCode: 0 }],
       })),
     } as never);
+    let canPersistStarted = false;
     const sink: RuntimeDriverEventSink = {
       stream: vi.fn(),
       process: vi.fn(async (event) => {
-        if (event.type === 'started') throw new Error('started persistence failed');
+        if (event.type === 'started' && !canPersistStarted) throw new Error('started persistence failed');
       }),
     };
     const session = await new CliRuntimeDriver().open({
@@ -251,14 +252,18 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
 
     await expect(session.runTurn({ turnId: 'turn-started-failure', prompt: 'hello', msgStore: new MsgStore() }, sink))
       .rejects.toThrow('started persistence failed');
-    expect(vi.mocked(sink.process).mock.calls.map(([event]) => event.type)).toEqual([
-      'started',
-      'exited',
-      'tree_cleanup_completed',
-    ]);
+    expect(vi.mocked(sink.process).mock.calls.every(([event]) => event.type === 'started')).toBe(true);
     expect(pty.kill).toHaveBeenCalled();
-    const closing = session.close();
-    await expect(closing).resolves.toBeUndefined();
+    await expect(session.close()).rejects.toMatchObject({ code: 'runtime_cleanup_pending' });
+
+    canPersistStarted = true;
+    vi.mocked(sink.process).mockClear();
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(vi.mocked(sink.process).mock.calls.map(([event]) => event.type)).toEqual([
+      'started', 'exited', 'tree_cleanup_completed',
+    ]);
+    await session.close();
+    expect(sink.process).toHaveBeenCalledTimes(3);
   });
 
   it('serializes early exit evidence behind the same generation started barrier', async () => {

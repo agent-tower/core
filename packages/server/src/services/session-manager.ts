@@ -969,7 +969,11 @@ export class SessionManager {
       await runtimeDisposal;
       if (!await this.isRuntimeCleanupConfirmed(id)) {
         this.terminalSessions.delete(id);
-        return { session };
+        throw new ServiceError(
+          'Session cleanup is still pending: runtime launch or process termination has not been confirmed.',
+          'RUNTIME_CLEANUP_PENDING',
+          409,
+        );
       }
       this.maybeClearTerminalState(id);
       if (terminalStatus && !persistedTerminal) {
@@ -993,7 +997,11 @@ export class SessionManager {
     // the next admission when this rejects, allowing a later retry/recovery.
     if (!await this.isRuntimeCleanupConfirmed(id)) {
       this.terminalSessions.delete(id);
-      return { session };
+      throw new ServiceError(
+        'Session cleanup is still pending: runtime launch or process termination has not been confirmed.',
+        'RUNTIME_CLEANUP_PENDING',
+        409,
+      );
     }
 
     await this.externalSessionPersistence.get(id);

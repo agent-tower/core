@@ -216,20 +216,26 @@ class CliDriverSession implements DriverSession {
     // DriverTurn and attaches its terminal handlers.
     void active.completion.catch(() => undefined);
     this.active = active;
+    const startedEvent: BufferedProcessEvent = {
+      type: 'started',
+      runtimeInstanceId: active.runtimeInstanceId,
+      launchClaimNumber: input.launchClaimNumber ?? 1,
+      pid: spawnResult.pid,
+      processGroupId: spawnResult.processGroupId,
+      birthMarker: spawnResult.birthMarker,
+      ownershipToken: spawnResult.ownershipToken,
+    };
+    // Retain the ownership handoff before attaching/replaying an early exit.
+    // If its transaction rolls back, cleanup must retry this same event before
+    // delivering exit evidence or releasing the only owner of the process tree.
+    active.processEvents.push(startedEvent);
 
     try {
       // Install the raw exit handoff and reusable stop owner before the first
       // durable started event. A persistence failure must still be closable.
       this.attachSpawnedTurn(active, spawnResult, input.msgStore, sink, input.executionPermission ?? 'ASK', input.admissionSignal, input.providerSnapshot ? getProviderSecretValues(input.providerSnapshot) : []);
-      await sink.process({
-        type: 'started',
-        runtimeInstanceId: active.runtimeInstanceId,
-        launchClaimNumber: input.launchClaimNumber ?? 1,
-        pid: spawnResult.pid,
-        processGroupId: spawnResult.processGroupId,
-        birthMarker: spawnResult.birthMarker,
-        ownershipToken: spawnResult.ownershipToken,
-      });
+      await sink.process(startedEvent);
+      active.processEvents.shift();
       active.processEventsReleased = true;
       await this.flushProcessEvents(active, sink);
       if (input.admissionSignal?.aborted) throw new AgentRuntimeError('turn_cancelled', 'open', 'CLI admission was cancelled', true);
