@@ -80,6 +80,64 @@ describe('TerminalManager process ownership', () => {
     } finally { childAlive = false; rootAlive = false; shell.exit(); await manager.destroyAll(); }
   });
 
+  it('terminates a Windows terminal even when identity probes exceed the exit wait budget', async () => {
+    const shell = new FakePty();
+    let rootAlive = true;
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const root = { pid: shell.pid, parentPid: process.pid, birthMarker: 'root-birth' };
+    const adapter: WindowsProcessTreeAdapter = {
+      captureProcess: vi.fn(async () => root),
+      captureDescendants: vi.fn(async () => { now += 50; return []; }),
+      isProcessAlive: vi.fn(async () => rootAlive),
+      terminateTree: vi.fn(async () => { now += 50; rootAlive = false; shell.exit(); }),
+    };
+    const manager = new TerminalManager(new EventBus(), {
+      spawn: vi.fn(() => shell) as any, windowsProcessAdapter: adapter,
+      platform: 'win32', forceTimeoutMs: 10,
+    });
+    const terminal = manager.create('windows-slow-identity-probe');
+    try {
+      await manager.destroy(terminal.terminalId);
+      expect(adapter.terminateTree).toHaveBeenCalledWith(root.pid);
+      expect(rootAlive).toBe(false);
+      expect(manager.size).toBe(0);
+    } finally {
+      rootAlive = false;
+      shell.exit();
+      try { await manager.destroyAll(); } finally { clock.mockRestore(); }
+    }
+  });
+
+  it('retains Windows terminal ownership when termination fails and allows a retry', async () => {
+    const shell = new FakePty();
+    let rootAlive = true;
+    let canTerminate = false;
+    const root = { pid: shell.pid, parentPid: process.pid, birthMarker: 'root-birth' };
+    const adapter: WindowsProcessTreeAdapter = {
+      captureProcess: vi.fn(async () => root),
+      captureDescendants: vi.fn(async () => []),
+      isProcessAlive: vi.fn(async () => rootAlive),
+      terminateTree: vi.fn(async () => {
+        if (canTerminate) { rootAlive = false; shell.exit(); }
+      }),
+    };
+    const manager = new TerminalManager(new EventBus(), {
+      spawn: vi.fn(() => shell) as any, windowsProcessAdapter: adapter,
+      platform: 'win32', forceTimeoutMs: 30,
+    });
+    const terminal = manager.create('windows-termination-retry');
+    try {
+      await expect(manager.destroy(terminal.terminalId)).rejects.toThrow('process tree did not exit');
+      expect(adapter.terminateTree).toHaveBeenCalledWith(root.pid);
+      expect(manager.has(terminal.terminalId)).toBe(true);
+      canTerminate = true;
+      await manager.cleanupBySocket('windows-termination-retry');
+      expect(rootAlive).toBe(false);
+      expect(manager.size).toBe(0);
+    } finally { rootAlive = false; shell.exit(); await manager.destroyAll(); }
+  });
+
   it('does not terminate a Windows PID reused after its descendant was recorded', async () => {
     const shell = new FakePty();
     let alive = true;

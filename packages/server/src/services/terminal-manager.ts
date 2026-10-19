@@ -199,14 +199,14 @@ export class TerminalManager {
     if (this.platform === 'win32') {
       void this.captureWindowsTree(managed).catch(() => undefined);
       managed.windowsCaptureTimer = setInterval(() => {
-        void this.captureWindowsTree(managed).catch(() => undefined);
+        if (!managed.stopRequested && !managed.exited) void this.captureWindowsTree(managed).catch(() => undefined);
       }, 1_000);
       managed.windowsCaptureTimer.unref?.();
     }
     try {
       managed.cleanups.push(shell.onData((data) => {
         managed.lastActivity = Date.now();
-        if (this.platform === 'win32') void this.captureWindowsTree(managed).catch(() => undefined);
+        if (this.platform === 'win32' && !managed.stopRequested && !managed.exited) void this.captureWindowsTree(managed).catch(() => undefined);
         this.eventBus.emit('terminal:stdout', { terminalId, data });
       }));
       managed.cleanups.push(shell.onExit(({ exitCode }) => {
@@ -259,7 +259,7 @@ export class TerminalManager {
     if (terminal.stopping) return terminal.stopping;
     const stopping = (async () => {
       if (this.platform === 'win32') {
-        const deadline = Date.now() + this.forceTimeoutMs;
+        let deadline: number | undefined;
         while (true) {
           await this.captureWindowsTree(terminal);
           const alive = [];
@@ -267,13 +267,17 @@ export class TerminalManager {
             if (await this.windowsProcessAdapter.isProcessAlive(member)) alive.push(member);
           }
           if (terminal.exited && alive.length === 0) break;
-          if (Date.now() >= deadline) throw new Error('Terminal process tree did not exit after forced termination');
+          if (deadline !== undefined && Date.now() >= deadline) throw new Error('Terminal process tree did not exit after forced termination');
           // Killing only an exited root PID cannot reclaim surviving children.
           for (const member of alive.reverse()) {
             if (await this.windowsProcessAdapter.isProcessAlive(member)) {
               await this.windowsProcessAdapter.terminateTree(member.pid);
             }
           }
+          // CIM identity probes can outlast the exit wait budget. Start that
+          // budget after the first termination pass, so cleanup always signals
+          // verified members before deciding that forced termination timed out.
+          deadline ??= Date.now() + this.forceTimeoutMs;
           await this.delay();
         }
       } else {
