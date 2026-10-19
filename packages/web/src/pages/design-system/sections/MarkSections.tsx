@@ -32,12 +32,12 @@ function VizPrinciple({ title, en, art, children }: { title: string; en: string;
   return (
     <article className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/60 bg-background">
       <div aria-hidden="true" className="flex h-32 items-center justify-center border-b border-border/50 px-6">{art}</div>
-      <div className="p-4">
+      <div className="px-5 pb-5 pt-4">
         <div className="flex items-baseline gap-2">
           <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-          <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">{en}</span>
+          <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">{en}</span>
         </div>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{children}</p>
+        <p className="mt-1.5 text-[13px] leading-[22px] text-muted-foreground">{children}</p>
       </div>
     </article>
   )
@@ -92,7 +92,7 @@ export function VizPrinciplesSection() {
             <div className="flex h-20 items-end gap-2">
               {[0.5, 0.65, 0.4, 0.9, 0.55, 0.7].map((value, index) => (index === 3 ? (
                 <span key={index} className="flex w-4 flex-col items-center gap-1">
-                  <span className="whitespace-nowrap rounded bg-destructive/10 px-1 text-[9px] font-medium leading-4 text-destructive-ink">逾期</span>
+                  <span className="whitespace-nowrap rounded bg-destructive/10 px-1 text-[10px] font-medium leading-4 text-destructive-ink">逾期</span>
                   <span className="w-4 rounded-t-[3px] bg-destructive" style={{ height: value * 60 }} />
                 </span>
               ) : (
@@ -235,7 +235,7 @@ export function MarksSection() {
           <Ring value={0.88} size={88} thickness={8} aria-label="完成 88%">
             <span className="flex flex-col items-center leading-tight">
               <span className="text-lg font-semibold tabular-nums text-foreground">22</span>
-              <span className="text-[10px] text-muted-foreground">/ 25 任务</span>
+              <span className="text-[11px] text-muted-foreground">/ 25 任务</span>
             </span>
           </Ring>
           <Ring value={0.95} size={64} tone="danger" aria-label="配额 95%" />

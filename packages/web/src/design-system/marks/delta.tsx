@@ -30,7 +30,7 @@ export function Delta({ value, format = 'percent', goodWhen = 'up', period, size
   const Arrow = direction === 'down' ? ArrowDown : ArrowUp
 
   return (
-    <span className={cn('inline-flex items-center gap-1 whitespace-nowrap', size === 'sm' ? 'text-[11px]' : 'text-xs', className)}>
+    <span className={cn('inline-flex items-center gap-1 whitespace-nowrap', size === 'sm' ? 'text-xs' : 'text-[13px]', className)}>
       <span className={cn('inline-flex items-center gap-0.5 font-medium tabular-nums', goodWhen === 'none' && direction !== 'flat' ? 'text-foreground/80' : TONE_INK[tone])}>
         {direction !== 'flat' && <Arrow aria-hidden="true" className={size === 'sm' ? 'size-3' : 'size-3.5'} strokeWidth={2.5} />}
         <span className="sr-only">{direction === 'up' ? '+' : direction === 'down' ? '−' : ''}</span>

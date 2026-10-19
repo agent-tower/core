@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react'
+import { Tooltip as DesignSystemTooltip } from '@/design-system'
+import { cn } from '@/lib/utils'
 
 export type TooltipSide = 'top' | 'bottom'
 export type TooltipAlign = 'start' | 'center' | 'end'
@@ -12,34 +14,14 @@ interface TooltipProps {
 }
 
 /**
- * Hover tooltip using pure CSS (group-hover pattern).
- * Wrap any trigger element; the tooltip appears above on hover.
+ * 旧接口的悬停提示，内部是设计系统的 Tooltip（反色面、渲染在浮层里不会被裁切，键盘聚焦同样出现）。
+ * 外面包一层 div 承接原来的布局类名；禁用的子元素不触发指针事件，交给这层接住，提示照样能出现。
+ * 新代码直接用 `@/design-system` 的 Tooltip。
  */
-export function Tooltip({ content, children, className = '', side = 'top', align = 'center' }: TooltipProps) {
-  const tooltipPosition = side === 'bottom'
-    ? 'top-full mt-2'
-    : 'bottom-full mb-2'
-  const arrowPosition = side === 'bottom'
-    ? 'bottom-full border-b-neutral-900'
-    : 'top-full border-t-neutral-900'
-  const tooltipAlignment = align === 'start'
-    ? 'left-0'
-    : align === 'end'
-      ? 'right-0'
-      : 'left-1/2 -translate-x-1/2'
-  const arrowAlignment = align === 'start'
-    ? 'left-4'
-    : align === 'end'
-      ? 'right-4'
-      : 'left-1/2 -translate-x-1/2'
-
+export function Tooltip({ content, children, className, side = 'top', align = 'center' }: TooltipProps) {
   return (
-    <div className={`group/tooltip relative inline-block ${className}`}>
-      {children}
-      <div className={`invisible absolute ${tooltipPosition} ${tooltipAlignment} max-w-[260px] px-3 py-2 bg-neutral-900 text-white text-xs leading-relaxed rounded-lg opacity-0 group-hover/tooltip:visible group-hover/tooltip:opacity-100 group-focus-within/tooltip:visible group-focus-within/tooltip:opacity-100 transition-opacity pointer-events-none whitespace-normal z-[100] shadow-lg`}>
-        {content}
-        <div className={`absolute ${arrowPosition} ${arrowAlignment} border-4 border-transparent`} />
-      </div>
-    </div>
+    <DesignSystemTooltip content={content} side={side} align={align}>
+      <div className={cn('relative inline-block [&>:disabled]:pointer-events-none', className)}>{children}</div>
+    </DesignSystemTooltip>
   )
 }

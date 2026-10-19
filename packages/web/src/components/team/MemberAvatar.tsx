@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import type { CSSProperties } from 'react'
+import { useMemo } from 'react'
+import { Avatar, type AvatarSize } from '@/design-system'
 import { cn } from '@/lib/utils'
 
 function getInitials(name: string) {
@@ -37,46 +37,33 @@ function getAvatarText(avatar: string | null | undefined, name: string) {
   return trimmed.slice(0, 2).toUpperCase()
 }
 
-function getAvatarStyle(avatar: string | null | undefined): CSSProperties | undefined {
-  const trimmed = avatar?.trim() ?? ''
-  if (!trimmed || !isColorAvatar(trimmed)) return undefined
-  return {
-    backgroundColor: trimmed,
-    color: '#ffffff',
-  }
-}
-
 export interface MemberAvatarProps {
   name: string
   avatar?: string | null
+  /** 设计系统档位；xs 及更小只放得下一个汉字，缩写取第一个字 */
+  size?: AvatarSize
   className?: string
 }
 
-export function MemberAvatar({ name, avatar, className }: MemberAvatarProps) {
-  const [failedSrc, setFailedSrc] = useState<string | null>(null)
+/**
+ * 团队成员 / Agent 头像：设计系统的 Avatar（单色底 + 缩写，有图片用图片，加载失败退回缩写）。
+ * 缩写按角色名取前两个字；avatar 存的是 1–2 个字符时直接显示它。
+ * 旧数据里存的色值不再用作底色，按缩写显示。
+ */
+export function MemberAvatar({ name, avatar, size, className }: MemberAvatarProps) {
   const trimmedAvatar = avatar?.trim() ?? ''
-  const shouldRenderImage = Boolean(trimmedAvatar) && isImageAvatar(trimmedAvatar) && failedSrc !== trimmedAvatar
-  const fallbackText = useMemo(() => getAvatarText(trimmedAvatar, name), [name, trimmedAvatar])
-
-  if (shouldRenderImage) {
-    return (
-      <img
-        src={trimmedAvatar}
-        alt={name}
-        loading="lazy"
-        onError={() => setFailedSrc(trimmedAvatar)}
-        className={cn('h-7 w-7 shrink-0 rounded-full border border-neutral-200 bg-white object-cover', className)}
-      />
-    )
-  }
+  const fallbackText = useMemo(() => {
+    const text = getAvatarText(trimmedAvatar, name)
+    return size === 'xs' && /[\u3400-\u9fff]/.test(text) ? Array.from(text)[0]! : text
+  }, [name, trimmedAvatar, size])
 
   return (
-    <div
-      className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-neutral-200 bg-neutral-100 text-[10px] font-semibold text-neutral-600', className)}
-      style={getAvatarStyle(trimmedAvatar)}
-      aria-label={name}
-    >
-      {fallbackText}
-    </div>
+    <Avatar
+      name={name}
+      src={trimmedAvatar && isImageAvatar(trimmedAvatar) ? trimmedAvatar : undefined}
+      initials={fallbackText}
+      size={size}
+      className={cn(!size && 'size-7 text-[10px]', className)}
+    />
   )
 }

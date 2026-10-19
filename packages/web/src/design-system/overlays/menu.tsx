@@ -21,12 +21,13 @@ export const MenuGroup = MenuPrimitive.Group
 export const MenuRadioGroup = MenuPrimitive.RadioGroup
 export const MenuSub = MenuPrimitive.Sub
 
-export function MenuContent({ className, sideOffset = 6, align = 'start', ...props }: ComponentProps<typeof MenuPrimitive.Content>) {
+export function MenuContent({ className, sideOffset = 6, align = 'start', collisionPadding = 8, ...props }: ComponentProps<typeof MenuPrimitive.Content>) {
   return (
     <MenuPrimitive.Portal>
       <MenuPrimitive.Content
         sideOffset={sideOffset}
         align={align}
+        collisionPadding={collisionPadding}
         className={cn(MENU_SURFACE, 'origin-(--radix-dropdown-menu-content-transform-origin)', className)}
         {...props}
       />
@@ -95,10 +96,10 @@ export function MenuSubTrigger({ icon, className, children, ...props }: Componen
   )
 }
 
-export function MenuSubContent({ className, ...props }: ComponentProps<typeof MenuPrimitive.SubContent>) {
+export function MenuSubContent({ className, collisionPadding = 8, ...props }: ComponentProps<typeof MenuPrimitive.SubContent>) {
   return (
     <MenuPrimitive.Portal>
-      <MenuPrimitive.SubContent className={cn(MENU_SURFACE, className)} sideOffset={4} {...props} />
+      <MenuPrimitive.SubContent className={cn(MENU_SURFACE, className)} sideOffset={4} collisionPadding={collisionPadding} {...props} />
     </MenuPrimitive.Portal>
   )
 }
@@ -108,10 +109,10 @@ export function MenuSubContent({ className, ...props }: ComponentProps<typeof Me
 export const ContextMenu = ContextMenuPrimitive.Root
 export const ContextMenuTrigger = ContextMenuPrimitive.Trigger
 
-export function ContextMenuContent({ className, ...props }: ComponentProps<typeof ContextMenuPrimitive.Content>) {
+export function ContextMenuContent({ className, collisionPadding = 8, ...props }: ComponentProps<typeof ContextMenuPrimitive.Content>) {
   return (
     <ContextMenuPrimitive.Portal>
-      <ContextMenuPrimitive.Content className={cn(MENU_SURFACE, 'w-48 min-w-0', className)} {...props} />
+      <ContextMenuPrimitive.Content className={cn(MENU_SURFACE, 'w-48 min-w-0', className)} collisionPadding={collisionPadding} {...props} />
     </ContextMenuPrimitive.Portal>
   )
 }

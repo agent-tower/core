@@ -50,21 +50,21 @@ export function RuntimePermissionPrompt({ sessionId, compact = false }: RuntimeP
                 className={cn(
                   'inline-flex min-h-8 items-center gap-1.5 border px-3 text-xs font-medium transition-colors disabled:opacity-50',
                   option.kind.startsWith('reject')
-                    ? 'border-destructive/30 text-destructive hover:bg-destructive/10'
+                    ? 'border-destructive/30 text-destructive-ink hover:bg-destructive/10'
                     : 'border-border bg-background text-foreground hover:bg-muted',
                 )}
               >
                 {resolvePermission.isPending
                   && resolvePermission.variables?.requestId === permission.requestId
                   && resolvePermission.variables.optionId === option.optionId
-                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:[animation-duration:2.4s]" aria-hidden="true" />
                   : null}
                 {t(option.name)}
               </button>
             ))}
           </div>
           {resolvePermission.error ? (
-            <div className="mt-1.5 text-xs text-destructive" role="alert">{resolvePermission.error.message}</div>
+            <div className="mt-1.5 text-xs text-destructive-ink" role="alert">{resolvePermission.error.message}</div>
           ) : null}
         </div>
       </div>

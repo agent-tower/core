@@ -1,17 +1,19 @@
 import { useState, useEffect } from 'react'
-import { Circle, Check, CircleDot, ChevronDown } from 'lucide-react'
+import { ChevronDown } from 'lucide-react'
+import { TodoStateIcon, Track, type TodoState } from '@/design-system'
 import type { TodoItem } from '@/hooks/use-todos'
 import { useI18n } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 
 const TODO_PANEL_OPEN_KEY = 'agent-tower-todo-panel-open'
 
-function getStatusIcon(status?: string, compact?: boolean) {
-  const size = compact ? 'h-3 w-3' : 'h-3.5 w-3.5'
+/** Agent 上报的状态 → 设计系统的待办状态（图标、颜色与任务状态同一套） */
+function toTodoState(status?: string): TodoState {
   const s = (status || '').toLowerCase()
-  if (s === 'completed') return <Check aria-hidden className={`${size} text-emerald-500`} />
-  if (s === 'in_progress' || s === 'in-progress') return <CircleDot aria-hidden className={`${size} text-blue-500`} />
-  if (s === 'cancelled') return <Circle aria-hidden className={`${size} text-neutral-300`} />
-  return <Circle aria-hidden className={`${size} text-neutral-400`} />
+  if (s === 'completed') return 'done'
+  if (s === 'in_progress' || s === 'in-progress') return 'doing'
+  if (s === 'cancelled') return 'cancelled'
+  return 'todo'
 }
 
 interface TodoPanelProps {
@@ -35,7 +37,6 @@ export function TodoPanel({ todos, compact }: TodoPanelProps) {
   if (!todos || todos.length === 0) return null
 
   const completedCount = todos.filter(t => t.status?.toLowerCase() === 'completed').length
-  const progressPct = todos.length > 0 ? (completedCount / todos.length) * 100 : 0
 
   return (
     <details
@@ -45,42 +46,36 @@ export function TodoPanel({ todos, compact }: TodoPanelProps) {
     >
       {/* [style] hide iOS Safari default disclosure triangle */}
       <summary className="list-none cursor-pointer select-none [&::-webkit-details-marker]:hidden">
-        <div className={`bg-neutral-50/80 border border-neutral-100 rounded-lg flex items-center justify-between hover:bg-neutral-100/80 transition-colors ${compact ? 'px-3 py-1.5' : 'px-3 py-2'}`}>
+        <div className={cn('flex items-center justify-between rounded-lg border border-border/60 bg-muted/50 transition-colors hover:bg-muted', compact ? 'px-3 py-1.5' : 'px-3 py-2')}>
           <div className="flex items-center gap-2 min-w-0">
-            <span className={`text-neutral-500 font-medium ${compact ? 'text-xs' : 'text-xs'}`}>
+            <span className="text-xs font-medium text-muted-foreground">
               {t('待办')}
             </span>
-            <span className={`text-neutral-400 tabular-nums ${compact ? 'text-xs' : 'text-xs'}`}>
+            <span className="text-xs tabular-nums text-muted-foreground">
               {completedCount}/{todos.length}
             </span>
-            {/* Mini progress bar */}
-            <div className="w-12 h-1 bg-neutral-200/60 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-emerald-400 rounded-full transition-all duration-300"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
+            {/* 进度条用墨色：这里的进度不代表风险，不上状态色 */}
+            <Track value={completedCount} max={todos.length} size="xs" className="w-12" />
           </div>
           <ChevronDown
             aria-hidden
-            className={`text-neutral-400 transition-transform group-open:rotate-180 ${compact ? 'h-3 w-3' : 'h-3.5 w-3.5'}`}
+            className={cn('text-muted-foreground transition-transform group-open:rotate-180', compact ? 'size-3' : 'size-3.5')}
           />
         </div>
       </summary>
       <div className={`pt-1.5 pb-0.5 ${compact ? 'max-h-28 overflow-y-auto px-1' : 'px-1'}`}>
         <ul className="space-y-px" role="list" aria-label="Agent todo list">
           {todos.map((todo, index) => {
-            const isCancelled = todo.status?.toLowerCase() === 'cancelled'
-            const isCompleted = todo.status?.toLowerCase() === 'completed'
+            const state = toTodoState(todo.status)
+            // 已完成、已取消都划线变灰，但不隐藏
+            const finished = state === 'done' || state === 'cancelled'
             return (
               <li
                 key={`${todo.content}-${index}`}
-                className={`flex items-center gap-1.5 rounded-md px-2 ${compact ? 'py-0.5' : 'py-[3px]'} ${isCompleted ? 'opacity-60' : ''}`}
+                className={cn('flex items-center gap-1.5 rounded-md px-2', compact ? 'py-0.5' : 'py-[3px]')}
               >
-                <span className={`flex items-center justify-center shrink-0 ${compact ? 'h-3 w-3' : 'h-3.5 w-3.5'}`}>
-                  {getStatusIcon(todo.status, compact)}
-                </span>
-                <span className={`${compact ? 'text-[11px] leading-[14px]' : 'text-xs leading-4'} text-neutral-600 wrap-break-word truncate ${isCancelled ? 'line-through text-neutral-400' : ''} ${isCompleted ? 'text-neutral-400' : ''}`}>
+                <TodoStateIcon state={state} className={compact ? 'size-3' : 'size-3.5'} />
+                <span className={cn('truncate text-xs leading-4', finished ? 'text-muted-foreground line-through decoration-foreground/30' : 'text-foreground/80')}>
                   {todo.content}
                 </span>
               </li>

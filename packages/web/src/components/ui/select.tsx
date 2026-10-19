@@ -1,7 +1,5 @@
 import * as React from "react"
-import { useState, useRef, useEffect, useCallback } from "react"
-import { ChevronDown, Check } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { Select as DesignSystemSelect, type SelectOption as DesignSystemSelectOption } from "@/design-system"
 import { useI18n } from "@/lib/i18n"
 
 export interface SelectOption {
@@ -21,6 +19,14 @@ export interface SelectProps {
   className?: string
 }
 
+/** Radix 不接受空字符串作为选项值，空值选项在内部换成这个占位值 */
+const EMPTY_VALUE = "__empty__"
+const NO_OPTIONS_VALUE = "__no_options__"
+
+/**
+ * 旧接口的选择框，内部是设计系统的 Select（浮层与菜单同材质，选中项加粗 + 对勾）。
+ * 新代码直接用 `@/design-system` 的 Select。
+ */
 export function Select({
   value,
   onChange,
@@ -30,114 +36,20 @@ export function Select({
   className,
 }: SelectProps) {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  const selectedOption = options.find(o => o.value === value)
-
-  // 点击外部关闭
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
-  }, [open])
-
-  // ESC 关闭
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false)
-    },
-    []
-  )
+  const isKnownValue = options.some(option => option.value === value)
+  const items: DesignSystemSelectOption[] = options.length > 0
+    ? options.map(option => ({ ...option, value: option.value === "" ? EMPTY_VALUE : option.value }))
+    : [{ value: NO_OPTIONS_VALUE, label: t("No options"), disabled: true }]
 
   return (
-    <div ref={containerRef} className={cn("relative", className)} onKeyDown={handleKeyDown}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen(prev => !prev)}
-        className={cn(
-          "flex items-center justify-between gap-2 w-full h-9 px-3 border rounded-lg text-sm transition-colors",
-          "bg-white border-neutral-200 hover:border-neutral-300",
-          "focus:outline-none focus:border-neutral-400",
-          "disabled:opacity-50 disabled:cursor-not-allowed",
-          open && "border-neutral-400",
-          !selectedOption && "text-neutral-400",
-        )}
-      >
-        <span className="flex min-w-0 flex-1 items-center gap-2">
-          {selectedOption?.icon}
-          <span className="truncate">
-            {selectedOption ? selectedOption.label : t(placeholder)}
-          </span>
-        </span>
-        <ChevronDown
-          size={14}
-          className={cn(
-            "ml-2 shrink-0 text-neutral-400 transition-transform duration-150",
-            open && "rotate-180"
-          )}
-        />
-      </button>
-
-      {open && (
-        <div className="absolute z-50 mt-1 w-full min-w-[160px] bg-white border border-neutral-200 rounded-lg shadow-lg shadow-neutral-200/50 py-1 max-h-[200px] overflow-y-auto">
-          {options.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-neutral-400">{t('No options')}</div>
-          ) : (
-            options.map(option => (
-              <div
-                key={option.value}
-                tabIndex={option.disabled && option.description ? 0 : undefined}
-                role={option.disabled && option.description ? 'group' : undefined}
-                aria-label={option.disabled && option.description ? `${option.label}: ${option.description}` : undefined}
-                className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-              >
-                <button
-                  type="button"
-                  disabled={option.disabled}
-                  onClick={() => {
-                    onChange(option.value)
-                    setOpen(false)
-                  }}
-                  className={cn(
-                    "flex items-start w-full px-3 py-1.5 text-sm text-left transition-colors",
-                    "hover:bg-neutral-50",
-                    option.value === value
-                      ? "text-neutral-900 font-medium"
-                      : "text-neutral-600",
-                    option.disabled && "cursor-not-allowed bg-neutral-50 text-neutral-500",
-                  )}
-                >
-                  <Check
-                    size={14}
-                    className={cn(
-                      "mr-2 mt-0.5 shrink-0",
-                      option.value === value ? "opacity-100" : "opacity-0"
-                    )}
-                  />
-                  {option.icon ? (
-                    <span className="mr-2 mt-0.5 flex shrink-0 items-center">{option.icon}</span>
-                  ) : null}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">{option.label}</span>
-                    {option.description ? (
-                      <span className={cn("mt-0.5 block whitespace-normal text-xs font-normal leading-snug", option.disabled ? "text-neutral-600" : "text-neutral-400")}>
-                        {option.description}
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </div>
+    <DesignSystemSelect
+      options={items}
+      // 值不在选项里时传空串，Radix 显示占位文字（与原来一致）
+      value={isKnownValue ? (value === "" ? EMPTY_VALUE : value) : ""}
+      onValueChange={next => onChange(next === EMPTY_VALUE ? "" : next)}
+      placeholder={t(placeholder)}
+      disabled={disabled}
+      className={className}
+    />
   )
 }

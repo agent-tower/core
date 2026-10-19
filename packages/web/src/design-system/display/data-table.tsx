@@ -103,7 +103,7 @@ export function DataTable<T>({
                   scope="col"
                   style={column.width ? { width: column.width } : undefined}
                   aria-sort={isSorted ? (sort?.direction === 'asc' ? 'ascending' : 'descending') : undefined}
-                  className={cn('h-8 whitespace-nowrap px-3 text-[11px] font-medium text-muted-foreground first:pl-2 last:pr-2', alignClass(column))}
+                  className={cn('h-8 whitespace-nowrap px-3 text-xs font-medium text-muted-foreground first:pl-2 last:pr-2', alignClass(column))}
                 >
                   {column.sortable ? (
                     <button

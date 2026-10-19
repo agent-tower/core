@@ -227,7 +227,6 @@ function resolveSenderMember(
 
 function RoomMessageMarkdown({
   content,
-  isUser,
   workingDir,
   onOpenWorkspaceFile,
   onOpenPreviewUrl,
@@ -257,20 +256,14 @@ function RoomMessageMarkdown({
       className={cn(
         'team-room-message-markdown prose prose-sm max-w-none break-words [overflow-wrap:anywhere]',
         'prose-p:my-2 prose-p:first:mt-0 prose-p:last:mb-0 prose-p:leading-6',
-        'prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-li:pl-0 prose-li:leading-6 prose-li:marker:text-neutral-400',
-        'prose-blockquote:my-2 prose-blockquote:border-l-2 prose-blockquote:border-neutral-300 prose-blockquote:pl-3 prose-blockquote:text-neutral-600',
-        'prose-pre:my-3 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:rounded-md prose-pre:border prose-pre:border-neutral-800 prose-pre:bg-neutral-950 prose-pre:p-3 prose-pre:text-xs prose-pre:leading-relaxed prose-pre:shadow-inner',
-        'prose-code:break-words prose-code:rounded prose-code:bg-neutral-100 prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.9em] prose-code:font-medium prose-code:text-neutral-800',
-        'prose-pre:prose-code:bg-transparent prose-pre:prose-code:p-0 prose-pre:prose-code:text-neutral-100',
+        'prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-li:pl-0 prose-li:leading-6 prose-li:marker:text-muted-foreground',
+        'prose-blockquote:my-2 prose-blockquote:border-l-2 prose-blockquote:border-border prose-blockquote:pl-3 prose-blockquote:text-foreground/70',
+        'prose-pre:my-3 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:rounded-md prose-pre:border prose-pre:border-border/60 prose-pre:bg-foreground/[0.025] prose-pre:p-3 prose-pre:text-xs prose-pre:leading-relaxed',
+        'prose-code:break-words prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.9em] prose-code:font-medium prose-code:text-foreground',
+        'prose-pre:prose-code:bg-transparent prose-pre:prose-code:p-0 prose-pre:prose-code:text-foreground',
         'prose-headings:mb-2 prose-headings:mt-3 prose-headings:font-semibold prose-headings:leading-snug',
-        'prose-a:text-blue-600 prose-a:underline-offset-2 hover:prose-a:text-blue-700',
-        'prose-hr:my-3 prose-hr:border-neutral-200',
-        isUser
-          ? [
-              'text-white prose-strong:text-white prose-headings:text-white prose-blockquote:border-white/30 prose-blockquote:text-neutral-200',
-              'prose-code:bg-white/15 prose-code:text-white prose-pre:border-neutral-700 prose-a:text-blue-200 hover:prose-a:text-blue-100 prose-hr:border-white/15',
-            ]
-          : 'text-neutral-800 prose-strong:text-neutral-900',
+        'prose-hr:my-3 prose-hr:border-border',
+        'text-foreground prose-strong:text-foreground',
       )}
     >
       <Streamdown
@@ -298,7 +291,7 @@ function MessageAttachments({
   if (!hasAttachmentIds) return null
   if (isLoading && attachments.length === 0) {
     return (
-      <div className="mt-3 text-xs text-neutral-400">
+      <div className="mt-3 text-xs text-muted-foreground">
         Loading attachments...
       </div>
     )
@@ -309,7 +302,7 @@ function MessageAttachments({
   const imageIndexById = new Map(imageAttachments.map((attachment, index) => [attachment.id, index]))
 
   return (
-    <div className="mt-3 flex flex-wrap gap-2 text-neutral-700">
+    <div className="mt-3 flex flex-wrap gap-2 text-foreground/80">
       {attachments.map((attachment) => {
         const attachmentUrl = `${API_BASE_URL}${attachment.url}`
         const isImage = attachment.mimeType.startsWith('image/')
@@ -320,7 +313,7 @@ function MessageAttachments({
               key={attachment.id}
               type="button"
               onClick={() => onOpenImage(imageAttachments, imageIndex)}
-              className="group relative h-24 w-24 overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50 shadow-sm transition-opacity hover:opacity-90"
+              className="group relative h-24 w-24 overflow-hidden rounded-lg border border-border bg-muted/50 shadow-raised transition-opacity hover:opacity-90"
               title={attachment.originalName}
             >
               <img
@@ -329,7 +322,7 @@ function MessageAttachments({
                 className="h-full w-full object-cover"
                 loading="lazy"
               />
-              <span className="absolute inset-x-0 bottom-0 truncate bg-black/55 px-1.5 py-1 text-left text-[10px] text-white">
+              <span className="absolute inset-x-0 bottom-0 truncate bg-inverse/60 px-1.5 py-1 text-left text-[11px] text-inverse-foreground">
                 {attachment.originalName}
               </span>
             </button>
@@ -342,15 +335,15 @@ function MessageAttachments({
             href={attachmentUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex max-w-[220px] items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-700 shadow-sm hover:bg-neutral-50"
+            className="flex max-w-[220px] items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground/80 shadow-raised hover:bg-accent"
             title={attachment.originalName}
           >
-            <FileText size={16} className="shrink-0 text-neutral-400" aria-hidden />
+            <FileText size={16} className="shrink-0 text-muted-foreground/70" aria-hidden />
             <span className="min-w-0 flex-1">
               <span className="block truncate font-medium">{attachment.originalName}</span>
-              <span className="text-neutral-400">{formatAttachmentSize(attachment.sizeBytes)}</span>
+              <span className="text-muted-foreground">{formatAttachmentSize(attachment.sizeBytes)}</span>
             </span>
-            <ExternalLink size={13} className="shrink-0 text-neutral-400" aria-hidden />
+            <ExternalLink size={13} className="shrink-0 text-muted-foreground/70" aria-hidden />
           </a>
         )
       })}
@@ -433,11 +426,11 @@ function AttachmentLightbox({
   const hasNext = index < images.length - 1
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-inverse/90 p-4" role="dialog" aria-modal="true">
       <button
         type="button"
         onClick={onClose}
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
+        className="absolute right-4 top-4 rounded-full bg-inverse-foreground/10 p-2 text-inverse-foreground transition-colors hover:bg-inverse-foreground/20"
         aria-label="Close image preview"
       >
         <X size={20} />
@@ -447,7 +440,7 @@ function AttachmentLightbox({
         <button
           type="button"
           onClick={() => onSelect(index - 1)}
-          className="absolute left-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          className="absolute left-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-inverse-foreground/10 text-inverse-foreground transition-colors hover:bg-inverse-foreground/20"
           aria-label="Previous image"
         >
           <ChevronLeft size={24} aria-hidden />
@@ -460,13 +453,13 @@ function AttachmentLightbox({
           alt={current.originalName}
           className="max-h-[82vh] max-w-[92vw] rounded-lg object-contain"
         />
-        <div className="flex items-center gap-3 text-sm text-white">
+        <div className="flex items-center gap-3 text-sm text-inverse-foreground">
           <span className="max-w-[70vw] truncate">{current.originalName}</span>
           <a
             href={`${API_BASE_URL}${current.url}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs hover:bg-white/20"
+            className="inline-flex items-center gap-1 rounded-md bg-inverse-foreground/10 px-2 py-1 text-xs hover:bg-inverse-foreground/20"
           >
             <ExternalLink size={13} aria-hidden />
             Open
@@ -478,7 +471,7 @@ function AttachmentLightbox({
         <button
           type="button"
           onClick={() => onSelect(index + 1)}
-          className="absolute right-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          className="absolute right-4 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-inverse-foreground/10 text-inverse-foreground transition-colors hover:bg-inverse-foreground/20"
           aria-label="Next image"
         >
           <ChevronRight size={24} aria-hidden />
@@ -624,7 +617,11 @@ function CollapsibleRoomMessageContent({
           <div
             className={cn(
               'pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-b from-transparent',
-              tone === 'system' ? 'to-amber-50' : tone === 'user' ? 'to-neutral-900' : 'to-neutral-100',
+              tone === 'system'
+                ? 'to-[color-mix(in_oklab,var(--color-warning)_8%,var(--color-background))]'
+                : tone === 'user'
+                  ? 'to-[color-mix(in_oklab,var(--color-foreground)_8%,var(--color-background))]'
+                  : 'to-background',
             )}
           />
         )}
@@ -639,12 +636,12 @@ function CollapsibleRoomMessageContent({
           disabled={isLoadingFullContent}
           onClick={() => void handleToggle()}
           className={cn(
-            'mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300',
+            'mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
             tone === 'system'
-              ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+              ? 'bg-warning/10 text-warning-ink hover:bg-warning/20'
               : tone === 'user'
-                ? 'bg-white/10 text-neutral-100 hover:bg-white/15 hover:text-white'
-                : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900',
+                ? 'bg-background/70 text-foreground/70 hover:bg-background hover:text-foreground'
+                : 'bg-muted text-foreground/70 hover:bg-foreground/10 hover:text-foreground',
             isLoadingFullContent ? 'cursor-wait opacity-70' : '',
           )}
         >
@@ -661,7 +658,7 @@ function CollapsibleRoomMessageContent({
       {loadError && (
         <div className={cn(
           'mt-1 text-xs',
-          tone === 'user' ? 'text-red-200' : 'text-red-600',
+          'text-destructive-ink',
         )}>
           {loadError}
         </div>
@@ -694,7 +691,7 @@ function RoomMessageRow({
   if (isSystem) {
     return (
       <div className="flex justify-center">
-        <div className="max-w-[min(100%,42rem)] rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-sm">
+        <div className="max-w-[min(100%,42rem)] rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-warning-ink shadow-raised">
           {children}
         </div>
       </div>
@@ -718,13 +715,13 @@ function RoomMessageRow({
       <div className={cn('flex min-w-0 max-w-[min(86%,46rem)] flex-col', isUser ? 'items-end' : 'items-start')}>
         <div
           className={cn(
-            'mb-1.5 flex max-w-full items-center gap-1.5 px-0.5 text-[11px] text-neutral-500',
+            'mb-1.5 flex max-w-full items-center gap-1.5 px-0.5 text-xs text-muted-foreground',
             isUser ? 'justify-end' : 'justify-start',
           )}
         >
-          <span className="truncate font-semibold text-neutral-700">{senderName}</span>
-          <span className="h-1 w-1 rounded-full bg-neutral-300" aria-hidden />
-          <Clock3 size={11} className="text-neutral-400" />
+          <span className="truncate font-semibold text-foreground/80">{senderName}</span>
+          <span className="h-1 w-1 rounded-full bg-foreground/15" aria-hidden />
+          <Clock3 size={11} className="text-muted-foreground/70" />
           <span className="shrink-0">{formatTime(createdAt)}</span>
           {headerAddon}
         </div>
@@ -732,8 +729,8 @@ function RoomMessageRow({
           className={cn(
             'max-w-full rounded-lg px-3.5 py-3 text-sm leading-6 transition-colors',
             isUser
-              ? 'rounded-tr-[2px] border border-neutral-900 bg-neutral-900 text-white shadow-sm'
-              : 'rounded-tl-[2px] bg-neutral-100 text-neutral-900 shadow-sm',
+              ? 'rounded-tr-[4px] bg-foreground/[0.08] text-foreground'
+              : 'rounded-tl-[4px] border border-border/70 bg-background text-foreground',
             bubbleClassName,
             isPending ? 'opacity-70' : '',
           )}
@@ -745,7 +742,7 @@ function RoomMessageRow({
         <MemberAvatar
           name={senderName}
           avatar={null}
-          className="mt-0.5 h-8 w-8 border-neutral-300 bg-neutral-900 text-white text-[11px]"
+          className="mt-0.5 h-8 w-8 text-[11px]"
         />
       )}
     </div>
@@ -754,7 +751,7 @@ function RoomMessageRow({
 
 function ProviderBadge({ provider }: { provider: Provider }) {
   return (
-    <span className="ml-0.5 inline-flex max-w-[10rem] shrink items-center gap-1 rounded-full bg-neutral-900/5 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-500">
+    <span className="ml-0.5 inline-flex max-w-[10rem] shrink items-center gap-1 rounded-full bg-foreground/5 px-1.5 py-0.5 text-xs font-medium leading-none text-muted-foreground">
       <AgentLogo agentType={provider.agentType} className="size-2.5" />
       <span className="truncate">{provider.name}</span>
     </span>
@@ -811,7 +808,7 @@ function RoomChatMessage({
       )}
       {isPrivate && (
         <span
-          className="ml-0.5 inline-flex max-w-[18rem] shrink items-center gap-1 rounded-full bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sky-700"
+          className="ml-0.5 inline-flex max-w-[18rem] shrink items-center gap-1 rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-xs font-medium leading-none text-foreground/70"
           title={recipientLabels.join(', ')}
         >
           <LockKeyhole size={10} />
@@ -819,17 +816,17 @@ function RoomChatMessage({
         </span>
       )}
       {!isSystem && workRequestCount > 0 && mentions.length === 0 && (
-        <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-600">
+        <span className="ml-0.5 shrink-0 rounded-full bg-foreground/[0.08] px-1.5 py-0.5 text-xs font-medium leading-none text-foreground/70">
           {t('Work requests')}: {workRequestCount}
         </span>
       )}
       {pendingStatus === 'sending' && (
-        <span className="ml-0.5 shrink-0 rounded-full bg-neutral-900/8 px-1.5 py-0.5 text-[10px] font-medium leading-none text-neutral-500">
+        <span className="ml-0.5 shrink-0 rounded-full bg-foreground/[0.08] px-1.5 py-0.5 text-xs font-medium leading-none text-muted-foreground">
           {t('发送中...')}
         </span>
       )}
       {pendingStatus === 'failed' && (
-        <span className="ml-0.5 shrink-0 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-red-600">
+        <span className="ml-0.5 shrink-0 rounded-full bg-destructive/10 px-1.5 py-0.5 text-xs font-medium leading-none text-destructive-ink">
           {t('发送失败')}
         </span>
       )}
@@ -844,7 +841,7 @@ function RoomChatMessage({
       isUser={isUser}
       isSystem={isSystem}
       headerAddon={headerAddon}
-      bubbleClassName={isUser && pendingStatus === 'failed' ? 'border-red-200 bg-red-50 text-red-900' : undefined}
+      bubbleClassName={isUser && pendingStatus === 'failed' ? 'border border-destructive/25 bg-destructive/10 text-destructive-ink' : undefined}
       isPending={pendingStatus === 'sending'}
     >
       <RoomMessageBody
@@ -888,18 +885,18 @@ function PendingApprovalBubble({
       senderName={member?.name ?? t('Agent')}
       avatar={member?.avatar ?? null}
       createdAt={request.createdAt}
-      bubbleClassName="border border-amber-200/80 bg-amber-50/80"
+      bubbleClassName="border border-warning/25 bg-warning/8"
     >
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+          <span className="inline-flex items-center gap-1 rounded-full border border-warning/25 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning-ink">
             <Clock3 size={11} />
             {t('Pending approval')}
           </span>
-          <span className="text-[11px] text-neutral-500">{t('Requester')}: {t(request.requesterType === 'user' ? 'User' : request.requesterType === 'system' ? 'System' : 'Agent')}</span>
+          <span className="text-xs text-muted-foreground">{t('Requester')}: {t(request.requesterType === 'user' ? 'User' : request.requesterType === 'system' ? 'System' : 'Agent')}</span>
         </div>
 
-        <div className="text-sm leading-6 text-neutral-800 [overflow-wrap:anywhere]">
+        <div className="text-sm leading-6 text-foreground [overflow-wrap:anywhere]">
           {request.instructionPreview ?? previewText(request.instruction)}
         </div>
 
@@ -909,7 +906,7 @@ function PendingApprovalBubble({
             size="xs"
             variant="outline"
             disabled={isActionPending}
-            className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800"
+            className="border-success/25 bg-success/10 text-success-ink hover:bg-success/15 hover:text-success-ink"
             onClick={onApprove}
           >
             <Check size={12} />
@@ -1285,7 +1282,7 @@ export function RoomTimeline({
   }, [stopMemberWork])
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white">
+    <div className="flex h-full min-h-0 flex-col bg-background">
       {lightboxState && (
         <AttachmentLightbox
           images={lightboxState.images}
@@ -1298,14 +1295,14 @@ export function RoomTimeline({
         <div
           ref={scrollRef}
           className={cn(
-            'h-full overflow-y-auto scrollbar-app-thin bg-white',
+            'h-full overflow-y-auto scrollbar-app-thin bg-background',
             compactComposer ? 'px-3 py-3' : 'px-4 py-4',
           )}
         >
           <div ref={contentRef} className={cn(compactComposer ? 'space-y-2.5' : 'space-y-3', centered && 'max-w-4xl mx-auto')}>
             {timelineItems.length === 0 ? (
-              <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-neutral-200 bg-white text-neutral-500">
-                <Users size={24} className="text-neutral-400" />
+              <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-background text-muted-foreground">
+                <Users size={24} className="text-muted-foreground/70" />
                 <span className="text-sm">{t('No room messages yet')}</span>
               </div>
             ) : (
@@ -1370,12 +1367,12 @@ export function RoomTimeline({
             )}
 
             {pendingApprovalError && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive-ink">
                 {getErrorMessage(pendingApprovalError, t('Failed to update work request'))}
               </div>
             )}
             {stopMemberWork.isError && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive-ink">
                 {getErrorMessage(stopMemberWork.error, t('Failed to stop member work'))}
               </div>
             )}
@@ -1386,7 +1383,7 @@ export function RoomTimeline({
           <button
             type="button"
             onClick={() => scrollToBottom()}
-            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-neutral-200 bg-white/90 px-3 py-1.5 text-xs text-neutral-600 shadow-md backdrop-blur-sm hover:bg-white hover:text-neutral-900 transition-colors"
+            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background/90 px-3 py-1.5 text-xs text-foreground/70 shadow-raised backdrop-blur-sm hover:bg-background hover:text-foreground transition-colors"
           >
             <ArrowDown size={14} />
             <span>{t('Back to bottom')}</span>
@@ -1395,7 +1392,7 @@ export function RoomTimeline({
       </div>
 
       <div className={cn(
-        'shrink-0 border-t border-transparent bg-white',
+        'shrink-0 border-t border-transparent bg-background',
         compactComposer ? 'px-3 pb-2 pt-1.5' : 'px-6 pb-6 pt-2',
       )}>
         <div className={cn(centered && 'max-w-4xl mx-auto')}>
@@ -1412,14 +1409,14 @@ export function RoomTimeline({
         />
         {!readOnly && changeSummaryBar}
         {readOnly ? (
-          <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-500">
+          <div className="rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
             {readOnlyMessage ?? t('This project is read-only')}
           </div>
         ) : (
-          <div className="relative rounded-xl border border-neutral-200 bg-white shadow-sm transition-all duration-200 hover:shadow-md focus-within:border-neutral-300 focus-within:shadow-md">
+          <div className="relative rounded-xl border border-border bg-background shadow-raised transition-all duration-200 hover:shadow-raised focus-within:border-ring focus-within:shadow-raised">
             {mentionMenuOpen && (
-              <div className="absolute bottom-full left-3 z-20 mb-2 w-[min(24rem,calc(100vw-3rem))] overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-xl">
-                <div className="border-b border-neutral-100 px-3 py-2 text-xs font-medium text-neutral-500">
+              <div className="absolute bottom-full left-3 z-20 mb-2 w-[min(24rem,calc(100vw-3rem))] overflow-hidden rounded-xl border border-border bg-background shadow-popover">
+                <div className="border-b border-border/60 px-3 py-2 text-xs font-medium text-muted-foreground">
                   {inlineMention ? t('Mention members') : t('Team members')}
                 </div>
                 <div className="max-h-64 overflow-y-auto p-1">
@@ -1437,7 +1434,7 @@ export function RoomTimeline({
                         }}
                         className={cn(
                           'flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors',
-                          highlighted ? 'bg-neutral-100' : 'hover:bg-neutral-50',
+                          highlighted ? 'bg-muted' : 'hover:bg-accent',
                         )}
                       >
                         <MemberAvatar
@@ -1447,20 +1444,20 @@ export function RoomTimeline({
                         />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="truncate text-sm font-medium text-neutral-900">{member.name}</span>
+                            <span className="truncate text-sm font-medium text-foreground">{member.name}</span>
                             {selected && (
-                              <span className="rounded-full bg-neutral-900 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                              <span className="rounded-full bg-primary px-1.5 py-0.5 text-xs font-medium text-primary-foreground">
                                 {t('selected')}
                               </span>
                             )}
                           </div>
-                          <div className="truncate text-xs text-neutral-500">
+                          <div className="truncate text-xs text-muted-foreground">
                             {[member.providerId, member.id.slice(0, 8)]
                               .filter(Boolean)
                               .join(' · ')}
                           </div>
                         </div>
-                        <AtSign size={15} className="text-neutral-400" />
+                        <AtSign size={15} className="text-muted-foreground/70" />
                       </button>
                     )
                   })}
@@ -1469,18 +1466,18 @@ export function RoomTimeline({
             )}
 
             {selectedMembers.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5 border-b border-neutral-100 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-1.5 border-b border-border/60 px-3 py-2">
                 {selectedMembers.map((member) => (
                   <span
                     key={member.id}
-                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs text-neutral-700"
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-muted/50 px-2 py-1 text-xs text-foreground/80"
                   >
                     <span className="truncate font-medium">@{member.name}</span>
-                    <span className="shrink-0 text-[10px] text-neutral-400">{member.id.slice(0, 8)}</span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">{member.id.slice(0, 8)}</span>
                     <button
                       type="button"
                       onClick={() => handleRemoveSelectedMention(member.id)}
-                      className="shrink-0 rounded-full p-0.5 text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-700"
+                      className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground/80"
                       title={t('Remove mention')}
                       aria-label={`${t('Remove mention')} ${member.name}`}
                     >
@@ -1504,7 +1501,7 @@ export function RoomTimeline({
               onSelect={(event) => syncInlineMention(draft, event.currentTarget.selectionStart)}
               placeholder={t('Message the team room...')}
               className={cn(
-                'w-full resize-none border-none bg-transparent text-neutral-900 placeholder-neutral-400 focus:outline-none',
+                'w-full resize-none border-none bg-transparent text-foreground placeholder:text-muted-foreground/70 focus:outline-none',
                 compactComposer
                   ? 'px-3 pb-1 pt-2.5 text-[15px] leading-5'
                   : 'px-4 pb-2 pt-4 text-sm leading-relaxed',
@@ -1526,7 +1523,7 @@ export function RoomTimeline({
                   onClick={() => fileInputRef.current?.click()}
                   title={t('Upload file')}
                   aria-label={t('Upload file')}
-                  className="rounded-lg p-2 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600"
+                  className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground/70"
                 >
                   <Paperclip size={18} />
                 </button>
@@ -1544,8 +1541,8 @@ export function RoomTimeline({
                     'rounded-lg transition-colors',
                     compactComposer ? 'p-1.5' : 'p-2',
                     mentionPickerOpen
-                      ? 'bg-neutral-100 text-neutral-700'
-                      : 'text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600',
+                      ? 'bg-muted text-foreground/80'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground/70',
                     selectedMembers.length === 0 && activeMembers.length === 0
                       ? 'cursor-not-allowed opacity-50'
                       : '',
@@ -1554,7 +1551,7 @@ export function RoomTimeline({
                   <AtSign size={compactComposer ? 15 : 18} />
                 </button>
                 {selectedMembers.length > 0 && (
-                  <span className="text-[11px] text-neutral-500">
+                  <span className="text-xs text-muted-foreground">
                     {selectedMembers.length} {t('selected')}
                   </span>
                 )}
@@ -1570,8 +1567,8 @@ export function RoomTimeline({
                   'rounded-lg transition-all duration-200',
                   compactComposer ? 'p-1.5' : 'p-2',
                   (draft.trim() || hasSendableAttachments) && !readOnly && !isSubmitting && !isUploading
-                    ? 'bg-neutral-900 text-white shadow-md hover:bg-black'
-                    : 'cursor-not-allowed bg-transparent text-neutral-300',
+                    ? 'bg-primary text-primary-foreground shadow-raised hover:bg-primary'
+                    : 'cursor-not-allowed bg-transparent text-muted-foreground',
                   isSubmitting || isUploading ? 'opacity-70' : '',
                 )}
               >
@@ -1580,7 +1577,7 @@ export function RoomTimeline({
             </div>
 
             {submitError && (
-              <div className="border-t border-neutral-100 px-3 py-2 text-xs text-red-600">
+              <div className="border-t border-border/60 px-3 py-2 text-xs text-destructive-ink">
                 {submitError}
               </div>
             )}

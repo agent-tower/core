@@ -4,7 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 import { BrandLockup } from '@/components/BrandLogo'
 import * as DesignSystem from '@/design-system'
 import { Badge, Button, CodeBlock, icons, NavGroup, NavRow, usePrefersReducedMotion } from '@/design-system'
-import { SECTION_GROUPS, SECTIONS, sectionNumber } from './design-system/sections'
+import { SECTION_GROUPS, SECTIONS } from './design-system/sections'
 import { ShowcasePart } from './design-system/showcase'
 import { CompositionSection, TrendsSection } from './design-system/sections/ChartSections'
 import { ActionsSection, StatusSection } from './design-system/sections/FeedbackSections'
@@ -21,7 +21,7 @@ const ICON_COUNT = Object.keys(icons).length
 
 const FACTS = [
   { label: '主色', value: 'Charcoal', note: '#191F25 · 主按钮、选中、图表主系列' },
-  { label: '正文', value: '14 / 20', note: '最小 10px · 字重 400 / 500 / 600' },
+  { label: '正文', value: '14 / 22', note: '中文最小 12px · 字重 400 / 500 / 600' },
   { label: '行高', value: '32px', note: '侧栏行、默认按钮、工具栏' },
   { label: '圆角', value: '8 · 10 · 14', note: '行 · 浮层与输入框 · 内容岛' },
 ]
@@ -55,7 +55,7 @@ function Hero() {
           <div key={fact.label} className="bg-background p-4">
             <dt className="text-xs text-muted-foreground">{fact.label}</dt>
             <dd className="mt-1 text-[17px] font-semibold tracking-tight text-foreground">{fact.value}</dd>
-            <dd className="mt-0.5 text-[11px] text-muted-foreground">{fact.note}</dd>
+            <dd className="mt-0.5 text-xs text-muted-foreground">{fact.note}</dd>
           </div>
         ))}
       </dl>
@@ -130,13 +130,13 @@ export function DesignSystemPage() {
 
       <div className="flex min-h-0 flex-1">
         <nav aria-label="设计系统目录" className="hidden w-60 shrink-0 overflow-y-auto px-2 pb-4 scrollbar-app-thin lg:block">
+          {/* 目录只放章节名：编号和组内计数对阅读没有帮助，逐行重复反而成了噪点 */}
           {SECTION_GROUPS.map(group => (
-            <NavGroup key={group.title} title={group.title} count={group.sections.length}>
+            <NavGroup key={group.title} title={group.title} className="mb-4">
               {group.sections.map(section => (
                 <NavRow
                   key={section.id}
                   label={section.title}
-                  meta={<span className="font-mono">{sectionNumber(section.id)}</span>}
                   active={activeId === section.id}
                   aria-current={activeId === section.id ? 'location' : undefined}
                   onClick={() => scrollTo(section.id)}

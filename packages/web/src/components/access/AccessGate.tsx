@@ -33,7 +33,7 @@ function UnlockView() {
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
             <LockKeyhole size={18} aria-hidden="true" />
           </div>
-          <h1 className="text-xl font-semibold tracking-tight">Agent Tower</h1>
+          <h1 className="text-[22px] font-semibold tracking-tight">Agent Tower</h1>
           <p className="text-sm text-muted-foreground">{translate('输入访问密码继续')}</p>
         </div>
 
@@ -50,7 +50,7 @@ function UnlockView() {
             aria-invalid={Boolean(error)}
             placeholder={translate('访问密码')}
           />
-          {error && <p className="text-xs text-destructive">{error}</p>}
+          {error && <p className="text-xs text-destructive-ink">{error}</p>}
         </div>
 
         <Button className="w-full" type="submit" disabled={!password || login.isPending}>

@@ -61,7 +61,7 @@ function AgentTypeGroup({
           <h3 className="text-[13px] font-semibold text-foreground">
             {AGENT_LABELS[agentType] ?? agentType}
           </h3>
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {variantEntries.length} {t('个变体')}
           </span>
           <ChevronDown
@@ -73,7 +73,7 @@ function AgentTypeGroup({
         <button
           type="button"
           onClick={onNew}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           <Plus size={12} aria-hidden="true" />
           {t('新增')}
@@ -91,7 +91,7 @@ function AgentTypeGroup({
                 className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-muted/40"
               >
                 <span className={cn(
-                  'inline-flex shrink-0 items-center rounded px-2 py-0.5 text-[11px] font-semibold tracking-wide',
+                  'inline-flex shrink-0 items-center rounded px-2 py-0.5 text-xs font-semibold',
                   variant === 'DEFAULT' ? 'bg-primary/[0.06] text-primary' : 'bg-muted text-muted-foreground',
                 )}>
                   {variant}
@@ -102,7 +102,7 @@ function AgentTypeGroup({
                 </span>
 
                 {builtIn && (
-                  <span className="shrink-0 text-[10px] font-medium text-muted-foreground/70">{t('内置')}</span>
+                  <span className="shrink-0 text-xs font-medium text-muted-foreground">{t('内置')}</span>
                 )}
 
                 <div className="flex shrink-0 items-center gap-1">
@@ -296,7 +296,7 @@ export function ProfileSettingsPage() {
               className="resize-none font-mono"
               aria-invalid={!!jsonError}
             />
-            {jsonError && <p role="alert" className="mt-1 text-xs text-destructive">{jsonError}</p>}
+            {jsonError && <p role="alert" className="mt-1 text-xs text-destructive-ink">{jsonError}</p>}
           </SettingsField>
         </div>
       </Modal>

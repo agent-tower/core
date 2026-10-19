@@ -5,6 +5,7 @@ import { apiClient } from '@/lib/api-client'
 import { useI18n } from '@/lib/i18n'
 import { FolderPicker } from '@/components/ui/folder-picker'
 import { Modal } from '@/components/ui/modal'
+import { Button } from '@/design-system'
 
 interface CreateProjectModalProps {
   isOpen: boolean
@@ -129,30 +130,18 @@ export function CreateProjectModal({ isOpen, onClose }: CreateProjectModalProps)
         title={t('Create New Project')}
         action={
           <>
-            <button
-              onClick={closeModal}
-              disabled={isBusy}
-              className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
-            >
+            <Button onClick={closeModal} disabled={isBusy}>
               {t('Cancel')}
-            </button>
-            <button
-              onClick={handleSubmit}
-              disabled={!canSubmit}
-              className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-                canSubmit
-                  ? 'bg-neutral-900 text-white hover:bg-black'
-                  : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
-              }`}
-            >
+            </Button>
+            <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit}>
               {isChecking ? t('Checking...') : createProject.isPending ? t('Creating...') : t('Create Project')}
-            </button>
+            </Button>
           </>
         }
       >
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-neutral-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground/80 mb-1.5">
               {t('Project Name')}
             </label>
             <input
@@ -161,12 +150,12 @@ export function CreateProjectModal({ isOpen, onClose }: CreateProjectModalProps)
               onChange={e => setProjectName(e.target.value)}
               placeholder={t('e.g., Agent Tower')}
               disabled={isBusy}
-              className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-400 transition-colors disabled:bg-neutral-50 disabled:text-neutral-400"
+              className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:border-ring transition-colors disabled:bg-muted/50 disabled:text-muted-foreground"
               autoFocus
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-neutral-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground/80 mb-1.5">
               {t('Project Path')}
             </label>
             <FolderPicker
@@ -176,7 +165,7 @@ export function CreateProjectModal({ isOpen, onClose }: CreateProjectModalProps)
             />
           </div>
           {formError && (
-            <p className="text-xs text-red-500 leading-relaxed">
+            <p className="text-xs text-destructive-ink leading-relaxed">
               {formError}
             </p>
           )}
@@ -193,31 +182,19 @@ export function CreateProjectModal({ isOpen, onClose }: CreateProjectModalProps)
         title={t('Initialize Git repository?')}
         action={
           <>
-            <button
-              onClick={() => setShowInitConfirm(false)}
-              disabled={createProject.isPending}
-              className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
-            >
+            <Button onClick={() => setShowInitConfirm(false)} disabled={createProject.isPending}>
               {t('Cancel')}
-            </button>
-            <button
-              onClick={handleCreateLocalProject}
-              disabled={createProject.isPending}
-              className="px-4 py-2 text-sm font-medium rounded-lg border border-neutral-200 text-neutral-700 hover:bg-neutral-50 transition-colors disabled:opacity-50"
-            >
+            </Button>
+            <Button onClick={handleCreateLocalProject} disabled={createProject.isPending}>
               {t('Create Local Project')}
-            </button>
-            <button
-              onClick={handleConfirmInit}
-              disabled={createProject.isPending}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-neutral-900 text-white hover:bg-black transition-colors disabled:opacity-50"
-            >
+            </Button>
+            <Button variant="primary" onClick={handleConfirmInit} disabled={createProject.isPending}>
               {createProject.isPending ? t('Creating...') : t('Initialize and Create')}
-            </button>
+            </Button>
           </>
         }
       >
-        <div className="space-y-3 text-sm text-neutral-600 leading-relaxed">
+        <div className="space-y-3 text-sm text-foreground/70 leading-relaxed">
           <p>
             {t('This directory is empty and does not have Git version control yet. Agent Tower can initialize Git and create the initial commit before creating the project.')}
           </p>

@@ -34,7 +34,7 @@ export function ProviderDraftTestResultPanel({ result }: { result: ProviderDraft
       data-provider-test-result
       className={cn(
         'rounded-lg border px-4 py-3 text-sm',
-        result.ok ? 'border-success/30 bg-success/10 text-success' : 'border-warning/30 bg-warning/10 text-foreground',
+        result.ok ? 'border-success/30 bg-success/10 text-success-ink' : 'border-warning/30 bg-warning/10 text-foreground',
       )}
     >
       <div className="flex min-w-0 items-start gap-2">

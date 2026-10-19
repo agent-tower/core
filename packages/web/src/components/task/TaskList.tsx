@@ -81,9 +81,9 @@ function TaskRowsSkeleton() {
     <div className="flex-1 overflow-hidden px-2 pt-3 motion-safe:animate-pulse" aria-hidden>
       {[3, 4].map((rows, group) => (
         <div key={group} className="mb-4">
-          <div className="flex h-7 items-center gap-1.5 px-2">
-            <div className="size-3.5 shrink-0 rounded-full bg-foreground/[0.06]" />
-            <div className="h-2.5 w-12 rounded-full bg-foreground/[0.06]" />
+          <div className="flex h-8 items-center gap-2.5 px-2 pointer-coarse:h-10">
+            <div className="size-4 shrink-0 rounded-full bg-foreground/[0.06]" />
+            <div className="h-3 w-14 rounded-full bg-foreground/[0.06]" />
           </div>
           {Array.from({ length: rows }).map((_, i) => (
             <div key={i} className="flex h-8 items-center gap-2.5 px-2 pointer-coarse:h-10">
@@ -169,7 +169,7 @@ export function TaskList({
       inner.style.margin = '0'
       inner.style.backgroundColor = 'var(--background)'
       inner.style.borderRadius = '0.5rem'
-      inner.style.boxShadow = '0 4px 6px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--border)'
+      inner.style.boxShadow = 'var(--shadow-popover), 0 0 0 1px var(--border)'
       inner.style.opacity = '0.96'
       inner.style.transition = 'none'
       inner.setAttribute('tabindex', '-1')
@@ -358,7 +358,7 @@ export function TaskList({
       ) : filteredTasks.length === 0 ? (
         /* 空状态：当前视图下没有任何任务（略高于几何中心，视觉上更居中） */
         <div className="flex-1 flex flex-col items-center justify-center px-6 pb-[10vh] text-center select-none">
-          <Layers size={36} className="text-muted-foreground/40 mb-3" strokeWidth={1.5} />
+          <Layers size={36} aria-hidden="true" className="text-muted-foreground/50 mb-3" strokeWidth={1.5} />
           <p className="text-sm text-muted-foreground mb-4">{t('No tasks')}</p>
           {canCreateTask && onCreateTask ? (
             <button
@@ -373,8 +373,8 @@ export function TaskList({
       ) : (
       <FlipContext.Provider value={flipHandle}>
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-        {/* scroll-pt 让出吸顶分组标题的高度，↑/↓ 聚焦的任务行不会被标题盖住 */}
-        <div className="flex-1 overflow-y-auto scrollbar-app-thin scroll-pt-8 relative">
+        {/* scroll-pt 让出吸顶分组标题的高度（32px，触屏 40px），↑/↓ 聚焦的任务行不会被标题盖住 */}
+        <div className="flex-1 overflow-y-auto scrollbar-app-thin scroll-pt-8 pointer-coarse:scroll-pt-10 relative">
           {/* 上下留白放在内层：sticky 会避让滚动容器自身的 padding，吸顶标题上方会漏出滚过去的任务行 */}
           <div className="pt-3 pb-4">
             {TASK_GROUP_CONFIG.map(({ status, title, defaultOpen }) => (
@@ -402,7 +402,7 @@ export function TaskList({
         {/* 拖拽浮层：与选中态同材质的白卡，Level 3 阴影表达「被拿起」 */}
         <DragOverlay dropAnimation={null}>
           {activeDragTask && dragStatus ? (
-            <div className="flex h-8 w-fit max-w-[280px] items-center gap-2.5 rounded-md bg-background px-2 text-sm text-foreground shadow-[0_12px_16px_-4px_rgba(36,36,36,0.08)] ring-1 ring-border/80">
+            <div className="flex h-8 w-fit max-w-[280px] items-center gap-2.5 rounded-md bg-background px-2 text-sm text-foreground shadow-overlay ring-1 ring-border/80">
               <dragStatus.icon className={cn('size-4 shrink-0', dragStatus.iconClass)} />
               <span className="truncate" title={activeDragTask.title}>{activeDragTask.title}</span>
             </div>

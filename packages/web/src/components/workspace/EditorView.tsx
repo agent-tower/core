@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor as MonacoEditor } from 'monaco-editor'
-import { Loader2, X, PanelLeftOpen, ZoomIn, ZoomOut, Maximize } from 'lucide-react'
+import { X, PanelLeftOpen, ZoomIn, ZoomOut, Maximize } from 'lucide-react'
 import { TransformWrapper, TransformComponent, useControls, useTransformComponent } from 'react-zoom-pan-pinch'
+import { Button, IconButton, Notice, Spinner } from '@/design-system'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { getApiBaseUrl } from '@/lib/api-base-url'
@@ -42,40 +43,20 @@ const ZoomToolbar: React.FC<{ filePath: string }> = ({ filePath }) => {
   const pct = Math.round(scale * 100)
 
   return (
-    <div className="flex items-center gap-1 px-3 py-1.5 border-b border-neutral-200 bg-neutral-50/80 shrink-0">
-      <button
-        type="button"
-        onClick={() => zoomOut(0.5)}
-        className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors"
-        title={t('Zoom out')}
-      >
-        <ZoomOut size={14} />
-      </button>
-      <button
-        type="button"
-        onClick={() => centerView(1)}
-        className="px-1.5 py-0.5 rounded hover:bg-neutral-200 text-[11px] text-neutral-600 tabular-nums min-w-[40px] text-center transition-colors"
-        title={t('Reset zoom')}
-      >
+    <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-muted/40 shrink-0">
+      <IconButton size="xs" label={t('Zoom out')} onClick={() => zoomOut(0.5)}>
+        <ZoomOut />
+      </IconButton>
+      <Button variant="ghost" size="xs" className="min-w-10 tabular-nums" onClick={() => centerView(1)} title={t('Reset zoom')}>
         {pct}%
-      </button>
-      <button
-        type="button"
-        onClick={() => zoomIn(0.5)}
-        className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors"
-        title={t('Zoom in')}
-      >
-        <ZoomIn size={14} />
-      </button>
-      <button
-        type="button"
-        onClick={() => centerView(1)}
-        className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-700 transition-colors ml-1"
-        title={t('Fit to view')}
-      >
-        <Maximize size={13} />
-      </button>
-      <span className="ml-2 text-[11px] text-neutral-400 truncate">{filePath}</span>
+      </Button>
+      <IconButton size="xs" label={t('Zoom in')} onClick={() => zoomIn(0.5)}>
+        <ZoomIn />
+      </IconButton>
+      <IconButton size="xs" label={t('Fit to view')} className="ml-1" onClick={() => centerView(1)}>
+        <Maximize />
+      </IconButton>
+      <span title={filePath} className="ml-2 truncate font-mono text-[11px] text-muted-foreground">{filePath}</span>
     </div>
   )
 }
@@ -90,7 +71,7 @@ const ImagePreview: React.FC<{ workingDir: string; filePath: string }> = ({
 
   if (error) {
     return (
-      <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
+      <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
         {t('Failed to load image.')}
       </div>
     )
@@ -114,7 +95,7 @@ const ImagePreview: React.FC<{ workingDir: string; filePath: string }> = ({
             <img
               src={src}
               alt={filePath}
-              className="max-w-full max-h-full object-contain rounded shadow-sm"
+              className="max-w-full max-h-full object-contain rounded shadow-raised"
               draggable={false}
               onError={() => setError(true)}
             />
@@ -182,17 +163,17 @@ const FileTabButton: React.FC<{
       type="button"
       onClick={onClick}
       className={cn(
-        'group flex items-center gap-2 px-3 py-2 rounded-t-md border-t border-x -mb-px min-w-[120px] max-w-[240px]',
+        'group flex items-center gap-2 px-3 py-2 rounded-t-md border-t border-x -mb-px min-w-[120px] max-w-[240px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60',
         active
-          ? 'bg-white border-neutral-200 text-neutral-900'
-          : 'bg-neutral-100/60 border-transparent text-neutral-500 hover:text-neutral-700 hover:bg-neutral-100'
+          ? 'bg-background border-border text-foreground'
+          : 'bg-foreground/[0.03] border-transparent text-muted-foreground hover:text-foreground hover:bg-foreground/[0.05]'
       )}
     >
-      <span className={cn('w-2 h-2 rounded-full', isDirty ? 'bg-amber-500' : 'bg-transparent')} />
+      <span className={cn('w-2 h-2 rounded-full', isDirty ? 'bg-warning' : 'bg-transparent')} />
       <span className="truncate flex-1 text-left text-xs">{name}</span>
       <span
         onClick={onClose}
-        className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-neutral-200 rounded transition-all shrink-0"
+        className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 pointer-coarse:opacity-100 p-0.5 hover:bg-foreground/[0.08] rounded transition-all shrink-0"
         aria-label={t('Close tab')}
         title={t('Close')}
       >
@@ -422,22 +403,17 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
   }, [activePath, activeTab?.loaded, editorMountVersion, pendingLocation])
 
   return (
-    <div className={cn('flex h-full overflow-hidden bg-white', className)} style={isDragging ? { userSelect: 'none', cursor: 'col-resize' } : undefined}>
+    <div className={cn('flex h-full overflow-hidden bg-background', className)} style={isDragging ? { userSelect: 'none', cursor: 'col-resize' } : undefined}>
       {/* Left: file tree */}
       <div
-        className="border-r border-neutral-200 bg-white shrink-0 overflow-hidden relative"
+        className="border-r border-border bg-background shrink-0 overflow-hidden relative"
         style={{ width: treeCollapsed ? 36 : treeWidth, transition: isDragging ? 'none' : 'width 0.15s ease' }}
       >
         {treeCollapsed ? (
           <div className="h-full flex items-start pt-2 justify-center">
-            <button
-              type="button"
-              onClick={toggleCollapse}
-              className="p-1.5 rounded hover:bg-neutral-100 text-neutral-500 hover:text-neutral-700 transition-colors"
-              title={t('Expand file tree')}
-            >
-              <PanelLeftOpen size={16} />
-            </button>
+            <IconButton size="sm" label={t('Expand file tree')} onClick={toggleCollapse}>
+              <PanelLeftOpen className="size-4" />
+            </IconButton>
           </div>
         ) : (
           <>
@@ -458,7 +434,7 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
           onMouseDown={onDragStart}
           className={cn(
             'w-1 shrink-0 cursor-col-resize transition-colors',
-            isDragging ? 'bg-blue-400' : 'bg-transparent hover:bg-blue-300'
+            isDragging ? 'bg-ring/40' : 'bg-transparent hover:bg-border'
           )}
         />
       )}
@@ -466,9 +442,9 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
       {/* Right: tabs + editor */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Tab bar */}
-        <div className="flex items-center gap-1 px-2 pt-2 border-b border-neutral-200 bg-neutral-100/80 overflow-x-auto shrink-0">
+        <div className="flex items-center gap-1 px-2 pt-2 border-b border-border bg-muted overflow-x-auto shrink-0">
           {tabs.length === 0 ? (
-            <div className="px-2 pb-2 text-xs text-neutral-500">{t('No open files')}</div>
+            <div className="px-2 pb-2 text-xs text-muted-foreground">{t('No open files')}</div>
           ) : (
             tabs.map((t) => (
               <FileTabButton
@@ -487,16 +463,16 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
 
           <div className="ml-auto flex items-center gap-2 pb-2 pr-1">
             {readOnly && (
-              <span className="text-[11px] text-neutral-400">{t('Read-only')}</span>
+              <span className="text-xs text-muted-foreground">{t('Read-only')}</span>
             )}
             {saveMutation.isPending && (
-              <span className="flex items-center gap-2 text-xs text-neutral-500">
-                <Loader2 size={14} className="animate-spin" />
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Spinner />
                 {t('Saving')}
               </span>
             )}
             {activeTab?.isDirty && !saveMutation.isPending && (
-              <span className="text-[11px] text-amber-600">{t('Unsaved')}</span>
+              <span className="text-xs text-warning-ink">{t('Unsaved')}</span>
             )}
           </div>
         </div>
@@ -504,22 +480,22 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
         {/* Editor area */}
         <div className="flex-1 min-h-0 relative">
           {!workingDir ? (
-            <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
+            <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
               {t('No workspace selected.')}
             </div>
           ) : !activeTab ? (
-            <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
+            <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
               {t('Select a file from the tree to open.')}
             </div>
           ) : activeTab.isImage ? (
             <ImagePreview workingDir={workingDir} filePath={activeTab.path} />
           ) : editorLoadFailed ? (
-            <div className="h-full flex items-center justify-center text-red-600 text-sm">
+            <div className="h-full flex items-center justify-center text-destructive-ink text-sm">
               {t('Failed to load editor.')}
             </div>
           ) : !editorReady ? (
-            <div className="h-full flex items-center justify-center text-neutral-500 text-sm">
-              <Loader2 size={14} className="animate-spin mr-2" />
+            <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+              <Spinner className="mr-2" />
               {t('Loading editor...')}
             </div>
           ) : (
@@ -543,17 +519,19 @@ export const EditorView = React.forwardRef<EditorViewHandle, { workingDir?: stri
               />
 
               {isFetching && !activeTab.loaded && (
-                <div className="absolute inset-0 bg-white/60 flex items-center justify-center">
-                  <div className="flex items-center gap-2 text-xs text-neutral-600">
-                    <Loader2 size={14} className="animate-spin" />
+                <div className="absolute inset-0 bg-background/60 flex items-center justify-center">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Spinner />
                     {t('Loading file...')}
                   </div>
                 </div>
               )}
 
               {isError && (
-                <div className="absolute bottom-2 left-2 right-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
-                  {t('Failed to load file')}{error instanceof Error ? `: ${error.message}` : ''}
+                <div className="absolute bottom-2 left-2 right-2 rounded-md bg-background shadow-raised">
+                  <Notice tone="danger" size="sm">
+                    {t('Failed to load file')}{error instanceof Error ? `: ${error.message}` : ''}
+                  </Notice>
                 </div>
               )}
             </>

@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
 import {
-  Loader2, AlertTriangle,
+  AlertTriangle,
   RefreshCw, Upload, XCircle, FileWarning, Info,
 } from 'lucide-react'
+import { Button, Notice, Spinner } from '@/design-system'
 import { useRebaseWorkspace, useMergeWorkspace, useAbortOperation, useGitStatus } from '@/hooks/use-workspaces'
 import { useWorkspaceBackgroundServices } from '@/hooks/use-workspace-services'
 import { useI18n } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 import {
   isMergeBlockingWorkspaceService,
   isWorkspaceServiceMergeError,
@@ -69,8 +71,8 @@ export function GitStatusBar({
 
   if (isLoading || !gitStatus) {
     return (
-      <div className="flex items-center gap-2 px-3 py-2 text-muted-foreground/70 border-b border-border/60">
-        <Loader2 size={14} className="animate-spin" />
+      <div className="flex items-center gap-2 px-3 py-2 text-muted-foreground border-b border-border/60">
+        <Spinner />
         <span className="text-xs">{t('正在检查工作区状态...')}</span>
       </div>
     )
@@ -81,6 +83,7 @@ export function GitStatusBar({
   const isDirty = gitStatus.hasUncommittedChanges || gitStatus.untrackedCount > 0
   const dirtyCount = gitStatus.uncommittedCount + gitStatus.untrackedCount
   const canUpdate = !hasConflicts && !isOperationInProgress && !isDirty
+  const canSubmit = !isDirty
   const noChanges = gitStatus.operation === 'idle' && gitStatus.ahead === 0 && gitStatus.behind === 0 && !isDirty && !hasConflicts
 
   const handleUpdate = () => {
@@ -123,8 +126,8 @@ export function GitStatusBar({
   // --- Main status view ---
   if (noChanges) {
     return (
-      <div className="flex items-center gap-2 px-3 py-2 text-muted-foreground/70 border-b border-border/60">
-        <Info size={13} />
+      <div className="flex items-center gap-2 px-3 py-2 text-muted-foreground border-b border-border/60">
+        <Info size={13} className="shrink-0 text-muted-foreground/70" />
         <span className="text-xs">{t('当前分支还没有任何变更')}</span>
       </div>
     )
@@ -135,58 +138,53 @@ export function GitStatusBar({
       <div className="border-b border-border bg-background">
         <div className="px-3 py-2">
           {error && (
-            <div className="mb-2 px-2.5 py-1.5 rounded-md bg-red-50 border border-red-200 text-[11px] text-red-700">
-              {error}
-            </div>
+            <Notice tone="danger" size="sm" className="mb-2">{error}</Notice>
           )}
 
           {isDirty && (
-            <div className="flex items-center gap-2 mb-2 px-2.5 py-1.5 rounded-md bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
-              <FileWarning size={12} className="shrink-0" />
-              <span>
-                {t('{count} 个本地改动未处理，需要先整理后再继续', { count: dirtyCount })}
-              </span>
-            </div>
+            <Notice tone="warning" size="sm" icon={<FileWarning />} className="mb-2">
+              {t('{count} 个本地改动未处理，需要先整理后再继续', { count: dirtyCount })}
+            </Notice>
           )}
 
           {hasConflicts && (
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-1.5 text-xs text-amber-700">
-                <AlertTriangle size={13} className="shrink-0" />
+              <div className="flex items-center gap-1.5 text-xs text-foreground">
+                <AlertTriangle size={13} className="shrink-0 text-warning" />
                 <span>{t('{count} 个文件存在冲突，需要处理后继续', { count: gitStatus.conflictedFiles.length })}</span>
               </div>
               <div className="flex items-center gap-1.5 ml-auto">
-                <button
-                  onClick={onResolveConflicts}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 border border-amber-200 transition-colors"
-                >
+                <Button variant="primary" size="sm" onClick={onResolveConflicts}>
                   {t('处理冲突')}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => abortOperation.mutate(workspaceId)}
-                  disabled={abortOperation.isPending}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:bg-muted border border-border transition-colors disabled:opacity-50"
+                  loading={abortOperation.isPending}
                 >
                   {abortOperation.isPending ? t('正在撤销...') : t('撤销操作')}
-                </button>
+                </Button>
               </div>
             </div>
           )}
 
           {isOperationInProgress && !hasConflicts && (
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-1.5 text-xs text-info">
-                <Loader2 size={13} className="animate-spin shrink-0" />
+              <div className="flex items-center gap-1.5 text-xs text-foreground">
+                <Spinner size="xs" className="text-info" />
                 <span>{gitStatus.operation === 'rebase' ? t('正在同步源分支更新...') : t('正在提交变更...')}</span>
               </div>
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
+                className="ml-auto"
                 onClick={() => abortOperation.mutate(workspaceId)}
-                disabled={abortOperation.isPending}
-                className="flex items-center gap-1.5 ml-auto px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:bg-muted border border-border transition-colors disabled:opacity-50"
+                loading={abortOperation.isPending}
               >
-                <XCircle size={12} />
+                {!abortOperation.isPending && <XCircle />}
                 {abortOperation.isPending ? t('正在撤销...') : t('撤销操作')}
-              </button>
+              </Button>
             </div>
           )}
 
@@ -197,14 +195,16 @@ export function GitStatusBar({
                   <span className="text-xs text-muted-foreground">
                     {t('源分支 {branch} 有 {count} 个更新', { branch: targetBranch, count: gitStatus.behind })}
                   </span>
-                  <button
+                  <Button
+                    variant="primary"
+                    size="sm"
                     onClick={handleUpdate}
-                    disabled={!canUpdate || rebaseWorkspace.isPending}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/90 transition-colors disabled:opacity-50"
+                    disabled={!canUpdate}
+                    loading={rebaseWorkspace.isPending}
                   >
-                    <RefreshCw size={12} />
+                    {!rebaseWorkspace.isPending && <RefreshCw />}
                     {rebaseWorkspace.isPending ? t('正在同步...') : t('同步更新')}
-                  </button>
+                  </Button>
                 </div>
               )}
 
@@ -213,25 +213,20 @@ export function GitStatusBar({
                   <span className="text-xs text-muted-foreground">
                     {t('{count} 个文件变更，可以安全提交', { count: committedFileCount ?? gitStatus.ahead })}
                   </span>
-                  {!isDirty ? (
-                    <button
+                  <span
+                    title={canSubmit ? undefined : t('需要先处理本地改动')}
+                    className={cn('inline-flex', !canSubmit && 'cursor-not-allowed')}
+                  >
+                    <Button
+                      variant="primary"
+                      size="sm"
                       onClick={handleOpenSubmitDialog}
-                      disabled={mergeWorkspace.isPending}
-                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/90 transition-colors disabled:opacity-50"
+                      disabled={!canSubmit || mergeWorkspace.isPending}
                     >
-                      <Upload size={12} />
+                      <Upload />
                       {t('提交变更')}
-                    </button>
-                  ) : (
-                    <button
-                      disabled
-                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground/60 bg-muted/60 border border-border cursor-not-allowed"
-                      title={isDirty ? t('需要先处理本地改动') : t('需要先同步源分支更新')}
-                    >
-                      <Upload size={12} />
-                      {t('提交变更')}
-                    </button>
-                  )}
+                    </Button>
+                  </span>
                 </div>
               )}
             </div>

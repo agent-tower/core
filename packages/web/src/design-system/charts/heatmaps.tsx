@@ -17,7 +17,7 @@ function inkOn(level: number) {
 export function ScaleLegend({ steps = [0, 1, 3, 4, 6], className }: { steps?: number[]; className?: string }) {
   const { t } = useI18n()
   return (
-    <span className={cn('inline-flex items-center gap-1.5 text-[11px] text-muted-foreground', className)}>
+    <span className={cn('inline-flex items-center gap-1.5 text-xs text-muted-foreground', className)}>
       {t('Less')}
       <span className="flex gap-[2px]" aria-hidden="true">
         {steps.map(step => <span key={step} className="size-2.5 rounded-[2px]" style={{ background: VIZ_RAMP[step] }} />)}
@@ -60,7 +60,7 @@ export function HeatTable({ rows, columns, data, corner, formatValue = defaultFo
   const ceiling = max ?? Math.max(1, ...data.flat())
   return (
     <div className={cn('overflow-x-auto scrollbar-app-thin', className)}>
-      <table aria-label={props['aria-label']} className="border-separate border-spacing-[2px] text-[11px]">
+      <table aria-label={props['aria-label']} className="border-separate border-spacing-[2px] text-xs">
         <thead>
           <tr>
             <th scope="col" className="pr-2 text-left font-normal text-muted-foreground">{corner}</th>
@@ -155,10 +155,10 @@ export function CalendarHeatmap({ start, values, describe, locale, className, ..
       ) : (
         <svg width={labelWidth + weeks * pitch} height={height} role="img" aria-label={props['aria-label']} className="block">
           {months.map(month => (
-            <text key={month.week} x={labelWidth + month.week * pitch} y={10} className="fill-muted-foreground text-[10px]">{month.label}</text>
+            <text key={month.week} x={labelWidth + month.week * pitch} y={10} className="fill-muted-foreground text-[11px]">{month.label}</text>
           ))}
           {[0, 2, 4].map(day => (
-            <text key={day} x={0} y={top + day * pitch + cell / 2} dy="0.32em" className="fill-muted-foreground text-[10px]">
+            <text key={day} x={0} y={top + day * pitch + cell / 2} dy="0.32em" className="fill-muted-foreground text-[11px]">
               {weekdayFormat.format(addDays(monday, day))}
             </text>
           ))}

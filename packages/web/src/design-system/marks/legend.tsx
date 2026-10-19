@@ -41,7 +41,7 @@ export function LegendSwatchMark({ swatch = 'solid', color = VIZ.ink }: { swatch
  */
 export function Legend({ items, className }: { items: LegendItem[]; className?: string }) {
   return (
-    <ul className={cn('flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[11px] text-muted-foreground', className)}>
+    <ul className={cn('flex flex-wrap items-center gap-x-3.5 gap-y-1 text-xs text-muted-foreground', className)}>
       {items.map((item, index) => (
         <li key={index} className="inline-flex items-center gap-1.5">
           <LegendSwatchMark swatch={item.swatch} color={item.color} />

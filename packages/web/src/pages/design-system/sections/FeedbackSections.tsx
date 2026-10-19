@@ -14,6 +14,7 @@ import {
   SkeletonRows,
   SkeletonText,
   Spinner,
+  TextLink,
   Tooltip,
   type BadgeVariant,
   type ButtonSize,
@@ -56,10 +57,10 @@ export function StatusSection() {
         <div className="overflow-x-auto scrollbar-app-thin">
           <div className="grid min-w-[560px] grid-cols-[96px_repeat(5,minmax(0,1fr))] items-center gap-x-3 gap-y-3">
             <span />
-            {BADGE_TONES.map(item => <span key={item.tone} className="font-mono text-[10px] text-muted-foreground">{item.tone}</span>)}
+            {BADGE_TONES.map(item => <span key={item.tone} className="font-mono text-[11px] text-muted-foreground">{item.tone}</span>)}
             {BADGE_VARIANTS.map(row => (
               <div key={row.variant} className="contents">
-                <span className="text-[11px] text-muted-foreground">{row.label}</span>
+                <span className="text-xs text-muted-foreground">{row.label}</span>
                 {BADGE_TONES.map(item => (
                   <span key={item.tone}>
                     <Badge tone={item.tone} variant={row.variant}>{item.label}</Badge>
@@ -119,7 +120,7 @@ export function StatusSection() {
       <Specimen
         name="Notice"
         title="提示条"
-        description="一段需要读到、但不打断操作的说明。颜色只给图标，正文保持墨色。"
+        description="一段需要读到、但不打断操作的说明。颜色只给图标，正文保持墨色。状态栏、侧栏这类紧凑面板用 sm 尺寸（最后一条）。"
         span={2}
         donts={['用提示条报告需要立刻处理的错误——那是对话框或 Toast 的事', '整段彩色正文']}
       >
@@ -139,6 +140,7 @@ export function StatusSection() {
             </div>
           )}
           <Notice className="lg:col-span-2">修改在新运行实例启动时生效，运行中的会话保留启动时的权限。</Notice>
+          <Notice size="sm" tone="warning" className="lg:col-span-2">3 个本地改动未处理，需要先整理后再继续。</Notice>
         </div>
       </Specimen>
 
@@ -245,6 +247,26 @@ export function ActionsSection() {
           <DemoRow label="尺寸">
             {SIZES.map(size => <Button key={size} size={size} variant={size === 'xl' ? 'primary' : 'secondary'}>{size}</Button>)}
           </DemoRow>
+        </div>
+      </Specimen>
+
+      <Specimen
+        name="TextLink"
+        title="文字链接"
+        description="句子里的链接：墨色加灰下划线，悬停时下划线加深。跟着句子折行、继承字号，长网址可以断开。单独的「查看文档」用 Button 的 link。"
+        dos={['站外链接加 external：新标签页打开，文字后跟 ↗', 'Markdown 渲染器、路由 Link 用 textLinkClassName()']}
+        donts={['用蓝色标链接：蓝色只表示运行中和信息', '链接文字写「这里」「点击」：写清去哪，如「执行权限说明」']}
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm leading-[22px] text-foreground/90">
+            任务完成后进入待审查，合并前可以在<TextLink href="#actions">变更视图</TextLink>里逐个文件确认；接入方式见<TextLink href="https://github.com/agent-tower/core" external>项目仓库</TextLink>。
+          </p>
+          <p className="text-xs leading-5 text-muted-foreground">
+            说明文字里的链接同样是墨色，比周围的灰字深一档：<TextLink href="#actions">查看全部快捷键</TextLink>
+          </p>
+          <p className="max-w-xs text-[13px] leading-5 text-foreground/90">
+            长网址在任意位置断开：<TextLink href="https://github.com/agent-tower/core/blob/main/packages/web/src/design-system/README.md" external>github.com/agent-tower/core/blob/main/packages/web/src/design-system/README.md</TextLink>
+          </p>
         </div>
       </Specimen>
 

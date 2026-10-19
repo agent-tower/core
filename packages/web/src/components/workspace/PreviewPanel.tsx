@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, ExternalLink, Globe2, Loader2, RefreshCw, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ExternalLink, Globe2, RefreshCw, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '@/components/ui/button'
+import { IconButton, Input, Spinner } from '@/design-system'
 import {
   usePreviewSession,
   usePreviewStatus,
@@ -349,7 +349,7 @@ function PreviewPanelContent({
 
   if (!workspaceId) {
     return (
-      <div className="h-full flex items-center justify-center bg-white text-sm text-neutral-500">
+      <div className="h-full flex items-center justify-center bg-background text-sm text-muted-foreground">
         {t('No active workspace.')}
       </div>
     )
@@ -360,13 +360,11 @@ function PreviewPanelContent({
   const busy = !isVisualizationMode && (isLoading || isFetching || updateConfig.isPending || isSessionOpening)
 
   return (
-    <div className="h-full flex flex-col bg-white">
-      <div className="shrink-0 border-b border-neutral-200 bg-neutral-50 px-2 py-2">
+    <div className="h-full flex flex-col bg-background">
+      <div className="shrink-0 border-b border-border bg-muted/40 px-2 py-2">
         <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
+          <IconButton
+            label={t('Back')}
             onClick={() => {
               if (isVisualizationMode) {
                 setVisualization(null)
@@ -375,26 +373,18 @@ function PreviewPanelContent({
               }
             }}
             disabled={!isVisualizationMode && !browser.iframeSrc}
-            title={t('Back')}
-            aria-label={t('Back')}
           >
             <ArrowLeft />
-          </Button>
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
+          </IconButton>
+          <IconButton
+            label={t('Forward')}
             onClick={() => postPreviewAction('forward')}
             disabled={isVisualizationMode || !browser.iframeSrc}
-            title={t('Forward')}
-            aria-label={t('Forward')}
           >
             <ArrowRight />
-          </Button>
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
+          </IconButton>
+          <IconButton
+            label={!isVisualizationMode && browser.isFrameLoading ? t('Stop loading') : t('Refresh preview')}
             onClick={!isVisualizationMode && browser.isFrameLoading
               ? () => {
                   postPreviewAction('stop')
@@ -402,16 +392,15 @@ function PreviewPanelContent({
                 }
               : handleRefresh}
             disabled={!isVisualizationMode && !browser.isFrameLoading && isFetching}
-            title={!isVisualizationMode && browser.isFrameLoading ? t('Stop loading') : t('Refresh preview')}
-            aria-label={!isVisualizationMode && browser.isFrameLoading ? t('Stop loading') : t('Refresh preview')}
           >
-            {!isVisualizationMode && browser.isFrameLoading ? <X /> : isFetching ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          </Button>
+            {!isVisualizationMode && browser.isFrameLoading ? <X /> : isFetching ? <Spinner /> : <RefreshCw />}
+          </IconButton>
 
-          <form className="relative min-w-0 flex-1" onSubmit={handleSubmit}>
-            <Globe2 className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-neutral-400" />
-            <input
+          <form className="min-w-0 flex-1" onSubmit={handleSubmit}>
+            <Input
               ref={addressInputRef}
+              size="sm"
+              prefix={<Globe2 />}
               value={visualization?.source.file ?? browser.address}
               onChange={(event) => patchBrowserState({ address: event.target.value })}
               onKeyDown={(event) => {
@@ -420,25 +409,20 @@ function PreviewPanelContent({
               disabled={isVisualizationMode || readOnly || updateConfig.isPending}
               placeholder={formatHint()}
               aria-label={t('Preview address')}
-              className="h-8 w-full min-w-0 rounded-md border border-neutral-200 bg-white pl-8 pr-2.5 text-xs text-neutral-800 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400 disabled:bg-neutral-100 disabled:text-neutral-400"
             />
           </form>
 
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
+          <IconButton
+            label={t('Open preview in new tab')}
             onClick={handleOpenInNewTab}
             disabled={!activeIframeSrc}
-            title={t('Open preview in new tab')}
-            aria-label={t('Open preview in new tab')}
           >
             <ExternalLink />
-          </Button>
+          </IconButton>
         </div>
 
-        <div className="mt-1 flex min-h-4 items-center justify-between gap-2 px-1 text-[11px] leading-4">
-          <span className="truncate text-neutral-500">
+        <div className="mt-1 flex min-h-4 items-center justify-between gap-2 px-1 text-xs leading-4">
+          <span className="truncate text-muted-foreground">
             {isVisualizationMode
               ? t('Viewing agent visualization')
               : busy
@@ -451,19 +435,20 @@ function PreviewPanelContent({
                     ? `${t('Preview target is not reachable')}${status.error ? `: ${status.error}` : ''}`
                     : t('Enter a local preview URL on the Agent Tower machine.')}
           </span>
-          <span className="shrink-0 text-neutral-400">
+          <span className="shrink-0 text-muted-foreground">
             {isVisualizationMode ? t('Session file') : t('Loopback only')}
           </span>
         </div>
       </div>
 
-      <div className="relative flex-1 min-h-0 bg-white">
+      <div className="relative flex-1 min-h-0 bg-background">
         {activeIframeSrc ? (
           <iframe
             key={iframeKey}
             ref={iframeRef}
             src={activeIframeSrc}
             title={t('Preview')}
+            // ds-allow black-white: 网页默认画布是白色，深色主题下也保持白底，与浏览器里看到的一致
             className="absolute inset-0 h-full w-full border-0 bg-white"
             sandbox={isVisualizationMode
               ? 'allow-modals allow-pointer-lock allow-presentation allow-scripts'
@@ -478,7 +463,7 @@ function PreviewPanelContent({
             }}
           />
         ) : (
-          <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm text-neutral-500">
+          <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm text-muted-foreground">
             {status?.configured
               ? status.ready && isSessionOpening
                 ? t('Checking preview target...')

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Clock3, Folder, Loader2, RefreshCw, Server } from 'lucide-react'
+import { AlertTriangle, Clock3, Folder, RefreshCw, Server } from 'lucide-react'
 import type {
   WorkspaceBackgroundServiceDto,
   WorkspaceBackgroundServiceRuntimeState,
 } from '@agent-tower/shared'
+import { Spinner } from '@/design-system'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { stripAnsiSequences } from '@/lib/ansi'
@@ -36,17 +37,17 @@ function formatStartedAt(value: string | null, locale: string, fallback: string)
 function getStatusMeta(state: WorkspaceBackgroundServiceRuntimeState) {
   switch (state) {
     case 'RUNNING':
-      return { label: 'Running', dotClassName: 'bg-emerald-400' }
+      return { label: 'Running', dotClassName: 'bg-terminal-green' }
     case 'STARTING':
-      return { label: 'Starting', dotClassName: 'bg-amber-400' }
+      return { label: 'Starting', dotClassName: 'bg-terminal-yellow' }
     case 'STOPPING':
-      return { label: 'Stopping', dotClassName: 'bg-amber-400' }
+      return { label: 'Stopping', dotClassName: 'bg-terminal-yellow' }
     case 'FAILED':
-      return { label: 'Failed', dotClassName: 'bg-red-400' }
+      return { label: 'Failed', dotClassName: 'bg-terminal-red' }
     case 'EXITED':
-      return { label: 'Exited', dotClassName: 'bg-neutral-400' }
+      return { label: 'Exited', dotClassName: 'bg-terminal-muted-foreground' }
     default:
-      return { label: 'Stopped', dotClassName: 'bg-neutral-500' }
+      return { label: 'Stopped', dotClassName: 'bg-terminal-bright-black' }
   }
 }
 
@@ -54,7 +55,7 @@ function StatusLabel({ state }: { state: WorkspaceBackgroundServiceRuntimeState 
   const { t } = useI18n()
   const status = getStatusMeta(state)
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] text-neutral-300">
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-terminal-foreground">
       <span className={cn('h-1.5 w-1.5 rounded-full', status.dotClassName)} aria-hidden="true" />
       {t(status.label)}
     </span>
@@ -64,13 +65,13 @@ function StatusLabel({ state }: { state: WorkspaceBackgroundServiceRuntimeState 
 function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
   const { t } = useI18n()
   return (
-    <div className="flex min-h-24 items-center justify-center gap-2 px-4 text-xs text-red-300" role="alert">
-      <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
+    <div className="flex min-h-24 items-center justify-center gap-2 px-4 text-xs text-terminal-foreground" role="alert">
+      <AlertTriangle size={14} className="shrink-0 text-terminal-red" aria-hidden="true" />
       <span>{message}</span>
       <button
         type="button"
         onClick={onRetry}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-[#333] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-terminal-muted-foreground transition-colors hover:bg-terminal-accent hover:text-terminal-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-muted-foreground"
         title={t('Retry')}
         aria-label={t('Retry')}
       >
@@ -111,22 +112,22 @@ export function WorkspaceBackgroundServices({
   }, [logText])
 
   return (
-    <div className="flex h-full min-h-0 w-full min-w-0 flex-col bg-[#1e1e1e] text-neutral-200 md:flex-row">
-      <aside className="flex max-h-[44%] min-h-32 shrink-0 flex-col border-b border-[#343434] bg-[#252526] md:max-h-none md:min-h-0 md:w-72 md:border-b-0 md:border-r">
-        <div className="flex h-10 shrink-0 items-center justify-between border-b border-[#343434] px-3">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-col bg-terminal text-terminal-foreground md:flex-row">
+      <aside className="flex max-h-[44%] min-h-32 shrink-0 flex-col border-b border-terminal-border bg-terminal-chrome md:max-h-none md:min-h-0 md:w-72 md:border-b-0 md:border-r">
+        <div className="flex h-10 shrink-0 items-center justify-between border-b border-terminal-border px-3">
           <div className="flex min-w-0 items-center gap-2">
-            <Server size={13} className="shrink-0 text-neutral-400" aria-hidden="true" />
+            <Server size={13} className="shrink-0 text-terminal-muted-foreground" aria-hidden="true" />
             <h2 className="truncate text-xs font-medium">{t('Background services')}</h2>
           </div>
           {!servicesQuery.isLoading && !servicesQuery.isError && (
-            <span className="text-[11px] tabular-nums text-neutral-500">{services.length}</span>
+            <span className="text-[11px] tabular-nums text-terminal-muted-foreground">{services.length}</span>
           )}
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto scrollbar-app-thin">
           {servicesQuery.isLoading ? (
-            <div className="flex min-h-24 items-center justify-center gap-2 text-xs text-neutral-500">
-              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+            <div className="flex min-h-24 items-center justify-center gap-2 text-xs text-terminal-muted-foreground">
+              <Spinner size="sm" />
               {t('Loading background services...')}
             </div>
           ) : servicesQuery.isError ? (
@@ -135,7 +136,7 @@ export function WorkspaceBackgroundServices({
               onRetry={() => void servicesQuery.refetch()}
             />
           ) : services.length === 0 ? (
-            <div className="flex min-h-24 flex-col items-center justify-center gap-2 px-4 text-center text-xs text-neutral-500">
+            <div className="flex min-h-24 flex-col items-center justify-center gap-2 px-4 text-center text-xs text-terminal-muted-foreground">
               <Server size={22} aria-hidden="true" />
               <span>{t('No background services')}</span>
             </div>
@@ -149,22 +150,24 @@ export function WorkspaceBackgroundServices({
                   onClick={() => setSelectedName(service.name)}
                   aria-pressed={selected}
                   className={cn(
-                    'block w-full border-b border-[#343434] px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-neutral-400',
-                    selected ? 'bg-[#1e1e1e]' : 'hover:bg-[#2d2d2d]',
+                    'block w-full border-b border-terminal-border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-terminal-muted-foreground',
+                    // 选中的行与终端同底色，像「接」在右侧日志上
+                    selected ? 'bg-terminal' : 'hover:bg-terminal-accent',
                   )}
                 >
                   <span className="flex min-w-0 items-center justify-between gap-2">
-                    <span className="truncate text-xs font-medium text-neutral-100">{service.name}</span>
+                    <span className="truncate text-xs font-medium text-terminal-foreground">{service.name}</span>
                     <StatusLabel state={service.runtimeState} />
                   </span>
-                  <span className="mt-1 block truncate font-mono text-[10px] text-neutral-500" title={formatCommand(service)}>
+                  <span className="mt-1 block truncate font-mono text-[11px] text-terminal-muted-foreground" title={formatCommand(service)}>
                     {formatCommand(service)}
                   </span>
-                  <span className="mt-1 flex min-w-0 items-center gap-1 text-[10px] text-neutral-500">
+                  <span className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-terminal-muted-foreground">
                     <Folder size={10} className="shrink-0" aria-hidden="true" />
                     <span className="truncate">{service.relativeCwd || '.'}</span>
                   </span>
-                  <span className="mt-1 flex min-w-0 items-center gap-1 text-[10px] text-neutral-500">
+                  {/* 时间用 11px 数字字号；「未启动」是中文，按 12px */}
+                  <span className={`mt-1 flex min-w-0 items-center gap-1 ${service.startedAt ? 'text-[11px]' : 'text-xs'} text-terminal-muted-foreground`}>
                     <Clock3 size={10} className="shrink-0" aria-hidden="true" />
                     <span className="truncate">
                       {formatStartedAt(service.startedAt, locale, t('Not started'))}
@@ -177,58 +180,59 @@ export function WorkspaceBackgroundServices({
         </div>
       </aside>
 
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-[#1e1e1e]" aria-label={t('Background service logs')}>
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-terminal" aria-label={t('Background service logs')}>
         {selectedService ? (
           <>
-            <header className="shrink-0 border-b border-[#343434] bg-[#252526]">
+            <header className="shrink-0 border-b border-terminal-border bg-terminal-chrome">
               <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2">
-                <span className="min-w-0 truncate text-xs font-semibold text-neutral-100">
+                <span className="min-w-0 truncate text-xs font-semibold text-terminal-foreground">
                   {selectedService.name}
                 </span>
                 <StatusLabel state={selectedService.runtimeState} />
               </div>
               <div
-                className="max-h-32 overflow-y-auto overscroll-y-contain px-3 pb-2 scrollbar-app-thin focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-neutral-400"
+                className="max-h-32 overflow-y-auto overscroll-y-contain px-3 pb-2 scrollbar-app-thin focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-terminal-muted-foreground"
                 tabIndex={0}
                 aria-label={`${selectedService.name} ${t('Details')}`}
               >
-                <dl className="mt-1.5 grid min-w-0 gap-x-4 gap-y-1 text-[10px] text-neutral-500 sm:grid-cols-2">
+                <dl className="mt-1.5 grid min-w-0 gap-x-4 gap-y-1 text-xs text-terminal-muted-foreground sm:grid-cols-2">
                   <div className="flex min-w-0 gap-1.5">
                     <dt className="shrink-0">{t('Command')}:</dt>
-                    <dd className="min-w-0 break-all font-mono text-neutral-400">{formatCommand(selectedService)}</dd>
+                    <dd className="min-w-0 break-all font-mono text-terminal-foreground">{formatCommand(selectedService)}</dd>
                   </div>
                   <div className="flex min-w-0 gap-1.5">
                     <dt className="shrink-0">{t('Working directory')}:</dt>
-                    <dd className="min-w-0 break-all font-mono text-neutral-400">{selectedService.relativeCwd || '.'}</dd>
+                    <dd className="min-w-0 break-all font-mono text-terminal-foreground">{selectedService.relativeCwd || '.'}</dd>
                   </div>
                   <div className="flex min-w-0 items-center gap-1.5 sm:col-span-2">
                     <Clock3 size={10} className="shrink-0" aria-hidden="true" />
                     <dt className="shrink-0">{t('Started')}:</dt>
-                    <dd className="truncate text-neutral-400">
+                    <dd className="truncate text-terminal-foreground">
                       {formatStartedAt(selectedService.startedAt, locale, t('Not started'))}
                     </dd>
                   </div>
                 </dl>
                 {selectedService.lastError && (
-                  <p className="mt-1.5 break-words text-[10px] text-red-300" role="alert">
-                    {selectedService.lastError}
+                  <p className="mt-1.5 flex min-w-0 items-start gap-1.5 break-words text-xs text-terminal-foreground" role="alert">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0 text-terminal-red" aria-hidden="true" />
+                    <span className="min-w-0">{selectedService.lastError}</span>
                   </p>
                 )}
               </div>
             </header>
 
             {(logsQuery.data?.truncated || logsQuery.data?.reset) && (
-              <div className="shrink-0 border-b border-amber-400/20 bg-amber-400/10 px-3 py-1.5 text-[10px] text-amber-200">
+              <div className="shrink-0 border-b border-terminal-yellow/20 bg-terminal-yellow/10 px-3 py-1.5 text-xs text-terminal-foreground">
                 {t('Earlier log output is unavailable.')}
               </div>
             )}
             {logsQuery.isError && (
-              <div className="flex shrink-0 items-center gap-2 border-b border-red-400/20 bg-red-400/10 px-3 py-1.5 text-[10px] text-red-200" role="alert">
+              <div className="flex shrink-0 items-center gap-2 border-b border-terminal-red/20 bg-terminal-red/10 px-3 py-1.5 text-xs text-terminal-foreground" role="alert">
                 <span>{t('Failed to refresh service logs.')}</span>
                 <button
                   type="button"
                   onClick={() => void logsQuery.refetch()}
-                  className="flex h-6 w-6 items-center justify-center rounded text-red-100 transition-colors hover:bg-red-300/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-200"
+                  className="flex h-6 w-6 items-center justify-center rounded text-terminal-foreground transition-colors hover:bg-terminal-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-muted-foreground"
                   title={t('Retry')}
                   aria-label={t('Retry')}
                 >
@@ -249,23 +253,23 @@ export function WorkspaceBackgroundServices({
               tabIndex={0}
             >
               {logsQuery.isLoading && !logsQuery.data ? (
-                <div className="flex h-full items-center justify-center gap-2 text-xs text-neutral-500">
-                  <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                <div className="flex h-full items-center justify-center gap-2 text-xs text-terminal-muted-foreground">
+                  <Spinner size="sm" />
                   {t('Loading service logs...')}
                 </div>
               ) : logText ? (
-                <pre className="m-0 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-neutral-300">
+                <pre className="m-0 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-terminal-foreground">
                   {logText}
                 </pre>
               ) : (
-                <div className="flex h-full items-center justify-center text-xs text-neutral-500">
+                <div className="flex h-full items-center justify-center text-xs text-terminal-muted-foreground">
                   {t('No logs yet')}
                 </div>
               )}
             </div>
           </>
         ) : (
-          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-neutral-500">
+          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-terminal-muted-foreground">
             {servicesQuery.isLoading ? t('Loading background services...') : t('Select a background service')}
           </div>
         )}

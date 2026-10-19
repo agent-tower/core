@@ -89,7 +89,7 @@ export function CreateTeamRunDialog({ isOpen, onClose, taskId }: CreateTeamRunDi
       />
 
         {submitError && (
-          <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive-ink">
             {submitError}
           </div>
         )}

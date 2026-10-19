@@ -75,7 +75,7 @@ export function TaskSearchModal({ isOpen, onClose, tasks, projects, onSelectTask
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
 
       {/* 浮层主体：居中偏上 */}
-      <div className="absolute left-1/2 top-[18vh] w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 bg-popover rounded-xl border border-border shadow-lg overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+      <div className="absolute left-1/2 top-[18vh] w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 bg-popover rounded-xl border border-border shadow-popover overflow-hidden animate-in fade-in zoom-in-95 duration-100">
         {/* 搜索输入 */}
         <div className="flex items-center gap-2.5 px-4 border-b border-border/60">
           <Search size={15} className="text-muted-foreground/70 shrink-0" />
@@ -94,7 +94,7 @@ export function TaskSearchModal({ isOpen, onClose, tasks, projects, onSelectTask
         {results.length > 0 ? (
           <>
             {!query.trim() && (
-              <div className="px-4 pt-2.5 pb-1 text-[11px] font-medium text-muted-foreground/70">
+              <div className="px-4 pt-2.5 pb-1 text-xs font-medium text-muted-foreground">
                 {t('Recent tasks')}
               </div>
             )}
@@ -115,7 +115,7 @@ export function TaskSearchModal({ isOpen, onClose, tasks, projects, onSelectTask
                       {task.title}
                     </span>
                     {project && (
-                      <span className="shrink-0 max-w-[120px] truncate text-xs text-muted-foreground/70">
+                      <span className="shrink-0 max-w-[120px] truncate text-xs text-muted-foreground">
                         {project.name}
                       </span>
                     )}
@@ -125,7 +125,7 @@ export function TaskSearchModal({ isOpen, onClose, tasks, projects, onSelectTask
             </div>
           </>
         ) : (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground/70">
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('No matching tasks')}
           </div>
         )}

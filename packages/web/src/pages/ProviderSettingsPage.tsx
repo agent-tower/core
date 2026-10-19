@@ -18,7 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { Switch } from '@/components/ui/switch'
+import { Switch } from '@/design-system'
 import { Plus, Pencil, Trash2, CheckCircle2, XCircle, ChevronDown, Download, Upload, RotateCcw, AlertTriangle, Cpu, FlaskConical, KeyRound, Loader2 } from 'lucide-react'
 import {
   AgentType,
@@ -357,9 +357,9 @@ function downloadJsonFile(filename: string, data: unknown) {
 function getImportActionMeta(action: ProviderImportAction) {
   switch (action) {
     case 'CREATE':
-      return { label: '新增', className: 'bg-success/10 text-success' }
+      return { label: '新增', className: 'bg-success/10 text-success-ink' }
     case 'OVERWRITE':
-      return { label: '覆盖', className: 'bg-warning/10 text-warning' }
+      return { label: '覆盖', className: 'bg-warning/10 text-warning-ink' }
     case 'SKIP':
       return { label: '跳过', className: 'bg-muted text-muted-foreground' }
   }
@@ -382,14 +382,14 @@ function AvailabilityBadge({ issue }: { issue?: string }) {
   const { t } = useI18n()
   if (!issue) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
+      <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success-ink">
         <CheckCircle2 size={11} aria-hidden="true" />
         {t('可用')}
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
       <XCircle size={11} aria-hidden="true" />
       {t('不可用')}
     </span>
@@ -748,7 +748,7 @@ export function ProviderFormModal({
       action={
         <div className="flex w-full flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Button variant="outline" onClick={handleTest} disabled={testProvider.isPending || !!apiBaseUrlError || !!configError || !!permissionError || !!fastModeState?.error || !!websocketState?.error || !!reasoningEffortError || (!!settingsError && settingsTouched) || conflicts.length > 0}>
-            {testProvider.isPending ? <Loader2 className="animate-spin" /> : <FlaskConical />}
+            {testProvider.isPending ? <Loader2 className="animate-spin motion-reduce:[animation-duration:2.4s]" /> : <FlaskConical />}
             {testProvider.isPending ? t('测试中...') : t('测试配置')}
           </Button>
           <div className="flex gap-2">
@@ -789,7 +789,7 @@ export function ProviderFormModal({
           {initialData && (
             <div>
               <label className="mb-1 block text-xs font-medium text-foreground">{t('Agent 类型')}</label>
-              <div className="flex h-9 items-center gap-2 rounded-lg border border-neutral-200 bg-muted/30 px-3 text-sm text-muted-foreground">
+              <div className="flex h-9 items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 text-sm text-muted-foreground">
                 <AgentLogo agentType={formData.agentType} className="size-4" />
                 <span className="min-w-0 truncate">{getProviderAgentLabel(formData.agentType, formData.runtimeType)}</span>
               </div>
@@ -831,7 +831,7 @@ export function ProviderFormModal({
                 aria-describedby={apiBaseUrlError ? 'provider-api-url-error' : undefined}
               />
               {apiBaseUrlError && (
-                <p id="provider-api-url-error" role="alert" className="mt-1 text-xs text-destructive">
+                <p id="provider-api-url-error" role="alert" className="mt-1 text-xs text-destructive-ink">
                   {t('请输入以 http:// 或 https:// 开头的完整 API 地址')}
                 </p>
               )}
@@ -926,7 +926,7 @@ export function ProviderFormModal({
                 />
               </div>
               {fastModeState.error && (
-                <p role="alert" className="mt-1 text-xs text-destructive">
+                <p role="alert" className="mt-1 text-xs text-destructive-ink">
                   {t('Fast 模式字段必须为 true 或 false，请在运行配置 JSON 中修正。')}
                 </p>
               )}
@@ -951,7 +951,7 @@ export function ProviderFormModal({
                 />
               </div>
               {websocketState.error && (
-                <p role="alert" className="mt-1 text-xs text-destructive">
+                <p role="alert" className="mt-1 text-xs text-destructive-ink">
                   {t('禁用 WebSocket 字段必须为 true 或 false，请在运行配置 JSON 中修正。')}
                 </p>
               )}
@@ -1042,7 +1042,7 @@ export function ProviderFormModal({
               className="font-mono"
               aria-invalid={!!configError}
             />
-            {configError && <p role="alert" className="mt-1 text-xs text-destructive">{configError}</p>}
+            {configError && <p role="alert" className="mt-1 text-xs text-destructive-ink">{configError}</p>}
 
           </div>
 
@@ -1192,7 +1192,7 @@ export function ProviderFormModal({
               aria-invalid={!!settingsError}
             />
             {settingsError && (
-              <p role="alert" className="mt-1 text-xs text-destructive">{settingsError}</p>
+              <p role="alert" className="mt-1 text-xs text-destructive-ink">{settingsError}</p>
             )}
           </div>
         )}
@@ -1305,16 +1305,16 @@ function ImportPreviewModal({
 
         <div className="grid grid-cols-3 gap-3">
           <div className="rounded-lg border border-success/25 bg-success/10 px-4 py-3">
-            <div className="text-xs font-medium text-success">{t('新增')}</div>
-            <div className="text-lg font-semibold text-foreground">{preview.summary.create}</div>
+            <div className="text-xs font-medium text-success-ink">{t('新增')}</div>
+            <div className="text-[15px] font-semibold text-foreground">{preview.summary.create}</div>
           </div>
           <div className="rounded-lg border border-warning/25 bg-warning/10 px-4 py-3">
-            <div className="text-xs font-medium text-warning">{t('覆盖')}</div>
-            <div className="text-lg font-semibold text-foreground">{preview.summary.overwrite}</div>
+            <div className="text-xs font-medium text-warning-ink">{t('覆盖')}</div>
+            <div className="text-[15px] font-semibold text-foreground">{preview.summary.overwrite}</div>
           </div>
           <div className="rounded-lg border border-border bg-muted/40 px-4 py-3">
             <div className="text-xs font-medium text-muted-foreground">{t('跳过')}</div>
-            <div className="text-lg font-semibold text-foreground">{preview.summary.skip}</div>
+            <div className="text-[15px] font-semibold text-foreground">{preview.summary.skip}</div>
           </div>
         </div>
 
@@ -1327,7 +1327,7 @@ function ImportPreviewModal({
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <h4 className="truncate text-sm font-medium text-foreground">{item.incoming.name}</h4>
-                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.className}`}>
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${meta.className}`}>
                         {t(meta.label)}
                       </span>
                     </div>
@@ -1397,12 +1397,12 @@ function ProviderDetailPanel({
               <span className="truncate">{getProviderAgentLabel(provider.agentType, provider.runtimeType)}</span>
             </span>
             {provider.isDefault && (
-              <span className="rounded-full bg-primary/[0.06] px-2 py-0.5 text-[11px] font-medium text-primary">
+              <span className="rounded-full bg-primary/[0.06] px-2 py-0.5 text-xs font-medium text-primary">
                 {t('默认')}
               </span>
             )}
             {provider.builtIn && (
-              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                 {t('内置')}
               </span>
             )}
@@ -1429,12 +1429,12 @@ function ProviderDetailPanel({
         <SettingsSectionTitle>{t('Execution permission')}</SettingsSectionTitle>
         <p className="text-sm">{t(EXECUTION_PERMISSION_LABELS[resolveProviderExecutionPermission(provider).mode])}</p>
         {permissionIssue && !provider.diagnostics?.some(item => item.field === 'executionPermission') ? (
-          <p role="alert" className="text-xs text-destructive">{t(permissionIssue)}</p>
+          <p role="alert" className="text-xs text-destructive-ink">{t(permissionIssue)}</p>
         ) : null}
         {provider.diagnostics?.filter(item => item.field === 'executionPermission').map((item, index) => (
-          <p key={`${item.code}-${index}`} role="alert" className="text-xs text-destructive">{t(item.message)}</p>
+          <p key={`${item.code}-${index}`} role="alert" className="text-xs text-destructive-ink">{t(item.message)}</p>
         ))}
-        {startIssue && !permissionIssue ? <p role="alert" className="text-xs text-destructive">{t(startIssue)}</p> : null}
+        {startIssue && !permissionIssue ? <p role="alert" className="text-xs text-destructive-ink">{t(startIssue)}</p> : null}
         <p className="text-xs text-muted-foreground">{t('Changes apply when a new runtime starts. Running sessions keep their launch mode.')}</p>
       </div>
 
@@ -1694,7 +1694,7 @@ export function ProviderSettingsPage() {
           getItemId={(item) => item.provider.id}
           mobileShowDetail={mobileShowDetail}
           onMobileBack={() => setMobileShowDetail(false)}
-          renderListItem={(item, isActive) => {
+          renderListItem={(item) => {
             const p = item.provider
             const issue = getProviderStartIssue(item)
             return (
@@ -1702,20 +1702,20 @@ export function ProviderSettingsPage() {
                 <AvailabilityDot issue={issue} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13px] font-medium">{p.name}</div>
-                  <div className={cn('flex min-w-0 items-center gap-1.5 text-[11px]', isActive ? 'text-primary-foreground/60' : 'text-muted-foreground')}>
+                  <div className={cn('flex min-w-0 items-center gap-1.5 text-[11px]', 'text-muted-foreground')}>
                     <AgentLogo
                       agentType={p.agentType}
                       className="size-3.5"
-                      fallbackClassName={isActive ? 'text-primary-foreground/70' : 'text-muted-foreground'}
+                      fallbackClassName="text-muted-foreground"
                     />
                     <span className="min-w-0 truncate">{getProviderAgentLabel(p.agentType, p.runtimeType)}</span>
                   </div>
-                  {issue ? <div className={cn('mt-0.5 break-words text-[11px] leading-snug', isActive ? 'text-primary-foreground/80' : 'text-destructive')}>{t(issue)}</div> : null}
+                  {issue ? <div className={cn('mt-0.5 break-words text-xs leading-snug text-destructive-ink')}>{t(issue)}</div> : null}
                 </div>
                 {p.isDefault && (
                   <span className={cn(
-                    'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
-                    isActive ? 'bg-white/20 text-primary-foreground' : 'bg-primary/[0.06] text-primary',
+                    'shrink-0 rounded px-1.5 py-0.5 text-xs font-medium',
+                    'bg-primary/[0.06] text-primary',
                   )}>
                     {t('默认')}
                   </span>

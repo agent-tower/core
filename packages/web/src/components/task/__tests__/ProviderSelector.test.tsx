@@ -31,6 +31,19 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
+/** 渠道菜单是设计系统的 Menu：按下鼠标打开，选项渲染在浮层（document.body）里 */
+function openMenu(trigger: HTMLElement) {
+  trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+}
+
+function options() {
+  return [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')]
+}
+
+function option(label: string) {
+  return options().find(item => item.textContent?.includes(label))!
+}
+
 describe('ProviderSelector', () => {
   it('shows only the server reason when the only Provider is blocked', () => {
     const container = document.createElement('div')
@@ -88,8 +101,8 @@ describe('ProviderSelector', () => {
         agentType={AgentType.CODEX} runtimeType={RuntimeType.CLI} onSelect={onSelect} />,
     ))
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Selected Provider is unavailable.')
-    act(() => container.querySelector('button')!.click())
-    act(() => [...container.querySelectorAll('button')].find(button => button.textContent?.includes('remaining'))!.click())
+    act(() => openMenu(container.querySelector('button')!))
+    act(() => option('remaining').click())
     expect(onSelect).toHaveBeenCalledWith('remaining')
     act(() => root.unmount())
   })
@@ -109,20 +122,19 @@ describe('ProviderSelector', () => {
       <ProviderSelector providers={[provider('ready', RuntimeType.ACP), blocked]}
         currentProviderId="ready" agentType={AgentType.CODEX} runtimeType={RuntimeType.ACP} onSelect={onSelect} />,
     ))
-    act(() => container.querySelector<HTMLButtonElement>('button')!.click())
-    const blockedOption = [...container.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.includes('blocked'))!
-    expect(blockedOption.disabled).toBe(true)
+    act(() => openMenu(container.querySelector<HTMLButtonElement>('button')!))
+    const blockedOption = option('blocked')
+    // 不能选的渠道仍可聚焦，原因通过 aria-describedby 交给读屏
+    expect(blockedOption.getAttribute('aria-disabled')).toBe('true')
     expect(blockedOption.textContent).toContain('Remove sandbox_workspace_write')
-    const help = blockedOption.parentElement!
-    expect(help.tabIndex).toBe(0)
-    expect(help.getAttribute('aria-label')).toContain('Remove sandbox_workspace_write')
+    const description = document.getElementById(blockedOption.getAttribute('aria-describedby') ?? '')
+    expect(description?.textContent).toContain('Remove sandbox_workspace_write')
     act(() => {
-      help.focus()
+      blockedOption.focus()
       blockedOption.click()
-      help.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      blockedOption.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
-    expect(document.activeElement).toBe(help)
+    expect(document.activeElement).toBe(blockedOption)
     expect(onSelect).not.toHaveBeenCalled()
     act(() => root.unmount())
   })
@@ -145,8 +157,8 @@ describe('ProviderSelector', () => {
       />,
     ))
 
-    const trigger = document.querySelector('button')
-    act(() => trigger?.click())
+    const trigger = document.querySelector('button')!
+    act(() => openMenu(trigger))
 
     expect(document.body.textContent).toContain('codex-acp-primary')
     expect(document.body.textContent).toContain('codex-acp-secondary')
@@ -177,20 +189,16 @@ describe('ProviderSelector', () => {
     // ACP Session 必须渲染可点击下拉，而不是把切换入口退化成静态文本。
     const trigger = document.querySelector('button')
     expect(trigger).not.toBeNull()
-    act(() => trigger?.click())
+    act(() => openMenu(trigger!))
 
-    const optionButtons = () => Array.from(
-      container.querySelectorAll<HTMLButtonElement>('.relative button'),
-    )
-    const optionLabels = () => optionButtons().map(button => button.textContent ?? '')
+    const optionLabels = () => options().map(item => item.textContent ?? '')
 
     expect(optionLabels().some(text => text.includes('codex-acp-default'))).toBe(true)
     expect(optionLabels().some(text => text.includes('codex-acp-alpha'))).toBe(true)
     expect(optionLabels().some(text => text.includes('codex-acp-bravo'))).toBe(true)
     expect(optionLabels().some(text => text.includes('codex-cli'))).toBe(false)
 
-    const target = optionButtons().find(button => button.textContent?.includes('codex-acp-bravo'))
-    act(() => target?.click())
+    act(() => option('codex-acp-bravo').click())
     expect(onSelect).toHaveBeenCalledWith('codex-acp-bravo')
     act(() => root.unmount())
   })

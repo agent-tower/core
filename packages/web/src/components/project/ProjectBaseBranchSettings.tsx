@@ -16,16 +16,16 @@ export function ProjectBaseBranchSettings({ projectId }: { projectId: string }) 
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-[13px] font-medium text-foreground">{t('Default base branch')}</h3>
-          <p className="text-[11px] text-muted-foreground mt-0.5">
+          <p className="text-xs text-muted-foreground mt-0.5">
             {t('New task and TeamRun main workspaces start from this branch. Existing workspaces keep their base branch.')}
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching} aria-label={t('Refresh')}>
-          <RefreshCw size={13} className={query.isFetching ? 'animate-spin' : ''} />
+          <RefreshCw size={13} className={query.isFetching ? 'animate-spin motion-reduce:[animation-duration:2.4s]' : ''} />
         </Button>
       </div>
       {query.isPending ? <p className="text-xs text-muted-foreground">{t('Loading...')}</p> : query.isError ? (
-        <p role="alert" className="text-xs text-destructive">{t('Could not load branches. Refresh to try again.')}</p>
+        <p role="alert" className="text-xs text-destructive-ink">{t('Could not load branches. Refresh to try again.')}</p>
       ) : query.data && (
         <DefaultBaseBranchEditor
           key={`${projectId}:${query.data.mainBranch}`}
@@ -67,7 +67,7 @@ function DefaultBaseBranchEditor({ projectId, mainBranch, branches, isRefreshing
           setBranch(value)
           update.reset()
         }} />
-      {update.isError && <p role="alert" className="text-xs text-destructive">{t('Could not save the default base branch. Refresh and choose an existing local branch.')}</p>}
+      {update.isError && <p role="alert" className="text-xs text-destructive-ink">{t('Could not save the default base branch. Refresh and choose an existing local branch.')}</p>}
       <Button size="sm" onClick={() => void save()} disabled={branch === mainBranch || !branches.includes(branch) || update.isPending || isRefreshing}>
         {update.isPending ? t('Saving') : t('Save default base branch')}
       </Button>

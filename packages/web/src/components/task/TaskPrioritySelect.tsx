@@ -69,7 +69,7 @@ export function TaskPrioritySelect({ value, onChange, disabled = false, compact 
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-36 rounded-lg border border-border bg-popover p-1 shadow-lg" role="listbox" aria-label={t('Task priority')}>
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-36 rounded-lg border border-border bg-popover p-1 shadow-popover" role="listbox" aria-label={t('Task priority')}>
           {TASK_PRIORITY_OPTIONS.map(option => {
             const selected = option.value === current.value
             return (

@@ -37,14 +37,14 @@ function formatActiveStatus(status: AgentInvocation['status']) {
 function statusTextClass(status: AgentInvocation['status']) {
   switch (status) {
     case 'FAILED':
-      return 'text-red-500'
+      return 'text-destructive-ink'
     case 'RUNNING':
     case 'WAITING_ROOM_REPLY':
     case 'QUEUED':
     case 'SESSION_ENDED':
-      return 'text-neutral-500'
+      return 'text-muted-foreground'
     default:
-      return 'text-neutral-500'
+      return 'text-muted-foreground'
   }
 }
 
@@ -123,23 +123,23 @@ export function ActiveWorkList({
   const summary = summarizeActiveWork(activeInvocations, t)
 
   return (
-    <div className="border-t border-neutral-200 bg-neutral-50/80">
+    <div className="border-t border-border bg-muted/40">
       <button
         type="button"
         onClick={() => setIsOpen((current) => !current)}
         aria-expanded={isOpen}
-        className="flex h-8 w-full items-center justify-between gap-3 px-3 text-left text-xs text-neutral-600 transition-colors hover:bg-neutral-100"
+        className="flex h-8 w-full items-center justify-between gap-3 px-3 text-left text-xs text-foreground/70 transition-colors hover:bg-accent"
       >
         <span className="min-w-0 truncate">
-          <span className="font-medium text-neutral-800">{t('Active work')}</span>
-          <span className="mx-1.5 text-neutral-300">·</span>
+          <span className="font-medium text-foreground">{t('Active work')}</span>
+          <span className="mx-1.5 text-muted-foreground">·</span>
           <span>{summary}</span>
         </span>
-        {isOpen ? <ChevronDown size={15} className="shrink-0 text-neutral-400" /> : <ChevronUp size={15} className="shrink-0 text-neutral-400" />}
+        {isOpen ? <ChevronDown size={15} className="shrink-0 text-muted-foreground/70" /> : <ChevronUp size={15} className="shrink-0 text-muted-foreground/70" />}
       </button>
 
       {isOpen && (
-        <div className="max-h-32 overflow-y-auto border-t border-neutral-200">
+        <div className="max-h-32 overflow-y-auto border-t border-border">
           {activeInvocations.map((invocation) => {
             const member = memberById.get(invocation.memberId)
             const workRequest = workRequestById.get(invocation.workRequestId)
@@ -150,12 +150,12 @@ export function ActiveWorkList({
             const instruction = workRequest?.instruction ?? invocation.workRequestId
 
             return (
-              <div key={invocation.id} className="border-t border-neutral-100 first:border-t-0">
+              <div key={invocation.id} className="border-t border-border/60 first:border-t-0">
                 <div
                   title={instruction}
                   className={cn(
-                    'group flex h-8 items-center gap-2 px-3 text-xs text-neutral-700',
-                    canOpenSession ? 'cursor-pointer hover:bg-white' : 'cursor-default',
+                    'group flex h-8 items-center gap-2 px-3 text-xs text-foreground/80',
+                    canOpenSession ? 'cursor-pointer hover:bg-background' : 'cursor-default',
                   )}
                   role={canOpenSession ? 'button' : undefined}
                   tabIndex={canOpenSession ? 0 : undefined}
@@ -171,10 +171,11 @@ export function ActiveWorkList({
                   <MemberAvatar
                     name={member?.name ?? t('Agent')}
                     avatar={member?.avatar ?? null}
-                    className="h-4 w-4 text-[8px]"
+                    size="xs"
+                    className="size-4"
                   />
                   <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                    <span className="truncate font-medium text-neutral-800">{member?.name ?? t('Agent')}</span>
+                    <span className="truncate font-medium text-foreground">{member?.name ?? t('Agent')}</span>
                     <span className={cn('shrink-0', statusTextClass(invocation.status))}>
                       <ActiveStatusText status={invocation.status} />
                     </span>
@@ -187,7 +188,7 @@ export function ActiveWorkList({
                         invocation.sessionId && onViewInvocationSession?.(invocation.sessionId)
                       }}
                       onKeyDown={(event) => event.stopPropagation()}
-                      className="hidden shrink-0 rounded-md p-1 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 group-hover:inline-flex"
+                      className="hidden shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground/80 group-hover:inline-flex"
                       title={t('View log')}
                       aria-label={`${t('View log')} ${member?.name ?? t('Agent')}`}
                     >
@@ -203,7 +204,7 @@ export function ActiveWorkList({
                       }}
                       onKeyDown={(event) => event.stopPropagation()}
                       disabled={isStoppingMember}
-                      className="shrink-0 rounded-md p-1 text-neutral-400 transition-colors hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive-ink disabled:cursor-not-allowed disabled:opacity-50"
                       title={t('Stop')}
                       aria-label={`${t('Stop')} ${member?.name ?? t('Agent')}`}
                     >
@@ -213,8 +214,8 @@ export function ActiveWorkList({
                 </div>
 
                 {canStop && isConfirmingStop && member && (
-                  <div className="flex flex-wrap items-center gap-1.5 border-t border-neutral-100 bg-white px-3 py-2">
-                    <span className="mr-1 text-[11px] text-neutral-600">{t('Stop running work?')}</span>
+                  <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 bg-background px-3 py-2">
+                    <span className="mr-1 text-xs text-foreground/70">{t('Stop running work?')}</span>
                     <Button
                       type="button"
                       size="xs"
@@ -230,7 +231,7 @@ export function ActiveWorkList({
                       size="xs"
                       variant="outline"
                       disabled={isStoppingMember}
-                      className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800"
+                      className="border-destructive/25 bg-destructive/10 text-destructive-ink hover:bg-destructive/15 hover:text-destructive-ink"
                       onClick={() => onStopMember(member.id, true)}
                     >
                       <Ban size={11} />

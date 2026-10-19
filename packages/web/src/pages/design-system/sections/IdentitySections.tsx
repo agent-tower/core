@@ -64,7 +64,7 @@ export function IconsSection() {
                     className="flex min-w-0 flex-col items-center gap-1.5 rounded-lg px-1 py-3 text-foreground/80 transition-colors hover:bg-accent hover:text-foreground"
                   >
                     <Icon name={name} />
-                    <span className="max-w-full truncate font-mono text-[10px] text-muted-foreground">{name}</span>
+                    <span className="max-w-full truncate font-mono text-[11px] text-muted-foreground">{name}</span>
                   </div>
                 ))}
               </div>
@@ -79,13 +79,13 @@ export function IconsSection() {
             <div key={size} className="flex items-center gap-3">
               <span className="flex w-8 shrink-0 justify-center text-foreground"><Icon name="agent" size={size} /></span>
               <span className="w-14 shrink-0 font-mono text-[11px] text-foreground/80">{size} · {ICON_SIZE[size]}</span>
-              <span className="min-w-0 truncate text-[11px] text-muted-foreground">{SIZE_USAGE[size]}</span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{SIZE_USAGE[size]}</span>
             </div>
           ))}
           <div className="flex items-center gap-3">
             <span className="flex w-8 shrink-0 justify-center text-muted-foreground/60"><Icon name="inbox" size={32} /></span>
             <span className="w-14 shrink-0 font-mono text-[11px] text-foreground/80">32 · 1.5</span>
-            <span className="min-w-0 truncate text-[11px] text-muted-foreground">空状态插图（浅灰、细描边）</span>
+            <span className="min-w-0 truncate text-xs text-muted-foreground">空状态插图（浅灰、细描边）</span>
           </div>
         </div>
       </Specimen>
@@ -128,13 +128,13 @@ export function AgentsSection() {
             <div key={meta.agentType} className="flex min-w-0 flex-col items-center gap-2 rounded-lg border border-border/60 px-2 py-4">
               <AgentLogo agentType={meta.agentType} className="size-8" />
               <span className="max-w-full truncate text-xs font-medium text-foreground">{meta.label}</span>
-              <span className="max-w-full truncate font-mono text-[10px] text-muted-foreground">{meta.logoSrc ? meta.agentType : '无 logo · 回退'}</span>
+              <span className="max-w-full truncate font-mono text-[11px] text-muted-foreground">{meta.logoSrc ? meta.agentType : '无 logo · 回退'}</span>
             </div>
           ))}
           <div className="flex min-w-0 flex-col items-center gap-2 rounded-lg border border-dashed border-border px-2 py-4">
             <AgentLogo agentType={null} className="size-8" />
             <span className="text-xs font-medium text-foreground">未知 Agent</span>
-            <span className="font-mono text-[10px] text-muted-foreground">fallback</span>
+            <span className="font-mono text-[11px] text-muted-foreground">fallback</span>
           </div>
         </div>
       </Specimen>
@@ -233,7 +233,7 @@ function EasingDemo() {
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline justify-between gap-2">
               <Code>{easing.name}</Code>
-              <span className="truncate text-[11px] text-muted-foreground">{easing.usage}</span>
+              <span className="truncate text-xs text-muted-foreground">{easing.usage}</span>
             </div>
             <div className="relative mt-1.5 h-5 rounded-full bg-foreground/[0.05]">
               <span
@@ -331,7 +331,7 @@ function CelebrateDemo() {
       </button>
       <div className="min-w-0">
         <div className={cn('truncate text-sm transition-colors duration-150', done ? 'text-muted-foreground line-through' : 'text-foreground')}>修复会话自动结束</div>
-        <div className="text-[11px] text-muted-foreground">点圆圈完成：对勾描绘 + 一次光环</div>
+        <div className="text-xs text-muted-foreground">点圆圈完成：对勾描绘 + 一次光环</div>
       </div>
     </div>
   )
@@ -377,7 +377,7 @@ export function MotionSection() {
               <span className="w-28 shrink-0">
                 <span className="block h-1.5 rounded-full bg-viz-6" style={{ width: `${(duration.ms / 700) * 100}%` }} />
               </span>
-              <span className="min-w-0 truncate text-[11px] text-muted-foreground">{duration.usage}</span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{duration.usage}</span>
             </div>
           ))}
         </div>

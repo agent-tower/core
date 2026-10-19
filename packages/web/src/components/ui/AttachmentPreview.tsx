@@ -1,6 +1,8 @@
 import { X, FileText, Image, Loader2 } from 'lucide-react'
 import type { PendingAttachment } from '@/hooks/use-attachments'
 import { getApiBaseUrl } from '@/lib/api-base-url'
+import { useI18n } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 
 const API_BASE_URL = getApiBaseUrl()
 
@@ -28,17 +30,19 @@ export function AttachmentPreview({ files, onRemove }: AttachmentPreviewProps) {
 }
 
 function AttachmentItem({ item, onRemove }: { item: PendingAttachment; onRemove: (id: string) => void }) {
+  const { t } = useI18n()
   const isImage = item.file.type.startsWith('image/')
   const isError = item.status === 'error'
   const isUploading = item.status === 'uploading'
 
   return (
     <div
-      className={`relative group flex items-center gap-2 px-3 py-2 rounded-lg border text-xs max-w-[200px] ${
+      className={cn(
+        'relative group flex items-center gap-2 px-3 py-2 rounded-lg border text-xs max-w-[200px]',
         isError
-          ? 'border-red-200 bg-red-50 text-red-600'
-          : 'border-neutral-200 bg-neutral-50 text-neutral-700'
-      }`}
+          ? 'border-destructive/25 bg-destructive/[0.06] text-destructive-ink'
+          : 'border-border bg-muted/50 text-foreground/80',
+      )}
     >
       {/* 图标/缩略图 */}
       {isImage && item.status === 'done' && item.attachment ? (
@@ -50,11 +54,11 @@ function AttachmentItem({ item, onRemove }: { item: PendingAttachment; onRemove:
       ) : (
         <span className="flex-shrink-0">
           {isUploading ? (
-            <Loader2 size={16} className="animate-spin text-neutral-400" />
+            <Loader2 size={16} className="animate-spin motion-reduce:[animation-duration:2.4s] text-muted-foreground" />
           ) : isImage ? (
-            <Image size={16} className="text-neutral-400" />
+            <Image size={16} className="text-muted-foreground" />
           ) : (
-            <FileText size={16} className="text-neutral-400" />
+            <FileText size={16} className="text-muted-foreground" />
           )}
         </span>
       )}
@@ -63,16 +67,18 @@ function AttachmentItem({ item, onRemove }: { item: PendingAttachment; onRemove:
       <div className="min-w-0 flex-1">
         <div className="truncate font-medium">{item.file.name}</div>
         {isError ? (
-          <div className="truncate text-red-500">{item.error}</div>
+          <div className="truncate">{item.error}</div>
         ) : (
-          <div className="text-neutral-400">{formatSize(item.file.size)}</div>
+          <div className="text-muted-foreground">{formatSize(item.file.size)}</div>
         )}
       </div>
 
-      {/* 删除按钮 */}
+      {/* 删除按钮：悬停或键盘聚焦时出现；触屏没有悬停，一直显示 */}
       <button
+        type="button"
         onClick={() => onRemove(item.tempId)}
-        className="absolute -top-1.5 -right-1.5 hidden group-hover:flex items-center justify-center w-5 h-5 rounded-full bg-neutral-700 text-white hover:bg-neutral-900 transition-colors"
+        aria-label={`${t('Remove')} ${item.file.name}`}
+        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-inverse text-inverse-foreground opacity-0 shadow-raised transition-opacity hover:bg-inverse/90 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 group-hover:opacity-100 pointer-coarse:opacity-100"
       >
         <X size={10} />
       </button>

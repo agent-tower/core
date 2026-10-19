@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import {
-  GitGraph, Loader2, FileCode2, ChevronRight, ChevronDown,
-  ArrowLeft, Search, History, FolderOpen, Folder,
+  GitGraph, FileCode2, ChevronRight, ChevronDown,
+  ArrowLeft, History, FolderOpen, Folder,
 } from 'lucide-react'
+import { DiffStat as BaseDiffStat, FileStatusBadge, SearchField, Spinner, TONE_DOT, fileChangeTone } from '@/design-system'
 import { cn } from '@/lib/utils'
 import { useI18n, translate } from '@/lib/i18n'
 import {
@@ -13,6 +14,7 @@ import {
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
 import { GitStatusBar } from './GitStatusBar'
+import { DiffLine } from './DiffLine'
 
 // 与 HistoryView 保持一致：二者共享 queryKeys.git.log 缓存，分页参数必须相同
 const PAGE_SIZE = 50
@@ -29,20 +31,6 @@ type CardSource =
 type ViewMode =
   | { kind: 'overview' }
   | { kind: 'commit'; commit: GitLogEntry }
-
-const STATUS_COLOR_MAP: Record<string, string> = {
-  M: 'text-amber-600 border-amber-200 bg-amber-50',
-  A: 'text-emerald-600 border-emerald-200 bg-emerald-50',
-  D: 'text-red-600 border-red-200 bg-red-50',
-  R: 'text-blue-600 border-blue-200 bg-blue-50',
-}
-
-const STATUS_DOT_MAP: Record<string, string> = {
-  M: 'bg-amber-500',
-  A: 'bg-emerald-500',
-  D: 'bg-red-500',
-  R: 'bg-blue-500',
-}
 
 function basename(p: string) {
   const parts = p.split('/')
@@ -68,48 +56,17 @@ function cardKeyOf(source: CardSource, path: string) {
   return source.kind === 'working' ? `${source.diffType}:${path}` : `${source.hash}:${path}`
 }
 
-/** +n -n 增删统计 */
+/** +n −n 增删统计（设计系统的 DiffStat）；两项都没有数据时不显示 */
 const DiffStat: React.FC<{ additions?: number; deletions?: number; className?: string }> = ({
   additions, deletions, className,
 }) => {
   if (additions === undefined && deletions === undefined) return null
-  return (
-    <span className={cn('flex items-center gap-1 font-mono text-[11px] shrink-0', className)}>
-      {additions !== undefined && additions > 0 && <span className="text-emerald-600">+{additions}</span>}
-      {deletions !== undefined && deletions > 0 && <span className="text-red-600">-{deletions}</span>}
-      {(additions ?? 0) === 0 && (deletions ?? 0) === 0 && <span className="text-muted-foreground/60">0</span>}
-    </span>
-  )
+  return <BaseDiffStat additions={additions} deletions={deletions} className={className} />
 }
 
 // ============================================================
 // Diff 渲染
 // ============================================================
-
-const DiffLine: React.FC<{ line: string; lineNum: number }> = ({ line, lineNum }) => {
-  let bgClass = ''
-  let textClass = 'text-foreground/90'
-
-  if (line.startsWith('+') && !line.startsWith('+++')) {
-    bgClass = 'bg-success/10'
-  } else if (line.startsWith('-') && !line.startsWith('---')) {
-    bgClass = 'bg-destructive/10'
-  } else if (line.startsWith('@@')) {
-    bgClass = 'bg-info/5'
-    textClass = 'text-info'
-  } else if (line.startsWith('diff ') || line.startsWith('index ')) {
-    textClass = 'text-muted-foreground/70'
-  }
-
-  return (
-    <div className={cn('flex', bgClass)}>
-      <span className="w-10 shrink-0 text-right pr-2 text-muted-foreground/60 select-none border-r border-border/60">
-        {lineNum}
-      </span>
-      <span className={cn('pl-2 whitespace-pre', textClass)}>{line}</span>
-    </div>
-  )
-}
 
 /** diff 文本主体：超大 diff 默认截断，可展开 */
 const DiffContent: React.FC<{ diff: string }> = ({ diff }) => {
@@ -119,7 +76,7 @@ const DiffContent: React.FC<{ diff: string }> = ({ diff }) => {
 
   if (!diff.trim()) {
     return (
-      <div className="py-6 text-center text-muted-foreground/70 text-xs">
+      <div className="py-6 text-center text-muted-foreground text-xs">
         {t('没有可显示的差异内容')}
       </div>
     )
@@ -137,7 +94,7 @@ const DiffContent: React.FC<{ diff: string }> = ({ diff }) => {
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="w-full py-2 text-xs text-info hover:bg-info/5 transition-colors"
+          className="w-full py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           {t('还有 {count} 行变更被折叠，点击展开全部', { count: lines.length - AUTO_COLLAPSE_LINES })}
         </button>
@@ -155,14 +112,14 @@ const WorkingDiffBody: React.FC<{
 
   if (!enabled || isLoading) {
     return (
-      <div className="flex items-center justify-center py-8 text-muted-foreground">
-        <Loader2 size={14} className="animate-spin mr-2" />
+      <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+        <Spinner size="sm" />
         <span className="text-xs">{t('正在加载差异...')}</span>
       </div>
     )
   }
   if (isError) {
-    return <div className="py-6 text-center text-destructive text-xs">{t('差异加载失败')}</div>
+    return <div className="py-6 text-center text-destructive-ink text-xs">{t('差异加载失败')}</div>
   }
   return <DiffContent diff={data?.diff || ''} />
 }
@@ -176,14 +133,14 @@ const CommitDiffBody: React.FC<{
 
   if (!enabled || isLoading) {
     return (
-      <div className="flex items-center justify-center py-8 text-muted-foreground">
-        <Loader2 size={14} className="animate-spin mr-2" />
+      <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+        <Spinner size="sm" />
         <span className="text-xs">{t('正在加载差异...')}</span>
       </div>
     )
   }
   if (isError) {
-    return <div className="py-6 text-center text-destructive text-xs">{t('差异加载失败')}</div>
+    return <div className="py-6 text-center text-destructive-ink text-xs">{t('差异加载失败')}</div>
   }
   return <DiffContent diff={data?.diff || ''} />
 }
@@ -227,7 +184,6 @@ const DiffCard: React.FC<{
     return () => observer.disconnect()
   }, [shouldLoad])
 
-  const colorClass = STATUS_COLOR_MAP[entry.status] || STATUS_COLOR_MAP.M
   const dir = dirname(entry.path)
 
   return (
@@ -247,11 +203,9 @@ const DiffCard: React.FC<{
         {collapsed
           ? <ChevronRight size={13} className="text-muted-foreground/70 shrink-0" />
           : <ChevronDown size={13} className="text-muted-foreground/70 shrink-0" />}
-        <span className={cn('w-4 h-4 flex items-center justify-center text-[11px] font-semibold border rounded-sm shrink-0', colorClass)}>
-          {entry.status}
-        </span>
+        <FileStatusBadge status={entry.status} />
         <span className="text-xs font-medium text-foreground truncate">{basename(entry.path)}</span>
-        {dir && <span className="text-[11px] text-muted-foreground/70 truncate">{dir}</span>}
+        {dir && <span className="font-mono text-[11px] text-muted-foreground truncate">{dir}</span>}
         <span className="ml-auto" />
         <DiffStat additions={entry.additions} deletions={entry.deletions} />
       </button>
@@ -371,7 +325,7 @@ const TreeChildren: React.FC<{
             style={{ paddingLeft: 8 + depth * 12 }}
             title={entry.path}
           >
-            <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', STATUS_DOT_MAP[entry.status] || STATUS_DOT_MAP.M)} />
+            <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', TONE_DOT[fileChangeTone(entry.status)])} />
             <span className={cn('text-xs truncate', active ? 'text-foreground font-medium' : 'text-foreground/90')}>
               {basename(entry.path)}
             </span>
@@ -408,14 +362,14 @@ const CommitTimeline: React.FC<{
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-1.5 px-3 py-2 text-muted-foreground/70 text-[11px]">
-        <Loader2 size={11} className="animate-spin" />
+      <div className="flex items-center gap-1.5 px-3 py-2 text-muted-foreground text-xs">
+        <Spinner size="xs" />
         <span>{t('正在加载提交记录...')}</span>
       </div>
     )
   }
   if (commits.length === 0) {
-    return <div className="px-3 py-2 text-[11px] text-muted-foreground/60">{t('暂无提交记录')}</div>
+    return <div className="px-3 py-2 text-xs text-muted-foreground">{t('暂无提交记录')}</div>
   }
 
   return (
@@ -435,13 +389,13 @@ const CommitTimeline: React.FC<{
           >
             <span className={cn(
               'w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 transition-colors',
-              active ? 'bg-brand' : 'bg-border group-hover:bg-muted-foreground/60',
+              active ? 'bg-primary' : 'bg-border group-hover:bg-muted-foreground/60',
             )} />
             <span className="flex-1 min-w-0">
               <span className={cn('block text-xs truncate', active ? 'text-foreground font-medium' : 'text-foreground/90')}>
                 {commit.message}
               </span>
-              <span className="block text-[11px] text-muted-foreground/70 truncate">
+              <span className="block text-[11px] text-muted-foreground truncate">
                 <span className="font-mono">{commit.shortHash}</span>
                 {' · '}{commit.author}{' · '}{timeAgo(commit.timestamp)}
               </span>
@@ -454,10 +408,10 @@ const CommitTimeline: React.FC<{
           type="button"
           onClick={() => fetchNextPage()}
           disabled={isFetchingNextPage}
-          className="w-full py-1.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded-sm transition-colors flex items-center justify-center gap-1.5"
+          className="w-full py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded-sm transition-colors flex items-center justify-center gap-1.5"
         >
           {isFetchingNextPage
-            ? <><Loader2 size={11} className="animate-spin" /> {t('正在加载...')}</>
+            ? <><Spinner size="xs" /> {t('正在加载...')}</>
             : t('加载更多提交')}
         </button>
       )}
@@ -655,12 +609,12 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
           <>
             <GitGraph size={14} className="text-muted-foreground shrink-0" />
             <span className="text-xs font-semibold text-foreground">{t('代码审查')}</span>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {t('{count} 个文件', { count: totals.files })}
             </span>
             <DiffStat additions={totals.additions} deletions={totals.deletions} />
             {branchName && targetBranch && (
-              <span className="ml-auto flex items-center gap-1 text-[11px] text-muted-foreground/70 font-mono truncate">
+              <span className="ml-auto flex items-center gap-1 text-[11px] text-muted-foreground font-mono truncate">
                 <span className="truncate">{branchName}</span>
                 <ArrowLeft size={10} className="rotate-180 shrink-0" />
                 <span className="truncate">{targetBranch}</span>
@@ -677,7 +631,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
               <ArrowLeft size={12} />
               {t('全部变更')}
             </button>
-            <span className="text-muted-foreground/40 text-xs">/</span>
+            <span aria-hidden="true" className="text-muted-foreground/50 text-xs">/</span>
             <span className="text-[11px] font-mono text-muted-foreground shrink-0">{viewMode.commit.shortHash}</span>
             <span className="text-xs text-foreground truncate">{viewMode.commit.message}</span>
             <DiffStat className="ml-auto" additions={totals.additions} deletions={totals.deletions} />
@@ -693,22 +647,22 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
             <div className="p-3 space-y-3">
               {[0, 1].map((i) => (
                 <div key={i} className="rounded-md border border-border overflow-hidden">
-                  <div className="h-8 bg-muted/60 animate-pulse" />
+                  <div className="h-8 bg-muted/60 animate-pulse motion-reduce:animate-none" />
                   <div className="p-3 space-y-2">
-                    <div className="h-3 w-2/3 bg-muted animate-pulse rounded-sm" />
-                    <div className="h-3 w-1/2 bg-muted animate-pulse rounded-sm" />
-                    <div className="h-3 w-3/4 bg-muted animate-pulse rounded-sm" />
+                    <div className="h-3 w-2/3 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
+                    <div className="h-3 w-1/2 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
+                    <div className="h-3 w-3/4 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
                   </div>
                 </div>
               ))}
             </div>
           ) : changesError && viewMode.kind === 'overview' ? (
-            <div className="flex-1 flex items-center justify-center py-16 text-destructive text-sm">
+            <div className="flex-1 flex items-center justify-center py-16 text-destructive-ink text-sm">
               {t('变更加载失败')}
             </div>
           ) : allEntries.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-muted-foreground/60">
-              <FileCode2 size={28} className="mb-2" />
+            <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+              <FileCode2 size={28} className="mb-2 text-muted-foreground/70" />
               <span className="text-xs">
                 {filter.trim()
                   ? t('没有匹配筛选条件的文件')
@@ -735,10 +689,10 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
               {uncommitted.length > 0 && (
                 <section>
                   <div className="sticky top-0 z-10 -mx-3 px-5 py-1.5 bg-background/95 backdrop-blur-sm">
-                    <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                    <span className="text-xs font-medium text-muted-foreground">
                       {t('未提交')}
                     </span>
-                    <span className="ml-2 text-[11px] text-muted-foreground/70">{uncommitted.length}</span>
+                    <span className="ml-2 text-[11px] tabular-nums text-muted-foreground">{uncommitted.length}</span>
                   </div>
                   <div className="space-y-3 mt-1">
                     {uncommitted.map((entry) => (
@@ -757,10 +711,10 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
               {committed.length > 0 && (
                 <section>
                   <div className="sticky top-0 z-10 -mx-3 px-5 py-1.5 bg-background/95 backdrop-blur-sm">
-                    <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                    <span className="text-xs font-medium text-muted-foreground">
                       {t('已提交')}
                     </span>
-                    <span className="ml-2 text-[11px] text-muted-foreground/70">{committed.length}</span>
+                    <span className="ml-2 text-[11px] tabular-nums text-muted-foreground">{committed.length}</span>
                   </div>
                   <div className="space-y-3 mt-1">
                     {committed.map((entry) => (
@@ -786,20 +740,12 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
           style={{ width: 'clamp(15rem, 24%, 22rem)' }}
         >
           <div className="p-2 shrink-0">
-            <div className="relative">
-              <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/60" />
-              <input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder={t('筛选文件...')}
-                className="w-full pl-6.5 pr-2 py-1.5 rounded-md border border-input bg-background text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring"
-              />
-            </div>
+            <SearchField size="sm" value={filter} onValueChange={setFilter} placeholder={t('筛选文件...')} />
           </div>
 
           <div className="flex-1 overflow-y-auto scrollbar-app-thin px-1.5 pb-1.5 min-h-0">
             {allEntries.length === 0 ? (
-              <div className="px-2 py-3 text-[11px] text-muted-foreground/60">
+              <div className="px-2 py-3 text-xs text-muted-foreground">
                 {filter.trim() ? t('无匹配文件') : t('暂无变更文件')}
               </div>
             ) : (
@@ -810,7 +756,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
           <div className="shrink-0 border-t border-border/60 max-h-[40%] flex flex-col min-h-0">
             <div className="flex items-center gap-1.5 px-3 py-2 shrink-0">
               <History size={12} className="text-muted-foreground" />
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+              <span className="text-xs font-medium text-muted-foreground">
                 {t('提交记录')}
               </span>
             </div>

@@ -68,7 +68,7 @@ function TreeRows({ nodes, depth, expanded, toggle }: { nodes: TreeNode[]; depth
               )}
               {node.icon && <span className="flex shrink-0 text-muted-foreground [&_svg]:size-3.5">{node.icon}</span>}
               <span className={cn('min-w-0 truncate text-[13px]', depth === 0 ? 'font-medium text-foreground' : 'text-foreground/85')}>{node.label}</span>
-              {hasNode(node.meta) && <span className="shrink-0 truncate text-[11px] text-muted-foreground">{node.meta}</span>}
+              {hasNode(node.meta) && <span className="shrink-0 truncate text-xs text-muted-foreground">{node.meta}</span>}
               <span className="flex-1" />
               {node.progress !== undefined && <Track value={node.progress} size="xs" className="w-14 shrink-0 sm:w-20" />}
               {(node.value !== undefined || node.progress !== undefined) && (

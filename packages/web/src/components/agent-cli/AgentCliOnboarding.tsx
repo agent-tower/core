@@ -59,10 +59,10 @@ export function AgentCliOnboarding() {
       aria-modal="true"
       aria-label={t('Agent 环境引导')}
     >
-      <div className="absolute inset-0 bg-black/25 backdrop-blur-sm" aria-hidden="true" />
+      <div className="absolute inset-0 bg-black/20" aria-hidden="true" />
       <div
         className={cn(
-          'relative flex max-h-[calc(100vh-1.5rem)] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-xl',
+          'relative flex max-h-[calc(100vh-1.5rem)] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-popover',
           'sm:max-h-[calc(100vh-3rem)]',
         )}
       >

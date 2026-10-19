@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
-import { GitBranch, GitMerge, AlertTriangle, CheckCircle, ArrowRight, Loader2, FileWarning } from 'lucide-react'
+import { GitBranch, GitMerge, AlertTriangle, CheckCircle, FileWarning } from 'lucide-react'
 import {
   ConflictOp,
   type GitOperationStatus,
   type WorkspaceBackgroundServiceDto,
 } from '@agent-tower/shared'
 import { Modal } from '@/components/ui/modal'
+import { Badge, Button, Field, Notice, Spinner, Textarea } from '@/design-system'
 import { useRebaseWorkspace, useMergeWorkspace, useGitStatus } from '@/hooks/use-workspaces'
 import { useWorkspaceBackgroundServices } from '@/hooks/use-workspace-services'
 import { useI18n } from '@/lib/i18n'
@@ -14,6 +15,7 @@ import {
   isMergeBlockingWorkspaceService,
   isWorkspaceServiceMergeError,
 } from '@/lib/workspace-merge'
+import { BranchFlow } from './BranchFlow'
 import { MergeActiveServicesNotice } from './MergeActiveServicesNotice'
 
 interface GitOperationsDialogProps {
@@ -91,23 +93,10 @@ function handleMutationError(
   setError(err instanceof Error ? err.message : fallbackMessage)
 }
 
-function StatusChip({ children, variant }: {
-  children: React.ReactNode
-  variant: 'success' | 'warning' | 'info' | 'neutral' | 'danger'
-}) {
-  const styles = {
-    success: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    warning: 'bg-amber-50 text-amber-700 border-amber-200',
-    info: 'bg-blue-50 text-blue-700 border-blue-200',
-    neutral: 'bg-neutral-50 text-neutral-600 border-neutral-200',
-    danger: 'bg-red-50 text-red-700 border-red-200',
-  }
-  return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${styles[variant]}`}>
-      {children}
-    </span>
-  )
-}
+/** 操作选项：整张卡片可点，图标放在浅灰方块里（颜色只留给状态） */
+const OPTION_BUTTON = 'w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-border enabled:hover:bg-accent transition-colors text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:opacity-40 disabled:cursor-not-allowed'
+const OPTION_ICON = 'w-8 h-8 rounded-md bg-foreground/[0.05] text-foreground/80 flex items-center justify-center shrink-0'
+
 
 function BranchStatusInfo({ gitStatus, branchName, targetBranch }: {
   gitStatus: GitOperationStatus
@@ -117,60 +106,56 @@ function BranchStatusInfo({ gitStatus, branchName, targetBranch }: {
   const { t } = useI18n()
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 text-sm">
-        <span className="px-2.5 py-1 rounded-md bg-neutral-100 font-mono text-xs text-neutral-700">{branchName}</span>
-        <ArrowRight size={14} className="text-neutral-400" />
-        <span className="px-2.5 py-1 rounded-md bg-neutral-100 font-mono text-xs text-neutral-700">{targetBranch}</span>
-      </div>
+      <BranchFlow from={branchName} to={targetBranch} />
 
       <div className="flex flex-wrap gap-2">
         {gitStatus.hasUncommittedChanges && (
-          <StatusChip variant="danger">
+          <Badge tone="danger">
             <FileWarning size={12} />
             {t('{count} 个未提交变更', { count: gitStatus.uncommittedCount })}
-          </StatusChip>
+          </Badge>
         )}
         {gitStatus.conflictedFiles.length > 0 && (
-          <StatusChip variant="warning">
+          <Badge tone="warning">
             <AlertTriangle size={12} />
             {t('{count} 个冲突文件', { count: gitStatus.conflictedFiles.length })}
-          </StatusChip>
+          </Badge>
         )}
         {gitStatus.operation === 'rebase' && gitStatus.conflictedFiles.length === 0 && (
-          <StatusChip variant="warning">
-            <Loader2 size={12} className="animate-spin" />
+          <Badge tone="warning">
+            <Spinner size="xs" />
             {t('变基进行中')}
-          </StatusChip>
+          </Badge>
         )}
         {gitStatus.operation === 'merge' && gitStatus.conflictedFiles.length === 0 && (
-          <StatusChip variant="warning">
-            <Loader2 size={12} className="animate-spin" />
+          <Badge tone="warning">
+            <Spinner size="xs" />
             {t('合并进行中')}
-          </StatusChip>
+          </Badge>
         )}
         {gitStatus.ahead > 0 && (
-          <StatusChip variant="success">
+          <Badge tone="success">
             <CheckCircle size={12} />
             {t('领先 {count} 个提交', { count: gitStatus.ahead })}
-          </StatusChip>
+          </Badge>
         )}
         {gitStatus.behind > 0 && (
-          <StatusChip variant="warning">
+          <Badge tone="warning">
             {t('落后 {count} 个提交', { count: gitStatus.behind })}
-          </StatusChip>
+          </Badge>
         )}
         {gitStatus.operation === 'idle' && gitStatus.ahead === 0 && gitStatus.behind === 0 && !gitStatus.hasUncommittedChanges && (
-          <StatusChip variant="neutral">
+          <Badge tone="neutral">
             <CheckCircle size={12} />
             {t('已是最新')}
-          </StatusChip>
+          </Badge>
         )}
       </div>
 
       {gitStatus.hasUncommittedChanges && (
-        <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
+        <Notice tone="warning">
           {t('工作区有未提交的变更，请先让 Agent 提交或手动处理后再执行 Rebase / Merge 操作。')}
-        </div>
+        </Notice>
       )}
     </div>
   )
@@ -274,8 +259,8 @@ export function GitOperationsDialog({
       title={title}
     >
       {isLoading || !gitStatus ? (
-        <div className="flex items-center justify-center py-8 gap-2 text-neutral-400">
-          <Loader2 size={18} className="animate-spin" />
+        <div className="flex items-center justify-center py-8 gap-2 text-muted-foreground">
+          <Spinner size="md" />
           <span className="text-sm">{t('加载分支状态...')}</span>
         </div>
       ) : mergeStep === 'confirm' ? (
@@ -335,41 +320,41 @@ function SelectOperationView({
       <BranchStatusInfo gitStatus={gitStatus} branchName={branchName} targetBranch={targetBranch} />
 
       {error && (
-        <div className="px-3 py-2 rounded-md bg-red-50 border border-red-200 text-sm text-red-700">
-          {error}
-        </div>
+        <Notice tone="danger">{error}</Notice>
       )}
 
       <div className="space-y-2">
         <button
+          type="button"
           onClick={onRebase}
           disabled={rebasePending || hasConflicts || isOperationInProgress || isDirty}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-neutral-200 hover:border-neutral-300 hover:bg-neutral-50 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
+          className={OPTION_BUTTON}
         >
-          <div className="w-8 h-8 rounded-md bg-blue-50 flex items-center justify-center shrink-0">
-            <GitBranch size={16} className="text-blue-600" />
+          <div className={OPTION_ICON}>
+            <GitBranch size={16} />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-neutral-900">
+            <div className="text-sm font-medium text-foreground">
               {rebasePending ? t('变基中...') : t('变基 (Rebase)')}
             </div>
-            <div className="text-xs text-neutral-500">{t('将当前分支变基到最新的 {targetBranch}', { targetBranch })}</div>
+            <div className="text-xs text-muted-foreground">{t('将当前分支变基到最新的 {targetBranch}', { targetBranch })}</div>
           </div>
         </button>
 
         <button
+          type="button"
           onClick={onMerge}
           disabled={mergePending || hasConflicts || isOperationInProgress || isDirty || gitStatus.ahead === 0}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-neutral-200 hover:border-neutral-300 hover:bg-neutral-50 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
+          className={OPTION_BUTTON}
         >
-          <div className="w-8 h-8 rounded-md bg-emerald-50 flex items-center justify-center shrink-0">
-            <GitMerge size={16} className="text-emerald-600" />
+          <div className={OPTION_ICON}>
+            <GitMerge size={16} />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-neutral-900">
+            <div className="text-sm font-medium text-foreground">
               {mergePending ? t('合并中...') : t('合并 (Merge)')}
             </div>
-            <div className="text-xs text-neutral-500">{t('合并到 {targetBranch}', { targetBranch })}</div>
+            <div className="text-xs text-muted-foreground">{t('合并到 {targetBranch}', { targetBranch })}</div>
           </div>
         </button>
       </div>
@@ -398,30 +383,18 @@ function MergeConfirmView({
   return (
     <div className="space-y-4">
       {/* Branch info */}
-      <div className="flex items-center gap-2 text-sm">
-        <span className="px-2.5 py-1 rounded-md bg-neutral-100 font-mono text-xs text-neutral-700">{branchName}</span>
-        <ArrowRight size={14} className="text-neutral-400" />
-        <span className="px-2.5 py-1 rounded-md bg-neutral-100 font-mono text-xs text-neutral-700">{targetBranch}</span>
-      </div>
+      <BranchFlow from={branchName} to={targetBranch} />
 
       {/* Commit message editor */}
-      <div>
-        <label className="block text-xs font-medium text-neutral-600 mb-1.5">
-          {t('提交消息')}
-        </label>
-        <textarea
+      <Field label={t('提交消息')} description={!editableMessage.trim() ? t('留空将使用默认消息') : undefined}>
+        <Textarea
           value={editableMessage}
           onChange={(e) => setEditableMessage(e.target.value)}
           placeholder={t('输入提交消息...')}
-          rows={4}
-          className="w-full px-3 py-2 rounded-md border border-neutral-200 text-sm font-mono text-neutral-800 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300 resize-none"
+          minRows={4}
+          className="font-mono"
         />
-        {!editableMessage.trim() && (
-          <p className="mt-1 text-xs text-neutral-400">
-            {t('留空将使用默认消息')}
-          </p>
-        )}
-      </div>
+      </Field>
 
       <MergeActiveServicesNotice
         services={activeServices}
@@ -430,41 +403,28 @@ function MergeConfirmView({
       />
 
       {error && (
-        <div className="px-3 py-2 rounded-md bg-red-50 border border-red-200 text-sm text-red-700">
-          {error}
-        </div>
+        <Notice tone="danger">{error}</Notice>
       )}
 
       {/* Actions */}
       <div className="flex gap-2 justify-end">
-        <button
-          onClick={onBack}
-          disabled={isPending}
-          className="px-4 py-2 rounded-md text-sm text-neutral-600 hover:bg-neutral-100 transition-colors disabled:opacity-50"
-        >
+        <Button variant="ghost" onClick={onBack} disabled={isPending}>
           {t('返回')}
-        </button>
-        <button
-          onClick={onConfirm}
-          disabled={isPending || isCheckingServices}
-          className="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 transition-colors disabled:opacity-50"
-        >
+        </Button>
+        <Button variant="primary" onClick={onConfirm} loading={isPending || isCheckingServices}>
           {isPending || isCheckingServices ? (
-            <>
-              <Loader2 size={14} className="animate-spin" />
-              {isCheckingServices
-                ? t('正在检查后台服务...')
-                : activeServices.length > 0
-                  ? t('正在停止服务并提交...')
-                  : t('合并中...')}
-            </>
+            isCheckingServices
+              ? t('正在检查后台服务...')
+              : activeServices.length > 0
+                ? t('正在停止服务并提交...')
+                : t('合并中...')
           ) : (
             <>
-              <GitMerge size={14} />
+              <GitMerge />
               {activeServices.length > 0 ? t('停止服务并提交') : t('确认合并')}
             </>
           )}
-        </button>
+        </Button>
       </div>
     </div>
   )

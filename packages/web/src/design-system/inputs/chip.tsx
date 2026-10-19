@@ -24,7 +24,7 @@ export function Chip({ selected = false, icon, count, size = 'md', className, ch
       className={cn(
         'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full font-medium transition-[background-color,color,box-shadow] duration-150',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-40',
-        size === 'md' ? 'h-7 px-3 text-xs [&_svg]:size-3.5' : 'h-6 px-2.5 text-[11px] [&_svg]:size-3',
+        size === 'md' ? 'h-7 px-3 text-xs [&_svg]:size-3.5' : 'h-6 px-2.5 text-xs [&_svg]:size-3',
         selected
           ? 'bg-primary text-primary-foreground hover:bg-primary/90'
           : 'bg-background text-foreground/80 ring-1 ring-inset ring-border hover:bg-accent hover:text-foreground',

@@ -39,10 +39,10 @@ function AppContent() {
             style: {
               fontFamily: 'inherit',
             },
+            // 设计系统的反色面：浮在内容上的小面（Tooltip、Toast）一律 bg-inverse
             classNames: {
-              error: '!bg-neutral-900 !text-neutral-100 !border-neutral-800 !shadow-lg',
-              success: '!bg-neutral-900 !text-neutral-100 !border-neutral-800 !shadow-lg',
-              default: '!bg-neutral-900 !text-neutral-100 !border-neutral-800 !shadow-lg',
+              toast: '!bg-inverse !text-inverse-foreground !border-inverse !shadow-overlay',
+              description: '!text-inverse-muted',
             },
           }}
         />

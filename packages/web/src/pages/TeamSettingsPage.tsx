@@ -149,11 +149,11 @@ interface QueryErrorNoticeProps { title: string; error: unknown; isFetching: boo
 function QueryErrorNotice({ title, error, isFetching, onRetry }: QueryErrorNoticeProps) {
   const { t } = useI18n()
   return (
-    <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+    <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive-ink">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-medium">{title}</div>
-          <div className="mt-1 text-xs text-destructive/90">{getErrorMessage(error, t('请稍后重试。'))}</div>
+          <div className="mt-1 text-xs text-destructive-ink">{getErrorMessage(error, t('请稍后重试。'))}</div>
         </div>
         <Button type="button" size="sm" variant="outline" onClick={onRetry} disabled={isFetching}>
           {isFetching ? t('加载中...') : t('重试')}
@@ -344,7 +344,7 @@ export function TeamSettingsPage() {
               className={cn(
                 'rounded-md px-3 py-1.5 text-[12px] font-medium transition-all',
                 activeTab === 'presets'
-                  ? 'bg-background text-foreground shadow-sm'
+                  ? 'bg-background text-foreground shadow-raised'
                   : 'text-muted-foreground hover:text-foreground',
               )}
             >
@@ -359,7 +359,7 @@ export function TeamSettingsPage() {
               className={cn(
                 'rounded-md px-3 py-1.5 text-[12px] font-medium transition-all',
                 activeTab === 'templates'
-                  ? 'bg-background text-foreground shadow-sm'
+                  ? 'bg-background text-foreground shadow-raised'
                   : 'text-muted-foreground hover:text-foreground',
               )}
             >
@@ -376,14 +376,14 @@ export function TeamSettingsPage() {
       {activeTab === 'presets' ? (
         mobileShowEditor ? (
           /* ── Preset editor (full view) ── */
-          <div className="rounded-xl border border-border bg-white">
+          <div className="rounded-xl border border-border bg-background">
             <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
               <div className="flex items-center gap-3">
                 <button onClick={backToList} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
                   <ArrowLeft size={14} />
                   {t('返回')}
                 </button>
-                <span className="text-neutral-200">|</span>
+                <span className="text-muted-foreground">|</span>
                 <h3 className="text-[13px] font-semibold text-foreground">
                   {presetMode === 'create' ? t('创建新预设') : selectedPreset?.name ?? t('编辑预设')}
                 </h3>
@@ -406,15 +406,15 @@ export function TeamSettingsPage() {
                 <div className="shrink-0">
                   <MemberAvatar name={presetForm.name || t('Agent')} avatar={presetForm.avatar} className="h-14 w-14 text-sm" />
                   <div className="flex justify-center gap-1 mt-2">
-                    <button type="button" onClick={() => setIsAvatarPickerOpen(true)} className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">{t('选择')}</button>
-                    <span className="text-[10px] text-muted-foreground/60">·</span>
-                    <button type="button" onClick={() => avatarFileInputRef.current?.click()} disabled={isUploadingAvatar} className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+                    <button type="button" onClick={() => setIsAvatarPickerOpen(true)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">{t('选择')}</button>
+                    <span className="text-[10px] text-muted-foreground">·</span>
+                    <button type="button" onClick={() => avatarFileInputRef.current?.click()} disabled={isUploadingAvatar} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
                       {isUploadingAvatar ? t('...') : t('上传')}
                     </button>
                     {presetForm.avatar.trim() && (
                       <>
-                        <span className="text-[10px] text-muted-foreground/60">·</span>
-                        <button type="button" onClick={handleClearAvatar} className="text-[10px] text-muted-foreground hover:text-destructive transition-colors">{t('清除')}</button>
+                        <span className="text-[10px] text-muted-foreground">·</span>
+                        <button type="button" onClick={handleClearAvatar} className="text-xs text-muted-foreground hover:text-destructive-ink transition-colors">{t('清除')}</button>
                       </>
                     )}
                   </div>
@@ -435,7 +435,7 @@ export function TeamSettingsPage() {
               <div>
                 <label className="block text-[12px] font-medium text-muted-foreground mb-1">{t('Provider')}</label>
                 <Select value={presetForm.providerId} onChange={v => updatePresetField('providerId', v)} options={providerOptions} disabled={providersIsError} />
-                {providersIsError && <p className="mt-1 text-[11px] text-destructive">{t('Provider 列表加载失败。')}</p>}
+                {providersIsError && <p className="mt-1 text-xs text-destructive-ink">{t('Provider 列表加载失败。')}</p>}
               </div>
 
               <div>
@@ -508,22 +508,22 @@ export function TeamSettingsPage() {
                       key={preset.id}
                       type="button"
                       onClick={() => openPresetEditor(preset)}
-                      className="flex items-start gap-3 rounded-xl border border-border bg-background p-4 text-left transition-all hover:border-border hover:shadow-sm"
+                      className="flex items-start gap-3 rounded-xl border border-border bg-background p-4 text-left transition-all hover:border-border hover:shadow-raised"
                     >
                       <MemberAvatar name={preset.name} avatar={preset.avatar} className="h-10 w-10 text-xs shrink-0" />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[13px] font-semibold text-foreground">{preset.name}</div>
                         {preset.aliases.length > 0 && (
-                          <div className="truncate text-[11px] text-muted-foreground mt-0.5">{preset.aliases.join(', ')}</div>
+                          <div className="truncate text-xs text-muted-foreground mt-0.5">{preset.aliases.join(', ')}</div>
                         )}
-                        <div className="truncate text-[11px] text-muted-foreground mt-1">
+                        <div className="truncate text-xs text-muted-foreground mt-1">
                           {presetProviderLabelById.get(preset.providerId) ?? preset.providerId}
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
                             {t(WORKSPACE_POLICY_OPTIONS.find(o => o.value === preset.workspacePolicy)?.label ?? preset.workspacePolicy)}
                           </span>
-                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
                             {capCount}/10 {t('能力')}
                           </span>
                         </div>
@@ -538,14 +538,14 @@ export function TeamSettingsPage() {
       ) : (
         mobileShowEditor ? (
           /* ── Template editor (full view) ── */
-          <div className="rounded-xl border border-border bg-white">
+          <div className="rounded-xl border border-border bg-background">
             <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
               <div className="flex items-center gap-3">
                 <button onClick={backToList} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
                   <ArrowLeft size={14} />
                   {t('返回')}
                 </button>
-                <span className="text-neutral-200">|</span>
+                <span className="text-muted-foreground">|</span>
                 <h3 className="text-[13px] font-semibold text-foreground">
                   {templateMode === 'create' ? t('创建新模板') : selectedTemplate?.name ?? t('编辑模板')}
                 </h3>
@@ -593,13 +593,13 @@ export function TeamSettingsPage() {
                       presets.map(preset => {
                         const count = templateForm.memberPresetIds.filter(id => id === preset.id).length
                         return (
-                          <button key={preset.id} type="button" onClick={() => addTemplatePreset(preset.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all', count > 0 ? 'border-neutral-900 bg-muted' : 'border-border bg-background hover:border-border')}>
+                          <button key={preset.id} type="button" onClick={() => addTemplatePreset(preset.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all', count > 0 ? 'border-foreground bg-muted' : 'border-border bg-background hover:border-border')}>
                             <MemberAvatar name={preset.name} avatar={preset.avatar} className="h-7 w-7 text-[10px] shrink-0" />
                             <div className="min-w-0 flex-1">
                               <div className="truncate text-[12px] font-medium text-foreground">{preset.name}</div>
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">
-                              {count > 0 && <span className="rounded-full bg-neutral-900 px-1.5 py-0.5 text-[10px] font-medium text-white">x{count}</span>}
+                              {count > 0 && <span className="rounded-full bg-primary px-1.5 py-0.5 text-[11px] font-medium text-primary-foreground">x{count}</span>}
                               <Plus size={13} className="text-muted-foreground" />
                             </div>
                           </button>
@@ -667,12 +667,12 @@ export function TeamSettingsPage() {
                       key={template.id}
                       type="button"
                       onClick={() => openTemplateEditor(template)}
-                      className="flex flex-col rounded-xl border border-border bg-background p-4 text-left transition-all hover:border-border hover:shadow-sm"
+                      className="flex flex-col rounded-xl border border-border bg-background p-4 text-left transition-all hover:border-border hover:shadow-raised"
                     >
                       <div className="truncate text-[13px] font-semibold text-foreground">{template.name}</div>
-                      <div className="text-[11px] text-muted-foreground mt-1">{t('{count} 个成员', { count: memberCount })}</div>
+                      <div className="text-xs text-muted-foreground mt-1">{t('{count} 个成员', { count: memberCount })}</div>
                       {memberNames.length > 0 && (
-                        <div className="truncate text-[11px] text-muted-foreground mt-1.5">
+                        <div className="truncate text-xs text-muted-foreground mt-1.5">
                           {memberNames.join(', ')}{memberCount > 3 ? ` +${memberCount - 3}` : ''}
                         </div>
                       )}
@@ -692,9 +692,9 @@ export function TeamSettingsPage() {
           {AVATAR_PRESETS.map(preset => {
             const selected = presetForm.avatar === preset.src
             return (
-              <button key={preset.id} type="button" onClick={() => handleSelectPresetAvatar(preset.src)} className={cn('group rounded-xl border bg-background p-2 text-center transition-all hover:border-neutral-400 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-neutral-900/15', selected ? 'border-neutral-900 ring-2 ring-neutral-900/10' : 'border-border')} aria-pressed={selected} aria-label={t('选择 {name} 头像', { name: preset.label })}>
+              <button key={preset.id} type="button" onClick={() => handleSelectPresetAvatar(preset.src)} className={cn('group rounded-xl border bg-background p-2 text-center transition-all hover:border-foreground/20 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring/60', selected ? 'border-foreground ring-2 ring-foreground' : 'border-border')} aria-pressed={selected} aria-label={t('选择 {name} 头像', { name: preset.label })}>
                 <img src={preset.src} alt={preset.label} loading="lazy" className="mx-auto h-14 w-14 rounded-full object-cover sm:h-16 sm:w-16" />
-                <span className="mt-1 block truncate text-[10px] font-medium text-muted-foreground">{preset.label}</span>
+                <span className="mt-1 block truncate text-xs font-medium text-muted-foreground">{preset.label}</span>
               </button>
             )
           })}

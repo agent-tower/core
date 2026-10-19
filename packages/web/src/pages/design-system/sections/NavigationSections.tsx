@@ -42,7 +42,7 @@ export function NavigationSection() {
       <Specimen
         name="NavRow · NavGroup"
         title="侧栏行与分组"
-        description="行高 32px（触屏 40px），图标 16px；分组标题 12px 灰字 + 折叠箭头 + 计数。"
+        description="行高 32px（触屏 40px），字号 14px（触屏 15px），图标 16px；分组标题与行同字号，用灰色常规体和行区分，后跟折叠箭头和计数。"
         canvas="chrome"
         dos={['右侧元信息只放计数、时间、快捷键，并保持紧凑']}
         donts={['在侧栏行里放按钮组——行尾操作用悬停才出现的图标按钮或右键菜单']}

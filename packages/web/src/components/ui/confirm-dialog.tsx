@@ -1,8 +1,7 @@
 import * as React from "react"
-import { AlertTriangle } from "lucide-react"
-import { Modal } from "./modal"
-import { cn } from "@/lib/utils"
+import { ConfirmDialog as DesignSystemConfirmDialog } from "@/design-system"
 import { useI18n } from "@/lib/i18n"
+import { useScrollLock } from "@/lib/scroll-lock"
 
 export interface ConfirmDialogProps {
   isOpen: boolean
@@ -16,6 +15,10 @@ export interface ConfirmDialogProps {
   isLoading?: boolean
 }
 
+/**
+ * 旧接口的确认框，内部是设计系统的 ConfirmDialog（danger 时主按钮变红并带警示图标，提交中转圈）。
+ * 新代码直接用 `@/design-system` 的 ConfirmDialog。
+ */
 export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   isOpen,
   onClose,
@@ -28,46 +31,19 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   isLoading = false,
 }) => {
   const { t } = useI18n()
-  const isDanger = variant === "danger"
+  useScrollLock(isOpen)
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
+    <DesignSystemConfirmDialog
+      open={isOpen}
+      onOpenChange={(open) => { if (!open) onClose() }}
       title={title}
-      className="max-w-sm"
-      action={
-        <>
-          <button
-            onClick={onClose}
-            disabled={isLoading}
-            className="px-4 py-2 text-sm font-medium text-neutral-600 hover:text-neutral-900 transition-colors disabled:opacity-50"
-          >
-            {t(cancelText)}
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={isLoading}
-            className={cn(
-              "px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50",
-              isDanger
-                ? "bg-red-500 text-white hover:bg-red-600"
-                : "bg-neutral-900 text-white hover:bg-black"
-            )}
-          >
-            {isLoading ? t("处理中...") : t(confirmText)}
-          </button>
-        </>
-      }
-    >
-      <div className="flex gap-4">
-        {isDanger && (
-          <div className="shrink-0 w-10 h-10 rounded-full bg-red-50 flex items-center justify-center">
-            <AlertTriangle size={20} className="text-red-500" />
-          </div>
-        )}
-        <div className="text-sm text-neutral-600 leading-relaxed pt-1">{description}</div>
-      </div>
-    </Modal>
+      description={description}
+      confirmLabel={t(confirmText)}
+      cancelLabel={t(cancelText)}
+      tone={variant === "danger" ? "danger" : "neutral"}
+      loading={isLoading}
+      onConfirm={onConfirm}
+    />
   )
 }

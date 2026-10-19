@@ -10,6 +10,7 @@ import { FolderPicker } from '@/components/ui/folder-picker'
 import type { Project, QuickCommand } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
+import { Notice } from '@/design-system'
 import {
   SettingsPageContainer,
   SettingsPageHeader,
@@ -214,12 +215,12 @@ export function ProjectSettingsPage() {
             getItemId={(p) => p.id}
             mobileShowDetail={mobileShowDetail}
             onMobileBack={() => setMobileShowDetail(false)}
-            renderListItem={(project, isActive) => (
+            renderListItem={(project) => (
               <>
                 <span
                   className={cn(
                     'h-2 w-2 rounded-full shrink-0',
-                    isActive ? 'bg-primary-foreground/60' : getProjectDotClass(project),
+                    getProjectDotClass(project),
                   )}
                 />
                 <div className="min-w-0 flex-1">
@@ -227,7 +228,7 @@ export function ProjectSettingsPage() {
                   <div
                     className={cn(
                       'truncate text-[11px] font-mono',
-                      isActive ? 'text-primary-foreground/70' : 'text-muted-foreground',
+                      'text-muted-foreground',
                     )}
                   >
                     {project.repoPath.split('/').pop()}
@@ -240,8 +241,8 @@ export function ProjectSettingsPage() {
                 ? () => (
                     <div className="pt-3 mt-2 border-t border-border">
                       <div className="flex items-center gap-2 px-3 mb-1">
-                        <span className="text-[11px] font-medium text-muted-foreground">{t('已删除')}</span>
-                        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        <span className="text-xs font-medium text-muted-foreground">{t('已删除')}</span>
+                        <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
                           {archivedProjects.length}
                         </span>
                       </div>
@@ -256,7 +257,7 @@ export function ProjectSettingsPage() {
                           <button
                             onClick={() => handleOpenRestoreProject(project.id)}
                             disabled={restoreProject.isPending}
-                            className="shrink-0 text-[11px] hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                            className="shrink-0 text-xs hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                             aria-label={t('恢复项目')}
                           >
                             <RotateCcw size={12} />
@@ -275,16 +276,16 @@ export function ProjectSettingsPage() {
                     <span className={cn('h-2.5 w-2.5 rounded-full shrink-0', getProjectDotClass(project))} />
                     <h3 className="text-base font-semibold text-foreground">{project.name}</h3>
                     {project.isGitRepo === false && (
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                         {t('Local project')}
                       </span>
                     )}
                   </div>
                   <p className="text-[11px] text-muted-foreground font-mono mb-5">{project.repoPath}</p>
                   {project.isGitRepo === false && (
-                    <div className="mb-5 rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-xs leading-relaxed text-info/90">
+                    <Notice tone="info" size="sm" className="mb-5">
                       {t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.')}
-                    </div>
+                    </Notice>
                   )}
 
                   {/* Config sections */}
@@ -294,7 +295,7 @@ export function ProjectSettingsPage() {
                     <div className="py-5 first:pt-0">
                       <div className="mb-3">
                         <h3 className="text-[13px] font-medium text-foreground">{t('自动复制文件')}</h3>
-                        <p className="text-[11px] text-muted-foreground mt-0.5">
+                        <p className="text-xs text-muted-foreground mt-0.5">
                           {t(
                             '创建 worktree 时自动从主仓库复制的文件或目录，适用于 .env、node_modules 等不在 git 管理中的文件。支持 glob。',
                           )}
@@ -316,7 +317,7 @@ export function ProjectSettingsPage() {
                     <div className="py-5">
                       <div className="mb-3">
                         <h3 className="text-[13px] font-medium text-foreground">{t('Setup 脚本')}</h3>
-                        <p className="text-[11px] text-muted-foreground mt-0.5">
+                        <p className="text-xs text-muted-foreground mt-0.5">
                           {t('创建 worktree 后自动执行的命令，每行一条。在 worktree 目录下执行，单条超时 5 分钟。')}
                         </p>
                       </div>
@@ -342,7 +343,7 @@ export function ProjectSettingsPage() {
                     <div className="py-5">
                       <div className="mb-3">
                         <h3 className="text-[13px] font-medium text-foreground">{t('常用命令')}</h3>
-                        <p className="text-[11px] text-muted-foreground mt-0.5">
+                        <p className="text-xs text-muted-foreground mt-0.5">
                           {t('在终端中可快速执行的命令，不会自动运行。')}
                         </p>
                       </div>
@@ -363,7 +364,7 @@ export function ProjectSettingsPage() {
                         <AlertTriangle size={15} className="text-destructive mt-0.5 shrink-0" aria-hidden="true" />
                         <div>
                           <div className="text-[13px] font-medium text-foreground">{t('删除项目')}</div>
-                          <p className="text-[11px] text-muted-foreground mt-0.5">
+                          <p className="text-xs text-muted-foreground mt-0.5">
                             {t('项目将从默认列表隐藏，历史记录保留。可选同时删除本地文件。')}
                           </p>
                         </div>
@@ -455,7 +456,7 @@ export function ProjectSettingsPage() {
           </label>
           {deleteProjectWithRepo && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-3">
-              <p className="text-sm font-medium text-destructive">
+              <p className="text-sm font-medium text-destructive-ink">
                 {t('勾选后会连项目文件一起删除，请谨慎选择。')}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -473,7 +474,7 @@ export function ProjectSettingsPage() {
             </div>
           )}
           {archiveProject.isError && (
-            <p className="text-xs text-destructive">
+            <p className="text-xs text-destructive-ink">
               {archiveProject.error instanceof Error ? archiveProject.error.message : t('Failed to delete project')}
             </p>
           )}
@@ -517,7 +518,7 @@ export function ProjectSettingsPage() {
             </div>
           )}
           {restoreProject.isError && (
-            <p className="text-xs text-destructive">
+            <p className="text-xs text-destructive-ink">
               {restoreProject.error instanceof Error ? restoreProject.error.message : t('Failed to restore project')}
             </p>
           )}

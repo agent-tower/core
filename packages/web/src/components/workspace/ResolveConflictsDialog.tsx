@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { ConflictOp, Session } from '@agent-tower/shared'
 import { toast } from 'sonner'
 import { Modal } from '@/components/ui/modal'
-import { Button } from '@/components/ui/button'
+import { Button, Field, Notice, Select } from '@/design-system'
 import { buildResolveConflictAiAction } from '@/lib/conflict-instructions'
 import { useSendMessage } from '@/hooks/use-sessions'
 import { usePostRoomMessage } from '@/hooks/use-team-run'
@@ -116,30 +116,32 @@ export function ResolveConflictsDialog({
       onClose={() => onOpenChange(false)}
       title={t('解决 {opLabel} 冲突', { opLabel })}
       action={
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handleManualResolve}>
+        <>
+          <Button variant="secondary" onClick={handleManualResolve}>
             {t('在 IDE 中打开')}
           </Button>
           <Button
+            variant="primary"
             onClick={handleAiResolve}
-            disabled={!canAiResolve || isSending}
+            disabled={!canAiResolve}
+            loading={isSending}
           >
             {isSending ? t('发送中...') : t('AI 辅助解决')}
           </Button>
-        </div>
+        </>
       }
     >
       <div className="space-y-4">
         {/* 冲突文件列表 */}
         <div>
-          <h4 className="text-sm font-medium text-neutral-700 mb-2">
+          <h4 className="text-[13px] font-medium text-foreground mb-1.5">
             {t('冲突文件（{count}）', { count: conflictedFiles.length })}
           </h4>
-          <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50">
+          <div className="max-h-40 overflow-y-auto rounded-lg border border-border/60 bg-foreground/[0.025]">
             {conflictedFiles.map((file) => (
               <div
                 key={file}
-                className="px-3 py-1.5 text-xs font-mono text-neutral-700 border-b border-neutral-100 last:border-b-0"
+                className="px-3 py-1.5 text-xs font-mono break-all text-foreground/85 border-b border-border/60 last:border-b-0"
               >
                 {file}
               </div>
@@ -148,34 +150,25 @@ export function ResolveConflictsDialog({
         </div>
 
         {isTeamRunMode && (
-          <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+          <Notice tone="info">
             {t('TeamRun 模式下会把处理冲突请求发送到 Team Room，由团队调度处理。')}
-          </div>
+          </Notice>
         )}
 
         {/* Session 选择 */}
         {shouldShowSessionSelect && (
-          <div>
-            <h4 className="text-sm font-medium text-neutral-700 mb-2">
-              {t('选择 Session（AI 辅助解决）')}
-            </h4>
-            <select
+          <Field label={t('选择 Session（AI 辅助解决）')}>
+            <Select
               value={selectedSessionId}
-              onChange={(e) => setSelectedSessionId(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-neutral-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-neutral-300"
-            >
-              <option value="">{t('选择一个 Session...')}</option>
-              {sessions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.agentType} — {s.status}
-                </option>
-              ))}
-            </select>
-          </div>
+              onValueChange={setSelectedSessionId}
+              placeholder={t('选择一个 Session...')}
+              options={sessions.map((s) => ({ value: s.id, label: `${s.agentType} — ${s.status}` }))}
+            />
+          </Field>
         )}
 
         {!isTeamRunMode && !targetSessionId && sessions.length === 0 && (
-          <p className="text-sm text-neutral-500">
+          <p className="text-sm text-muted-foreground">
             {t('没有可用的 Session，请在 IDE 中手动解决冲突。')}
           </p>
         )}

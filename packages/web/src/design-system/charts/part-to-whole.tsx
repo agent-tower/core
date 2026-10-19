@@ -75,7 +75,7 @@ export function DonutChart({ segments, size = 136, thickness = 14, centerValue, 
           <span className="text-[22px] font-semibold leading-7 tracking-tight text-foreground">
             {shown ? formatValue(shown.value) : centerValue ?? formatValue(total)}
           </span>
-          <span className="max-w-[80%] truncate text-[11px] leading-4 text-muted-foreground">
+          <span className="max-w-[80%] truncate text-xs leading-[18px] text-muted-foreground">
             {shown ? `${shown.label} · ${formatPercent(total ? shown.value / total : 0)}` : centerLabel}
           </span>
         </div>
@@ -248,7 +248,7 @@ export function FunnelChart({ stages, formatValue = defaultFormat, className, ..
               </div>
               <span className="text-right">
                 <span className="block text-[13px] font-semibold leading-4 tabular-nums text-foreground">{formatValue(stage.value)}</span>
-                <span className="block text-[10px] leading-3 tabular-nums text-muted-foreground">{formatPercent(stage.value / first)}</span>
+                <span className="block text-[11px] leading-[14px] tabular-nums text-muted-foreground">{formatPercent(stage.value / first)}</span>
               </span>
             </div>
             {index < stages.length - 1 && (
@@ -262,7 +262,7 @@ export function FunnelChart({ stages, formatValue = defaultFormat, className, ..
                       fill={VIZ.empty}
                     />
                   </svg>
-                  <span className={cn('relative text-[10px] leading-none tabular-nums', index + 1 === worst ? 'font-medium text-warning-ink' : 'text-foreground/70')}>
+                  <span className={cn('relative text-[11px] leading-none tabular-nums', index + 1 === worst ? 'font-medium text-warning-ink' : 'text-foreground/70')}>
                     ↓ {formatPercent(conversions[index + 1])}
                   </span>
                 </div>

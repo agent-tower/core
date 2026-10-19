@@ -2,8 +2,8 @@ import { useState, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 const AVATAR_SIZE = {
-  xs: 'size-5 text-[9px]',
-  sm: 'size-6 text-[10px]',
+  xs: 'size-5 text-[10px]',
+  sm: 'size-6 text-[11px]',
   md: 'size-8 text-xs',
   lg: 'size-10 text-sm',
 } as const
@@ -27,14 +27,16 @@ export interface AvatarProps {
   shape?: 'circle' | 'square'
   /** 叠放时的白色描边 */
   ring?: boolean
+  /** 自定义缩写：Agent 角色名取前两个字（前端工程师 → 前端）等；不传按姓名规则取 */
+  initials?: string
   className?: string
 }
 
 /**
- * 头像：单色底 + 缩写，不给每个人分配颜色（颜色只留给状态）。
- * 图片加载失败自动退回缩写。
+ * 头像：有图片（预设、上传）用图片，加载失败自动退回缩写；没有图片用单色底 + 缩写。
+ * 不给每个人分配颜色，也不支持色块头像（自选底色 + 白字）——旧数据里存的是色值的，只传 name 按缩写显示。
  */
-export function Avatar({ name, src, size = 'sm', shape = 'circle', ring = false, className }: AvatarProps) {
+export function Avatar({ name, src, size = 'sm', shape = 'circle', ring = false, initials, className }: AvatarProps) {
   const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const showImage = Boolean(src) && failedSrc !== src
   return (
@@ -52,7 +54,7 @@ export function Avatar({ name, src, size = 'sm', shape = 'circle', ring = false,
       {showImage ? (
         <img src={src} alt={name} className="size-full object-cover" onError={() => setFailedSrc(src ?? null)} />
       ) : (
-        <span aria-label={name} role="img">{initialsOf(name, size)}</span>
+        <span aria-label={name} role="img">{initials || initialsOf(name, size)}</span>
       )}
     </span>
   )

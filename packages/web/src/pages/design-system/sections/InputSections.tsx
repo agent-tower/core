@@ -122,7 +122,7 @@ function SliderDemo() {
           <span className="text-foreground/80">{EFFORT_LABELS[effort[0]]}</span>
         </div>
         <Slider value={effort} onValueChange={setEffort} min={0} max={3} step={1} marks={[0, 1, 2, 3]} aria-label="推理强度" />
-        <div className="mt-1.5 flex justify-between text-[11px] text-muted-foreground">
+        <div className="mt-1.5 flex justify-between text-xs text-muted-foreground">
           {EFFORT_LABELS.map(label => <span key={label}>{label}</span>)}
         </div>
       </div>

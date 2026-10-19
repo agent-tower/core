@@ -43,7 +43,7 @@ export function ObjectiveCard({ code, title, meta, health, progress, keyResults,
             {code && <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{code}</span>}
             <h4 className="truncate text-sm font-semibold leading-5 text-foreground">{title}</h4>
           </div>
-          {hasNode(meta) && <p className="truncate text-[11px] leading-4 text-muted-foreground">{meta}</p>}
+          {hasNode(meta) && <p className="truncate text-xs leading-[18px] text-muted-foreground">{meta}</p>}
         </div>
         {health && <HealthBadge health={health} className="mt-0.5" />}
       </header>

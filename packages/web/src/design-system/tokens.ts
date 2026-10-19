@@ -119,19 +119,3 @@ export const MOTION = {
   easeEnter: 'cubic-bezier(0.16, 1, 0.3, 1)',
   easeMove: 'cubic-bezier(0.2, 0, 0, 1)',
 } as const
-
-/**
- * 终端配色：与 xterm 主题（workspace/TerminalView）一致的 VS Code Dark。
- * 终端是全站唯一的常驻深色面，这组颜色只在终端 / 日志输出里使用。
- */
-export const TERMINAL_THEME = {
-  background: '#1e1e1e',
-  foreground: '#d4d4d4',
-  muted: '#808080',
-  red: '#f44747',
-  green: '#6a9955',
-  yellow: '#d7ba7d',
-  blue: '#569cd6',
-  cyan: '#4ec9b0',
-  magenta: '#c586c0',
-} as const

@@ -78,9 +78,10 @@ export function SettingsMasterDetail<T>({
               aria-current={isActive ? 'true' : undefined}
               className={cn(
                 'flex min-w-0 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+                // 选中是浮起的白卡，与侧栏选中行同一种材质，表示「正在右侧打开」
                 isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-foreground hover:bg-muted/50',
+                  ? 'bg-background text-foreground shadow-raised ring-1 ring-border/80'
+                  : 'text-foreground hover:bg-accent',
               )}
             >
               {renderListItem(item, isActive)}

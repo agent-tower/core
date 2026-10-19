@@ -68,12 +68,12 @@ export function DeleteTaskConfirmDialog({
         <>
           <p>{t('确认删除任务「{title}」？此操作不可撤销。', { title: taskTitle })}</p>
           {warningsLoading ? (
-            <p className="mt-2 text-xs text-neutral-400">{t('加载中...')}</p>
+            <p className="mt-2 text-xs text-muted-foreground">{t('加载中...')}</p>
           ) : warnings.length > 0 ? (
             <ul className="mt-2 space-y-1">
               {warnings.map((w, i) => (
-                <li key={i} className="flex items-start gap-1.5 text-amber-600">
-                  <span className="mt-1 shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" />
+                <li key={i} className="flex items-start gap-1.5 text-warning-ink">
+                  <span className="mt-1 shrink-0 w-1.5 h-1.5 rounded-full bg-warning" />
                   <span>{w}</span>
                 </li>
               ))}

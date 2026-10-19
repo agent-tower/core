@@ -34,7 +34,7 @@ export function Panel({ title, description, actions, footer, variant = 'plain', 
         <header className={cn('flex items-start justify-between gap-3 pb-2.5 pt-3.5', padding === 'sm' ? 'px-3' : 'px-4')}>
           <div className="min-w-0">
             {title && <h3 className="truncate text-[13px] font-semibold leading-5 text-foreground">{title}</h3>}
-            {description && <p className="text-[11px] leading-4 text-muted-foreground">{description}</p>}
+            {description && <p className="mt-0.5 text-xs leading-[18px] text-muted-foreground">{description}</p>}
           </div>
           {actions && <div className="-mr-1 -mt-0.5 flex shrink-0 items-center gap-1">{actions}</div>}
         </header>

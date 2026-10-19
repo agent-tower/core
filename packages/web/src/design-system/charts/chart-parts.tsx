@@ -40,7 +40,7 @@ export function ChartTooltip({ x, y, containerWidth, containerHeight, title, row
       className="pointer-events-none absolute z-10 min-w-[120px] max-w-[240px] rounded-lg border border-border bg-popover px-2.5 py-2 text-xs shadow-popover"
       style={{ top, ...(flip ? { right: containerWidth - x + 12 } : { left: x + 12 }) }}
     >
-      {title && <div className="mb-1 text-[11px] text-muted-foreground">{title}</div>}
+      {title && <div className="mb-1 text-xs text-muted-foreground">{title}</div>}
       <div className="space-y-1">
         {rows.map((row, index) => (
           <div key={index} className="flex items-center gap-2 whitespace-nowrap">
@@ -50,7 +50,7 @@ export function ChartTooltip({ x, y, containerWidth, containerHeight, title, row
           </div>
         ))}
       </div>
-      {footer && <div className="mt-1.5 border-t border-border/60 pt-1.5 text-[11px] text-muted-foreground">{footer}</div>}
+      {footer && <div className="mt-1.5 border-t border-border/60 pt-1.5 text-xs text-muted-foreground">{footer}</div>}
     </div>
   )
 }

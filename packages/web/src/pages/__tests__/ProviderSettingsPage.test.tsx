@@ -73,6 +73,14 @@ function renderModal(
   ))
 }
 
+/** 选择框的选项：设计系统的 Select 把它们渲染成浮层里的 role="option" */
+function findOption(label: string): HTMLElement {
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+    .find(item => item.textContent?.trim() === label)
+  if (!option) throw new Error(`Option not found: ${label}`)
+  return option
+}
+
 function findButton(label: string): HTMLButtonElement {
   const button = [...document.querySelectorAll('button')]
     .find(item => item.textContent?.trim() === label)
@@ -134,7 +142,7 @@ describe('ProviderFormModal draft test invalidation', () => {
     renderModal(undefined, onSave)
 
     act(() => findButton('Claude Code').click())
-    act(() => findButton('Codex (ACP)').click())
+    act(() => findOption('Codex (ACP)').click())
     changeTextInput(document.querySelector('#provider-name') as HTMLInputElement, 'Codex ACP Test')
 
     expect(document.querySelector('#provider-api-url')).not.toBeNull()
@@ -165,20 +173,20 @@ describe('ProviderFormModal draft test invalidation', () => {
     renderModal(undefined, onSave)
 
     act(() => findButton('Claude Code').click())
-    expect(findButton('Claude Code (ACP)')).not.toBeNull()
-    expect(findButton('Qwen Code (ACP)')).not.toBeNull()
-    expect(findButton('Gemini CLI (ACP)')).not.toBeNull()
-    expect(findButton('Cursor Agent (ACP)')).not.toBeNull()
-    expect(findButton('Kiro CLI (ACP)')).not.toBeNull()
-    expect(findButton('OpenCode (ACP)')).not.toBeNull()
-    expect(findButton('Pi Coding Agent (ACP)')).not.toBeNull()
-    expect(findButton('Grok Build (ACP)')).not.toBeNull()
+    expect(findOption('Claude Code (ACP)')).not.toBeNull()
+    expect(findOption('Qwen Code (ACP)')).not.toBeNull()
+    expect(findOption('Gemini CLI (ACP)')).not.toBeNull()
+    expect(findOption('Cursor Agent (ACP)')).not.toBeNull()
+    expect(findOption('Kiro CLI (ACP)')).not.toBeNull()
+    expect(findOption('OpenCode (ACP)')).not.toBeNull()
+    expect(findOption('Pi Coding Agent (ACP)')).not.toBeNull()
+    expect(findOption('Grok Build (ACP)')).not.toBeNull()
     expect([...document.querySelectorAll('button')].some(
       button => button.textContent?.trim() === 'Minion Code (ACP)'
     )).toBe(false)
     expect([...document.querySelectorAll('button')].some(button => button.textContent?.trim() === 'Qwen Code')).toBe(false)
 
-    act(() => findButton('Qwen Code (ACP)').click())
+    act(() => findOption('Qwen Code (ACP)').click())
     changeTextInput(document.querySelector('#provider-name') as HTMLInputElement, 'Qwen ACP Test')
     act(() => findButton('保存 Provider').click())
 
@@ -221,7 +229,7 @@ describe('ProviderFormModal draft test invalidation', () => {
     selectExecutionPermission('Auto approve (full access)')
     const request = beginTest()
     act(() => findButton('Claude Code').click())
-    act(() => findButton('Codex').click())
+    act(() => findOption('Codex').click())
 
     act(() => request.onSuccess(successfulResult))
     expect(document.querySelector('[data-provider-test-result]')).toBeNull()
@@ -258,7 +266,7 @@ describe('ProviderFormModal draft test invalidation', () => {
     expect(fastModeControl?.textContent).toContain('跟随 Codex')
 
     act(() => fastModeControl?.click())
-    act(() => findButton('Fast').click())
+    act(() => findOption('Fast').click())
     act(() => request.onSuccess(successfulResult))
 
     expect(fastModeControl?.textContent).toContain('Fast')
@@ -379,7 +387,7 @@ describe('ProviderFormModal draft test invalidation', () => {
     expect(fastModeControl).not.toBeNull()
 
     act(() => fastModeControl?.click())
-    act(() => findButton('Fast').click())
+    act(() => findOption('Fast').click())
     act(() => findButton('高级配置').click())
     const configInput = document.querySelector('textarea') as HTMLTextAreaElement
     expect(JSON.parse(configInput.value)).toMatchObject({ fastMode: true })

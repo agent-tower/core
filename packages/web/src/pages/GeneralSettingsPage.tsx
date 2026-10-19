@@ -4,7 +4,7 @@ import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
+import { Switch } from '@/design-system'
 import { useI18n } from '@/lib/i18n'
 import { useAppSettings, useUpdateAppSettings, useCommitMessageDefaults } from '@/hooks/use-app-settings'
 import {
@@ -345,7 +345,7 @@ export function GeneralSettingsPage() {
                 )}
 
                 {accessPasswordError && (
-                  <p className="text-xs text-destructive">{accessPasswordError}</p>
+                  <p className="text-xs text-destructive-ink">{accessPasswordError}</p>
                 )}
 
                 <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">

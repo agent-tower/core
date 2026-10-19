@@ -51,10 +51,10 @@ export function ProcessSteps({ steps, className }: { steps: ProcessStep[]; class
                 {!isLast && <span aria-hidden="true" className={cn('h-px flex-1', step.status === 'done' ? 'bg-foreground' : 'bg-border')} />}
               </div>
               <div className="min-w-0 pr-2">
-                <div className="font-mono text-[10px] text-muted-foreground">{String(index + 1).padStart(2, '0')}</div>
+                <div className="font-mono text-[11px] text-muted-foreground">{String(index + 1).padStart(2, '0')}</div>
                 <div className={cn('text-[13px] leading-5', step.status === 'upcoming' ? 'text-foreground/70' : 'font-medium text-foreground')}>{step.title}</div>
                 {(step.owner || step.time) && (
-                  <div className="text-[11px] leading-4 text-muted-foreground">
+                  <div className="text-xs leading-[18px] text-muted-foreground">
                     {step.owner}
                     {step.owner && step.time && ' · '}
                     {step.time}
@@ -95,7 +95,7 @@ function TopologyBranch({ node }: { node: TopologyNode }) {
         {node.status && <span className="absolute right-1.5 top-1.5">{node.status}</span>}
         {node.icon && <span className="flex text-muted-foreground [&_img]:size-4 [&_svg]:size-4">{node.icon}</span>}
         <span className="max-w-full truncate text-xs font-medium text-foreground">{node.title}</span>
-        {hasNode(node.subtitle) && <span className="max-w-full truncate text-[10px] text-muted-foreground">{node.subtitle}</span>}
+        {hasNode(node.subtitle) && <span className="max-w-full truncate text-[11px] text-muted-foreground">{node.subtitle}</span>}
       </div>
       {node.children?.length ? (
         <ul>

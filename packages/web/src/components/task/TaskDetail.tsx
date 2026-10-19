@@ -115,15 +115,15 @@ function EmptyState() {
   const { t } = useI18n()
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center bg-background text-muted-foreground/70 select-none">
-      <div className="w-16 h-16 bg-muted/50 rounded-2xl border border-border/60 flex items-center justify-center mb-6">
+    <div className="flex-1 flex flex-col items-center justify-center bg-background text-muted-foreground select-none">
+      <div className="w-16 h-16 bg-muted/50 rounded-xl border border-border/60 flex items-center justify-center mb-6">
         <svg
           width="28"
           height="28"
           viewBox="0 0 24 24"
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
-          className="text-muted-foreground/50"
+          className="text-muted-foreground"
         >
           <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="currentColor" />
           <path
@@ -142,7 +142,7 @@ function EmptyState() {
           />
         </svg>
       </div>
-      <h3 className="text-foreground font-medium mb-2 text-lg">Agent Tower</h3>
+      <h3 className="text-foreground font-medium mb-2 text-[15px]">Agent Tower</h3>
       <p className="text-sm max-w-sm text-center text-muted-foreground leading-relaxed">
         {t('Select a task from the sidebar to view logs, monitor execution, or interact with an agent.')}
       </p>
@@ -152,17 +152,17 @@ function EmptyState() {
 
 // ============ Status Badge Helper ============
 
-// 状态色语义与图标统一见 .design/DESIGN.md §2.4 与 status-styles.ts
+// 状态色语义与图标统一见 status-styles.ts
 function statusIcon(status: UITaskStatus) {
   const Icon = STATUS_STYLES[status].icon
   return <Icon className="size-3" />
 }
 
 const STATUS_OPTIONS = [
-  { status: UITaskStatus.Review, className: 'bg-warning/10 text-warning', hoverClass: 'hover:bg-warning/15', icon: statusIcon(UITaskStatus.Review) },
-  { status: UITaskStatus.Running, className: 'bg-info/10 text-info', hoverClass: 'hover:bg-info/15', icon: statusIcon(UITaskStatus.Running) },
+  { status: UITaskStatus.Review, className: 'bg-warning/10 text-warning-ink', hoverClass: 'hover:bg-warning/15', icon: statusIcon(UITaskStatus.Review) },
+  { status: UITaskStatus.Running, className: 'bg-info/10 text-info-ink', hoverClass: 'hover:bg-info/15', icon: statusIcon(UITaskStatus.Running) },
   { status: UITaskStatus.Pending, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-muted', icon: statusIcon(UITaskStatus.Pending) },
-  { status: UITaskStatus.Done, className: 'bg-success/10 text-success', hoverClass: 'hover:bg-success/15', icon: statusIcon(UITaskStatus.Done) },
+  { status: UITaskStatus.Done, className: 'bg-success/10 text-success-ink', hoverClass: 'hover:bg-success/15', icon: statusIcon(UITaskStatus.Done) },
   { status: UITaskStatus.Cancelled, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-border', icon: statusIcon(UITaskStatus.Cancelled) },
 ] as const
 
@@ -198,7 +198,7 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-40 bg-background rounded-lg border border-border shadow-lg z-50 py-1 animate-in fade-in zoom-in-95 duration-100">
+        <div className="absolute right-0 top-full mt-2 w-40 bg-background rounded-lg border border-border shadow-popover z-50 py-1 animate-in fade-in zoom-in-95 duration-100">
           {STATUS_OPTIONS.filter(o => o.status !== status).map(opt => (
             <button
               key={opt.status}
@@ -998,12 +998,12 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
               {task.projectName}
             </span>
             {task.projectArchivedAt && (
-              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground shrink-0">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground shrink-0">
                 {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
               </span>
             )}
-            <span className="text-muted-foreground/40 text-xs">/</span>
-            <span className="text-xs text-muted-foreground/70 font-mono truncate">{task.branch}</span>
+            <span className="text-muted-foreground text-xs">/</span>
+            <span className="text-xs text-muted-foreground font-mono truncate">{task.branch}</span>
           </div>
           <EditableTaskTitle
             taskId={task.id}
@@ -1027,7 +1027,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
             <button
               onClick={handleOpenInIde}
               disabled={!workingDir || isProjectReadOnly}
-              className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title={t('Open in IDE')}
             >
               <Code2 size={16} />
@@ -1038,13 +1038,13 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
               <div className="relative" ref={moreMenuRef}>
                 <button
                   onClick={() => setIsMoreMenuOpen(v => !v)}
-                  className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors"
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                   title={t('More actions')}
                 >
                   <MoreVertical size={16} />
                 </button>
                 {isMoreMenuOpen && (
-                  <div className="absolute right-0 top-full mt-2 w-44 bg-background rounded-lg border border-border shadow-lg z-50 py-1">
+                  <div className="absolute right-0 top-full mt-2 w-44 bg-background rounded-lg border border-border shadow-popover z-50 py-1">
                     {showCreateTeamRunEntry && (
                       <button
                         onClick={() => {
@@ -1075,7 +1075,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                             setIsDeleteConfirmOpen(true)
                             setIsMoreMenuOpen(false)
                           }}
-                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive-ink hover:bg-destructive/10 transition-colors"
                         >
                           <Trash2 size={15} />
                           <span>{t('删除任务')}</span>
@@ -1140,15 +1140,15 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                   <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
                     <div ref={contentRef} className="w-full max-w-4xl mx-auto">
                       {isLoadingSnapshot ? (
-                        <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground/70">
-                          <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground">
+                          <svg className="animate-spin motion-reduce:[animation-duration:2.4s] h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                           </svg>
                           <span className="text-sm">{t('Loading logs...')}</span>
                         </div>
                       ) : logs.length === 0 ? (
-                        <div className="text-muted-foreground/70 text-center py-8">
+                        <div className="text-muted-foreground text-center py-8">
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
                       ) : (
@@ -1173,7 +1173,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                   {!isAtBottom && (
                     <button
                       onClick={() => scrollToBottom()}
-                      className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-background/90 backdrop-blur-sm border border-border rounded-full shadow-md text-xs text-muted-foreground hover:bg-background hover:text-foreground transition-all"
+                      className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-background/90 backdrop-blur-sm border border-border rounded-full shadow-raised text-xs text-muted-foreground hover:bg-background hover:text-foreground transition-all"
                       aria-label={t('Scroll to bottom')}
                     >
                       <ArrowDown size={14} />
@@ -1215,7 +1215,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
               {(isLoadingTaskBody || taskBody?.body) && (
                 <div className="mb-4 pb-4 border-b border-border/60 min-w-0">
                   {isLoadingTaskBody ? (
-                    <p className="text-sm text-muted-foreground/70 italic">{t('Loading...')}</p>
+                    <p className="text-sm text-muted-foreground italic">{t('Loading...')}</p>
                   ) : taskBody?.body ? (
                     <div className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
                       <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
@@ -1237,8 +1237,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
               )}
 
               {isLoadingWorkspaces ? (
-                (!hasStartProgress || isProjectReadOnly) && <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground/70">
-                  <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                (!hasStartProgress || isProjectReadOnly) && <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground">
+                  <svg className="animate-spin motion-reduce:[animation-duration:2.4s] h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
@@ -1246,15 +1246,15 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 </div>
               ) : sessionId ? (
                 isLoadingSnapshot ? (
-                  <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground/70">
-                    <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground">
+                    <svg className="animate-spin motion-reduce:[animation-duration:2.4s] h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
                     <span className="text-sm">{t('Loading logs...')}</span>
                   </div>
                 ) : logs.length === 0 ? (
-                  <div className="text-muted-foreground/70 text-center py-8">
+                  <div className="text-muted-foreground text-center py-8">
                     {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                   </div>
                 ) : (
@@ -1276,7 +1276,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
               ) : !hasStartProgress || autoStartState?.status === 'failed' || setupProgress?.status === 'failed' || isProjectReadOnly ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
                   {(!hasStartProgress || isProjectReadOnly) && <>
-                  <div className="w-14 h-14 bg-muted/50 rounded-2xl border border-border/60 flex items-center justify-center mb-5">
+                  <div className="w-14 h-14 bg-muted/50 rounded-xl border border-border/60 flex items-center justify-center mb-5">
                     <Play size={24} className="text-muted-foreground/70 ml-0.5" />
                   </div>
                   <h3 className="text-base font-medium text-foreground mb-1.5">
@@ -1311,7 +1311,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
             {!isAtBottom && (
               <button
                 onClick={() => scrollToBottom()}
-                className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-background/90 backdrop-blur-sm border border-border rounded-full shadow-md text-xs text-muted-foreground hover:bg-background hover:text-foreground transition-all"
+                className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-background/90 backdrop-blur-sm border border-border rounded-full shadow-raised text-xs text-muted-foreground hover:bg-background hover:text-foreground transition-all"
                 aria-label={t('Scroll to bottom')}
               >
                 <ArrowDown size={14} />
@@ -1363,7 +1363,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
               <div
                 ref={inputContainerRef}
                 className={`relative bg-background rounded-xl border hover:border-ring/40 focus-within:border-ring/60 transition-colors duration-200 ${
-                isDragOver ? 'border-info bg-info/5' : 'border-border'
+                isDragOver ? 'border-foreground/40 bg-foreground/[0.02]' : 'border-border'
               }`}
               >
               {/* Attachment Preview */}
@@ -1402,7 +1402,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="p-2 text-muted-foreground/70 hover:text-muted-foreground hover:bg-muted rounded-lg transition-colors"
+                    className="p-2 text-muted-foreground hover:text-muted-foreground hover:bg-muted rounded-lg transition-colors"
                     title={t('Upload file')}
                   >
                     <Paperclip size={18} />
@@ -1424,7 +1424,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     <button
                       onClick={handleStop}
                       disabled={stopSession.isPending || isSessionCancelling}
-                      className="p-2 rounded-lg transition-all duration-200 bg-destructive text-white hover:bg-destructive/90 disabled:opacity-50"
+                      aria-label={t('Stop')}
+                      title={t('Stop')}
+                      className="p-2 rounded-lg transition-all duration-200 bg-destructive-ink text-white hover:bg-destructive-ink/90 disabled:opacity-50"
                     >
                       <Square size={14} />
                     </button>
@@ -1447,7 +1449,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                           && !isSessionCancelling
                           && !selectedProviderIssue
                           ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                          : 'bg-transparent text-muted-foreground/50 cursor-not-allowed'
+                          : 'bg-transparent text-muted-foreground cursor-not-allowed'
                       }`}
                     >
                       <ArrowUp size={18} />

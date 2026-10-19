@@ -68,12 +68,12 @@ export function TaskStartProgress({ state, setupProgress, sessionStarted = false
 
   return (
     <div
-      className={`${compact ? 'my-2 mb-4' : 'my-3 mb-6'} mx-auto w-full max-w-2xl rounded-xl border ${isFailed ? 'border-destructive/30 bg-destructive/[0.03]' : 'border-border/70 bg-background'} px-4 py-3 text-left shadow-sm`}
+      className={`${compact ? 'my-2 mb-4' : 'my-3 mb-6'} mx-auto w-full max-w-2xl rounded-xl border ${isFailed ? 'border-destructive/30 bg-destructive/[0.03]' : 'border-border/70 bg-background'} px-4 py-3 text-left shadow-raised`}
       role={isFailed ? 'alert' : 'status'}
       aria-live={isFailed ? 'assertive' : 'polite'}
     >
       {isFailed && (state?.error || setupProgress?.error || startFailed) ? (
-        <p className="mb-2 break-words text-xs text-destructive/80">{state?.error || setupProgress?.error || t('Agent start failed')}</p>
+        <p className="mb-2 break-words text-xs text-destructive-ink">{state?.error || setupProgress?.error || t('Agent start failed')}</p>
       ) : null}
 
       <div className="space-y-2">
@@ -81,7 +81,7 @@ export function TaskStartProgress({ state, setupProgress, sessionStarted = false
           const completed = status === 'completed'
           const active = status === 'active'
           return (
-            <div key={label} className={`flex items-start gap-2 text-sm ${status === 'failed' ? 'text-destructive' : completed || active ? 'text-info' : 'text-muted-foreground'}`}>
+            <div key={label} className={`flex items-start gap-2 text-sm ${status === 'failed' ? 'text-destructive-ink' : completed || active ? 'text-info-ink' : 'text-muted-foreground'}`}>
               {completed ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : active ? <Loader2 className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" /> : status === 'failed' ? <XCircle className="h-4 w-4 shrink-0" /> : <Circle className="h-4 w-4 shrink-0" />}
               <div className="min-w-0 flex-1">
                 <span>{label}</span>

@@ -92,11 +92,11 @@ type MobileTab = 'chat' | 'team-status' | 'changes' | 'history' | 'workspace'
 
 function StatusDot({ status }: { status: UITaskStatus }) {
   const colors: Record<UITaskStatus, string> = {
-    [UITaskStatus.Running]: 'bg-blue-500',
-    [UITaskStatus.Review]: 'bg-amber-500',
-    [UITaskStatus.Pending]: 'bg-neutral-400',
-    [UITaskStatus.Done]: 'bg-emerald-500',
-    [UITaskStatus.Cancelled]: 'bg-neutral-400',
+    [UITaskStatus.Running]: 'bg-info',
+    [UITaskStatus.Review]: 'bg-warning',
+    [UITaskStatus.Pending]: 'bg-muted-foreground/60',
+    [UITaskStatus.Done]: 'bg-success',
+    [UITaskStatus.Cancelled]: 'bg-muted-foreground/60',
   }
   return <span className={`w-2.5 h-2.5 rounded-full ${colors[status]}`} />
 }
@@ -705,11 +705,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
   // ============ Render ============
 
   return (
-    <div ref={containerRef} className="fixed inset-x-0 top-0 flex flex-col h-dvh bg-white overflow-hidden overscroll-none">
+    <div ref={containerRef} className="fixed inset-x-0 top-0 flex flex-col h-dvh bg-background overflow-hidden overscroll-none">
       {/* Header */}
-      <header className="shrink-0 bg-white border-b border-neutral-200 z-20">
+      <header className="shrink-0 bg-background border-b border-border z-20">
         <div className="flex items-center h-11 px-2.5 gap-1.5">
-          <button onClick={onBack} className="p-1.5 -ml-0.5 text-neutral-600 active:text-neutral-900">
+          <button onClick={onBack} className="p-1.5 -ml-0.5 text-foreground/70 active:text-foreground">
             <ArrowLeft size={18} />
           </button>
           <div className="flex-1 min-w-0">
@@ -717,17 +717,17 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
               taskId={task.id}
               title={task.title}
               readOnly={isProjectReadOnly}
-              titleClassName="text-[13px] font-bold text-neutral-900 truncate leading-tight"
+              titleClassName="text-[13px] font-semibold text-foreground truncate leading-tight"
               compact
             />
-            <div className="flex min-w-0 items-center gap-1 text-[11px] text-neutral-500 leading-tight">
+            <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground leading-tight">
               <span className={`truncate font-medium ${task.projectColor}`}>{task.projectName}</span>
               {task.projectArchivedAt && (
-                <span className="rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500">
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
                   {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
                 </span>
               )}
-              <span className="text-neutral-300">/</span>
+              <span className="text-muted-foreground">/</span>
               <span className="font-mono truncate">{task.branch}</span>
             </div>
           </div>
@@ -740,7 +740,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
           <button
             onClick={handleOpenInIde}
             disabled={!selectedWorkspaceOpenId || isProjectReadOnly}
-            className="p-1.5 text-neutral-400 active:text-neutral-900 disabled:opacity-30"
+            className="p-1.5 text-muted-foreground active:text-foreground disabled:opacity-30"
           >
             <Code2 size={16} />
           </button>
@@ -748,19 +748,19 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
             <div className="relative" ref={moreMenuRef}>
               <button
                 onClick={() => setIsMoreMenuOpen(v => !v)}
-                className="p-1.5 text-neutral-400 active:text-neutral-900"
+                className="p-1.5 text-muted-foreground active:text-foreground"
                 aria-label="More actions"
               >
                 <MoreVertical size={16} />
               </button>
               {isMoreMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg border border-neutral-200 shadow-lg z-50 py-1">
+                <div className="absolute right-0 top-full mt-1 w-40 bg-background rounded-lg border border-border shadow-popover z-50 py-1">
                   <button
                     onClick={() => {
                       setIsDeleteConfirmOpen(true)
                       setIsMoreMenuOpen(false)
                     }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 active:bg-red-50"
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive-ink active:bg-destructive/10"
                   >
                     <Trash2 size={15} />
                     <span>{t('删除任务')}</span>
@@ -772,15 +772,15 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
         </div>
 
         {/* Sub-Tab Bar */}
-        <div className="flex border-t border-neutral-100">
+        <div className="flex border-t border-border/60">
           {tabConfig.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               onClick={() => setActiveTab(key)}
-              className={`flex min-w-0 flex-1 items-center justify-center gap-1 px-1 py-2 text-[11px] font-medium transition-colors ${
+              className={`flex min-w-0 flex-1 items-center justify-center gap-1 px-1 py-2 text-xs font-medium transition-colors ${
                 activeTab === key
-                  ? 'text-neutral-900 border-b-2 border-neutral-900'
-                  : 'text-neutral-400 border-b-2 border-transparent'
+                  ? 'text-foreground border-b-2 border-foreground'
+                  : 'text-muted-foreground border-b-2 border-transparent'
               }`}
             >
               <Icon size={13} className="shrink-0" />
@@ -795,11 +795,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
         teamRun ? (
           <main className="flex-1 min-h-0 overflow-hidden">
             {focusedInvocationSessionId ? (
-              <div className="flex h-full min-h-0 flex-col bg-white">
-                <div className="relative z-20 flex shrink-0 items-center justify-between gap-3 overflow-visible border-b border-neutral-200 px-3 py-2.5">
+              <div className="flex h-full min-h-0 flex-col bg-background">
+                <div className="relative z-20 flex shrink-0 items-center justify-between gap-3 overflow-visible border-b border-border px-3 py-2.5">
                   <div className="min-w-0">
-                    <div className="text-xs font-semibold text-neutral-900">{t('Invocation details')}</div>
-                    <div className="truncate text-[11px] text-neutral-500">
+                    <div className="text-xs font-semibold text-foreground">{t('Invocation details')}</div>
+                    <div className="truncate text-[11px] text-muted-foreground">
                       {focusedInvocationSessionId}
                     </div>
                   </div>
@@ -817,7 +817,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                       type="button"
                       size="xs"
                       variant="ghost"
-                      className="h-7 gap-1 rounded-lg border border-neutral-200/70 bg-white/60 px-1.5 text-[11px] font-medium text-neutral-500 hover:border-neutral-300 hover:bg-neutral-100 hover:text-neutral-900 active:bg-neutral-100"
+                      className="h-7 gap-1 rounded-lg border border-border bg-background/60 px-1.5 text-xs font-medium text-muted-foreground hover:border-foreground/20 hover:bg-accent hover:text-foreground active:bg-accent"
                       onClick={handleBackToTeamRoom}
                     >
                       <ArrowLeft size={12} />
@@ -832,7 +832,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                       {isLoadingSnapshot ? (
                         <LoadingSpinner label={t('Loading logs...')} />
                       ) : logs.length === 0 ? (
-                        <div className="text-neutral-400 text-center py-8 text-sm">
+                        <div className="text-muted-foreground text-center py-8 text-sm">
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
                       ) : (
@@ -855,7 +855,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                   {!isAtBottom && (
                     <button
                       onClick={() => scrollToBottom()}
-                      className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-2.5 py-1 bg-white/90 backdrop-blur-sm border border-neutral-200 rounded-full shadow-md text-[11px] text-neutral-600 active:bg-white transition-all"
+                      className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-2.5 py-1 bg-background/90 backdrop-blur-sm border border-border rounded-full shadow-raised text-xs text-foreground/70 active:bg-background transition-all"
                       aria-label={t('Scroll to bottom')}
                     >
                       <ArrowDown size={12} />
@@ -864,7 +864,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                   )}
                 </div>
                 {todos.length > 0 && (
-                  <div className="px-3 pt-1.5 pb-0.5 bg-white shrink-0 border-t border-neutral-100">
+                  <div className="px-3 pt-1.5 pb-0.5 bg-background shrink-0 border-t border-border/60">
                     <TodoPanel todos={todos} compact />
                   </div>
                 )}
@@ -892,17 +892,17 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
             <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-app-thin overscroll-y-contain px-3 pt-3 pb-2">
             <div ref={contentRef}>
             {/* Task Description */}
-            <div className="mb-3 pb-2 border-b border-neutral-100">
+            <div className="mb-3 pb-2 border-b border-border/60">
               {isLoadingTaskBody ? (
-                <p className="text-[13px] text-neutral-400 italic">{t('Loading...')}</p>
+                <p className="text-[13px] text-muted-foreground italic">{t('Loading...')}</p>
               ) : taskBody?.body ? (
-                <div className="text-[13px] text-neutral-500 leading-relaxed prose prose-sm max-w-none">
+                <div className="text-[13px] text-muted-foreground leading-relaxed prose prose-sm max-w-none">
                   <Streamdown urlTransform={attachmentUrlTransform} components={streamdownComponents}>
                     {taskBody.body}
                   </Streamdown>
                 </div>
               ) : (
-                <p className="text-[13px] text-neutral-400 italic">No description</p>
+                <p className="text-[13px] text-muted-foreground italic">No description</p>
               )}
             </div>
 
@@ -923,7 +923,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
               isLoadingSnapshot ? (
                 <LoadingSpinner label="Loading logs..." />
               ) : logs.length === 0 ? (
-                <div className="text-neutral-400 text-center py-8 text-sm">
+                <div className="text-muted-foreground text-center py-8 text-sm">
                   {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded.'}
                 </div>
               ) : (
@@ -944,11 +944,11 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
               /* No session — show start agent CTA */
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 {(!hasStartProgress || isProjectReadOnly) && <>
-                <div className="w-12 h-12 bg-neutral-50 rounded-xl border border-neutral-100 flex items-center justify-center mb-4">
-                  <Play size={20} className="text-neutral-400 ml-0.5" />
+                <div className="w-12 h-12 bg-muted/50 rounded-xl border border-border/60 flex items-center justify-center mb-4">
+                  <Play size={20} className="text-muted-foreground/70 ml-0.5" />
                 </div>
-                <h3 className="text-sm font-medium text-neutral-900 mb-1">{t('尚未启动 Agent')}</h3>
-                <p className="text-xs text-neutral-500 mb-5 max-w-[240px]">
+                <h3 className="text-sm font-medium text-foreground mb-1">{t('尚未启动 Agent')}</h3>
+                <p className="text-xs text-muted-foreground mb-5 max-w-[240px]">
                   {isProjectReadOnly ? projectReadOnlyMessage : t('选择一个 Agent 来执行此任务')}
                 </p>
                 </>}
@@ -970,7 +970,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
             {!isAtBottom && (
               <button
                 onClick={() => scrollToBottom()}
-                className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-2.5 py-1 bg-white/90 backdrop-blur-sm border border-neutral-200 rounded-full shadow-md text-[11px] text-neutral-600 active:bg-white transition-all"
+                className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-2.5 py-1 bg-background/90 backdrop-blur-sm border border-border rounded-full shadow-raised text-xs text-foreground/70 active:bg-background transition-all"
                 aria-label="Scroll to bottom"
               >
                 <ArrowDown size={12} />
@@ -981,22 +981,22 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
 
           {/* Todo Panel */}
           {todos.length > 0 && (
-            <div className="px-3 pt-1.5 pb-0.5 bg-white shrink-0 border-t border-neutral-100">
+            <div className="px-3 pt-1.5 pb-0.5 bg-background shrink-0 border-t border-border/60">
               <TodoPanel todos={todos} compact />
             </div>
           )}
 
           {/* Input Area */}
           {isProjectReadOnly ? (
-            <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
-              <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
+            <div className="px-3 py-2 bg-background shrink-0 border-t border-border/60">
+              <div className="rounded-xl border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
                 {projectReadOnlyMessage}
               </div>
             </div>
           ) : isReadOnlySession ? (
-            <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
-              <div className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
-                <span className="text-xs text-neutral-500">{t('代码已合并，以上为历史沟通记录')}</span>
+            <div className="px-3 py-2 bg-background shrink-0 border-t border-border/60">
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/50 px-3 py-2">
+                <span className="text-xs text-muted-foreground">{t('代码已合并，以上为历史沟通记录')}</span>
                 <Button size="sm" onClick={async () => { await ensureTaskBody(); setIsStartDialogOpen(true) }}>
                   <Play size={14} className="mr-1.5" />
                   {t('启动新 Agent')}
@@ -1004,12 +1004,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
               </div>
             </div>
           ) : sessionId && (
-            <div className="px-3 py-2 bg-white shrink-0 border-t border-neutral-100">
+            <div className="px-3 py-2 bg-background shrink-0 border-t border-border/60">
               {workspaceChangeSummaryBar}
               <RuntimePermissionPrompt sessionId={logSessionId || sessionId} compact />
               <div
                 ref={inputContainerRef}
-                className="relative bg-white rounded-xl border border-neutral-200 shadow-sm focus-within:border-neutral-300"
+                className="relative bg-background rounded-xl border border-border shadow-raised focus-within:border-ring"
               >
                 <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
 
@@ -1028,7 +1028,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                   }}
                   rows={1}
                   placeholder={!isSessionActive ? 'Continue conversation...' : 'Message Agent...'}
-                  className="w-full px-3 pt-2.5 pb-1 bg-transparent border-none focus:outline-none resize-none text-[15px] text-neutral-900 placeholder-neutral-400"
+                  className="w-full px-3 pt-2.5 pb-1 bg-transparent border-none focus:outline-none resize-none text-[15px] text-foreground placeholder:text-muted-foreground/70"
                   style={{ minHeight: 40, maxHeight: 140 }}
                 />
 
@@ -1044,7 +1044,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                   <div className="flex items-center gap-0.5">
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      className="p-1 text-neutral-400 active:text-neutral-600 rounded-lg"
+                      className="p-1 text-muted-foreground active:text-foreground/70 rounded-lg"
                     >
                       <Paperclip size={15} />
                     </button>
@@ -1064,7 +1064,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                       <button
                         onClick={handleStop}
                         disabled={stopSession.isPending || isSessionCancelling}
-                        className="p-1.5 rounded-lg bg-red-500 text-white active:bg-red-600 disabled:opacity-50"
+                        aria-label={t('Stop')}
+                        className="p-1.5 rounded-lg bg-destructive-ink text-white active:bg-destructive-ink/90 disabled:opacity-50"
                       >
                         <Square size={12} />
                       </button>
@@ -1086,8 +1087,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                             && !stopSession.isPending
                             && !isSessionCancelling
                             && !selectedProviderIssue
-                            ? 'bg-neutral-900 text-white active:bg-black'
-                            : 'bg-transparent text-neutral-300'
+                            ? 'bg-primary text-primary-foreground active:bg-primary'
+                            : 'bg-transparent text-muted-foreground'
                         }`}
                       >
                         <ArrowUp size={15} />
@@ -1140,7 +1141,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
       {activeTab === 'changes' && taskSupportsGit && (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {workspaces && workspaces.length > 1 && (
-            <div className="shrink-0 border-b border-neutral-100 bg-white px-3 py-2">
+            <div className="shrink-0 border-b border-border/60 bg-background px-3 py-2">
               <WorkspaceSwitcher
                 workspaces={workspaces}
                 teamRun={teamRun}
@@ -1261,8 +1262,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
 
 function LoadingSpinner({ label }: { label: string }) {
   return (
-    <div className="flex items-center justify-center py-12 gap-3 text-neutral-400">
-      <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+    <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground">
+      <svg className="animate-spin motion-reduce:[animation-duration:2.4s] h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
       </svg>

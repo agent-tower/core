@@ -47,9 +47,10 @@ export function DialogContent({ title, description, footer, size = 'md', hideClo
         <div className="flex shrink-0 items-start justify-between gap-4 px-5 pb-3 pt-5">
           <div className="min-w-0">
             <DialogPrimitive.Title className="text-[15px] font-semibold leading-6 text-foreground">{title}</DialogPrimitive.Title>
+            {/* 说明可能带段落或列表，用 div 承载，避免 <p> 里套块级元素 */}
             {description && (
-              <DialogPrimitive.Description className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-                {description}
+              <DialogPrimitive.Description asChild>
+                <div className="mt-1 text-[13px] leading-relaxed text-muted-foreground">{description}</div>
               </DialogPrimitive.Description>
             )}
           </div>

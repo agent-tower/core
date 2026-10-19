@@ -75,8 +75,10 @@ describe('ProviderExecutionPermissionSection', () => {
 
   it('provides a 44px switch target and forwards changes', () => {
     const { onToggle, toggle } = renderSection()
-    expect(toggle.className).toContain('h-11')
-    expect(toggle.className).toContain('w-11')
+    // 开关本身 20px 高，after 伪元素四周各扩 12px，触控热区 44px
+    expect(toggle.className).toContain('h-5')
+    expect(toggle.className).toContain('after:absolute')
+    expect(toggle.className).toContain('after:-inset-3')
     act(() => toggle.click())
     expect(onToggle).toHaveBeenCalledWith(true)
   })

@@ -72,11 +72,13 @@ function GradientCanvas({
       if (variant === 'running' && progress < 1) {
         const start = (-1.5 + 1.5 * progress) * width
         const gradient = context.createLinearGradient(start, 0, start + width * 2.5, 0)
-        gradient.addColorStop(0, 'rgba(0, 0, 0, 1)')
-        gradient.addColorStop(0.4, 'rgba(0, 0, 0, 1)')
-        gradient.addColorStop(0.5, 'rgba(0, 0, 0, 0.4)')
-        gradient.addColorStop(0.6, 'rgba(0, 0, 0, 1)')
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 1)')
+        // ds-allow hex: destination-in 遮罩只取透明度，颜色值不会显示
+        const mask = (alpha: number) => `rgba(0, 0, 0, ${alpha})`
+        gradient.addColorStop(0, mask(1))
+        gradient.addColorStop(0.4, mask(1))
+        gradient.addColorStop(0.5, mask(0.4))
+        gradient.addColorStop(0.6, mask(1))
+        gradient.addColorStop(1, mask(1))
         context.globalCompositeOperation = 'destination-in'
         context.fillStyle = gradient
         context.fillRect(0, 0, width, height)

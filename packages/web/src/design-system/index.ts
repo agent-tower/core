@@ -15,6 +15,7 @@ export { addDays } from './lib/date'
 export { hasNode } from './lib/node'
 export { useControllableState, useElementWidth, usePrefersReducedMotion, useSvgId } from './lib/hooks'
 export { useNow, formatRelativeTime } from './lib/clock'
+export { readTerminalTheme, type TerminalTheme } from './lib/terminal-theme'
 
 /* 图标 */
 export { Icon, type IconProps } from './icons/icon'
@@ -34,6 +35,8 @@ export { Button, type ButtonProps } from './actions/button'
 export { IconButton, type IconButtonProps } from './actions/icon-button'
 export { CopyButton, type CopyButtonProps } from './actions/copy-button'
 export { Kbd, KbdGroup, type KbdProps, type KbdGroupProps } from './actions/kbd'
+export { textLinkClassName } from './actions/text-link-styles'
+export { TextLink, type TextLinkProps } from './actions/text-link'
 
 /* 输入 */
 export { Field, type FieldProps } from './inputs/field'
@@ -133,6 +136,7 @@ export { StatTile, StatGroup, HeroFigure, Meter, type StatTileProps, type HeroFi
 export { ObjectiveCard, type ObjectiveCardProps, type KeyResult } from './display/objective'
 export {
   TodoList,
+  TodoStateIcon,
   Timeline,
   ActivityFeed,
   DeadlineList,
@@ -151,14 +155,17 @@ export {
 export { DataTable, type DataColumn, type DataTableProps, type SortState } from './display/data-table'
 export { ProcessSteps, TopologyTree, type ProcessStatus, type ProcessStep, type TopologyNode } from './display/process'
 export { Avatar, AvatarGroup, MessageBubble, type AvatarProps, type AvatarSize, type AvatarGroupProps, type MessageBubbleProps } from './display/people'
+export { FILE_CHANGE_TONE, fileChangeTone, type FileChangeStatus } from './display/file-change'
 export {
+  FileGlyph,
+  FileStatusBadge,
   FileRow,
   FileChip,
   CommitItem,
   CodeBlock,
   TerminalBlock,
   PromptBlock,
-  type FileChangeStatus,
+  type FileStatusBadgeProps,
   type FileRowProps,
   type CommitItemProps,
   type CodeBlockProps,

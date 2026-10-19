@@ -3,12 +3,13 @@
  *
  * 统一网格：行外边距 8px + 内边距 8px，图标与分组标题都落在 16px 基线上。
  * 交互态：hover 灰底；选中为白卡（与右侧内容岛同一材质，表达「正在右侧打开」）；
- * 键盘焦点用中性灰焦点环（见 .design/DESIGN.md §7）。
+ * 键盘焦点用中性灰焦点环（见 /design-system「颜色」章节的「线与焦点」）。
  */
 import { cn } from '@/lib/utils'
 
+/** 字号 14px；触屏 15px，手机上整屏只有这一列，14px 偏小 */
 const SIDEBAR_ROW_BASE =
-  'flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 text-sm text-left transition-[background-color,box-shadow,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60'
+  'flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 text-sm pointer-coarse:text-[15px] text-left transition-[background-color,box-shadow,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60'
 
 /** 行高：精确指针 32px；触屏放大到 40px 便于点按 */
 const SIDEBAR_ROW_HEIGHT = 'h-8 pointer-coarse:h-10'

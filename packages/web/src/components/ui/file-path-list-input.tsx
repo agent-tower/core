@@ -135,18 +135,18 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder, disa
     <div>
       {/* 已添加的路径列表 */}
       {value.length > 0 && (
-        <div className="border border-neutral-200 rounded-lg mb-2 divide-y divide-neutral-100">
+        <div className="border border-border rounded-lg mb-2 divide-y divide-border/60">
           {value.map((p, i) => (
             <div key={p} className="flex items-center gap-2 px-3 py-1.5 group">
               {p.includes('.') && !p.endsWith('/')
-                ? <File size={14} className="text-neutral-400 shrink-0" />
-                : <Folder size={14} className="text-amber-500 shrink-0" />
+                ? <File size={14} className="text-muted-foreground/70 shrink-0" />
+                : <Folder size={14} className="text-warning shrink-0" />
               }
-              <span className="text-sm font-mono text-neutral-700 truncate flex-1">{p}</span>
+              <span className="text-sm font-mono text-foreground/80 truncate flex-1">{p}</span>
               <button
                 onClick={() => removePath(i)}
                 disabled={disabled}
-                className="p-0.5 text-neutral-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:cursor-not-allowed disabled:hover:text-neutral-300"
+                className="p-0.5 text-muted-foreground hover:text-destructive-ink opacity-0 group-hover:opacity-100 transition-opacity shrink-0 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
               >
                 <X size={14} />
               </button>
@@ -167,12 +167,12 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder, disa
             onFocus={() => { if (input && completions.length > 0) setShowDropdown(true) }}
             placeholder={placeholder ?? t('输入文件路径...')}
             disabled={disabled}
-            className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-neutral-300 disabled:cursor-not-allowed disabled:bg-neutral-50 disabled:text-neutral-400"
+            className="flex-1 px-3 py-2 border border-border rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring/60 disabled:cursor-not-allowed disabled:bg-muted/50 disabled:text-muted-foreground"
           />
           <button
             onClick={() => addPath(input)}
             disabled={disabled || !input.trim()}
-            className="flex items-center gap-1 px-3 py-2 text-sm bg-neutral-900 text-white rounded-lg hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-1 px-3 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <Plus size={14} />
             <span>{t('添加')}</span>
@@ -183,25 +183,25 @@ export function FilePathListInput({ value, onChange, repoPath, placeholder, disa
         {showDropdown && (
           <div
             ref={dropdownRef}
-            className="absolute z-50 left-0 right-0 mt-1 bg-white border border-neutral-200 rounded-lg shadow-lg max-h-[200px] overflow-y-auto"
+            className="absolute z-50 left-0 right-0 mt-1 bg-background border border-border rounded-lg shadow-popover max-h-[200px] overflow-y-auto"
           >
             {completions.map((item, i) => (
               <button
                 key={item.path}
                 onClick={() => handleSelect(item)}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-neutral-50 transition-colors ${
-                  i === selectedIndex ? 'bg-neutral-100' : ''
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-accent transition-colors ${
+                  i === selectedIndex ? 'bg-muted' : ''
                 }`}
               >
                 {item.type === 'directory'
-                  ? <Folder size={14} className="text-amber-500 shrink-0" />
-                  : <File size={14} className="text-neutral-400 shrink-0" />
+                  ? <Folder size={14} className="text-warning shrink-0" />
+                  : <File size={14} className="text-muted-foreground/70 shrink-0" />
                 }
-                <span className="font-mono text-neutral-700 truncate flex-1">{item.path}</span>
+                <span className="font-mono text-foreground/80 truncate flex-1">{item.path}</span>
                 {item.type === 'directory' && (
                   <span
                     onClick={(e) => handleAddDir(item, e)}
-                    className="p-0.5 text-neutral-300 hover:text-emerald-600 shrink-0"
+                    className="p-0.5 text-muted-foreground hover:text-success-ink shrink-0"
                     title={t('添加此目录')}
                   >
                     <FolderPlus size={14} />

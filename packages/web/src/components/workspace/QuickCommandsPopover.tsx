@@ -1,6 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React from 'react'
 import { Zap, Play, ChevronDown } from 'lucide-react'
 import type { QuickCommand } from '@agent-tower/shared'
+import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/design-system'
 import { useI18n } from '@/lib/i18n'
 
 export interface QuickCommandsPopoverProps {
@@ -8,70 +9,43 @@ export interface QuickCommandsPopoverProps {
   onSelect: (command: string) => void
 }
 
+/**
+ * 终端标签栏上的快捷命令：触发按钮跟着终端面的配色，弹出的是普通浅色菜单
+ * （键盘上下选择、选中即执行并关闭）。
+ */
 export const QuickCommandsPopover: React.FC<QuickCommandsPopoverProps> = React.memo(
   function QuickCommandsPopover({ commands, onSelect }) {
     const { t } = useI18n()
-    const [open, setOpen] = useState(false)
-    const popoverRef = useRef<HTMLDivElement>(null)
-    const buttonRef = useRef<HTMLButtonElement>(null)
-
-    useEffect(() => {
-      if (!open) return
-      const handler = (e: MouseEvent) => {
-        if (popoverRef.current && !popoverRef.current.contains(e.target as Node) &&
-            buttonRef.current && !buttonRef.current.contains(e.target as Node)) {
-          setOpen(false)
-        }
-      }
-      document.addEventListener('mousedown', handler)
-      return () => document.removeEventListener('mousedown', handler)
-    }, [open])
 
     if (commands.length === 0) return null
 
     return (
       <>
         {/* 分隔线 */}
-        <div className="w-px h-4 bg-[#444] mx-1 shrink-0" />
+        <div className="w-px h-4 bg-terminal-border mx-1 shrink-0" />
 
-        <div className="relative">
-          <button
-            ref={buttonRef}
-            onClick={() => setOpen(!open)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 mx-1 rounded text-[11px] font-medium transition-colors shrink-0 ${
-              open
-                ? 'bg-amber-500/20 text-amber-300'
-                : 'bg-amber-500/10 text-amber-400/80 hover:bg-amber-500/20 hover:text-amber-300'
-            }`}
-          >
+        <Menu>
+          <MenuTrigger className="group mx-1 flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium text-terminal-muted-foreground transition-colors hover:bg-terminal-accent hover:text-terminal-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-muted-foreground data-[state=open]:bg-terminal-accent data-[state=open]:text-terminal-foreground">
             <Zap size={12} />
             <span>{t('快捷命令')}</span>
-            <ChevronDown size={10} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
-          </button>
-
-          {open && (
-            <div
-              ref={popoverRef}
-              className="absolute right-0 top-full mt-1 w-72 bg-[#2d2d2d] border border-[#444] rounded-lg shadow-xl z-[100] overflow-hidden"
-            >
-              <div className="max-h-[240px] overflow-y-auto">
-                {commands.map((cmd, i) => (
-                  <button
-                    key={i}
-                    onClick={() => { onSelect(cmd.command); setOpen(false) }}
-                    className="w-full flex items-start gap-2.5 px-3 py-2 hover:bg-[#383838] transition-colors text-left group"
-                  >
-                    <Play size={12} className="text-green-500 mt-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[12px] font-medium text-neutral-200">{cmd.name}</div>
-                      <div className="text-[11px] font-mono text-neutral-500 truncate">{cmd.command}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
+            <ChevronDown size={10} className="transition-transform group-data-[state=open]:rotate-180" />
+          </MenuTrigger>
+          <MenuContent align="end" className="w-72">
+            <div className="max-h-[240px] overflow-y-auto">
+              {commands.map((cmd, i) => (
+                <MenuItem
+                  key={i}
+                  icon={<Play className="mt-0.5" />}
+                  onSelect={() => onSelect(cmd.command)}
+                  className="items-start"
+                >
+                  <span className="block truncate font-medium text-foreground">{cmd.name}</span>
+                  <span className="block truncate font-mono text-xs text-muted-foreground">{cmd.command}</span>
+                </MenuItem>
+              ))}
             </div>
-          )}
-        </div>
+          </MenuContent>
+        </Menu>
       </>
     )
   }

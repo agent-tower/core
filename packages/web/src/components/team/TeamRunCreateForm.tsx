@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { Check, Loader2, Plus, X, Zap, Shield, ChevronDown } from 'lucide-react'
 import type { MemberPreset, TeamRunMode } from '@agent-tower/shared'
 import { MemberAvatar } from './MemberAvatar'
+import { Segmented, textLinkClassName } from '@/design-system'
 import { useProviders } from '@/hooks/use-providers'
 import { useMemberPresets, useTeamTemplates } from '@/hooks/use-team-run'
 import { useI18n } from '@/lib/i18n'
@@ -121,9 +122,9 @@ export function TeamRunCreateForm({
 
   const templateSection = (
     <section className="min-w-0">
-      <div className="text-[11px] font-medium text-muted-foreground mb-1.5">{t('团队模板')}</div>
+      <div className="text-xs font-medium text-muted-foreground mb-1.5">{t('团队模板')}</div>
       {teamTemplatesIsError ? (
-        <div className="rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
+        <div className="rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive-ink">
           <span>{t('团队模板加载失败')}</span>
           <button
             type="button"
@@ -136,13 +137,13 @@ export function TeamRunCreateForm({
         </div>
       ) : teamTemplatesIsLoading ? (
         <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-          <Loader2 size={12} className="animate-spin" />
+          <Loader2 size={12} className="animate-spin motion-reduce:[animation-duration:2.4s]" />
           {t('加载中...')}
         </div>
       ) : (teamTemplatesData ?? []).length === 0 ? (
         <div className="rounded-lg border border-dashed border-border bg-background px-3 py-3 text-xs text-muted-foreground">
           {t('当前没有团队模板')}
-          <Link to={preserveDesktopSearch('/settings/team')} className="ml-1.5 text-info hover:underline">
+          <Link to={preserveDesktopSearch('/settings/team')} className={textLinkClassName('ml-1.5')}>
             {t('去创建')}
           </Link>
         </div>
@@ -166,7 +167,7 @@ export function TeamRunCreateForm({
                 className={cn(
                   'w-full rounded-lg px-3 py-2 text-left border transition-all disabled:cursor-not-allowed disabled:opacity-60',
                   isSelected
-                    ? 'bg-background border-foreground/20 shadow-sm'
+                    ? 'bg-background border-foreground/20 shadow-raised'
                     : 'bg-background border-border/60 hover:border-border hover:bg-accent',
                 )}
               >
@@ -176,10 +177,10 @@ export function TeamRunCreateForm({
                       <span className={cn('text-xs truncate', isSelected ? 'font-medium text-foreground' : 'text-foreground')}>
                         {template.name}
                       </span>
-                      <span className="text-[10px] text-muted-foreground shrink-0">{memberCount}{t('人')}</span>
+                      <span className="text-xs text-muted-foreground shrink-0">{memberCount}{t('人')}</span>
                     </div>
                     {preview && (
-                      <div className="mt-0.5 text-[10px] text-muted-foreground truncate">{preview}</div>
+                      <div className="mt-0.5 text-xs text-muted-foreground truncate">{preview}</div>
                     )}
                   </div>
                   {isSelected && <Check size={13} className="shrink-0 text-foreground" />}
@@ -199,9 +200,9 @@ export function TeamRunCreateForm({
         return (
           <div
             key={`${preset.id}-${index}`}
-            className="inline-flex items-center gap-1 pl-1 pr-0.5 py-0.5 rounded-md border border-border/60 bg-background text-[10px] text-foreground"
+            className="inline-flex items-center gap-1 pl-1 pr-0.5 py-0.5 rounded-md border border-border/60 bg-background text-xs text-foreground"
           >
-            <MemberAvatar name={preset.name} avatar={preset.avatar} className="h-3.5 w-3.5 text-[7px]" />
+            <MemberAvatar name={preset.name} avatar={preset.avatar} size="xs" className="size-3.5" />
             <span className="max-w-[80px] truncate">{displayName}</span>
             <button
               type="button"
@@ -218,7 +219,7 @@ export function TeamRunCreateForm({
   )
 
   const memberList = memberPresetsIsError ? (
-    <div className="rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
+    <div className="rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive-ink">
       <span>{t('成员预设加载失败')}</span>
       <button
         type="button"
@@ -231,13 +232,13 @@ export function TeamRunCreateForm({
     </div>
   ) : memberPresetsIsLoading ? (
     <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-      <Loader2 size={12} className="animate-spin" />
+      <Loader2 size={12} className="animate-spin motion-reduce:[animation-duration:2.4s]" />
       {t('加载中...')}
     </div>
   ) : (memberPresetsData ?? []).length === 0 ? (
     <div className="rounded-lg border border-dashed border-border bg-background px-3 py-3 text-xs text-muted-foreground">
       {t('当前没有成员预设')}
-      <Link to={preserveDesktopSearch('/settings/team')} className="ml-1.5 text-info hover:underline">
+      <Link to={preserveDesktopSearch('/settings/team')} className={textLinkClassName('ml-1.5')}>
         {t('去创建')}
       </Link>
     </div>
@@ -260,14 +261,14 @@ export function TeamRunCreateForm({
               'bg-background hover:bg-accent hover:border-border/60',
             )}
           >
-            <MemberAvatar name={preset.name} avatar={preset.avatar} className="h-6 w-6 text-[9px] shrink-0" />
+            <MemberAvatar name={preset.name} avatar={preset.avatar} className="h-6 w-6 text-[10px] shrink-0" />
             <div className="min-w-0 flex-1">
               <div className="text-xs text-foreground truncate">{preset.name}</div>
-              <div className="text-[10px] text-muted-foreground truncate">{providerLabel} · {capCount}/10</div>
+              <div className="text-xs text-muted-foreground truncate">{providerLabel} · {capCount}/10</div>
             </div>
             <div className="flex items-center gap-1 shrink-0">
               {selectedCount > 0 && (
-                <span className="text-[10px] text-foreground font-semibold">×{selectedCount}</span>
+                <span className="text-[11px] text-foreground font-semibold">×{selectedCount}</span>
               )}
               <Plus size={12} className="text-muted-foreground" />
             </div>
@@ -278,7 +279,7 @@ export function TeamRunCreateForm({
   )
 
   const memberCountBadge = selectedMemberPresets.length > 0 && (
-    <span className="inline-flex items-center justify-center min-w-[16px] h-4 rounded-full bg-primary text-[10px] font-semibold text-primary-foreground px-1.5">
+    <span className="inline-flex items-center justify-center min-w-[16px] h-4 rounded-full bg-primary text-[11px] font-semibold text-primary-foreground px-1.5">
       {selectedMemberPresets.length}
     </span>
   )
@@ -286,37 +287,17 @@ export function TeamRunCreateForm({
   // Mode selector — shared by both layouts
   const modeSelector = (
     <div className="flex items-center gap-3">
-      <span className="text-[11px] font-medium text-muted-foreground shrink-0">{t('执行模式')}</span>
-      <div className="inline-flex items-center h-7 rounded-md border border-border/70 bg-background p-0.5">
-        <button
-          type="button"
-          onClick={() => !disabled && setMode('AUTO')}
-          disabled={disabled}
-          className={cn(
-            'flex items-center gap-1.5 rounded h-full px-2.5 text-xs transition-all disabled:cursor-not-allowed disabled:opacity-50',
-            mode === 'AUTO'
-              ? 'bg-primary text-primary-foreground font-medium shadow-sm'
-              : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <Zap size={11} />
-          {t('自动模式')}
-        </button>
-        <button
-          type="button"
-          onClick={() => !disabled && setMode('CONFIRM')}
-          disabled={disabled}
-          className={cn(
-            'flex items-center gap-1.5 rounded h-full px-2.5 text-xs transition-all disabled:cursor-not-allowed disabled:opacity-50',
-            mode === 'CONFIRM'
-              ? 'bg-primary text-primary-foreground font-medium shadow-sm'
-              : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <Shield size={11} />
-          {t('确认模式')}
-        </button>
-      </div>
+      <span className="text-xs font-medium text-muted-foreground shrink-0">{t('执行模式')}</span>
+      <Segmented
+        size="sm"
+        aria-label={t('执行模式')}
+        value={mode}
+        onValueChange={value => setMode(value as TeamRunMode)}
+        options={[
+          { value: 'AUTO', label: t('自动模式'), icon: <Zap />, disabled },
+          { value: 'CONFIRM', label: t('确认模式'), icon: <Shield />, disabled },
+        ]}
+      />
     </div>
   )
 
@@ -333,7 +314,7 @@ export function TeamRunCreateForm({
             onClick={() => !disabled && setShowMembers((v) => !v)}
             disabled={disabled}
             aria-expanded={showMembers}
-            className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-50"
           >
             <ChevronDown size={12} className={cn('transition-transform', showMembers ? '' : '-rotate-90')} />
             {t('追加独立成员')}
@@ -360,7 +341,7 @@ export function TeamRunCreateForm({
 
         <section className="min-w-0">
           <div className="flex items-center gap-2 mb-1.5">
-            <span className="text-[11px] font-medium text-muted-foreground">{t('追加成员')}</span>
+            <span className="text-xs font-medium text-muted-foreground">{t('追加成员')}</span>
             {memberCountBadge}
           </div>
           {memberChips}

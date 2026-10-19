@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { AlertTriangle, RotateCcw } from 'lucide-react'
+import { Button } from '@/design-system'
 import { useI18n } from '@/lib/i18n'
 import { ErrorBoundary } from './ErrorBoundary'
 
@@ -36,22 +37,18 @@ export function AppRootBoundary({ children }: { children: ReactNode }) {
             </p>
           </div>
           <p
-            className="max-w-xl truncate rounded-md border border-border/60 bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground"
+            className="max-w-xl truncate rounded-md border border-border/60 bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground"
             title={error.message || error.name}
           >
             {error.message || error.name}
           </p>
-          <p className="max-w-md text-[11px] text-muted-foreground/80">
+          <p className="max-w-md text-xs text-muted-foreground">
             {t('Only rendering errors are caught here. Errors from event handlers, async callbacks or observers are not.')}
           </p>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3.5 py-1.5 text-xs font-medium text-brand-foreground transition-colors hover:bg-brand/90"
-          >
-            <RotateCcw size={13} />
+          <Button variant="primary" size="sm" onClick={() => window.location.reload()}>
+            <RotateCcw />
             {t('Reload page')}
-          </button>
+          </Button>
         </div>
       )}
     >

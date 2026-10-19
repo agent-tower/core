@@ -1,6 +1,7 @@
 import type { AnchorHTMLAttributes, ImgHTMLAttributes, LiHTMLAttributes, MouseEvent } from 'react'
 import type { Components, ExtraProps, StreamdownProps } from 'streamdown'
 import { ChartNoAxesCombined, Download } from 'lucide-react'
+import { textLinkClassName } from '@/design-system'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { localImageUrl, resolveMessageResource, workspaceImageUrl } from '@/lib/message-resource'
@@ -31,7 +32,7 @@ const BaseMarkdownImage = ({
       alt={alt}
       {...props}
       className={cn(
-        'max-w-[300px] max-h-[200px] object-contain rounded-lg border border-neutral-200 cursor-pointer hover:opacity-90 active:opacity-90 transition-opacity',
+        'max-w-[300px] max-h-[200px] object-contain rounded-lg border border-border cursor-pointer hover:opacity-90 active:opacity-90 transition-opacity',
         className,
       )}
     />
@@ -56,10 +57,9 @@ const MarkdownLink = ({
   delete linkProps.onOpenPreviewUrl
   delete linkProps.onOpenVisualization
   delete linkProps.downloadSessionId
-  const linkClassName = cn(
-    'text-blue-600 underline decoration-blue-300 underline-offset-2 transition-colors hover:text-blue-700 hover:decoration-blue-500',
-    className,
-  )
+  // 句子里的链接：墨色 + 灰下划线（设计系统的 TextLink），蓝色只留给「运行中 / 信息」
+  const linkClassName = textLinkClassName(className)
+  const inlineActionClassName = textLinkClassName('inline-flex max-w-full items-center gap-1.5 align-middle font-medium')
 
   if (intent?.type === 'codex-inline-visualization') {
     if (!onOpenVisualization) return <code title={intent.file}>{intent.file}</code>
@@ -68,7 +68,7 @@ const MarkdownLink = ({
         type="button"
         onClick={() => onOpenVisualization(intent.file)}
         title={t('Open visualization')}
-        className="inline-flex max-w-full items-center gap-1.5 align-middle font-medium text-blue-600 underline decoration-blue-300 underline-offset-2 transition-colors hover:text-blue-700 hover:decoration-blue-500"
+        className={inlineActionClassName}
       >
         <ChartNoAxesCombined className="size-4 shrink-0" aria-hidden />
         <span className="truncate">{intent.file}</span>
@@ -83,7 +83,7 @@ const MarkdownLink = ({
         href={agentArtifactDownloadUrl(downloadSessionId, intent.file)}
         download={intent.file.split('/').at(-1)}
         title={t('Download file')}
-        className="inline-flex max-w-full items-center gap-1.5 align-middle font-medium text-blue-600 underline decoration-blue-300 underline-offset-2 transition-colors hover:text-blue-700 hover:decoration-blue-500"
+        className={inlineActionClassName}
       >
         <Download className="size-4 shrink-0" aria-hidden />
         <span className="truncate">{intent.file.split('/').at(-1)}</span>

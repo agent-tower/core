@@ -65,9 +65,9 @@ export function SessionReadonlyMeta({
     <div className={`flex shrink-0 items-center ${compact ? 'gap-1' : 'gap-2'}`}>
       {provider && (
         <div
-          className={`flex shrink-0 items-center rounded-lg text-neutral-500 ${
+          className={`flex shrink-0 items-center rounded-lg text-muted-foreground ${
             compact
-              ? 'max-w-[130px] min-w-[82px] gap-1 px-1.5 py-1 text-[11px]'
+              ? 'max-w-[130px] min-w-[82px] gap-1 px-1.5 py-1 text-xs'
               : 'max-w-[220px] min-w-[110px] gap-1.5 px-2 py-1.5 text-xs'
           }`}
           title={`${t('Provider')}: ${provider.title}`}

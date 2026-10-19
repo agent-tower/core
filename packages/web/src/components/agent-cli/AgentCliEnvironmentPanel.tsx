@@ -25,6 +25,7 @@ import type {
 import { ApiError } from '@/lib/api-client'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
+import { Notice } from '@/design-system'
 import { Button } from '@/components/ui/button'
 import {
   useAgentCliInstallLogs,
@@ -86,13 +87,13 @@ function getStatusMeta(status?: AgentCliToolStatus) {
     case 'installed':
       return {
         label: '已安装',
-        className: 'bg-success/10 text-success',
+        className: 'bg-success/10 text-success-ink',
         icon: CheckCircle2,
       }
     case 'legacy_detected':
       return {
         label: 'Legacy 已检测',
-        className: 'bg-warning/10 text-warning',
+        className: 'bg-warning/10 text-warning-ink',
         icon: CheckCircle2,
       }
     case 'missing':
@@ -110,7 +111,7 @@ function getStatusMeta(status?: AgentCliToolStatus) {
     case 'error':
       return {
         label: '检测失败',
-        className: 'bg-destructive/10 text-destructive',
+        className: 'bg-destructive/10 text-destructive-ink',
         icon: AlertTriangle,
       }
     default:
@@ -150,7 +151,7 @@ function StatusBadge({ status }: { status?: AgentCliToolStatus }) {
   const meta = getStatusMeta(status)
   const Icon = meta.icon
   return (
-    <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium', meta.className)}>
+    <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', meta.className)}>
       <Icon size={11} aria-hidden="true" />
       {t(meta.label)}
     </span>
@@ -198,7 +199,7 @@ function ToolRow({
             <span className="text-sm font-semibold text-foreground">{item.displayName}</span>
             <StatusBadge status={status} />
             {item.legacy && (
-              <span className="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
+              <span className="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning-ink">
                 {t('迁移中')}
               </span>
             )}
@@ -220,7 +221,7 @@ function ToolRow({
                 onClick={onPreview}
                 disabled={disabled || previewDisabled || previewing || unsupported}
               >
-                {previewing ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
+                {previewing ? <Loader2 className="animate-spin motion-reduce:[animation-duration:2.4s]" size={14} /> : <Download size={14} />}
                 {installed ? t('重新预览') : t('预览安装')}
               </Button>
               {unsupported && (
@@ -294,7 +295,7 @@ function PreviewPanel({
         </div>
         <div>
           <dt className="text-muted-foreground">{t('固定参数')}</dt>
-          <dd className="mt-1 break-all font-mono text-[11px] text-foreground">
+          <dd className="mt-1 break-all font-mono text-xs text-foreground">
             {preview.fixedArgs.length > 0 ? preview.fixedArgs.join(' ') : t('无')}
           </dd>
         </div>
@@ -305,9 +306,9 @@ function PreviewPanel({
       </dl>
 
       {preview.platform === 'win32' && (
-        <div className="mt-4 rounded-lg border border-info/25 bg-info/10 px-3 py-2.5 text-xs leading-relaxed text-foreground">
+        <Notice tone="info" size="sm" className="mt-4">
           {t('Windows 将下载并执行官方 PowerShell 安装脚本；不会使用复制粘贴式 shell pipeline。')}
-        </div>
+        </Notice>
       )}
 
       {item?.officialSources.length ? (
@@ -346,7 +347,7 @@ function PreviewPanel({
 
       {preview.riskNotes.length > 0 && (
         <div className="mt-4 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2.5">
-          <div className="flex items-center gap-2 text-xs font-semibold text-warning">
+          <div className="flex items-center gap-2 text-xs font-semibold text-warning-ink">
             <AlertTriangle size={13} aria-hidden="true" />
             {t('安装风险')}
           </div>
@@ -370,7 +371,7 @@ function PreviewPanel({
 
       <div className="mt-4 flex justify-end">
         <Button onClick={onInstall} disabled={!confirmed || installing || disabled}>
-          {installing ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
+          {installing ? <Loader2 className="animate-spin motion-reduce:[animation-duration:2.4s]" size={14} /> : <Download size={14} />}
           {t('确认安装')}
         </Button>
       </div>
@@ -399,7 +400,7 @@ function TaskPanel({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           {active ? (
-            <Loader2 className="animate-spin text-primary" size={16} aria-hidden="true" />
+            <Loader2 className="animate-spin motion-reduce:[animation-duration:2.4s] text-primary" size={16} aria-hidden="true" />
           ) : succeeded ? (
             <CheckCircle2 className="text-success" size={16} aria-hidden="true" />
           ) : failed ? (
@@ -414,14 +415,14 @@ function TaskPanel({
         </div>
         {active && (
           <Button size="sm" variant="outline" onClick={onCancel} disabled={cancelling}>
-            {cancelling ? <Loader2 className="animate-spin" size={14} /> : <Square size={14} />}
+            {cancelling ? <Loader2 className="animate-spin motion-reduce:[animation-duration:2.4s]" size={14} /> : <Square size={14} />}
             {t('取消')}
           </Button>
         )}
       </div>
 
       {task?.errorMessage && (
-        <div className="mt-3 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        <div className="mt-3 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive-ink">
           {task.errorMessage}
         </div>
       )}
@@ -432,7 +433,7 @@ function TaskPanel({
         </div>
       )}
 
-      <pre className="mt-4 max-h-56 overflow-auto rounded-lg bg-muted/60 p-3 font-mono text-[11px] leading-relaxed text-foreground scrollbar-app-thin">
+      <pre className="mt-4 max-h-56 overflow-auto rounded-lg bg-muted/60 p-3 font-mono text-xs leading-relaxed text-foreground scrollbar-app-thin">
         {logs || t('等待安装日志...')}
       </pre>
     </section>
@@ -607,7 +608,7 @@ export function AgentCliEnvironmentPanel({
     return (
       <div className="space-y-3">
         {Array.from({ length: 4 }).map((_, index) => (
-          <div key={index} className="h-20 animate-pulse rounded-lg bg-muted" />
+          <div key={index} className="h-20 animate-pulse motion-reduce:animate-none rounded-lg bg-muted" />
         ))}
       </div>
     )
@@ -615,7 +616,7 @@ export function AgentCliEnvironmentPanel({
 
   if (manifestQuery.isError || statusQuery.isError) {
     return (
-      <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+      <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive-ink">
         {t('Agent CLI 环境信息加载失败。')}
       </div>
     )
@@ -628,7 +629,7 @@ export function AgentCliEnvironmentPanel({
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-base font-semibold text-foreground">{t('Agent CLI 环境')}</h3>
             {statusQuery.data?.stale && (
-              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                 {t('状态待检测')}
               </span>
             )}
@@ -644,7 +645,7 @@ export function AgentCliEnvironmentPanel({
             </Button>
           )}
           <Button size="sm" variant="outline" onClick={handleRefresh} disabled={refreshStatus.isPending}>
-            <RefreshCw className={cn(refreshStatus.isPending && 'animate-spin')} size={14} />
+            <RefreshCw className={cn(refreshStatus.isPending && 'animate-spin motion-reduce:[animation-duration:2.4s]')} size={14} />
             {t('重新检测')}
           </Button>
         </div>

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useId, type KeyboardEvent, type ReactNode, type SyntheticEvent } from 'react'
 import { Check, ChevronDown } from 'lucide-react'
 import { Select as SelectPrimitive } from 'radix-ui'
 import { cn } from '@/lib/utils'
@@ -11,7 +11,14 @@ export interface SelectOption {
   label: ReactNode
   description?: ReactNode
   icon?: ReactNode
+  /** 不可选：仍可用键盘聚焦、读屏能读到说明（例如为什么不可选），只是选不中 */
   disabled?: boolean
+}
+
+/** 不可选的选项拦下「选中」：鼠标抬起、点击、回车、空格 */
+const preventSelect = (event: SyntheticEvent) => event.preventDefault()
+const preventSelectKey = (event: KeyboardEvent) => {
+  if (event.key === 'Enter' || event.key === ' ') event.preventDefault()
 }
 
 export interface SelectProps {
@@ -49,6 +56,7 @@ export function Select({
 }: SelectProps) {
   const field = useFieldControl()
   const isInvalid = invalid ?? field?.invalid ?? false
+  const descriptionIdPrefix = useId()
 
   return (
     <SelectPrimitive.Root value={value} defaultValue={defaultValue} onValueChange={onValueChange} disabled={disabled}>
@@ -85,27 +93,46 @@ export function Select({
           )}
         >
           <SelectPrimitive.Viewport>
-            {options.map(option => (
-              <SelectPrimitive.Item
-                key={option.value}
-                value={option.value}
-                disabled={option.disabled}
-                className={cn(MENU_ITEM, MENU_ITEM_CHECKABLE, 'group/item items-start data-[state=checked]:text-foreground')}
-              >
-                {option.icon && <span className="mt-0.5 flex shrink-0 text-muted-foreground">{option.icon}</span>}
-                <span className="min-w-0 flex-1">
-                  <SelectPrimitive.ItemText>
-                    <span className="flex items-center gap-2 truncate group-data-[state=checked]/item:font-medium">{option.label}</span>
-                  </SelectPrimitive.ItemText>
-                  {option.description && (
-                    <span className="mt-0.5 block whitespace-normal text-[11px] leading-snug text-muted-foreground">{option.description}</span>
+            {options.map((option, index) => {
+              const descriptionId = option.description ? `${descriptionIdPrefix}-${index}` : undefined
+              return (
+                <SelectPrimitive.Item
+                  key={option.value}
+                  value={option.value}
+                  // 不可选不交给 Radix 的 disabled：那样键盘会跳过它，读屏也读不到原因；这里只拦下选中
+                  aria-disabled={option.disabled || undefined}
+                  aria-describedby={descriptionId}
+                  onPointerUp={option.disabled ? preventSelect : undefined}
+                  onClick={option.disabled ? preventSelect : undefined}
+                  onKeyDown={option.disabled ? preventSelectKey : undefined}
+                  className={cn(
+                    MENU_ITEM,
+                    MENU_ITEM_CHECKABLE,
+                    'group/item items-start data-[state=checked]:text-foreground',
+                    option.disabled && 'cursor-not-allowed text-muted-foreground data-[highlighted]:text-muted-foreground',
                   )}
-                </span>
-                <SelectPrimitive.ItemIndicator className={cn(MENU_INDICATOR, 'top-2')}>
-                  <Check className="size-3.5" />
-                </SelectPrimitive.ItemIndicator>
-              </SelectPrimitive.Item>
-            ))}
+                >
+                  <span className="min-w-0 flex-1">
+                    {/* 图标放进 ItemText，触发器里也跟着显示 */}
+                    <SelectPrimitive.ItemText>
+                      <span className="flex min-w-0 items-center gap-2 group-data-[state=checked]/item:font-medium">
+                        {option.icon && <span className="flex shrink-0 text-muted-foreground">{option.icon}</span>}
+                        <span className="truncate">{option.label}</span>
+                      </span>
+                    </SelectPrimitive.ItemText>
+                    {/* 说明文字不参与撑宽（w-0 + min-w-full）：浮层宽度由触发器和选项名决定，说明在其中换行 */}
+                    {option.description && (
+                      <span id={descriptionId} className={cn('mt-0.5 block w-0 min-w-full whitespace-normal text-xs leading-[18px] text-muted-foreground', option.icon && 'pl-6')}>
+                        {option.description}
+                      </span>
+                    )}
+                  </span>
+                  <SelectPrimitive.ItemIndicator className={cn(MENU_INDICATOR, 'top-2')}>
+                    <Check className="size-3.5" />
+                  </SelectPrimitive.ItemIndicator>
+                </SelectPrimitive.Item>
+              )
+            })}
           </SelectPrimitive.Viewport>
         </SelectPrimitive.Content>
       </SelectPrimitive.Portal>

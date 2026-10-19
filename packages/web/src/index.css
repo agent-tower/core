@@ -52,7 +52,7 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  /* 设计系统扩展 token（src/design-system）：状态文字色、反色面、图表墨阶、层级与缓动 */
+  /* 设计系统扩展 token（src/design-system）：状态文字色、反色面、图表墨阶、终端、层级与缓动 */
   --color-success-ink: var(--success-ink);
   --color-warning-ink: var(--warning-ink);
   --color-info-ink: var(--info-ink);
@@ -69,6 +69,19 @@
   --color-viz-6: var(--viz-6);
   --color-viz-grid: var(--viz-grid);
   --color-viz-axis: var(--viz-axis);
+  --color-terminal: var(--terminal);
+  --color-terminal-foreground: var(--terminal-foreground);
+  --color-terminal-muted-foreground: var(--terminal-muted-foreground);
+  --color-terminal-chrome: var(--terminal-chrome);
+  --color-terminal-border: var(--terminal-border);
+  --color-terminal-accent: var(--terminal-accent);
+  --color-terminal-red: var(--terminal-red);
+  --color-terminal-green: var(--terminal-green);
+  --color-terminal-yellow: var(--terminal-yellow);
+  --color-terminal-blue: var(--terminal-blue);
+  --color-terminal-magenta: var(--terminal-magenta);
+  --color-terminal-cyan: var(--terminal-cyan);
+  --color-terminal-bright-black: var(--terminal-bright-black);
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.05);
   --shadow-popover: 0 4px 12px rgb(0 0 0 / 0.06);
   --shadow-overlay: 0 12px 16px -4px rgb(36 36 36 / 0.08), 0 4px 6px -2px rgb(36 36 36 / 0.03);
@@ -78,7 +91,7 @@
 
 :root {
   --radius: 0.625rem;
-  /* 中性色统一带轻微冷蓝倾向（hue ≈ 255–264），详见 .design/DESIGN.md */
+  /* 中性色统一带轻微冷蓝倾向（hue ≈ 255–264），色板与用法见 /design-system「颜色」章节 */
   --background: oklch(1 0 0);
   --foreground: oklch(0.24 0.006 258);
   --card: oklch(1 0 0);
@@ -94,15 +107,17 @@
   --muted-foreground: oklch(0.55 0.016 262);
   --accent: oklch(0.967 0.003 264);
   --accent-foreground: oklch(0.24 0.006 258);
-  --destructive: oklch(0.577 0.245 27.325);
+  /* 状态色全部落在 sRGB 内（即 #dc2626 / #16a34a / #d97706 / #2563eb）。
+     Tailwind v4 的同名色是 P3 广色域值，在 Mac 屏上会发「荧光」，长时间看刺眼；明度、色相不变，只收饱和度。 */
+  --destructive: oklch(0.577 0.215 27.3);
   /* Brand = Charcoal 黑（主调），蓝色仅保留为 info 语义 */
   --brand: oklch(0.235 0.015 252);
   --brand-foreground: oklch(0.985 0.002 264);
-  --success: oklch(0.627 0.194 149.214);
+  --success: oklch(0.627 0.17 149.2);
   --success-foreground: oklch(0.985 0.002 264);
-  --warning: oklch(0.666 0.179 58.318);
+  --warning: oklch(0.666 0.157 58.3);
   --warning-foreground: oklch(0.985 0.002 264);
-  --info: oklch(0.546 0.245 262.881);
+  --info: oklch(0.546 0.215 262.9);
   --info-foreground: oklch(0.985 0.002 264);
   --border: oklch(0.928 0.006 264.531);
   --input: oklch(0.928 0.006 264.531);
@@ -129,10 +144,10 @@
   --scrollbar-thumb-hover: oklch(0.708 0.008 264);
   /* 状态文字色：--success / --warning 作文字只有约 3.2:1，文字一律用 *-ink（白底与 ≤15% 着色底上 ≥ 4.5:1）；
      图标、圆点、图形标记仍用基础状态色。 */
-  --success-ink: oklch(0.5 0.14 150);
-  --warning-ink: oklch(0.52 0.14 52);
+  --success-ink: oklch(0.5 0.135 150);
+  --warning-ink: oklch(0.52 0.13 52);
   --info-ink: oklch(0.5 0.21 263);
-  --destructive-ink: oklch(0.51 0.21 27);
+  --destructive-ink: oklch(0.51 0.2 27);
   /* 反色面：Tooltip / Toast 等浮在内容之上的深色小面 */
   --inverse: oklch(0.235 0.015 252);
   --inverse-foreground: oklch(0.985 0.002 264);
@@ -148,6 +163,26 @@
   --viz-6: oklch(0.235 0.015 252);
   --viz-grid: oklch(0.94 0.005 264);
   --viz-axis: oklch(0.82 0.009 260);
+  /* 终端：全站唯一的常驻深色面，配色沿用 VS Code Dark 的 Hex 值，浅色、暗色主题共用。
+     xterm 自己画 canvas、读不了 CSS 变量，创建终端时用 readTerminalTheme() 取这里的实际值。 */
+  --terminal: #1e1e1e;
+  --terminal-foreground: #d4d4d4;
+  --terminal-selection: #264f78;
+  /* 程序输出的 ANSI 色，亮色版除黑白外与常规色相同。终端里的状态点也用这组：
+     基础状态色是按白底调的，蓝色放在深色标签栏上不到 3:1。 */
+  --terminal-red: #f44747;
+  --terminal-green: #6a9955;
+  --terminal-yellow: #d7ba7d;
+  --terminal-blue: #569cd6;
+  --terminal-magenta: #c586c0;
+  --terminal-cyan: #4ec9b0;
+  --terminal-bright-black: #808080;
+  --terminal-bright-white: #ffffff;
+  /* 终端上的界面层：标签栏与侧列表、分隔线、悬停。说明文字在终端底和标签栏悬停态上都 ≥ 4.5:1 */
+  --terminal-chrome: #252526;
+  --terminal-border: oklch(1 0 0 / 8%);
+  --terminal-accent: oklch(1 0 0 / 6%);
+  --terminal-muted-foreground: #9d9d9d;
 }
 
 .dark {
@@ -166,7 +201,7 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
-  /* 暗色仅保持变量完整，主题切换为后续迭代（见 .design/DESIGN.md §9） */
+  /* 暗色仅保持变量完整，主题切换是后续迭代 */
   --brand: oklch(0.623 0.214 259.815);
   --brand-foreground: oklch(0.985 0.002 264);
   --success: oklch(0.696 0.17 162.48);
@@ -359,13 +394,13 @@
       animation-timing-function: cubic-bezier(0.2, 0.9, 0.35, 1);
     }
     15% {
-      color: rgb(4 120 87);
-      text-shadow: 0 0 4px rgb(16 185 129 / 0.5);
+      color: var(--success-ink);
+      text-shadow: 0 0 4px color-mix(in oklab, var(--success) 50%, transparent);
       animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
     }
     42% {
-      color: rgb(4 120 87);
-      text-shadow: 0 0 4px rgb(16 185 129 / 0.5);
+      color: var(--success-ink);
+      text-shadow: 0 0 4px color-mix(in oklab, var(--success) 50%, transparent);
     }
   }
 

@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import "xterm/css/xterm.css"
 import "./terminal.css"
 
+import { readTerminalTheme } from "@/design-system"
 import { useStandaloneTerminal } from "@/lib/socket/hooks/useStandaloneTerminal"
 import { useXtermAutoFit } from "./useXtermAutoFit"
 
@@ -26,33 +27,6 @@ export interface StandaloneTerminalApi {
   sendInput: (data: string) => void
   paste: (data: string) => void
 }
-
-// ============================================================
-// xterm theme (shared with TerminalView)
-// ============================================================
-
-const XTERM_THEME = {
-  background: "#1e1e1e",
-  foreground: "#d4d4d4",
-  cursor: "#d4d4d4",
-  selectionBackground: "#264f78",
-  black: "#1e1e1e",
-  red: "#f44747",
-  green: "#6a9955",
-  yellow: "#d7ba7d",
-  blue: "#569cd6",
-  magenta: "#c586c0",
-  cyan: "#4ec9b0",
-  white: "#d4d4d4",
-  brightBlack: "#808080",
-  brightRed: "#f44747",
-  brightGreen: "#6a9955",
-  brightYellow: "#d7ba7d",
-  brightBlue: "#569cd6",
-  brightMagenta: "#c586c0",
-  brightCyan: "#4ec9b0",
-  brightWhite: "#ffffff",
-} as const
 
 // ============================================================
 // Component
@@ -119,7 +93,7 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
         fontSize: 13,
         fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
         lineHeight: 1.4,
-        theme: XTERM_THEME,
+        theme: readTerminalTheme(),
         scrollback: 5000,
         convertEol: true,
       })
@@ -167,10 +141,10 @@ export const StandaloneTerminalView: React.FC<StandaloneTerminalViewProps> = Rea
     }, [isAttached, onReady, paste, scheduleFit, sendInput])
 
     return (
-      <div className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#1e1e1e]">
+      <div className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-terminal">
         {/* Terminal loading overlay */}
         {!terminalId && (
-          <div className="absolute inset-0 flex items-center justify-center text-neutral-500 text-xs z-10 bg-[#1e1e1e]">
+          <div className="absolute inset-0 flex items-center justify-center text-terminal-muted-foreground text-xs z-10 bg-terminal">
             Starting terminal...
           </div>
         )}

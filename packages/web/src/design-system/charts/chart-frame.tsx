@@ -47,7 +47,7 @@ export function ChartFrame({ title, subtitle, legend, actions, table, footnote, 
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div id={titleId} className="text-[13px] font-semibold leading-5 text-foreground">{title}</div>
-          {subtitle && <div className="text-[11px] leading-4 text-muted-foreground">{subtitle}</div>}
+          {subtitle && <div className="mt-0.5 text-xs leading-[18px] text-muted-foreground">{subtitle}</div>}
         </div>
         {(actions || table) && (
           <div className="-mr-1 -mt-0.5 flex shrink-0 items-center gap-1">
@@ -69,7 +69,7 @@ export function ChartFrame({ title, subtitle, legend, actions, table, footnote, 
       <div className="mt-3 min-w-0">
         {view === 'table' && table ? <ChartTable data={table} /> : children}
       </div>
-      {footnote && <figcaption className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{footnote}</figcaption>}
+      {footnote && <figcaption className="mt-3 text-xs leading-5 text-muted-foreground">{footnote}</figcaption>}
     </figure>
   )
 }

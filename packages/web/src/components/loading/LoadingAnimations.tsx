@@ -1,7 +1,7 @@
 /**
  * 10 首屏加载动画候选方案
  *
- * 所有颜色遵循 .design/DESIGN.md 规范：
+ * 所有颜色遵循设计系统规范：
  * - 主色 Charcoal #181e25 (--primary / --brand)
  * - 中性灰 --muted-foreground / --border
  * - 不使用随机渐变或品牌外彩色

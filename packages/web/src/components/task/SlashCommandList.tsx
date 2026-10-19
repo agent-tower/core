@@ -34,12 +34,12 @@ export function SlashCommandList({
   return (
     <div className={compact ? 'pt-1.5' : 'pt-2'}>
       <div className={`mb-1 flex items-center justify-between ${compact ? 'px-2 pt-0.5' : 'px-3 pt-1'}`}>
-        <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-neutral-400">{title}</span>
-        <span className="text-[10px] text-neutral-400">{insertionHint}</span>
+        <span className="text-xs font-medium text-muted-foreground">{title}</span>
+        <span className="text-xs text-muted-foreground">{insertionHint}</span>
       </div>
 
       {commands.length === 0 ? (
-        <div className={`${compact ? 'px-2 pb-2 pt-1.5 text-[11px]' : 'px-3 pb-3 pt-2 text-xs'} text-neutral-400`}>
+        <div className={`${compact ? 'px-2 pb-2 pt-1.5 text-xs' : 'px-3 pb-3 pt-2 text-xs'} text-muted-foreground`}>
           {hasCatalog ? (emptyQueryMessage ?? `No matches for ${queryPrefix}${query}`) : emptyCatalogMessage}
         </div>
       ) : (
@@ -52,19 +52,19 @@ export function SlashCommandList({
               onClick={() => onSelect(command)}
               className={`w-full rounded-lg border text-left transition-colors ${
                 index === selectedIndex
-                  ? 'border-neutral-300 bg-neutral-50'
-                  : 'border-transparent hover:border-neutral-200 hover:bg-neutral-50/80'
+                  ? 'border-border bg-muted/50'
+                  : 'border-transparent hover:border-border hover:bg-accent'
               } ${itemPadding}`}
             >
               <div className="flex items-center gap-2">
-                <div className="font-mono text-[13px] text-neutral-900">{command.command}</div>
+                <div className="font-mono text-[13px] text-foreground">{command.command}</div>
                 {command.kind && command.kind !== 'builtin' ? (
-                  <span className="rounded-full border border-neutral-200 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.12em] text-neutral-500">
+                  <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
                     {command.scope ? `${command.scope} ${command.kind}` : command.kind}
                   </span>
                 ) : null}
               </div>
-              <div className={`${compact ? 'mt-0.5 text-[11px]' : 'mt-1 text-xs'} text-neutral-500`}>
+              <div className={`${compact ? 'mt-0.5 text-xs' : 'mt-1 text-xs'} text-muted-foreground`}>
                 {command.description}
               </div>
             </button>

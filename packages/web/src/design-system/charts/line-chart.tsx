@@ -168,8 +168,8 @@ export function LineChart({ labels, series, height = 220, formatValue = defaultF
             {marker && marker.index >= 0 && marker.index < count && (
               <g>
                 <line x1={crisp(x(marker.index))} x2={crisp(x(marker.index))} y1={top} y2={top + plotH} stroke={VIZ.text} strokeOpacity={0.35} strokeWidth={1} />
-                <rect x={x(marker.index) - (marker.label.length * 11 + 10) / 2} y={top - 19} width={marker.label.length * 11 + 10} height={15} rx={4} fill={VIZ.text} />
-                <text x={x(marker.index)} y={top - 8} textAnchor="middle" className="fill-background text-[10px] font-medium">{marker.label}</text>
+                <rect x={x(marker.index) - (marker.label.length * 11 + 10) / 2} y={top - 20} width={marker.label.length * 11 + 10} height={16} rx={4} fill={VIZ.text} />
+                <text x={x(marker.index)} y={top - 8} textAnchor="middle" className="fill-background text-[11px] font-medium">{marker.label}</text>
               </g>
             )}
 

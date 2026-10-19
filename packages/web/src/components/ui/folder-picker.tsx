@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Folder, FolderGit2, ChevronRight, Loader2, AlertCircle, Check } from 'lucide-react'
+import { Badge, Button, Chip, Input } from '@/design-system'
 import { apiClient } from '@/lib/api-client'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
@@ -182,36 +183,23 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
     <div className="space-y-2">
       {/* 手动输入框 */}
       <div className="relative">
-        <input
+        <Input
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleInputKeyDown}
           placeholder={placeholder ?? 'e.g., /Users/me/projects/my-repo'}
-          className={cn(
-            'w-full px-3 py-2 border rounded-lg text-sm font-mono focus:outline-none transition-colors pr-8',
-            value
-              ? 'border-emerald-300 bg-emerald-50/50 focus:border-emerald-400'
-              : 'border-neutral-200 focus:border-neutral-400',
-          )}
+          className="font-mono"
+          suffix={value ? (
+            validationMode === 'git'
+              ? <FolderGit2 aria-hidden className="size-3.5 text-success" />
+              : <Folder aria-hidden className="size-3.5 text-success" />
+          ) : undefined}
         />
-        {value && (
-          validationMode === 'git' ? (
-            <FolderGit2
-              size={14}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500"
-            />
-          ) : (
-            <Folder
-              size={14}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500"
-            />
-          )
-        )}
       </div>
 
       {/* 提示文字 */}
-      <p className="text-xs text-neutral-400">
+      <p className="text-xs text-muted-foreground">
         {validationMode === 'git'
           ? t('Browse and select a Git repository, or type a path and press Enter')
           : t('Browse and select a directory, or type a path and press Enter')}
@@ -221,28 +209,26 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
       {drives.length > 0 && (
         <div className="flex items-center gap-1 flex-wrap">
           {drives.map((drive) => (
-            <button
+            <Chip
               key={drive}
+              size="sm"
+              selected={currentPath.toUpperCase().startsWith(drive.toUpperCase())}
               onClick={() => { browsePath(drive); setValidationError(null) }}
-              className={cn(
-                'px-2 py-0.5 rounded text-xs font-mono transition-colors border',
-                currentPath.toUpperCase().startsWith(drive.toUpperCase())
-                  ? 'bg-neutral-900 text-white border-neutral-900'
-                  : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100',
-              )}
+              className="font-mono"
             >
               {drive.replace('\\', '')}
-            </button>
+            </Chip>
           ))}
         </div>
       )}
 
       {/* 面包屑导航 */}
-      <div className="flex items-center gap-0.5 text-xs text-neutral-500 overflow-x-auto pb-1 scrollbar-none">
+      <div className="flex items-center gap-0.5 text-xs text-muted-foreground overflow-x-auto pb-1 scrollbar-none">
         {!isWindows && (
           <button
+            type="button"
             onClick={() => browsePath('/')}
-            className="hover:text-neutral-900 transition-colors flex-shrink-0 px-1 py-0.5 rounded hover:bg-neutral-100"
+            className="hover:text-foreground transition-colors flex-shrink-0 px-1 py-0.5 rounded hover:bg-accent"
           >
             /
           </button>
@@ -250,15 +236,16 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
         {breadcrumbSegments.map((segment, i) => (
           <span key={i} className="flex items-center gap-0.5 flex-shrink-0">
             {(isWindows ? i > 0 : true) && (
-              <ChevronRight size={10} className="text-neutral-300" />
+              <ChevronRight size={10} aria-hidden="true" className="text-muted-foreground/50" />
             )}
             <button
+              type="button"
               onClick={() => handleBreadcrumbClick(i)}
               className={cn(
                 'px-1 py-0.5 rounded transition-colors truncate max-w-[120px]',
                 i === breadcrumbSegments.length - 1
-                  ? 'font-medium text-neutral-900'
-                  : 'hover:text-neutral-900 hover:bg-neutral-100',
+                  ? 'font-medium text-foreground/90'
+                  : 'hover:text-foreground hover:bg-accent',
               )}
             >
               {segment}
@@ -268,48 +255,45 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
       </div>
 
       {/* 目录列表 */}
-      <div className="border border-neutral-200 rounded-lg overflow-hidden">
+      <div className="border border-border rounded-lg overflow-hidden">
         <div className="max-h-[200px] overflow-y-auto">
           {isLoading ? (
-            <div className="flex items-center justify-center py-8 text-neutral-400">
-              <Loader2 size={16} className="animate-spin mr-2" />
+            <div className="flex items-center justify-center py-8 text-muted-foreground">
+              <Loader2 size={16} className="animate-spin motion-reduce:[animation-duration:2.4s] mr-2" />
               <span className="text-xs">Loading...</span>
             </div>
           ) : error ? (
-            <div className="flex items-center justify-center py-8 text-red-500 gap-2">
+            <div className="flex items-center justify-center py-8 text-destructive-ink gap-2">
               <AlertCircle size={14} />
               <span className="text-xs">{error}</span>
             </div>
           ) : dirs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-8 text-neutral-400">
+            <div className="flex flex-col items-center justify-center gap-3 py-8 text-muted-foreground">
               <span className="text-xs">No subdirectories</span>
               {validationMode === 'directory' && currentPath && (
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  variant={currentPath === value ? 'soft' : 'secondary'}
+                  aria-pressed={currentPath === value}
                   onClick={() => selectDirectory(currentPath)}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors',
-                    currentPath === value
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                      : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50',
-                  )}
                 >
-                  <Check size={13} />
+                  <Check />
                   <span>{t('Select Current')}</span>
-                </button>
+                </Button>
               )}
             </div>
           ) : (
-            <ul className="divide-y divide-neutral-100">
+            <ul className="divide-y divide-border/60">
               {/* 返回上级按钮 */}
               {currentPath !== parentPath && (
                 <li>
                   <button
+                    type="button"
                     onClick={() => browsePath(parentPath)}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-neutral-50 transition-colors group"
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-accent transition-colors group"
                   >
-                    <Folder size={14} className="text-neutral-400 flex-shrink-0" />
-                    <span className="text-xs text-neutral-500 group-hover:text-neutral-700">..</span>
+                    <Folder size={14} className="text-muted-foreground flex-shrink-0" />
+                    <span className="text-xs text-muted-foreground group-hover:text-foreground">..</span>
                   </button>
                 </li>
               )}
@@ -320,35 +304,35 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
                     onClick={() => handleDirClick(entry)}
                     className={cn(
                       'w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors group',
-                      entry.path === value
-                        ? 'bg-emerald-50'
-                        : 'hover:bg-neutral-50',
+                      // 选中：浅灰底 + 加粗 + 对勾，与菜单的选中态一致
+                      entry.path === value ? 'bg-accent' : 'hover:bg-accent',
                     )}
                   >
                     {entry.isGitRepo ? (
-                      <FolderGit2 size={14} className="text-emerald-500 flex-shrink-0" />
+                      <FolderGit2 size={14} className="text-foreground/70 flex-shrink-0" />
                     ) : (
-                      <Folder size={14} className="text-neutral-400 flex-shrink-0" />
+                      <Folder size={14} className="text-muted-foreground flex-shrink-0" />
                     )}
                     <span
                       className={cn(
                         'text-xs truncate',
                         entry.path === value
-                          ? 'font-medium text-emerald-700'
-                          : 'text-neutral-700 group-hover:text-neutral-900',
+                          ? 'font-medium text-foreground'
+                          : 'text-foreground/80 group-hover:text-foreground',
                       )}
                     >
                       {entry.name}
                     </span>
                     {entry.isGitRepo && (
-                      <span className="ml-auto flex-shrink-0 text-[10px] font-medium bg-emerald-100 text-emerald-600 px-1.5 py-0.5 rounded">
-                        Git
-                      </span>
+                      <Badge size="sm" shape="tag" className="ml-auto shrink-0">Git</Badge>
+                    )}
+                    {entry.isGitRepo && entry.path === value && (
+                      <Check size={12} className="shrink-0 text-foreground" />
                     )}
                     {!entry.isGitRepo && validationMode !== 'directory' && (
                       <ChevronRight
                         size={12}
-                        className="ml-auto text-neutral-300 group-hover:text-neutral-400 flex-shrink-0"
+                        className="ml-auto text-muted-foreground/70 group-hover:text-muted-foreground flex-shrink-0"
                       />
                     )}
                     {!entry.isGitRepo && validationMode === 'directory' && (
@@ -356,7 +340,7 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
                         size={12}
                         className={cn(
                           'ml-auto flex-shrink-0',
-                          entry.path === value ? 'text-emerald-500' : 'text-neutral-300 group-hover:text-neutral-400',
+                          entry.path === value ? 'text-foreground' : 'text-muted-foreground/70 group-hover:text-muted-foreground',
                         )}
                       />
                     )}
@@ -370,13 +354,13 @@ export function FolderPicker({ value, onChange, validationMode = 'git', placehol
 
       {/* 验证状态 */}
       {isValidating && (
-        <div className="flex items-center gap-2 text-xs text-neutral-400">
-          <Loader2 size={12} className="animate-spin" />
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 size={12} className="animate-spin motion-reduce:[animation-duration:2.4s]" />
           <span>Validating...</span>
         </div>
       )}
       {validationError && (
-        <div className="flex items-center gap-2 text-xs text-red-500">
+        <div className="flex items-center gap-2 text-xs text-destructive-ink">
           <AlertCircle size={12} />
           <span>{validationError}</span>
         </div>

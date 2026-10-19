@@ -9,7 +9,7 @@ const BASE =
 
 /** 高度档位与主页对齐：24 紧凑 · 28 胶囊/工具栏 · 32 列表行同高（默认）· 36 表单 · 44 首屏 CTA */
 const SIZE: Record<ButtonSize, string> = {
-  xs: "h-6 gap-1 rounded-md px-2 text-[11px] [&_svg:not([class*='size-'])]:size-3",
+  xs: "h-6 gap-1 rounded-md px-2 text-xs [&_svg:not([class*='size-'])]:size-3",
   sm: "h-7 gap-1.5 rounded-md px-2.5 text-xs [&_svg:not([class*='size-'])]:size-3.5",
   md: "h-8 gap-1.5 rounded-md px-3 text-[13px] [&_svg:not([class*='size-'])]:size-4",
   lg: "h-9 gap-2 rounded-lg px-4 text-sm [&_svg:not([class*='size-'])]:size-4",

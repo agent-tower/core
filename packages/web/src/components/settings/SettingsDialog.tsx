@@ -133,7 +133,7 @@ export function SettingsDialog() {
       )}
     >
       <div
-        className="absolute inset-0 bg-black/20 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/20"
         onClick={closeSettings}
         aria-hidden="true"
       />
@@ -145,7 +145,7 @@ export function SettingsDialog() {
         aria-modal="true"
         aria-label={t('设置')}
         className={cn(
-          'relative flex w-full max-w-[1100px] flex-col overflow-hidden rounded-2xl bg-background shadow-[0_12px_16px_-4px_rgba(36,36,36,0.08)] ring-1 ring-foreground/5 transform transition-all duration-200 outline-none motion-reduce:transition-none',
+          'relative flex w-full max-w-[1100px] flex-col overflow-hidden rounded-xl bg-background shadow-overlay ring-1 ring-foreground/5 transform transition-all duration-200 outline-none motion-reduce:transition-none',
           'h-[min(calc(100vh-1.5rem),840px)] sm:h-[min(calc(100vh-3rem),840px)]',
           isOpen ? 'scale-100 translate-y-0' : 'scale-[0.97] translate-y-1',
         )}
@@ -200,7 +200,7 @@ export function SettingsDialog() {
                 className={cn(
                   'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
                   activeTab === item.id
-                    ? 'bg-background text-foreground font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05)] ring-1 ring-foreground/[0.04]'
+                    ? 'bg-background text-foreground font-medium shadow-raised ring-1 ring-foreground/[0.04]'
                     : 'text-muted-foreground hover:text-foreground hover:bg-background/60',
                 )}
               >

@@ -108,7 +108,7 @@ function statusLabel(status: SessionStatus | string, t: (key: string) => string)
 function BlinkingStatusDot({ className, pulseClassName }: { className: string; pulseClassName: string }) {
   return (
     <span className="relative inline-flex h-2 w-2">
-      <span className={cn('absolute inline-flex h-full w-full animate-ping rounded-full', pulseClassName)} />
+      <span className={cn('absolute inline-flex h-full w-full animate-ping motion-reduce:animate-none rounded-full', pulseClassName)} />
       <span className={cn('relative inline-flex h-2 w-2 rounded-full', className)} />
     </span>
   )
@@ -178,7 +178,7 @@ function ConversationListItem({
             <ConversationStatusDot status={conversation.status} unread={unread} />
           </span>
         ) : (
-          <span className="flex w-14 shrink-0 items-center justify-end text-[11px] tabular-nums text-muted-foreground/50">
+          <span className="flex w-14 shrink-0 items-center justify-end text-[11px] tabular-nums text-muted-foreground">
             <span className="truncate group-hover:hidden">{updatedAt}</span>
           </span>
         )}
@@ -275,7 +275,7 @@ function ConversationSearchModal({
     <div className="fixed inset-0 z-90" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
 
-      <div className="absolute left-1/2 top-[18vh] w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-popover shadow-lg animate-in fade-in zoom-in-95 duration-100">
+      <div className="absolute left-1/2 top-[18vh] w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-popover shadow-popover animate-in fade-in zoom-in-95 duration-100">
         <div className="flex items-center gap-2.5 border-b border-border/60 px-4">
           <Search size={15} className="shrink-0 text-muted-foreground/70" />
           <input
@@ -292,7 +292,7 @@ function ConversationSearchModal({
         {results.length > 0 ? (
           <>
             {!hasQuery ? (
-              <div className="px-4 pb-1 pt-2.5 text-[11px] font-medium text-muted-foreground/70">
+              <div className="px-4 pb-1 pt-2.5 text-xs font-medium text-muted-foreground">
                 {t('Recent conversations')}
               </div>
             ) : null}
@@ -312,7 +312,7 @@ function ConversationSearchModal({
                   <span className="min-w-0 flex-1 truncate text-sm text-foreground/90" title={conversation.title}>
                     {conversation.title}
                   </span>
-                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground/60">
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                     {timeAgo(conversation.lastActiveAt ?? conversation.createdAt)}
                   </span>
                 </button>
@@ -320,7 +320,7 @@ function ConversationSearchModal({
             </div>
           </>
         ) : (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground/70">
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('No matching conversations')}
           </div>
         )}
@@ -581,14 +581,14 @@ export function ConversationPage() {
           hasMacTrafficLights && 'pl-[72px]',
         )}>
           <BrandLockup />
-          <span className="mx-1.5 select-none text-muted-foreground/40">/</span>
+          <span className="mx-1.5 select-none text-muted-foreground">/</span>
           <span className="truncate text-sm font-medium text-foreground/90">{t('Conversation')}</span>
         </div>
         <button
           type="button"
           onClick={() => useUIStore.getState().openSettings()}
           className={cn(
-            'rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground',
+            'rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
             usesIntegratedTitlebar && 'app-region-no-drag',
           )}
           title={t('Settings')}
@@ -644,7 +644,7 @@ export function ConversationPage() {
               <div className="px-4 py-4 text-sm text-muted-foreground">{t('Loading...')}</div>
             ) : conversations.length === 0 ? (
               <div className="flex h-full select-none flex-col items-center justify-center px-6 text-center">
-                <MessageSquare size={36} className="mb-3 text-muted-foreground/40" strokeWidth={1.5} />
+                <MessageSquare size={36} aria-hidden="true" className="mb-3 text-muted-foreground/50" strokeWidth={1.5} />
                 <p className="mb-4 text-sm text-muted-foreground">{t('No conversations')}</p>
                 <button
                   type="button"
@@ -658,7 +658,7 @@ export function ConversationPage() {
               <div className="mb-2">
                 <div className="flex w-full items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-muted-foreground">
                   <span className="flex-1 text-left">{t('History')}</span>
-                  <span className="text-[11px] font-normal tabular-nums text-muted-foreground/50">
+                  <span className="text-[11px] font-normal tabular-nums text-muted-foreground">
                     {conversations.length}
                   </span>
                 </div>
@@ -679,7 +679,7 @@ export function ConversationPage() {
             )}
           </div>
 
-          <div className="flex items-center justify-between border-t border-border/60 px-4 py-3 text-xs text-muted-foreground/70">
+          <div className="flex items-center justify-between border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">
             <span>{t('Conversations')} · {conversations.length}</span>
           </div>
         </aside>
@@ -723,7 +723,7 @@ export function ConversationPage() {
           ) : !activeConversation ? (
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 pb-[10vh] md:px-8">
               <div className="w-full max-w-2xl animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
-                <h1 className="mb-8 max-w-full break-words text-center text-3xl leading-tight tracking-tight text-foreground">
+                <h1 className="mb-8 max-w-full break-words text-center text-[26px] leading-tight tracking-tight text-foreground">
                   {t('需要我帮你做点什么？')}
                 </h1>
                 <CreateTaskInput
@@ -742,7 +742,7 @@ export function ConversationPage() {
                   }}
                 />
                 {error ? (
-                  <div className="mt-3 rounded-lg border border-destructive/15 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                  <div className="mt-3 rounded-lg border border-destructive/15 bg-destructive/5 px-3 py-2 text-sm text-destructive-ink">
                     {error}
                   </div>
                 ) : null}

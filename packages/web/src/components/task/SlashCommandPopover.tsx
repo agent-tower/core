@@ -125,7 +125,7 @@ export function SlashCommandPopover({
     <div className="pointer-events-none fixed inset-0 z-[120]">
       <div
         ref={panelRef}
-        className="pointer-events-auto fixed overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-lg shadow-neutral-200/70"
+        className="pointer-events-auto fixed overflow-hidden rounded-xl border border-border bg-background shadow-popover "
         style={{
           top: position.top,
           left: position.left,

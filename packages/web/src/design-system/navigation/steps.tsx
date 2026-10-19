@@ -53,7 +53,7 @@ export function Stepper({ steps, current, className }: StepperProps) {
               <div className={cn('truncate text-[13px] leading-5', status === 'upcoming' ? 'text-muted-foreground' : 'font-medium text-foreground')}>
                 {step.title}
               </div>
-              {step.description && <div className="truncate text-[11px] leading-4 text-muted-foreground">{step.description}</div>}
+              {step.description && <div className="truncate text-xs leading-[18px] text-muted-foreground">{step.description}</div>}
             </div>
             {!isLast && (
               <span aria-hidden="true" className={cn('mx-2 mt-3 h-px min-w-6 flex-1', index < current ? 'bg-foreground' : 'bg-border')} />

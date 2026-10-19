@@ -3,6 +3,7 @@ import { Code2, Terminal, Globe, GitGraph, History, PanelRightClose, Users } fro
 import type { TeamRun, Workspace } from "@agent-tower/shared"
 
 import { cn } from "@/lib/utils"
+import { Notice } from "@/design-system"
 import { useI18n } from "@/lib/i18n"
 import { TerminalTabs } from "./TerminalTabs"
 import { EditorView, type EditorViewHandle } from "./EditorView"
@@ -106,10 +107,10 @@ const TabButton: React.FC<{
     type="button"
     onClick={onClick}
     className={cn(
-      "flex shrink-0 items-center gap-2 px-4 py-2 text-xs font-medium transition-all rounded-t-md border-t border-x -mb-px whitespace-nowrap",
+      "flex shrink-0 items-center gap-2 px-4 py-2 text-xs font-medium transition-all rounded-t-md border-t border-x -mb-px whitespace-nowrap outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60",
       active
-        ? "bg-white border-neutral-200 text-neutral-900 shadow-[0_-2px_6px_rgba(0,0,0,0.02)] z-10"
-        : "bg-transparent border-transparent text-neutral-500 hover:text-neutral-700 hover:bg-neutral-200/50"
+        ? "bg-background border-border text-foreground z-10"
+        : "bg-transparent border-transparent text-muted-foreground hover:text-foreground hover:bg-foreground/[0.05]"
     )}
   >
     {icon}
@@ -130,10 +131,10 @@ const RailTabButton: React.FC<{
     aria-label={label}
     aria-pressed={active}
     className={cn(
-      "flex h-9 w-9 items-center justify-center rounded-lg border text-muted-foreground transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+      "flex h-9 w-9 items-center justify-center rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
       active
-        ? "border-neutral-900 bg-neutral-900 text-white shadow-sm"
-        : "border-transparent hover:border-border hover:bg-background hover:text-foreground"
+        ? "bg-background text-foreground shadow-raised ring-1 ring-border/80"
+        : "text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground"
     )}
   >
     {icon}
@@ -287,23 +288,23 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     const translatedActiveLabel = activeTabConfig ? t(activeTabConfig.label) : ''
 
     const readOnlyNotice = readOnly ? (
-      <div className="mx-2 mt-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-500">
+      <Notice size="sm" className="mx-2 mt-2">
         {repoDeleted
           ? t('项目已删除且本地仓库文件已清理。这里只保留历史视图。')
           : t('项目已删除。Workspace 以只读模式展示历史内容。')}
-      </div>
+      </Notice>
     ) : null
 
     const content = (
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {showSwitcher && (
-          <div className="shrink-0 px-3 py-1.5 border-b border-neutral-100 bg-neutral-50/60">
+          <div className="shrink-0 px-3 py-1.5 border-b border-border/60 bg-muted/40">
             <WorkspaceSwitcher
               workspaces={workspaces}
               teamRun={teamRun}
               selectedWorkspaceId={selectedWorkspaceId}
               onSelectWorkspace={onSelectWorkspace!}
-              buttonClassName="h-7 text-[11px]"
+              buttonClassName="h-7"
             />
           </div>
         )}
@@ -370,7 +371,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
     if (isRailVariant) {
       return (
-        <div className={cn("flex h-full w-full min-w-0 bg-white", className)}>
+        <div className={cn("flex h-full w-full min-w-0 bg-background", className)}>
           <div className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-l border-border bg-muted/35 px-1.5 py-2">
             {tabs.map((tab) => (
               <RailTabButton
@@ -414,12 +415,12 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     }
 
     return (
-      <div className={cn("flex h-full w-full min-w-0 flex-col bg-white", className)}>
+      <div className={cn("flex h-full w-full min-w-0 flex-col bg-background", className)}>
         {readOnly && (
           readOnlyNotice
         )}
         {/* Tab 栏 — folder style */}
-        <div className="flex items-center overflow-x-auto scrollbar-app-thin px-2 pt-2 border-b border-neutral-200 bg-neutral-100/80 shrink-0 gap-1 select-none">
+        <div className="flex items-center overflow-x-auto scrollbar-app-thin px-2 pt-2 border-b border-border bg-muted shrink-0 gap-1 select-none">
           {tabs.map((tab) => (
             <TabButton
               key={tab.key}

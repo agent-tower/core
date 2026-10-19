@@ -34,14 +34,14 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
           onChange(v === '' ? undefined : v)
         }}
         placeholder={t('留空为 auto；或直接输入模型 ID（与 cursor-agent --model 一致）')}
-        className="w-full px-3 py-1.5 text-sm border border-neutral-200 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900 font-mono"
+        className="w-full px-3 py-1.5 text-sm border border-border rounded focus:outline-none focus:ring-1 focus:ring-ring/60 font-mono"
       />
 
       <button
         type="button"
         onClick={() => setListOpen(o => !o)}
         disabled={isLoading}
-        className="flex items-center gap-1 text-xs text-neutral-600 hover:text-neutral-900 disabled:opacity-50 w-fit"
+        className="flex items-center gap-1 text-xs text-foreground/70 hover:text-foreground disabled:opacity-50 w-fit"
       >
         <ChevronDown size={14} className={cn('transition-transform', listOpen && 'rotate-180')} />
         {isLoading
@@ -52,13 +52,13 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
       </button>
 
       {listOpen && !isLoading && (
-        <div className="rounded-lg border border-neutral-200 bg-white shadow-sm overflow-hidden">
+        <div className="rounded-lg border border-border bg-background shadow-raised overflow-hidden">
           <input
             type="text"
             value={filter}
             onChange={e => setFilter(e.target.value)}
             placeholder={t('筛选模型…')}
-            className="w-full px-3 py-2 text-sm border-b border-neutral-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-neutral-300"
+            className="w-full px-3 py-2 text-sm border-b border-border/60 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-ring/60"
           />
           <div className="max-h-[min(50vh,22rem)] overflow-y-auto py-1">
             <button
@@ -69,8 +69,8 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
                 setFilter('')
               }}
               className={cn(
-                'w-full px-3 py-2 text-left text-sm hover:bg-neutral-50',
-                !value ? 'bg-neutral-50 font-medium' : 'text-neutral-700'
+                'w-full px-3 py-2 text-left text-sm hover:bg-accent',
+                !value ? 'bg-muted/50 font-medium' : 'text-foreground/80'
               )}
             >
               {t('默认 (auto)')}
@@ -85,27 +85,27 @@ export function CursorAgentModelField({ value, onChange }: CursorAgentModelField
                   setFilter('')
                 }}
                 className={cn(
-                  'w-full px-3 py-2 text-left text-sm hover:bg-neutral-50 border-t border-neutral-100',
-                  value === m.id ? 'bg-blue-50/80' : ''
+                  'w-full px-3 py-2 text-left text-sm hover:bg-accent border-t border-border/60',
+                  value === m.id ? 'bg-foreground/[0.06]' : ''
                 )}
               >
-                <div className="font-mono text-xs text-neutral-900 break-all">{m.id}</div>
-                <div className="text-xs text-neutral-500 mt-0.5 break-words">{m.label}</div>
+                <div className="font-mono text-xs text-foreground break-all">{m.id}</div>
+                <div className="text-xs text-muted-foreground mt-0.5 break-words">{m.label}</div>
               </button>
             ))}
             {filtered.length === 0 && (
-              <div className="px-3 py-4 text-xs text-neutral-400 text-center">{t('无匹配项')}</div>
+              <div className="px-3 py-4 text-xs text-muted-foreground text-center">{t('无匹配项')}</div>
             )}
           </div>
         </div>
       )}
 
       {(isError || data?.error) && (
-        <p className="text-xs text-amber-700">
+        <p className="text-xs text-warning-ink">
           {t('无法从本机加载模型列表（{error}）。仍可手动输入；或在安装 cursor-agent 的机器上运行', {
             error: data?.error ?? t('请求失败'),
           })}
-          <code className="mx-0.5 bg-neutral-100 px-1 rounded text-[11px]">cursor-agent --list-models</code>
+          <code className="mx-0.5 bg-muted px-1 rounded text-[11px]">cursor-agent --list-models</code>
           {t('查看 ID。')}
         </p>
       )}

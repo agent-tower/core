@@ -1,7 +1,7 @@
 /**
  * 任务状态 → 视觉样式 唯一映射字典
  *
- * 全站任务状态的颜色语义在此统一定义（见 .design/DESIGN.md §2.4），
+ * 全站任务状态的颜色语义在此统一定义（设计系统 README 指定这里为唯一来源），
  * 组件不得再散落硬编码状态颜色。
  */
 import type { ComponentType } from 'react'

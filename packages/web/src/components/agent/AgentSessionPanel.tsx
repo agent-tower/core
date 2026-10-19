@@ -246,15 +246,15 @@ export function AgentSessionPanel({
         <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pb-4 pt-6">
           <div ref={contentRef} className="mx-auto w-full min-w-0 max-w-4xl">
             {isLoadingSnapshot ? (
-              <div className="flex items-center justify-center gap-3 py-12 text-muted-foreground/70">
-                <svg className="h-5 w-5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <div className="flex items-center justify-center gap-3 py-12 text-muted-foreground">
+                <svg className="h-5 w-5 animate-spin motion-reduce:[animation-duration:2.4s]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
                 <span className="text-sm">{t('Loading logs...')}</span>
               </div>
             ) : logs.length === 0 ? (
-              <div className="py-8 text-center text-muted-foreground/70">
+              <div className="py-8 text-center text-muted-foreground">
                 {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
               </div>
             ) : (
@@ -276,7 +276,7 @@ export function AgentSessionPanel({
           <button
             type="button"
             onClick={() => scrollToBottom()}
-            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-md backdrop-blur-sm transition-all hover:bg-background hover:text-foreground"
+            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-raised backdrop-blur-sm transition-all hover:bg-background hover:text-foreground"
             aria-label={t('Scroll to bottom')}
           >
             <ArrowDown size={14} />
@@ -302,13 +302,13 @@ export function AgentSessionPanel({
         <div className="mx-auto max-w-4xl">
           <RuntimePermissionPrompt sessionId={sessionId} />
           {error ? (
-            <div className="mb-2 text-sm text-destructive">{error}</div>
+            <div className="mb-2 text-sm text-destructive-ink">{error}</div>
           ) : null}
           <div
             ref={inputContainerRef}
             className={cn(
               'relative rounded-xl border bg-background transition-colors duration-200 hover:border-ring/40 focus-within:border-ring/60',
-              isDragOver ? 'border-info bg-info/5' : 'border-border',
+              isDragOver ? 'border-foreground/40 bg-foreground/[0.02]' : 'border-border',
             )}
           >
             <AttachmentPreview files={attachmentFiles} onRemove={removeFile} />
@@ -344,7 +344,7 @@ export function AgentSessionPanel({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isUploading}
-                  className="rounded-lg p-2 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
                   title={t('Upload file')}
                 >
                   <Paperclip size={18} />
@@ -365,8 +365,9 @@ export function AgentSessionPanel({
                     type="button"
                     onClick={handleStop}
                     disabled={isStopping || isSessionCancelling}
-                    className="rounded-lg bg-destructive p-2 text-white transition-all duration-200 hover:bg-destructive/90 disabled:opacity-50"
+                    className="rounded-lg bg-destructive-ink p-2 text-white transition-all duration-200 hover:bg-destructive-ink/90 disabled:opacity-50"
                     title={t('Stop')}
+                    aria-label={t('Stop')}
                   >
                     <Square size={14} />
                   </button>
@@ -391,7 +392,7 @@ export function AgentSessionPanel({
                         && !isSessionCancelling
                         && !selectedProviderIssue
                         ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                        : 'cursor-not-allowed bg-transparent text-muted-foreground/50',
+                        : 'cursor-not-allowed bg-transparent text-muted-foreground',
                     )}
                     title={t('Send')}
                   >

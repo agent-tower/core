@@ -55,7 +55,7 @@ export function Segmented({ options, value, defaultValue, onValueChange, size = 
             'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-medium text-foreground/70 transition-[color,background-color,box-shadow] duration-150',
             'hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-40',
             'data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-raised data-[state=on]:ring-1 data-[state=on]:ring-border/80',
-            size === 'md' ? 'h-7 px-3 text-xs [&_svg]:size-3.5' : 'h-6 px-2.5 text-[11px] [&_svg]:size-3',
+            size === 'md' ? 'h-7 px-3 text-xs [&_svg]:size-3.5' : 'h-6 px-2.5 text-xs [&_svg]:size-3',
             block && 'flex-1',
           )}
         >

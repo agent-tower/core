@@ -68,7 +68,7 @@ export function ExecutionPermissionSelector({ value, agentType, options, error, 
 
         {open && (
           <div id={`${id}-options`} role="group" aria-labelledby={`${id}-label`}
-            className="absolute left-0 top-full z-50 mt-1.5 max-h-[60vh] w-full overflow-y-auto rounded-lg border border-border bg-popover py-1 shadow-[0_4px_12px_rgba(0,0,0,0.06)]">
+            className="absolute left-0 top-full z-50 mt-1.5 max-h-[60vh] w-full overflow-y-auto rounded-lg border border-border bg-popover py-1 shadow-popover">
             {EXECUTION_PERMISSION_MODES.map(mode => {
               const option = options?.find(item => item.mode === mode)
               const enabled = option?.selectable === true
@@ -95,7 +95,7 @@ export function ExecutionPermissionSelector({ value, agentType, options, error, 
                       <span id={labelId} className={cn('block', enabled && value === mode ? 'font-medium text-foreground' : 'text-muted-foreground')}>
                         {t(EXECUTION_PERMISSION_LABELS[mode])}
                       </span>
-                      <span id={descriptionId} className="mt-0.5 block space-y-1 text-[11px] leading-snug text-muted-foreground">
+                      <span id={descriptionId} className="mt-0.5 block space-y-1 text-xs leading-snug text-muted-foreground">
                         <span className="block">{t(description(mode))}</span>
                         {!options ? <span className="block">{t('Loading permission support…')}</span> : null}
                         {option?.reasons.map(reason => <span className="block" key={reason.code}>{t(reason.message)}</span>)}
@@ -113,8 +113,8 @@ export function ExecutionPermissionSelector({ value, agentType, options, error, 
         {!options ? <p>{t('Loading permission support…')}</p> : null}
         {selectedOption?.reasons.map(reason => <p key={reason.code}>{t(reason.message)}</p>)}
       </div>
-      {options?.every(item => !item.selectable) ? <p role="alert" className="text-xs text-destructive">{t('This Agent has no available execution permission mode.')}</p> : null}
-      {error ? <p role="alert" className="text-xs text-destructive">{t(error)}</p> : null}
+      {options?.every(item => !item.selectable) ? <p role="alert" className="text-xs text-destructive-ink">{t('This Agent has no available execution permission mode.')}</p> : null}
+      {error ? <p role="alert" className="text-xs text-destructive-ink">{t(error)}</p> : null}
       <p className="text-xs text-muted-foreground">{t('Changes apply when a new runtime starts. Running sessions keep their launch mode.')}</p>
     </fieldset>
   )

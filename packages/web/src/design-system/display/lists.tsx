@@ -20,7 +20,8 @@ const TODO_STATE: Record<TodoState, { icon: LucideIcon; label: string; className
   cancelled: { icon: CircleSlash, label: 'Cancelled', className: 'text-muted-foreground/70' },
 }
 
-function TodoStateIcon({ state, className }: { state: TodoState; className?: string }) {
+/** 待办状态图标：业务里的待办（如 Agent 的计划清单）也用它，保证同一状态同一图标 */
+export function TodoStateIcon({ state, className }: { state: TodoState; className?: string }) {
   const { icon: Icon, className: tone } = TODO_STATE[state]
   return <Icon aria-hidden="true" className={cn('size-4 shrink-0', tone, className)} />
 }
@@ -59,7 +60,7 @@ export function TodoList({ items, onToggle, summary = true, className }: TodoLis
   return (
     <div className={className}>
       {summary && (
-        <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+        <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {(['doing', 'todo', 'done'] as const).map(state => (
             <span key={state} className="inline-flex items-center gap-1">
               <TodoStateIcon state={state} className="size-3.5" />
@@ -91,9 +92,9 @@ export function TodoList({ items, onToggle, summary = true, className }: TodoLis
                 {item.title}
               </span>
               {hasNode(item.tag) && <span className="shrink-0">{item.tag}</span>}
-              {hasNode(item.meta) && <span className="shrink-0 text-[11px] text-muted-foreground">{item.meta}</span>}
+              {hasNode(item.meta) && <span className="shrink-0 text-xs text-muted-foreground">{item.meta}</span>}
               {item.due && (
-                <span className={cn('w-14 shrink-0 text-right text-[11px] tabular-nums', item.due.tone && !finished ? cn('font-medium', TONE_INK[item.due.tone]) : 'text-muted-foreground')}>
+                <span className={cn('w-14 shrink-0 text-right text-xs tabular-nums', item.due.tone && !finished ? cn('font-medium', TONE_INK[item.due.tone]) : 'text-muted-foreground')}>
                   {item.due.label}
                 </span>
               )}
@@ -139,8 +140,8 @@ export function Timeline({ groups, className }: { groups: TimelineGroup[]; class
             {group.entries.map(entry => (
               <li key={entry.id} className="grid grid-cols-[2.75rem_3px_minmax(0,1fr)] gap-x-2.5 py-1">
                 <span className="flex flex-col pt-px text-right leading-4 tabular-nums">
-                  <span className="text-[11px] text-foreground/80">{entry.time}</span>
-                  {entry.endTime && <span className="text-[10px] text-muted-foreground">{entry.endTime}</span>}
+                  <span className="text-xs text-foreground/80">{entry.time}</span>
+                  {entry.endTime && <span className="text-[11px] text-muted-foreground">{entry.endTime}</span>}
                 </span>
                 <span aria-hidden="true" className={cn('rounded-full', entry.active ? 'bg-viz-6' : 'bg-viz-1')} />
                 <div className="min-w-0">
@@ -148,7 +149,7 @@ export function Timeline({ groups, className }: { groups: TimelineGroup[]; class
                     <span className="truncate text-[13px] text-foreground/90">{entry.title}</span>
                     {hasNode(entry.tag) && <span className="shrink-0">{entry.tag}</span>}
                   </div>
-                  {hasNode(entry.meta) && <div className="truncate text-[11px] text-muted-foreground">{entry.meta}</div>}
+                  {hasNode(entry.meta) && <div className="truncate text-xs text-muted-foreground">{entry.meta}</div>}
                 </div>
               </li>
             ))}
@@ -212,15 +213,15 @@ export function DeadlineList({ items, className }: { items: DeadlineItem[]; clas
         const unit = item.days < 0 ? t('days overdue') : item.days === 0 ? t('Due today') : t('days left')
         return (
           <li key={item.id} className="flex items-center gap-3 border-b border-border/40 py-2 last:border-0">
-            <div className="flex w-12 shrink-0 flex-col items-center leading-none">
+            <div className="flex w-14 shrink-0 flex-col items-center leading-none">
               <span className={cn('text-xl font-semibold tabular-nums', tone ? TONE_INK[tone] : 'text-foreground')}>
                 {item.days === 0 ? '0' : Math.abs(item.days)}
               </span>
-              <span className={cn('mt-1 text-[10px]', tone ? TONE_INK[tone] : 'text-muted-foreground')}>{unit}</span>
+              <span className={cn('mt-1 text-xs', tone ? TONE_INK[tone] : 'text-muted-foreground')}>{unit}</span>
             </div>
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] text-foreground/90">{item.title}</div>
-              {hasNode(item.meta) && <div className="truncate text-[11px] text-muted-foreground">{item.meta}</div>}
+              {hasNode(item.meta) && <div className="truncate text-xs text-muted-foreground">{item.meta}</div>}
             </div>
           </li>
         )
@@ -253,7 +254,7 @@ export function Leaderboard({ entries, className }: { entries: LeaderEntry[]; cl
           {entry.avatar}
           <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-medium text-foreground/90">{entry.name}</div>
-            {hasNode(entry.meta) && <div className="truncate text-[11px] text-muted-foreground">{entry.meta}</div>}
+            {hasNode(entry.meta) && <div className="truncate text-xs text-muted-foreground">{entry.meta}</div>}
           </div>
           {entry.change !== undefined && (
             <span
@@ -294,7 +295,7 @@ export function Bulletin({ items, locale, className }: { items: BulletinItem[]; 
         <li key={item.id} className="flex gap-3 border-b border-border/40 py-2.5 last:border-0">
           <div className="flex w-10 shrink-0 flex-col items-center rounded-lg bg-foreground/[0.04] py-1 leading-none">
             <span className="text-lg font-semibold tabular-nums text-foreground">{item.date.getDate()}</span>
-            <span className="mt-0.5 text-[10px] text-muted-foreground">{monthFormat.format(item.date)}</span>
+            <span className="mt-0.5 text-[11px] text-muted-foreground">{monthFormat.format(item.date)}</span>
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -302,7 +303,7 @@ export function Bulletin({ items, locale, className }: { items: BulletinItem[]; 
               {item.badge}
             </div>
             {item.body && <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{item.body}</p>}
-            {hasNode(item.meta) && <div className="mt-1 text-[11px] text-muted-foreground">{item.meta}</div>}
+            {hasNode(item.meta) && <div className="mt-1 text-xs text-muted-foreground">{item.meta}</div>}
           </div>
         </li>
       ))}

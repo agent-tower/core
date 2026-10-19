@@ -7,7 +7,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
+import { Switch } from '@/design-system'
 import { CheckCircle2, AlertCircle, Loader2, Link, Bell, MessageSquare } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import {
@@ -171,13 +171,13 @@ export function NotificationSettingsPage() {
                   </Button>
                 </div>
                 {testStatus === 'success' && (
-                  <div role="status" className="mt-2 flex items-center gap-1.5 text-xs text-success">
+                  <div role="status" className="mt-2 flex items-center gap-1.5 text-xs text-success-ink">
                     <CheckCircle2 size={12} aria-hidden="true" />
                     {t('测试消息发送成功')}
                   </div>
                 )}
                 {testStatus === 'error' && (
-                  <div role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
+                  <div role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-destructive-ink">
                     <AlertCircle size={12} aria-hidden="true" />
                     {t('发送失败，请检查 Webhook 地址')}
                   </div>

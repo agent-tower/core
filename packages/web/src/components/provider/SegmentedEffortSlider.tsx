@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Switch } from '@/components/ui/switch'
+import { Switch } from '@/design-system'
 import { cn } from '@/lib/utils'
 
 export interface SegmentedEffortOption {
@@ -83,7 +83,7 @@ export function SegmentedEffortSlider({
         </div>
       </div>
 
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground" aria-hidden="true">
+      <div className="flex items-center justify-between text-xs text-muted-foreground" aria-hidden="true">
         <span>{efficiencyLabel}</span>
         <span>{intelligenceLabel}</span>
       </div>
@@ -159,7 +159,7 @@ export function SegmentedEffortSlider({
           <span
             aria-hidden="true"
             className={cn(
-              'absolute size-5 -translate-x-1/2 rounded-full border-[5px] border-primary bg-background shadow-sm transition-[left,transform] duration-150 motion-reduce:transition-none',
+              'absolute size-5 -translate-x-1/2 rounded-full border-[5px] border-primary bg-background shadow-raised transition-[left,transform] duration-150 motion-reduce:transition-none',
               dragging && 'scale-110',
             )}
             style={{ left: `${percentage}%` }}
@@ -172,7 +172,7 @@ export function SegmentedEffortSlider({
           ? followCliLabel
           : `${currentLabel}: ${selectedOption?.label ?? value} (${selectedOption?.value ?? value})`}
       </div>
-      {error && <p id={errorId} role="alert" className="text-xs text-destructive">{error}</p>}
+      {error && <p id={errorId} role="alert" className="text-xs text-destructive-ink">{error}</p>}
     </div>
   )
 }

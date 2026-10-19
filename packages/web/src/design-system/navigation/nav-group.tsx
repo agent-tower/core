@@ -22,7 +22,8 @@ export interface NavGroupProps {
 }
 
 /**
- * 侧栏分组：12px 灰色标题 + 折叠箭头 + 右侧计数。空分组只保留标题与「0」，不显示占位。
+ * 侧栏分组：灰色常规体标题 + 折叠箭头 + 右侧计数。标题与行同字号、同行高（14px · 32px，触屏 15px · 40px），
+ * 只靠灰色和常规字重与行区分——字号缩小反而难读。空分组只保留标题与「0」，不显示占位。
  * 折叠状态由用户决定，常用分组默认展开。
  */
 export function NavGroup({ title, icon, count, countTone = 'neutral', sticky = false, defaultOpen = true, open, onOpenChange, children, className }: NavGroupProps) {
@@ -33,15 +34,16 @@ export function NavGroup({ title, icon, count, countTone = 'neutral', sticky = f
       <div className={cn(sticky && 'sticky top-0 z-10 bg-sidebar')}>
         <Collapsible.Trigger
           data-sidebar-item=""
-          className="group/header flex h-7 w-full items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="group/header flex h-8 w-full items-center gap-1 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-10 pointer-coarse:text-[15px]"
         >
-          {icon && <span className="mr-0.5 flex shrink-0 [&_svg]:size-3.5">{icon}</span>}
+          {/* 14–15px 的中文字形比行框中心高约 1.5px，图标上移 1px 才看着齐 */}
+          {icon && <span className="mr-1.5 flex shrink-0 -translate-y-px [&_svg]:size-4">{icon}</span>}
           <span id={titleId} className="truncate">{title}</span>
           <ChevronRight
             aria-hidden="true"
-            className="size-3 shrink-0 text-muted-foreground/60 transition-transform duration-150 group-hover/header:text-muted-foreground group-data-[state=open]/header:rotate-90"
+            className="size-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-150 group-hover/header:text-muted-foreground group-data-[state=open]/header:rotate-90"
           />
-          {count !== undefined && <CountBadge count={count} tone={count > 0 ? countTone : 'neutral'} className="ml-auto" />}
+          {count !== undefined && <CountBadge count={count} tone={count > 0 ? countTone : 'neutral'} className="ml-auto text-xs leading-5" />}
         </Collapsible.Trigger>
       </div>
       <Collapsible.Content role="group" aria-labelledby={titleId} className="mt-0.5 flex flex-col gap-px">

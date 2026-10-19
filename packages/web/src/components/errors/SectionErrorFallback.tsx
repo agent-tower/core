@@ -1,4 +1,5 @@
 import { AlertTriangle, RotateCcw } from 'lucide-react'
+import { Button } from '@/design-system'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 
@@ -48,22 +49,18 @@ export function SectionErrorFallback({
         </p>
       </div>
       <p
-        className="max-w-xl truncate rounded-md border border-border/60 bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground"
+        className="max-w-xl truncate rounded-md border border-border/60 bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground"
         title={error.message || error.name}
       >
         {error.message || error.name}
       </p>
-      <p className="max-w-md text-[11px] text-muted-foreground/80">
+      <p className="max-w-md text-xs text-muted-foreground">
         {t('Only rendering errors are caught here. Errors from event handlers, async callbacks or observers are not.')}
       </p>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-      >
-        <RotateCcw size={13} />
+      <Button size="sm" onClick={onRetry}>
+        <RotateCcw />
         {t('Retry')}
-      </button>
+      </Button>
     </div>
   )
 }

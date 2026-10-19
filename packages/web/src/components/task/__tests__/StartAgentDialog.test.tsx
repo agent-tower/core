@@ -73,6 +73,12 @@ function button(label: string) {
     .find(item => item.textContent?.includes(label))!
 }
 
+/** 选择框的选项渲染在浮层里（document.body），不在 container 内 */
+function option(label: string) {
+  return [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+    .find(item => item.textContent?.includes(label))!
+}
+
 afterEach(() => {
   if (root) act(() => root!.unmount())
   container?.remove()
@@ -100,16 +106,17 @@ describe('StartAgentDialog Provider permissions', () => {
     expect(button('启动').disabled).toBe(true)
 
     act(() => button('选择 Agent').click())
-    const disabledOption = button('first')
-    const help = disabledOption.parentElement!
-    expect(disabledOption.disabled).toBe(true)
-    expect(help.tabIndex).toBe(0)
-    expect(help.getAttribute('aria-label')).toContain('First mode denied')
+    const disabledOption = option('first')
+    // 不可选的选项仍可聚焦，说明通过 aria-describedby 交给读屏
+    expect(disabledOption.getAttribute('aria-disabled')).toBe('true')
+    expect(disabledOption.tabIndex).toBe(-1)
+    const description = document.getElementById(disabledOption.getAttribute('aria-describedby') ?? '')
+    expect(description?.textContent).toContain('First mode denied')
     act(() => {
-      help.focus()
-      help.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      disabledOption.focus()
+      disabledOption.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
-    expect(document.activeElement).toBe(help)
+    expect(document.activeElement).toBe(disabledOption)
     expect(button('启动').disabled).toBe(true)
     expect(mocks.createWorkspace).not.toHaveBeenCalled()
   })
@@ -125,7 +132,7 @@ describe('StartAgentDialog Provider permissions', () => {
     expect(button('启动').disabled).toBe(true)
 
     act(() => button('ready').click())
-    act(() => button('alternate').click())
+    act(() => option('alternate').click())
     expect(button('启动').disabled).toBe(false)
     await act(async () => button('启动').click())
     expect(mocks.createSession).toHaveBeenCalledWith('/workspaces/workspace-1/sessions', {

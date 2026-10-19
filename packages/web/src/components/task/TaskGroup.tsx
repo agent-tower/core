@@ -39,7 +39,7 @@ function shortenProjectName(name: string): string {
 }
 
 const MENU_ITEM_CLASS = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-foreground/80 transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:outline-none'
-const MENU_LABEL_CLASS = 'px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground'
+const MENU_LABEL_CLASS = 'px-2 pb-1 pt-1.5 text-xs font-medium text-muted-foreground'
 const MENU_SEPARATOR = <div className="-mx-1 my-1 h-px bg-border/60" />
 
 interface TaskGroupProps {
@@ -210,7 +210,7 @@ function DraggableTaskCard({
           <TaskPriorityIndicator priority={task.priority} />
         )}
         {task.projectArchivedAt && (
-          <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+          <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-xs font-medium leading-none text-muted-foreground">
             {task.projectRepoDeletedAt ? t('源码已删除') : t('已删除')}
           </span>
         )}
@@ -238,7 +238,7 @@ function DraggableTaskCard({
         <div
           ref={menuRef}
           role="menu"
-          className="fixed z-[100] w-48 rounded-lg border border-border bg-popover p-1 shadow-lg shadow-black/5 animate-in fade-in zoom-in-95 duration-100"
+          className="fixed z-[100] w-48 rounded-lg border border-border bg-popover p-1 shadow-popover shadow-black/5 animate-in fade-in zoom-in-95 duration-100"
         >
           {onTaskStatusChange && (
             <>
@@ -290,7 +290,7 @@ function DraggableTaskCard({
                 type="button"
                 role="menuitem"
                 onClick={() => { setIsDeleteConfirmOpen(true); setContextMenu(null) }}
-                className={cn(MENU_ITEM_CLASS, 'text-destructive hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10')}
+                className={cn(MENU_ITEM_CLASS, 'text-destructive-ink hover:bg-destructive/10 hover:text-destructive-ink focus-visible:bg-destructive/10')}
               >
                 <Trash2 className="size-3.5 shrink-0" aria-hidden />
                 <span>{t('Delete Task')}</span>
@@ -365,26 +365,28 @@ export const TaskGroup = memo(function TaskGroup({
           onClick={() => !isGlobalDragging && setIsOpen(prev => !prev)}
           aria-expanded={isOpen}
           data-sidebar-item=""
-          className="group/header flex h-7 w-full items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          // 与任务行同字号、同行高，只靠灰色常规体和任务标题区分层级
+          className="group/header flex h-8 w-full items-center gap-1 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-10 pointer-coarse:text-[15px]"
         >
-          {/* 状态图标每组只出现一次，与右键「移动到」菜单同一套图标；左缘与任务标题同在 16px 线上 */}
-          <StatusIcon className={cn('mr-0.5 size-3.5 shrink-0', accentClass)} />
+          {/* 状态图标每组只出现一次，与右键「移动到」菜单同一套图标；左缘与任务标题同在 16px 线上，文字与顶部菜单的文字对齐。
+              14–15px 的中文字形比行框中心高约 1.5px，图标上移 1px 才看着齐（取整像素，1x / 2x / 3x 屏都不发虚） */}
+          <StatusIcon className={cn('mr-1.5 size-4 shrink-0 -translate-y-px', accentClass)} />
           <span id={labelId} className="truncate">{translatedTitle}</span>
           <ChevronRight
-            size={12}
+            size={14}
             aria-hidden
             className={cn(
-              'shrink-0 text-muted-foreground/60 transition-transform duration-150 group-hover/header:text-muted-foreground',
+              'shrink-0 text-muted-foreground transition-transform duration-150 group-hover/header:text-muted-foreground',
               shouldShowContent && 'rotate-90',
             )}
           />
           {/* 待审查是唯一需要用户介入的分组，计数用暖色徽章突出 */}
           {isReview && !isEmpty ? (
-            <span className="ml-auto rounded-full bg-warning/15 px-1.5 text-[11px] font-semibold leading-4 tabular-nums text-warning">
+            <span className="ml-auto rounded-full bg-warning/15 px-1.5 text-xs font-semibold leading-5 tabular-nums text-warning-ink">
               {tasks.length}
             </span>
           ) : (
-            <span className="ml-auto text-[11px] font-normal tabular-nums text-muted-foreground/80">{tasks.length}</span>
+            <span className="ml-auto text-xs tabular-nums text-muted-foreground">{tasks.length}</span>
           )}
         </button>
       </div>
@@ -395,7 +397,7 @@ export const TaskGroup = memo(function TaskGroup({
           ref={setNodeRef}
           className={cn(
             'mx-2 mt-0.5 flex h-9 items-center justify-center rounded-md border border-dashed text-xs font-medium transition-colors duration-150',
-            isOver ? 'border-info/50 bg-info/5 text-info' : 'border-border bg-foreground/[0.02] text-muted-foreground',
+            isOver ? 'border-foreground/30 bg-foreground/[0.04] text-foreground/80' : 'border-border bg-foreground/[0.02] text-muted-foreground',
           )}
         >
           {isOver ? t('Drop into {title}', { title: translatedTitle }) : t('Drop here')}

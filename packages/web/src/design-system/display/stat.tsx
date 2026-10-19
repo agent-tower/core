@@ -44,7 +44,7 @@ export function StatTile({ label, value, unit, icon, delta, trend, footnote, cla
       {(delta || footnote) && (
         <div className="flex min-w-0 items-center gap-2">
           {delta && <Delta {...delta} />}
-          {footnote && <span className="truncate text-[11px] text-muted-foreground">{footnote}</span>}
+          {footnote && <span className="truncate text-xs text-muted-foreground">{footnote}</span>}
         </div>
       )}
     </div>

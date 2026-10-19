@@ -142,7 +142,7 @@ export function EditableTaskTitle({
             onKeyDown={handleKeyDown}
             disabled={updateTask.isPending}
             className={cn(
-              'flex-1 min-w-0 px-2 py-1 text-lg font-semibold bg-background border border-input rounded-md',
+              'flex-1 min-w-0 px-2 py-1 text-[15px] font-semibold bg-background border border-input rounded-md',
               'focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent',
               'disabled:opacity-50 disabled:cursor-not-allowed',
               compact && 'text-base py-0.5',
@@ -159,7 +159,7 @@ export function EditableTaskTitle({
               className="h-8 w-8 p-0"
             >
               {updateTask.isPending ? (
-                <Loader2 size={16} className="animate-spin" />
+                <Loader2 size={16} className="animate-spin motion-reduce:[animation-duration:2.4s]" />
               ) : (
                 <Check size={16} />
               )}
@@ -179,7 +179,7 @@ export function EditableTaskTitle({
           <div
             className={cn(
               'text-xs',
-              isAtLimit ? 'text-destructive' : 'text-muted-foreground'
+              isAtLimit ? 'text-destructive-ink' : 'text-muted-foreground'
             )}
           >
             {charCount} / {TITLE_MAX_LENGTH} {t('字符')}
@@ -199,7 +199,7 @@ export function EditableTaskTitle({
       <h2
         onClick={handleStartEdit}
         className={cn(
-          'flex-1 min-w-0 text-lg font-semibold text-foreground break-words line-clamp-2',
+          'flex-1 min-w-0 text-[15px] font-semibold text-foreground break-words line-clamp-2',
           !readOnly && 'cursor-text hover:text-foreground/80 transition-colors',
           compact && 'text-base',
           titleClassName

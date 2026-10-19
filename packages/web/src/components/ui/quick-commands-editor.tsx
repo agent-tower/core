@@ -37,14 +37,14 @@ export function QuickCommandsEditor({ value, onChange }: QuickCommandsEditorProp
     <div>
       {/* 已配置的命令列表 */}
       {value.length > 0 && (
-        <div className="border border-neutral-200 rounded-lg mb-2 divide-y divide-neutral-100">
+        <div className="border border-border rounded-lg mb-2 divide-y divide-border/60">
           {value.map((cmd, i) => (
             <div key={i} className="flex items-center gap-3 px-3 py-2 group">
-              <span className="text-sm font-medium text-neutral-700 w-28 shrink-0 truncate">{cmd.name}</span>
-              <span className="text-sm font-mono text-neutral-500 flex-1 truncate">{cmd.command}</span>
+              <span className="text-sm font-medium text-foreground/80 w-28 shrink-0 truncate">{cmd.name}</span>
+              <span className="text-sm font-mono text-muted-foreground flex-1 truncate">{cmd.command}</span>
               <button
                 onClick={() => handleRemove(i)}
-                className="p-0.5 text-neutral-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                className="p-0.5 text-muted-foreground hover:text-destructive-ink opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
               >
                 <X size={14} />
               </button>
@@ -61,7 +61,7 @@ export function QuickCommandsEditor({ value, onChange }: QuickCommandsEditorProp
           onChange={(e) => setNewName(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={t('名称')}
-          className="w-28 shrink-0 px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-neutral-300"
+          className="w-28 shrink-0 px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-ring/60"
         />
         <input
           type="text"
@@ -69,12 +69,12 @@ export function QuickCommandsEditor({ value, onChange }: QuickCommandsEditorProp
           onChange={(e) => setNewCommand(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={t('命令')}
-          className="flex-1 px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-neutral-300"
+          className="flex-1 px-3 py-2 border border-border rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring/60"
         />
         <button
           onClick={handleAdd}
           disabled={!newName.trim() || !newCommand.trim()}
-          className="flex items-center gap-1 px-3 py-2 text-sm bg-neutral-900 text-white rounded-lg hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
+          className="flex items-center gap-1 px-3 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
         >
           <Plus size={14} />
           <span>{t('添加')}</span>

@@ -130,8 +130,8 @@ export function BranchSelect({ id, label, value, branches, disabled, isRefreshin
           ))}
           {filteredBranches.length === 0 && <p className="px-2 py-3 text-xs text-muted-foreground">{t('No matching branches')}</p>}
         </div>
-        <div role="status" className="flex shrink-0 items-center gap-1.5 border-t border-border/60 px-2 pt-2 pb-1 text-[11px] tabular-nums text-muted-foreground">
-          {isRefreshing && <Loader2 className="size-3 animate-spin" aria-label={t('Refreshing branches')} />}
+        <div role="status" className="flex shrink-0 items-center gap-1.5 border-t border-border/60 px-2 pt-2 pb-1 text-xs tabular-nums text-muted-foreground">
+          {isRefreshing && <Loader2 className="size-3 animate-spin motion-reduce:[animation-duration:2.4s]" aria-label={t('Refreshing branches')} />}
           {search.trim() ? t('{shown} of {total} local branches', { shown: filteredBranches.length, total: branches.length }) : t('{count} local branches', { count: branches.length })}
         </div>
       </PopoverContent>

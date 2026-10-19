@@ -22,6 +22,7 @@ import type {
   WorkspacePolicy,
 } from '@agent-tower/shared'
 import { Button } from '@/components/ui/button'
+import { Segmented } from '@/design-system'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Modal } from '@/components/ui/modal'
 import { Select, type SelectOption } from '@/components/ui/select'
@@ -186,9 +187,9 @@ function isMemberWorking(member: TeamMember) {
 }
 
 function getStatusTone(member: TeamMember) {
-  if (isMemberWorking(member)) return 'bg-emerald-500'
-  if (member.status === 'FAILED') return 'bg-red-500'
-  return 'bg-neutral-300'
+  if (isMemberWorking(member)) return 'bg-success'
+  if (member.status === 'FAILED') return 'bg-destructive'
+  return 'bg-foreground/15'
 }
 
 function workspacePolicyLabel(value: WorkspacePolicy) {
@@ -204,7 +205,7 @@ interface FieldLabelProps {
 }
 
 function FieldLabel({ children }: FieldLabelProps) {
-  return <span className="text-xs font-medium text-neutral-600">{children}</span>
+  return <span className="text-xs font-medium text-foreground/70">{children}</span>
 }
 
 interface EmptyStateProps {
@@ -216,12 +217,12 @@ interface EmptyStateProps {
 
 function EmptyState({ icon, title, description, action }: EmptyStateProps) {
   return (
-    <div className="flex min-h-[18rem] flex-col items-center justify-center rounded-lg border border-dashed border-neutral-200 bg-white px-6 py-8 text-center">
-      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-neutral-100 text-neutral-500">
+    <div className="flex min-h-[18rem] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-background px-6 py-8 text-center">
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
         {icon}
       </div>
-      <div className="text-sm font-medium text-neutral-900">{title}</div>
-      {description ? <div className="mt-1 max-w-sm text-xs leading-relaxed text-neutral-500">{description}</div> : null}
+      <div className="text-sm font-medium text-foreground">{title}</div>
+      {description ? <div className="mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">{description}</div> : null}
       {action ? <div className="mt-4">{action}</div> : null}
     </div>
   )
@@ -417,14 +418,14 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
 
   const renderPresetPanel = () => (
     <div className="flex min-h-0 flex-col lg:flex-1">
-      <div className="border-b border-neutral-100 px-5 py-4">
+      <div className="border-b border-border/60 px-5 py-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-semibold text-neutral-900">
-              <UserPlus size={15} className="text-neutral-500" />
+            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <UserPlus size={15} className="text-muted-foreground" />
               <span>{t('Add member from preset')}</span>
             </div>
-            <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
               {t('Choose a saved preset to add a ready-to-run member snapshot.')}
             </p>
           </div>
@@ -463,19 +464,19 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                   className={cn(
                     'flex min-h-[4.25rem] items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors',
                     selected
-                      ? 'border-neutral-900 bg-neutral-50 shadow-sm'
-                      : 'border-neutral-200 bg-white hover:border-neutral-300 hover:bg-neutral-50',
+                      ? 'border-foreground bg-muted/50 shadow-raised'
+                      : 'border-border bg-background hover:border-foreground/20 hover:bg-accent',
                   )}
                 >
                   <MemberAvatar name={preset.name} avatar={preset.avatar} className="h-8 w-8 text-[11px]" />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-neutral-900">{preset.name}</span>
-                    <span className="mt-0.5 block truncate text-xs text-neutral-500">{preset.providerId}</span>
-                    <span className="mt-1 block truncate text-[10px] text-neutral-400">
+                    <span className="block truncate text-sm font-medium text-foreground">{preset.name}</span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">{preset.providerId}</span>
+                    <span className="mt-1 block truncate text-xs text-muted-foreground">
                       {t(workspacePolicyLabel(preset.workspacePolicy))} · {t(sessionPolicyLabel(preset.sessionPolicy))}
                     </span>
                   </span>
-                  {selected ? <Check size={16} className="shrink-0 text-neutral-900" /> : null}
+                  {selected ? <Check size={16} className="shrink-0 text-foreground" /> : null}
                 </button>
               )
             })}
@@ -507,14 +508,14 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
 
     return (
       <div className="flex min-h-0 flex-col lg:flex-1">
-        <div className="border-b border-neutral-100 px-5 py-4">
+        <div className="border-b border-border/60 px-5 py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm font-semibold text-neutral-900">
-                {isEditMode ? <Settings2 size={15} className="text-neutral-500" /> : <Plus size={15} className="text-neutral-500" />}
+              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                {isEditMode ? <Settings2 size={15} className="text-muted-foreground" /> : <Plus size={15} className="text-muted-foreground" />}
                 <span>{isEditMode ? t('Edit member') : t('Custom member')}</span>
               </div>
-              <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 {isEditMode
                   ? t('Provider, role, workspace, and session changes apply to future work only.')
                   : t('Create a one-off member snapshot for this TeamRun.')}
@@ -527,7 +528,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                 size="sm"
                 onClick={() => setRemoveTarget(selectedMember)}
                 disabled={isBusy}
-                className="border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800"
+                className="border-destructive/25 text-destructive-ink hover:bg-destructive/10 hover:text-destructive-ink"
               >
                 <Trash2 size={13} />
                 {t('Remove')}
@@ -543,14 +544,14 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
 
         <div className="p-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
           {isEditMode && selectedMember ? (
-            <div className="mb-4 flex items-center gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5">
+            <div className="mb-4 flex items-center gap-3 rounded-lg border border-border bg-muted/50 px-3 py-2.5">
               <MemberAvatar name={selectedMember.name} avatar={selectedMember.avatar} className="h-9 w-9 text-xs" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className={cn('h-2 w-2 shrink-0 rounded-full', getStatusTone(selectedMember))} />
-                  <span className="truncate text-sm font-medium text-neutral-900">{selectedMember.name}</span>
+                  <span className="truncate text-sm font-medium text-foreground">{selectedMember.name}</span>
                 </div>
-                <div className="mt-0.5 truncate text-xs text-neutral-500">
+                <div className="mt-0.5 truncate text-xs text-muted-foreground">
                   {selectedMember.providerId} · {t(workspacePolicyLabel(selectedMember.workspacePolicy))}
                 </div>
               </div>
@@ -564,7 +565,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                 <input
                   value={form.name}
                   onChange={(event) => updateForm('name', event.target.value)}
-                  className="h-9 w-full rounded-lg border border-neutral-200 px-3 text-sm outline-none transition-colors focus:border-neutral-400"
+                  className="h-9 w-full rounded-lg border border-border px-3 text-sm outline-none transition-colors focus:border-ring"
                 />
               </label>
               <label className="space-y-1.5">
@@ -573,7 +574,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                   value={form.aliasesText}
                   onChange={(event) => updateForm('aliasesText', event.target.value)}
                   placeholder={t('Comma separated')}
-                  className="h-9 w-full rounded-lg border border-neutral-200 px-3 text-sm outline-none transition-colors focus:border-neutral-400"
+                  className="h-9 w-full rounded-lg border border-border px-3 text-sm outline-none transition-colors focus:border-ring"
                 />
               </label>
               <div className="space-y-1.5">
@@ -585,7 +586,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                 <input
                   value={form.avatar}
                   onChange={(event) => updateForm('avatar', event.target.value)}
-                  className="h-9 w-full rounded-lg border border-neutral-200 px-3 text-sm outline-none transition-colors focus:border-neutral-400"
+                  className="h-9 w-full rounded-lg border border-border px-3 text-sm outline-none transition-colors focus:border-ring"
                 />
               </label>
             </div>
@@ -631,7 +632,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                 value={form.rolePrompt}
                 onChange={(event) => updateForm('rolePrompt', event.target.value)}
                 rows={7}
-                className="w-full resize-y rounded-lg border border-neutral-200 px-3 py-2 text-sm leading-relaxed outline-none transition-colors focus:border-neutral-400"
+                className="w-full resize-y rounded-lg border border-border px-3 py-2 text-sm leading-relaxed outline-none transition-colors focus:border-ring"
               />
             </label>
 
@@ -641,7 +642,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                 {CAPABILITY_FIELDS.map((field) => (
                   <label
                     key={field.key}
-                    className="flex min-h-9 items-center gap-2 rounded-md border border-neutral-200 bg-white px-2.5 py-2 text-xs text-neutral-700"
+                    className="flex min-h-9 items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2 text-xs text-foreground/80"
                   >
                     <input
                       type="checkbox"
@@ -681,16 +682,16 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
           </>
         }
       >
-        <div className="grid min-h-0 grid-cols-1 overflow-visible rounded-lg border border-neutral-200 bg-white lg:h-[min(42rem,calc(100vh-13rem))] lg:min-h-[34rem] lg:grid-cols-[20rem_minmax(0,1fr)] lg:overflow-hidden">
-          <aside className="flex min-h-0 flex-col border-b border-neutral-200 bg-neutral-50/70 lg:border-b-0 lg:border-r">
-            <div className="border-b border-neutral-200 px-4 py-4">
+        <div className="grid min-h-0 grid-cols-1 overflow-visible rounded-lg border border-border bg-background lg:h-[min(42rem,calc(100vh-13rem))] lg:min-h-[34rem] lg:grid-cols-[20rem_minmax(0,1fr)] lg:overflow-hidden">
+          <aside className="flex min-h-0 flex-col border-b border-border bg-muted/35 lg:border-b-0 lg:border-r">
+            <div className="border-b border-border px-4 py-4">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-neutral-900">
-                    <Users size={15} className="text-neutral-500" />
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <Users size={15} className="text-muted-foreground" />
                     <span>{t('Members')}</span>
                   </div>
-                  <div className="mt-1 text-xs text-neutral-500">
+                  <div className="mt-1 text-xs text-muted-foreground">
                     {activeMembers.length} {t('active')} · {workingCount} {t('working')}
                   </div>
                 </div>
@@ -702,7 +703,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
 
             <div className="max-h-64 overflow-y-auto p-2 lg:min-h-0 lg:max-h-none lg:flex-1">
               {activeMembers.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-neutral-200 bg-white px-3 py-5 text-center text-xs text-neutral-400">
+                <div className="rounded-lg border border-dashed border-border bg-background px-3 py-5 text-center text-xs text-muted-foreground">
                   {t('No active members')}
                 </div>
               ) : (
@@ -717,22 +718,22 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                         className={cn(
                           'group flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors',
                           selected
-                            ? 'border-neutral-300 bg-white shadow-sm'
-                            : 'border-transparent hover:border-neutral-200 hover:bg-white',
+                            ? 'border-border bg-background shadow-raised'
+                            : 'border-transparent hover:border-border hover:bg-background',
                         )}
                       >
                         <MemberAvatar name={member.name} avatar={member.avatar} className="h-8 w-8 text-[11px]" />
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center gap-1.5">
                             <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', getStatusTone(member))} />
-                            <span className="truncate text-sm font-medium text-neutral-900">{member.name}</span>
+                            <span className="truncate text-sm font-medium text-foreground">{member.name}</span>
                           </span>
-                          <span className="mt-0.5 block truncate text-xs text-neutral-500">{member.providerId}</span>
+                          <span className="mt-0.5 block truncate text-xs text-muted-foreground">{member.providerId}</span>
                         </span>
                         <Edit3
                           size={13}
                           className={cn(
-                            'shrink-0 text-neutral-300 transition-opacity',
+                            'shrink-0 text-muted-foreground transition-opacity',
                             selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
                           )}
                         />
@@ -743,33 +744,17 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
               )}
             </div>
 
-            <div className="border-t border-neutral-200 p-2">
-              <div className="grid grid-cols-2 gap-1">
-                <button
-                  type="button"
-                  onClick={switchToPresetAdd}
-                  disabled={isBusy}
-                  className={cn(
-                    'inline-flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                    panelMode === 'add-preset' ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-100',
-                  )}
-                >
-                  <UserPlus size={12} />
-                  {t('Preset')}
-                </button>
-                <button
-                  type="button"
-                  onClick={switchToCustomAdd}
-                  disabled={isBusy}
-                  className={cn(
-                    'inline-flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                    panelMode === 'add-custom' ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-100',
-                  )}
-                >
-                  <CopyPlus size={12} />
-                  {t('Custom')}
-                </button>
-              </div>
+            <div className="border-t border-border p-2">
+              <Segmented
+                block
+                aria-label={t('Add member')}
+                value={panelMode}
+                onValueChange={value => (value === 'add-preset' ? switchToPresetAdd() : switchToCustomAdd())}
+                options={[
+                  { value: 'add-preset', label: t('Preset'), icon: <UserPlus />, disabled: isBusy },
+                  { value: 'add-custom', label: t('Custom'), icon: <CopyPlus />, disabled: isBusy },
+                ]}
+              />
             </div>
           </aside>
 
@@ -795,7 +780,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
                 : ''}
             </p>
             {removeTarget && isMemberWorking(removeTarget) ? (
-              <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-left text-red-700">
+              <div className="flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-left text-destructive-ink">
                 <AlertTriangle size={15} className="mt-0.5 shrink-0" />
                 <span className="text-sm font-medium">{t('确认后会停止当前工作并取消队列')}</span>
               </div>

@@ -321,10 +321,10 @@ export function CreateTaskInput({
         ref={inputContainerRef}
         className={cn(
           'relative bg-background rounded-xl border transition-colors duration-200',
-          'shadow-[0_1px_2px_rgba(0,0,0,0.05)]',
+          'shadow-raised',
           'hover:border-ring/40 focus-within:border-ring/60',
           isDragOver
-            ? 'border-info bg-info/5'
+            ? 'border-foreground/40 bg-foreground/[0.02]'
             : 'border-border',
           isSubmitting && 'opacity-80',
         )}
@@ -357,7 +357,7 @@ export function CreateTaskInput({
         {/* Drag overlay */}
         {supportsAttachments && isDragOver && (
           <div className="px-4 pb-2">
-            <div className="flex items-center justify-center py-3 border border-dashed border-info/40 rounded-lg text-xs font-medium text-info">
+            <div className="flex items-center justify-center py-3 border border-dashed border-foreground/30 rounded-lg text-xs font-medium text-foreground/80">
               {t('Drop files here')}
             </div>
           </div>
@@ -391,22 +391,22 @@ export function CreateTaskInput({
           <div className="flex items-center gap-2">
             {supportsAttachments && isUploading && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Loader2 size={14} className="animate-spin" />
+                <Loader2 size={14} className="animate-spin motion-reduce:[animation-duration:2.4s]" />
                 {t('Uploading...')}
               </span>
             )}
             {isSubmitting && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Loader2 size={14} className="animate-spin" />
+                <Loader2 size={14} className="animate-spin motion-reduce:[animation-duration:2.4s]" />
                 {t(pendingLabel ?? CREATE_STEP_LABEL[createStep])}
               </span>
             )}
             {!isConversationMode && !isSubmitting && !isUploading && effectiveCreateMode === 'TEAM' && !hasTeamMembers && title.trim().length > 0 && (
-              <span className="text-[11px] text-warning">{t('请选择团队模板或追加成员')}</span>
+              <span className="text-xs text-warning-ink">{t('请选择团队模板或追加成员')}</span>
             )}
             {canSubmit && (
-              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-muted-foreground/80 select-none">
-                <kbd className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded border border-border bg-muted/60 text-[10px] font-medium text-muted-foreground leading-none">⏎</kbd>
+              <span className="hidden sm:inline-flex items-center gap-1 text-xs text-muted-foreground select-none">
+                <kbd className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded border border-border bg-muted/60 text-[11px] font-medium text-muted-foreground leading-none">⏎</kbd>
                 {effectiveSubmitLabel}
               </span>
             )}
@@ -417,8 +417,8 @@ export function CreateTaskInput({
               className={cn(
                 'flex items-center justify-center size-8 rounded-lg transition-all duration-200',
                 canSubmit
-                  ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm'
-                  : 'bg-muted text-muted-foreground/40 cursor-not-allowed',
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-raised'
+                  : 'bg-muted text-muted-foreground cursor-not-allowed',
               )}
               title={submitTitle ? t(submitTitle) : t('Create & Start')}
             >
@@ -463,7 +463,7 @@ export function CreateTaskInput({
             </button>
 
             {showProjectMenu && (
-              <div className="absolute top-full left-0 mt-1.5 w-56 bg-popover border border-border rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.06)] py-1 max-h-[240px] overflow-y-auto z-50">
+              <div className="absolute top-full left-0 mt-1.5 w-56 bg-popover border border-border rounded-lg shadow-popover py-1 max-h-[240px] overflow-y-auto z-50">
                 {projects.map(p => (
                   <button
                     key={p.id}
@@ -505,7 +505,7 @@ export function CreateTaskInput({
             </button>
 
             {showProviderMenu && (
-              <div className="absolute top-full left-0 z-50 mt-1.5 max-h-[min(60vh,320px)] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-border bg-popover py-1 shadow-[0_4px_12px_rgba(0,0,0,0.06)] sm:w-80">
+              <div className="absolute top-full left-0 z-50 mt-1.5 max-h-[min(60vh,320px)] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-border bg-popover py-1 shadow-popover sm:w-80">
                 {providers.map(p => (
                   <div key={p.id} tabIndex={!p.available ? 0 : undefined} role={!p.available ? 'group' : undefined}
                     aria-label={!p.available ? `${p.name}: ${t(p.reason || 'Agent executable is unavailable.')}` : undefined}
@@ -525,8 +525,8 @@ export function CreateTaskInput({
                         <span className={cn('block break-words', p.id === providerId ? 'font-medium text-foreground' : 'text-muted-foreground')}>
                           {p.name}{!p.available ? t(' (unavailable)') : ''}
                         </span>
-                        {p.permissionMode ? <span className="mt-0.5 block text-[11px] text-muted-foreground">{t('Required permission: {mode}', { mode: t(EXECUTION_PERMISSION_LABELS[p.permissionMode]) })}</span> : null}
-                        {p.reason ? <span className="mt-0.5 block break-words text-[11px] leading-snug text-destructive">{t(p.reason)}</span> : null}
+                        {p.permissionMode ? <span className="mt-0.5 block text-xs text-muted-foreground">{t('Required permission: {mode}', { mode: t(EXECUTION_PERMISSION_LABELS[p.permissionMode]) })}</span> : null}
+                        {p.reason ? <span className="mt-0.5 block break-words text-xs leading-snug text-destructive-ink">{t(p.reason)}</span> : null}
                       </span>
                     </button>
                   </div>
@@ -554,7 +554,7 @@ export function CreateTaskInput({
             </button>
 
             {showWorkspaceModeMenu && (
-              <div className="absolute top-full left-0 mt-1.5 w-72 max-w-[calc(100vw-2rem)] bg-popover border border-border rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.06)] py-1 z-50">
+              <div className="absolute top-full left-0 mt-1.5 w-72 max-w-[calc(100vw-2rem)] bg-popover border border-border rounded-lg shadow-popover py-1 z-50">
                 {localProjectOnly ? (
                   <Tooltip side="bottom" className="block w-full" content={disabledWorktreeModeHint}>
                     <div
@@ -572,7 +572,7 @@ export function CreateTaskInput({
                           <span className="block truncate text-muted-foreground">
                             {t('工作树模式')}
                           </span>
-                          <span className="mt-0.5 block whitespace-normal text-[11px] leading-snug text-muted-foreground/80">
+                          <span className="mt-0.5 block whitespace-normal text-xs leading-snug text-muted-foreground">
                             {worktreeModeHint}
                           </span>
                         </span>
@@ -600,7 +600,7 @@ export function CreateTaskInput({
                       <span className={cn('block truncate', effectiveWorkspaceMode === WorkspaceKind.WORKTREE ? 'text-foreground font-medium' : 'text-muted-foreground')}>
                         {t('工作树模式')}
                       </span>
-                      <span className="mt-0.5 block whitespace-normal text-[11px] leading-snug text-muted-foreground/80">
+                      <span className="mt-0.5 block whitespace-normal text-xs leading-snug text-muted-foreground">
                         {worktreeModeHint}
                       </span>
                     </span>
@@ -616,7 +616,7 @@ export function CreateTaskInput({
                     <span className={cn('block truncate', effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'text-foreground font-medium' : 'text-muted-foreground')}>
                       {t('本地模式')}
                     </span>
-                    <span className="mt-0.5 block whitespace-normal text-[11px] leading-snug text-muted-foreground/80">
+                    <span className="mt-0.5 block whitespace-normal text-xs leading-snug text-muted-foreground">
                       {mainDirectoryModeHint}
                     </span>
                   </span>
@@ -687,7 +687,7 @@ export function CreateTaskInput({
               >
                 <span
                   className={cn(
-                    'inline-block size-3 rounded-full bg-background shadow-sm transition-transform',
+                    'inline-block size-3 rounded-full bg-background shadow-raised transition-transform',
                     effectiveCreateMode === 'TEAM' ? 'translate-x-3.5' : 'translate-x-0.5',
                   )}
                 />
@@ -698,7 +698,7 @@ export function CreateTaskInput({
       </div>
 
       {selectedProvider && !selectedProvider.available ? (
-        <p role="alert" className="mt-2 break-words px-2 text-xs leading-snug text-destructive">
+        <p role="alert" className="mt-2 break-words px-2 text-xs leading-snug text-destructive-ink">
           {selectedProvider.reason ? t(selectedProvider.reason) : t('Agent executable is unavailable.')}
         </p>
       ) : null}

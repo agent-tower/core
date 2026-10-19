@@ -2,7 +2,7 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 /**
- * 文本输入框 — 映射 DESIGN.md §4.2/§7：
+ * 文本输入框：
  * radius md(8px)、focus 表现为「边框加深」（中性灰 --ring），不引入彩色描边。
  */
 function Input({ className, type = 'text', ...props }: React.ComponentProps<'input'>) {

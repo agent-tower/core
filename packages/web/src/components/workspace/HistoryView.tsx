@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
-import { History, Loader2, FileCode2, ChevronRight } from 'lucide-react'
+import { History, FileCode2, ChevronRight } from 'lucide-react'
+import { FileStatusBadge, Spinner } from '@/design-system'
 import { cn } from '@/lib/utils'
 import { useGitCommitFiles, useGitCommitDiff, type GitChangeEntry } from '@/hooks/use-git'
 import { apiClient } from '@/lib/api-client'
@@ -9,15 +10,9 @@ import { queryKeys } from '@/hooks/query-keys'
 import { useGitVisibilityStore } from '@/stores/git-visibility-store'
 import type { GitLogResponse } from '@/hooks/use-git'
 import { translate, useI18n } from '@/lib/i18n'
+import { DiffLine } from './DiffLine'
 
 const PAGE_SIZE = 50
-
-const STATUS_COLOR_MAP: Record<string, string> = {
-  M: 'text-amber-600 border-amber-200 bg-amber-50',
-  A: 'text-emerald-600 border-emerald-200 bg-emerald-50',
-  D: 'text-red-600 border-red-200 bg-red-50',
-  R: 'text-blue-600 border-blue-200 bg-blue-50',
-}
 
 function timeAgo(ts: number): string {
   const now = Math.floor(Date.now() / 1000)
@@ -39,39 +34,18 @@ function dirname(p: string) {
   return idx > 0 ? p.slice(0, idx) : ''
 }
 
-/** Diff line renderer */
-const DiffLine: React.FC<{ line: string; lineNum: number }> = ({ line, lineNum }) => {
-  let bgClass = ''
-  let textClass = 'text-foreground/90'
-  if (line.startsWith('+') && !line.startsWith('+++')) {
-    bgClass = 'bg-success/10'
-  } else if (line.startsWith('-') && !line.startsWith('---')) {
-    bgClass = 'bg-destructive/10'
-  } else if (line.startsWith('@@')) {
-    bgClass = 'bg-info/5'; textClass = 'text-info'
-  } else if (line.startsWith('diff ') || line.startsWith('index ')) {
-    textClass = 'text-muted-foreground/70'
-  }
-  return (
-    <div className={cn('flex', bgClass)}>
-      <span className="w-10 shrink-0 text-right pr-2 text-muted-foreground/60 select-none border-r border-border/60">{lineNum}</span>
-      <span className={cn('pl-2 whitespace-pre', textClass)}>{line}</span>
-    </div>
-  )
-}
-
 /** Diff viewer for a file in a commit */
 const CommitDiffViewer: React.FC<{ workingDir: string; hash: string; filePath: string }> = ({ workingDir, hash, filePath }) => {
   const { t } = useI18n()
   const { data, isLoading, isError } = useGitCommitDiff(workingDir, hash, filePath)
   if (isLoading) return (
-    <div className="flex-1 flex items-center justify-center text-muted-foreground">
-      <Loader2 size={16} className="animate-spin mr-2" /><span className="text-xs">{t('Loading diff...')}</span>
+    <div className="flex-1 flex items-center justify-center gap-2 text-muted-foreground">
+      <Spinner size="md" /><span className="text-xs">{t('Loading diff...')}</span>
     </div>
   )
-  if (isError) return <div className="flex-1 flex items-center justify-center text-destructive text-xs">{t('Failed to load diff.')}</div>
+  if (isError) return <div className="flex-1 flex items-center justify-center text-destructive-ink text-xs">{t('Failed to load diff.')}</div>
   const diff = data?.diff || ''
-  if (!diff.trim()) return <div className="flex-1 flex items-center justify-center text-muted-foreground/70 text-xs">{t('No diff content available.')}</div>
+  if (!diff.trim()) return <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">{t('No diff content available.')}</div>
   const lines = diff.split('\n')
   return (
     <div className="flex-1 overflow-auto scrollbar-app-thin font-mono text-xs leading-5">
@@ -87,16 +61,15 @@ const CommitFileList: React.FC<{
   const { t } = useI18n()
   const { data, isLoading } = useGitCommitFiles(workingDir, hash)
   if (isLoading) return (
-    <div className="pl-7 py-1 text-xs text-muted-foreground/70 flex items-center gap-1">
-      <Loader2 size={12} className="animate-spin" /><span>{t('Loading...')}</span>
+    <div className="pl-7 py-1 text-xs text-muted-foreground flex items-center gap-1">
+      <Spinner size="xs" /><span>{t('Loading...')}</span>
     </div>
   )
   const files = data?.files || []
-  if (files.length === 0) return <div className="pl-7 py-1 text-xs text-muted-foreground/70">{t('No files changed')}</div>
+  if (files.length === 0) return <div className="pl-7 py-1 text-xs text-muted-foreground">{t('No files changed')}</div>
   return (
     <div className="pl-7 pb-1 space-y-0.5">
       {files.map((f: GitChangeEntry) => {
-        const colorClass = STATUS_COLOR_MAP[f.status] || STATUS_COLOR_MAP.M
         const dir = dirname(f.path)
         return (
           <button
@@ -108,11 +81,14 @@ const CommitFileList: React.FC<{
               selectedPath === f.path ? 'bg-muted' : 'hover:bg-muted/60'
             )}
           >
-            <span className={cn('w-4 h-4 flex items-center justify-center text-[11px] font-semibold border rounded-sm shrink-0', colorClass)}>
-              {f.status}
-            </span>
-            <span className="text-xs text-foreground truncate">{basename(f.path)}</span>
-            {dir && <span className="text-[11px] text-muted-foreground/70 truncate ml-auto shrink-0">{dir}</span>}
+            <FileStatusBadge status={f.status} />
+            <span className="min-w-0 text-xs text-foreground truncate">{basename(f.path)}</span>
+            {/* 目录只占剩余空间，先于文件名截断；rtl 让它从左侧截断，内层 ltr 隔离（同 FileRow） */}
+            {dir && (
+              <span className="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-muted-foreground [direction:rtl]">
+                <span dir="ltr">{dir}</span>
+              </span>
+            )}
           </button>
         )
       })}
@@ -181,16 +157,16 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
     <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm bg-background h-full">{t('No workspace selected.')}</div>
   )
   if (isLoading) return (
-    <div className="flex-1 flex items-center justify-center text-muted-foreground bg-background h-full">
-      <Loader2 size={16} className="animate-spin mr-2" /><span className="text-sm">{t('Loading history...')}</span>
+    <div className="flex-1 flex items-center justify-center gap-2 text-muted-foreground bg-background h-full">
+      <Spinner size="md" /><span className="text-sm">{t('Loading history...')}</span>
     </div>
   )
   if (isError) return (
-    <div className="flex-1 flex items-center justify-center text-destructive text-sm bg-background h-full">{t('Failed to load history.')}</div>
+    <div className="flex-1 flex items-center justify-center text-destructive-ink text-sm bg-background h-full">{t('Failed to load history.')}</div>
   )
   if (commits.length === 0) return (
-    <div className="flex-1 flex flex-col items-center justify-center py-12 text-muted-foreground/60 bg-background h-full">
-      <History size={28} className="mb-2" /><span className="text-xs">{t('No commit history')}</span>
+    <div className="flex-1 flex flex-col items-center justify-center py-12 text-muted-foreground bg-background h-full">
+      <History size={28} className="mb-2 text-muted-foreground/70" /><span className="text-xs">{t('No commit history')}</span>
     </div>
   )
 
@@ -204,7 +180,7 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
           <div className="flex items-center gap-2">
             <History size={14} className="text-muted-foreground" />
             <span className="text-xs font-semibold text-foreground">{t('History')}</span>
-            <span className="text-[11px] bg-muted px-1.5 py-0.5 rounded-full text-muted-foreground">{commits.length}</span>
+            <span className="text-[11px] tabular-nums bg-muted px-1.5 py-0.5 rounded-full text-muted-foreground">{commits.length}</span>
           </div>
         </div>
 
@@ -224,7 +200,7 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
                   <div className="flex flex-col items-center shrink-0 pt-1">
                     <div className={cn(
                       'w-2 h-2 rounded-full shrink-0 transition-colors',
-                      isSelected ? 'bg-brand' : 'bg-border group-hover:bg-muted-foreground/60'
+                      isSelected ? 'bg-primary' : 'bg-border group-hover:bg-muted-foreground/60'
                     )} />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -234,15 +210,15 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
                       <ChevronRight size={12} className={cn('shrink-0 text-muted-foreground/70 transition-transform', isSelected && 'rotate-90')} />
                     </div>
                     <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className="text-[11px] text-muted-foreground truncate">{commit.author}</span>
-                      <span className="text-[11px] text-muted-foreground/70">{timeAgo(commit.timestamp)}</span>
+                      <span className="text-xs text-muted-foreground truncate">{commit.author}</span>
+                      <span className="text-[11px] text-muted-foreground">{timeAgo(commit.timestamp)}</span>
                     </div>
                   </div>
                 </button>
                 {isSelected && (
                   <>
                     {commit.body && (
-                      <div className="pl-7 pr-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap leading-5 border-l-2 border-border ml-3">
+                      <div className="pl-7 pr-2 py-1.5 text-xs text-muted-foreground whitespace-pre-wrap leading-5 border-l-2 border-border ml-3">
                         {commit.body}
                       </div>
                     )}
@@ -266,7 +242,7 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
               disabled={isFetchingNextPage}
               className="w-full py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded-sm transition-colors flex items-center justify-center gap-1.5"
             >
-              {isFetchingNextPage ? <><Loader2 size={12} className="animate-spin" /> {t('Loading...')}</> : t('Load more')}
+              {isFetchingNextPage ? <><Spinner size="xs" /> {t('Loading...')}</> : t('Load more')}
             </button>
           )}
         </div>
@@ -275,7 +251,7 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
       {/* Drag handle */}
       <div
         onMouseDown={onDragStart}
-        className={cn('w-1 shrink-0 cursor-col-resize transition-colors', isDragging ? 'bg-info/60' : 'bg-transparent hover:bg-info/30')}
+        className={cn('w-1 shrink-0 cursor-col-resize transition-colors', isDragging ? 'bg-ring/40' : 'bg-transparent hover:bg-border')}
       />
 
       {/* Right: diff viewer */}
@@ -285,14 +261,14 @@ export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) =
             <div className="px-3 py-2 border-b border-border/60 flex items-center gap-2 shrink-0">
               <FileCode2 size={14} className="text-muted-foreground" />
               <span className="text-xs font-medium text-foreground truncate">{selectedFile}</span>
-              <span className="text-[11px] text-muted-foreground/70">({selectedCommit?.shortHash})</span>
+              <span className="font-mono text-[11px] text-muted-foreground">({selectedCommit?.shortHash})</span>
             </div>
             <CommitDiffViewer workingDir={workingDir} hash={selectedHash} filePath={selectedFile} />
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground/60">
+          <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="flex flex-col items-center gap-2">
-              <FileCode2 size={28} />
+              <FileCode2 size={28} className="text-muted-foreground/70" />
               <span className="text-xs">{selectedHash ? t('Select a file to view diff') : t('Select a commit to view changes')}</span>
             </div>
           </div>

@@ -97,7 +97,7 @@ export function ChipSelect({
                     {option.label}
                   </span>
                   {option.description && (
-                    <span className="mt-0.5 block whitespace-normal text-[11px] leading-snug text-muted-foreground">{option.description}</span>
+                    <span className="mt-0.5 block whitespace-normal text-xs leading-[18px] text-muted-foreground">{option.description}</span>
                   )}
                 </span>
                 <MenuPrimitive.ItemIndicator className={cn(MENU_INDICATOR, 'top-2')}>

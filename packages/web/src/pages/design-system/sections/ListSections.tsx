@@ -34,6 +34,7 @@ import {
   Segmented,
   TaskStatusBadge,
   TerminalBlock,
+  TextLink,
   Timeline,
   TodoList,
   TopologyTree,
@@ -263,7 +264,7 @@ export function TablesSection() {
   return (
     <ShowcaseSection
       id="tables"
-      description="需要逐行比较、排序时用表格。表头 11px 灰字，行高 36px，数字列右对齐等宽；状态列用图标 + 文字。热力表用墨阶表示强弱，格内仍写数字。"
+      description="需要逐行比较、排序时用表格。表头 12px 灰字，行高 36px，数字列右对齐等宽；状态列用图标 + 文字。热力表用墨阶表示强弱，格内仍写数字。"
     >
       <Specimen
         name="DataTable"
@@ -401,7 +402,13 @@ export function PeopleSection() {
       id="people"
       description="人用单色头像 + 缩写，不给每个人分配颜色；Agent 用官方 logo。内容类组件（文件、提交、代码、终端）都是等宽字，路径从左截断，复制按钮在右上。"
     >
-      <Specimen name="Avatar · AvatarGroup" title="头像" description="圆形是人，方形是项目 / 机器人。叠放时白描边，超出收成「+N」。">
+      <Specimen
+        name="Avatar · AvatarGroup"
+        title="头像"
+        description="圆形是人，方形是项目 / 机器人。叠放时白描边，超出收成「+N」。"
+        dos={['有头像图片就用图片（预设或上传），没有或加载失败时退回缩写']}
+        donts={['色块头像（自选底色 + 白字）：颜色只留给状态']}
+      >
         <div className="flex flex-col gap-5">
           <DemoRow label="尺寸">
             <Avatar name="林夏" size="xs" />
@@ -435,7 +442,7 @@ export function PeopleSection() {
             time="15:04"
             avatar={<AgentAvatar agentType={AgentType.CLAUDE_CODE} />}
           >
-            已改好：行高统一走 <code className="rounded bg-foreground/[0.05] px-1 font-mono text-xs">navRowClassName</code>，元信息用 grid 1fr → 0fr 收起，宽度精确跟随内容。改动了 3 个文件，测试已通过。
+            已改好：行高统一走 <code className="rounded bg-foreground/[0.05] px-1 font-mono text-xs">navRowClassName</code>，元信息用 grid 1fr → 0fr 收起，宽度精确跟随内容。改动了 3 个文件，测试已通过，用法写进了<TextLink href="#people">设计系统 README</TextLink>。
           </MessageBubble>
         </div>
       </Specimen>
@@ -470,7 +477,7 @@ export function PeopleSection() {
       <Specimen name="TerminalBlock" title="终端输出" description="全站唯一常驻的深色面，配色与 xterm 主题一致，像「窗口中的窗口」。">
         <TerminalBlock
           title="pnpm --filter web build"
-          status={<span className="flex items-center gap-1.5"><LiveDot tone="success" pulse={false} />退出码 0</span>}
+          status={<span className="flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-terminal-green" />退出码 0</span>}
           lines={[
             { kind: 'command', text: 'pnpm --filter web build' },
             { kind: 'muted', text: '> tsc -b && vite build' },

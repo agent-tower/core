@@ -142,6 +142,7 @@ describe('SessionReadonlyMeta helpers', () => {
   })
 
   it('renders fallback provider metadata and a downward token tooltip for header placement', () => {
+    vi.useFakeTimers()
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -165,6 +166,14 @@ describe('SessionReadonlyMeta helpers', () => {
 
     expect(container.textContent).toContain('Member Provider')
     expect(container.textContent).toContain('9.5K')
-    expect(container.innerHTML).toContain('top-full')
+
+    // 悬停 300ms 后提示出现在浮层里，方向朝下
+    const trigger = [...container.querySelectorAll('[data-state]')].find(node => node.textContent?.includes('9.5K'))
+    act(() => {
+      trigger?.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }))
+      vi.advanceTimersByTime(300)
+    })
+    expect(document.body.querySelector('[data-side="bottom"]')).not.toBeNull()
+    vi.useRealTimers()
   })
 })

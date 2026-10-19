@@ -5,8 +5,8 @@ import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 
 /**
- * 设置页共享骨架体系 — 视觉规范唯一来源为 .design/DESIGN.md：
- * 排版层级（§3）、四态覆盖（§6）、语义 Token（§8）在此集中落地，
+ * 设置页共享骨架体系 — 视觉规范以设计系统为准（src/design-system，展示页 /design-system）：
+ * 排版层级、加载 / 空 / 错误等状态、语义 Token 在此集中落地，
  * 各设置页面只组合这些原语，不再各自手写样式。
  */
 
@@ -33,7 +33,7 @@ export function SettingsPageHeader({
   return (
     <div className={cn('mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between', className)}>
       <div className="min-w-0">
-        <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
+        <h2 className="text-[22px] font-semibold tracking-tight text-foreground">{title}</h2>
         {description && (
           <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">{description}</p>
         )}
@@ -136,7 +136,7 @@ export function SettingsEmptyState({
 }) {
   return (
     <div className={cn('rounded-xl border border-dashed border-border bg-muted/30 py-14 text-center', className)}>
-      {Icon && <Icon size={48} strokeWidth={1.25} className="mx-auto mb-3 text-muted-foreground/40" aria-hidden="true" />}
+      {Icon && <Icon size={48} strokeWidth={1.25} className="mx-auto mb-3 text-muted-foreground/50" aria-hidden="true" />}
       <p className="text-sm text-muted-foreground">{message}</p>
       {action && <div className="mt-4 flex justify-center">{action}</div>}
     </div>

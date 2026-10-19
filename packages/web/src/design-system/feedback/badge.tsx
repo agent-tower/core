@@ -8,6 +8,7 @@ export interface BadgeProps extends ComponentProps<'span'> {
   tone?: Tone
   /** soft 浅底（默认）· outline 描边 · solid 实底（每屏最多一处）· dot 圆点 + 文字（状态列表首选） */
   variant?: BadgeVariant
+  /** md 12px（默认，中文状态词）· sm 11px（只放编号、版本号、比值这类数字和字母） */
   size?: 'sm' | 'md'
   /** pill 全圆角（状态、计数）· tag 4px 小圆角（标签、编号、优先级） */
   shape?: 'pill' | 'tag'
@@ -15,8 +16,8 @@ export interface BadgeProps extends ComponentProps<'span'> {
 }
 
 const SIZE = {
-  sm: 'h-[18px] px-1.5 text-[10px] gap-1 [&_svg]:size-2.5',
-  md: 'h-5 px-2 text-[11px] gap-1 [&_svg]:size-3',
+  sm: 'h-[18px] px-1.5 text-[11px] gap-1 [&_svg]:size-2.5',
+  md: 'h-5 px-2 text-xs gap-1 [&_svg]:size-3',
 }
 
 /**

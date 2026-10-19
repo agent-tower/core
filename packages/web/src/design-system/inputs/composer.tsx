@@ -92,7 +92,7 @@ export function Composer({
             {submitting && pendingLabel && <Spinner size="sm" label={pendingLabel} className="text-xs" />}
             {toolbarEnd}
             {canSubmit && submitHint && (
-              <span className="hidden select-none items-center gap-1 text-[11px] text-muted-foreground sm:inline-flex">
+              <span className="hidden select-none items-center gap-1 text-xs text-muted-foreground sm:inline-flex">
                 <Kbd>⏎</Kbd>
                 {submitHint}
               </span>

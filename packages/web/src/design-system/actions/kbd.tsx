@@ -13,7 +13,7 @@ export function Kbd({ inverse = false, className, ...props }: KbdProps) {
     <kbd
       data-slot="kbd"
       className={cn(
-        'inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded px-1 font-sans text-[10px] font-medium leading-none',
+        'inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded px-1 font-sans text-[11px] font-medium leading-none',
         inverse
           ? 'border border-inverse-foreground/20 bg-inverse-foreground/10 text-inverse-foreground/80'
           : 'border border-border bg-muted/60 text-muted-foreground',
@@ -38,7 +38,7 @@ export function KbdGroup({ keys, inverse, separator, className }: KbdGroupProps)
     <span className={cn('inline-flex items-center gap-0.5', className)}>
       {keys.map((key, index) => (
         <Fragment key={index}>
-          {index > 0 && separator ? <span className="px-0.5 text-[10px] text-muted-foreground">{separator}</span> : null}
+          {index > 0 && separator ? <span className="px-0.5 text-[11px] text-muted-foreground">{separator}</span> : null}
           <Kbd inverse={inverse}>{key}</Kbd>
         </Fragment>
       ))}

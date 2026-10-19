@@ -230,8 +230,12 @@ describe('LogStream tool grouping', () => {
       '90ms',
       '135ms',
     ])
-    expect(container.textContent).toContain('已处理 1 分 5 秒')
-    expect(container.textContent).toContain('最后一次输出于 5 秒前')
+    const trigger = container.querySelector<HTMLElement>('[aria-label="正在思考"]')
+    await act(async () => {
+      trigger?.focus()
+    })
+    expect(document.body.textContent).toContain('已处理 1 分 5 秒')
+    expect(document.body.textContent).toContain('最后一次输出于 5 秒前')
   })
 
   it('keeps successful tools grouped when their business text contains confirmation keywords', async () => {
@@ -459,13 +463,11 @@ describe('LogStream tool grouping', () => {
     })
 
     expect(getToolGroupButtons(container)).toHaveLength(2)
-    const warning = Array.from(container.querySelectorAll('div')).find((element) => (
-      element.classList.contains('bg-amber-50/70')
-    ))
-    expect(warning).toBeDefined()
-    expect(warning?.classList.contains('border-amber-200')).toBe(true)
+    const warning = container.querySelector<HTMLElement>('[data-slot="notice"]')
+    expect(warning).not.toBeNull()
+    expect(warning?.className).toContain('bg-warning/')
     expect(warning?.textContent).toContain('MCP server `agent-tower` failed to start')
-    expect(warning?.className).not.toContain('red')
+    expect(warning?.className).not.toContain('destructive')
   })
 
   it('keeps error logs separate from adjacent tool logs in grouping', async () => {

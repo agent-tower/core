@@ -1,5 +1,5 @@
 import { AlertTriangle } from 'lucide-react'
-import { Switch } from '@/components/ui/switch'
+import { Switch } from '@/design-system'
 import { cn } from '@/lib/utils'
 
 interface ProviderExecutionPermissionSectionProps {
@@ -43,7 +43,7 @@ export function ProviderExecutionPermissionSection({
         <div className="flex shrink-0 items-center gap-2">
           <span className={cn(
             'text-xs font-medium',
-            error ? 'text-destructive' : enabled ? 'text-warning' : 'text-muted-foreground',
+            error ? 'text-destructive-ink' : enabled ? 'text-warning-ink' : 'text-muted-foreground',
           )}>
             {error ? errorLabel : enabled ? enabledLabel : disabledLabel}
           </span>
@@ -52,22 +52,20 @@ export function ProviderExecutionPermissionSection({
             disabled={!!error}
             onCheckedChange={onToggle}
             aria-label={label}
-            className={cn(
-              'h-11 w-11 bg-transparent before:absolute before:left-1 before:h-5 before:w-9 before:rounded-full',
-              enabled ? 'before:bg-primary' : 'before:bg-border',
-            )}
+            // 视觉 20px 高，触控热区扩到 44px
+            className="after:absolute after:-inset-3"
           />
         </div>
       </div>
 
       {enabled && !error && (
-        <div className="mt-1 flex items-start gap-2 text-xs text-warning">
-          <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" data-warning-icon />
+        <div className="mt-1 flex items-start gap-2 text-xs text-warning-ink">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" data-warning-icon />
           <span>{warning}</span>
         </div>
       )}
       {error && (
-        <p role="alert" className="mt-1 text-xs text-destructive">
+        <p role="alert" className="mt-1 text-xs text-destructive-ink">
           {error}
         </p>
       )}

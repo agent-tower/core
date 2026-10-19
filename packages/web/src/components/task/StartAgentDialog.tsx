@@ -199,7 +199,7 @@ export function StartAgentDialog({
         <div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-neutral-700 mb-2">
+              <label className="block text-sm font-medium text-foreground/80 mb-2">
                 {t('Agent')}
               </label>
               <Select
@@ -209,9 +209,9 @@ export function StartAgentDialog({
                 placeholder={isLoading ? t('加载中...') : t('选择 Agent')}
                 disabled={isStarting || isLoading}
               />
-              {blockedPermission ? <p role="alert" className="mt-2 break-words text-xs leading-snug text-destructive">{t(blockedPermission)}</p> : null}
+              {blockedPermission ? <p role="alert" className="mt-2 break-words text-xs leading-snug text-destructive-ink">{t(blockedPermission)}</p> : null}
               {allProvidersBlocked && !selectedProvider ? (
-                <div role="alert" className="mt-2 space-y-1 break-words text-xs leading-snug text-destructive">
+                <div role="alert" className="mt-2 space-y-1 break-words text-xs leading-snug text-destructive-ink">
                   <p>{t('No available Provider for this session.')}</p>
                   <ul className="space-y-1">
                     {providersData.map(item => (
@@ -222,10 +222,10 @@ export function StartAgentDialog({
                   </ul>
                 </div>
               ) : null}
-              {noProviders ? <p role="alert" className="mt-2 text-xs text-destructive">{t('No available Provider for this session.')}</p> : null}
+              {noProviders ? <p role="alert" className="mt-2 text-xs text-destructive-ink">{t('No available Provider for this session.')}</p> : null}
             </div>
             <div>
-              <label className="block text-sm font-medium text-neutral-700 mb-2">
+              <label className="block text-sm font-medium text-foreground/80 mb-2">
                 {t('模式')}
               </label>
               {!projectSupportsWorktree ? (
@@ -265,7 +265,7 @@ export function StartAgentDialog({
 
         {/* Prompt 输入 */}
         <div>
-          <label className="block text-sm font-medium text-neutral-700 mb-2">
+          <label className="block text-sm font-medium text-foreground/80 mb-2">
             {t('任务描述')}
           </label>
           <textarea
@@ -274,13 +274,13 @@ export function StartAgentDialog({
             rows={5}
             disabled={isStarting}
             placeholder={t('描述你想让 Agent 完成的任务...')}
-            className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm text-neutral-900 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-neutral-300 focus:border-neutral-300 resize-none disabled:opacity-50 disabled:bg-neutral-50"
+            className="w-full px-3 py-2 border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring/60 focus:border-ring resize-none disabled:opacity-50 disabled:bg-muted/50"
           />
         </div>
 
         {/* 错误提示 */}
         {error && (
-          <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+          <div className="text-sm text-destructive-ink bg-destructive/10 border border-destructive/25 rounded-lg px-3 py-2">
             {error}
           </div>
         )}

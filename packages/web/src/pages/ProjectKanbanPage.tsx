@@ -68,7 +68,7 @@ function ProjectSwitcher({
 
   return (
     <div className={cn('relative flex items-center min-w-0', className)}>
-      <span className="mx-1.5 text-muted-foreground/40 select-none">/</span>
+      <span className="mx-1.5 text-muted-foreground select-none">/</span>
       <button
         onClick={() => setIsOpen(prev => !prev)}
         className="flex items-center gap-1.5 px-2 py-1 rounded-md text-sm text-foreground/90 hover:bg-accent transition-colors min-w-0"
@@ -85,7 +85,7 @@ function ProjectSwitcher({
       {isOpen ? (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setIsOpen(false)} />
-          <div className="absolute left-4 top-full mt-1.5 w-60 bg-popover border border-border rounded-lg shadow-lg shadow-black/5 z-40 py-1 animate-in fade-in zoom-in-95 duration-100 origin-top-left">
+          <div className="absolute left-4 top-full mt-1.5 w-60 bg-popover border border-border rounded-lg shadow-popover shadow-black/5 z-40 py-1 animate-in fade-in zoom-in-95 duration-100 origin-top-left">
             <button
               onClick={() => { setFilterProjectId(null); setIsOpen(false) }}
               className="w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 hover:bg-accent/50 transition-colors"
@@ -660,7 +660,7 @@ export function ProjectKanbanPage() {
             </button>
           </header>
           <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[8vh]">
-            <h1 className="max-w-full text-center text-[20px] font-medium tracking-tight leading-snug text-foreground mb-5 break-words">{createTaskTitle}</h1>
+            <h1 className="max-w-full text-center text-[22px] font-medium tracking-tight leading-snug text-foreground mb-5 break-words">{createTaskTitle}</h1>
             <CreateTaskInput
               projects={createTaskProjectOptions}
               providers={createTaskProviderOptions}
@@ -717,7 +717,7 @@ export function ProjectKanbanPage() {
             </div>
             <div className="flex items-center gap-1">
               <TunnelButton />
-              <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-muted-foreground/70 active:text-foreground rounded-md">
+              <button onClick={() => useUIStore.getState().openSettings()} className="p-1.5 text-muted-foreground active:text-foreground rounded-md">
                 <Settings size={16} />
               </button>
             </div>
@@ -780,7 +780,7 @@ export function ProjectKanbanPage() {
           <button
             onClick={() => useUIStore.getState().openSettings()}
             className={cn(
-              'p-1.5 text-muted-foreground/70 hover:text-foreground hover:bg-accent rounded-md transition-colors',
+              'p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors',
               usesIntegratedTitlebar && 'app-region-no-drag',
             )}
           >
@@ -832,7 +832,7 @@ export function ProjectKanbanPage() {
             </Suspense>
           ) : effectiveSelectedTaskId && !taskDetailData ? (
             <div className="flex-1 flex items-center justify-center bg-background min-w-0">
-              <span className="text-sm text-muted-foreground/70">{t('Loading...')}</span>
+              <span className="text-sm text-muted-foreground">{t('Loading...')}</span>
             </div>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center bg-background min-w-0 px-8 pb-[10vh]">

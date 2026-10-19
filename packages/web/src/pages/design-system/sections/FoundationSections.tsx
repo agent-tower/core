@@ -1,12 +1,11 @@
 import type { ReactNode } from 'react'
-import { CircleAlert, CircleCheck, Info, MousePointer2, TriangleAlert, type LucideIcon } from 'lucide-react'
+import { CircleAlert, CircleCheck, Info, MousePointer2, Plus, TriangleAlert, type LucideIcon } from 'lucide-react'
 import {
   Badge,
   Button,
   Legend,
   ProjectDot,
   ProjectTag,
-  TERMINAL_THEME,
   TONE_DOT,
   TONE_INK,
   TONE_MARK,
@@ -27,9 +26,9 @@ function PrincipleCard({ title, art, children }: { title: string; art: ReactNode
       <div aria-hidden="true" className="flex h-36 items-center justify-center border-b border-border/50 bg-foreground/[0.015] px-6">
         {art}
       </div>
-      <div className="p-4">
+      <div className="px-5 pb-5 pt-4">
         <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{children}</p>
+        <p className="mt-1.5 text-[13px] leading-[22px] text-muted-foreground">{children}</p>
       </div>
     </article>
   )
@@ -133,7 +132,7 @@ export function PrinciplesSection() {
             />
             <MiniRow title="w-[58%]" />
             <div className="flex justify-end px-1.5 pt-0.5">
-              <span className="rounded-full bg-warning/10 px-1.5 py-px text-[9px] font-medium text-warning-ink">待审查 1</span>
+              <span className="rounded-full bg-warning/10 px-1.5 py-px text-[10px] font-medium text-warning-ink">待审查 1</span>
             </div>
           </div>
         )}
@@ -170,7 +169,7 @@ export function PrinciplesSection() {
               <span className="size-2 rounded-full bg-info" />
               <span className="h-1.5 w-16 rounded-full bg-foreground/60" />
             </span>
-            <span className="absolute inset-x-0 bottom-0 text-center font-mono text-[10px] text-muted-foreground">250ms · ease-enter</span>
+            <span className="absolute inset-x-0 bottom-0 text-center font-mono text-[11px] text-muted-foreground">250ms · ease-enter</span>
           </div>
         )}
       >
@@ -196,7 +195,7 @@ const SURFACES: SwatchSpec[] = [
   { name: '悬停', token: '--accent', hex: '#F3F4F6', value: 'var(--accent)', usage: '行悬停、ghost 按钮' },
   { name: '浅灰底', token: 'foreground / 5%', hex: '≈ #F4F4F4', value: 'color-mix(in oklab, var(--foreground) 5%, var(--background))', usage: '分段轨道、标签、代码、头像' },
   { name: '反色', token: '--inverse', hex: '#191F25', value: 'var(--inverse)', usage: 'Tooltip、Toast 等浮在内容上的小面' },
-  { name: '终端', token: 'TERMINAL_THEME', hex: '#1E1E1E', value: TERMINAL_THEME.background, usage: '终端与日志：唯一常驻深色面' },
+  { name: '终端', token: '--terminal', hex: '#1E1E1E', value: 'var(--terminal)', usage: '终端与日志：唯一常驻深色面' },
 ]
 
 function Swatch({ name, token, hex, value, usage }: SwatchSpec) {
@@ -205,10 +204,10 @@ function Swatch({ name, token, hex, value, usage }: SwatchSpec) {
       <div className="h-14 rounded-lg ring-1 ring-inset ring-black/[0.07]" style={{ background: value }} />
       <div className="mt-2 flex items-baseline justify-between gap-2">
         <span className="text-xs font-medium text-foreground">{name}</span>
-        <span className="font-mono text-[10px] text-muted-foreground">{hex}</span>
+        <span className="font-mono text-[11px] text-muted-foreground">{hex}</span>
       </div>
-      <div className="truncate font-mono text-[10px] text-muted-foreground">{token}</div>
-      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{usage}</p>
+      <div className="truncate font-mono text-[11px] text-muted-foreground">{token}</div>
+      <p className="mt-1 text-xs leading-[18px] text-muted-foreground">{usage}</p>
     </div>
   )
 }
@@ -222,11 +221,52 @@ const INKS = [
 ]
 
 const STATUS_ROWS: { tone: Exclude<Tone, 'neutral'>; name: string; meaning: string; icon: LucideIcon; base: string; ink: string; baseRatio: number; inkRatio: number }[] = [
-  { tone: 'info', name: '信息', meaning: '运行中、链接、提示', icon: Info, base: '--info', ink: '--info-ink', baseRatio: 5.26, inkRatio: 6.31 },
-  { tone: 'success', name: '成功', meaning: '已完成、已合并、在线', icon: CircleCheck, base: '--success', ink: '--success-ink', baseRatio: 3.22, inkRatio: 5.61 },
-  { tone: 'warning', name: '警告', meaning: '待审查、临近截止、需要确认', icon: TriangleAlert, base: '--warning', ink: '--warning-ink', baseRatio: 3.19, inkRatio: 5.8 },
-  { tone: 'danger', name: '危险', meaning: '失败、逾期、删除', icon: CircleAlert, base: '--destructive', ink: '--destructive-ink', baseRatio: 4.76, inkRatio: 6.37 },
+  { tone: 'info', name: '信息', meaning: '运行中、提示', icon: Info, base: '--info', ink: '--info-ink', baseRatio: 5.17, inkRatio: 6.31 },
+  { tone: 'success', name: '成功', meaning: '已完成、已合并、在线', icon: CircleCheck, base: '--success', ink: '--success-ink', baseRatio: 3.3, inkRatio: 5.64 },
+  { tone: 'warning', name: '警告', meaning: '待审查、临近截止、需要确认', icon: TriangleAlert, base: '--warning', ink: '--warning-ink', baseRatio: 3.18, inkRatio: 5.78 },
+  { tone: 'danger', name: '危险', meaning: '失败、逾期、删除', icon: CircleAlert, base: '--destructive', ink: '--destructive-ink', baseRatio: 4.83, inkRatio: 6.38 },
 ]
+
+/** 终端上的界面层；预览都画在终端底色上 */
+const TERMINAL_TOKENS: { token: string; preview: ReactNode; usage: string }[] = [
+  { token: '--terminal', preview: <span className="size-full bg-terminal" />, usage: '终端正文和日志；选中的标签、行也用它' },
+  { token: '--terminal-chrome', preview: <span className="size-full bg-terminal-chrome" />, usage: '标签栏、标题栏、侧列表' },
+  {
+    token: '--terminal-accent',
+    preview: <span className="size-full bg-terminal-chrome"><span className="block size-full bg-terminal-accent" /></span>,
+    usage: '悬停：6% 白，叠在哪一层上都成立',
+  },
+  { token: '--terminal-border', preview: <span className="size-full p-1.5"><span className="block size-full rounded border border-terminal-border" /></span>, usage: '分隔线、描边：8% 白' },
+  { token: '--terminal-foreground', preview: <span className="text-xs font-medium text-terminal-foreground">Aa</span>, usage: '正文、选中项的文字' },
+  { token: '--terminal-muted-foreground', preview: <span className="text-xs font-medium text-terminal-muted-foreground">Aa</span>, usage: '标签、表头、次要信息（标签栏悬停态上仍 ≥ 4.5:1）' },
+]
+
+/** 程序输出的 ANSI 色，与 xterm 是同一套 */
+const TERMINAL_ANSI = [
+  { name: 'red', className: 'bg-terminal-red', usage: '失败' },
+  { name: 'green', className: 'bg-terminal-green', usage: '成功' },
+  { name: 'yellow', className: 'bg-terminal-yellow', usage: '警告' },
+  { name: 'blue', className: 'bg-terminal-blue', usage: '运行中' },
+  { name: 'magenta', className: 'bg-terminal-magenta', usage: '程序输出' },
+  { name: 'cyan', className: 'bg-terminal-cyan', usage: '程序输出' },
+  { name: 'bright-black', className: 'bg-terminal-bright-black', usage: '提示符' },
+]
+
+function TerminalTab({ state, dot, children }: { state: 'selected' | 'hover' | 'idle'; dot: string; children: ReactNode }) {
+  return (
+    <span
+      className={cn(
+        'flex h-8 items-center gap-2 rounded-t-md px-3 font-mono text-xs',
+        state === 'selected' && 'bg-terminal text-terminal-foreground',
+        state === 'hover' && 'bg-terminal-accent text-terminal-muted-foreground',
+        state === 'idle' && 'text-terminal-muted-foreground',
+      )}
+    >
+      <span className={cn('size-1.5 rounded-full', dot)} />
+      {children}
+    </span>
+  )
+}
 
 const RAMP_INFO = [
   { hex: '#EFF0F3', ratio: '1.14', usage: '零值 / 空格' },
@@ -263,7 +303,7 @@ export function ColorSection() {
               <span className={cn('w-28 shrink-0 text-sm', ink.className)}>任务看板 Aa 128</span>
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium text-foreground">{ink.name} <Code className="ml-1">{ink.token}</Code></div>
-                <div className="text-[11px] leading-snug text-muted-foreground">{ink.usage}</div>
+                <div className="text-xs leading-[18px] text-muted-foreground">{ink.usage}</div>
               </div>
               {ink.ratio >= 4.5 ? (
                 <Badge variant="outline" size="sm" className="tabular-nums">{ink.ratio}:1</Badge>
@@ -286,7 +326,7 @@ export function ColorSection() {
             <div key={line.token} className="min-w-0">
               <div className={cn('h-12 rounded-lg bg-background', line.className)} />
               <div className="mt-2 text-xs font-medium text-foreground">{line.label}</div>
-              <div className="font-mono text-[10px] text-muted-foreground">{line.token}</div>
+              <div className="font-mono text-[11px] text-muted-foreground">{line.token}</div>
             </div>
           ))}
         </div>
@@ -303,7 +343,7 @@ export function ColorSection() {
         <div className="overflow-x-auto scrollbar-app-thin">
           <table className="w-full min-w-[640px] border-collapse text-left">
             <thead>
-              <tr className="border-b border-border/70 text-[11px] text-muted-foreground">
+              <tr className="border-b border-border/70 text-xs text-muted-foreground">
                 <th scope="col" className="h-8 pr-3 font-medium">语义</th>
                 <th scope="col" className="h-8 px-3 font-medium">标记（基础色）</th>
                 <th scope="col" className="h-8 px-3 font-medium">文字（ink）</th>
@@ -319,7 +359,7 @@ export function ColorSection() {
                   <tr key={row.tone} className="border-b border-border/40 last:border-0">
                     <td className="py-2.5 pr-3">
                       <div className="text-[13px] font-medium text-foreground">{row.name}</div>
-                      <div className="text-[11px] text-muted-foreground">{row.meaning}</div>
+                      <div className="text-xs text-muted-foreground">{row.meaning}</div>
                     </td>
                     <td className="px-3">
                       <span className="flex items-center gap-2">
@@ -377,12 +417,12 @@ export function ColorSection() {
         <div className="flex h-10 overflow-hidden rounded-lg ring-1 ring-inset ring-black/[0.05]">
           {VIZ_RAMP.map(color => <div key={color} className="flex-1" style={{ background: color }} />)}
         </div>
-        <div className="mt-2 grid grid-cols-7 gap-1">
+        <div className="mt-2 grid grid-cols-7 gap-1.5">
           {RAMP_INFO.map((step, index) => (
             <div key={step.hex} className="min-w-0">
-              <div className="font-mono text-[10px] text-foreground/80">viz-{index}</div>
-              <div className="font-mono text-[10px] tabular-nums text-muted-foreground">{step.ratio}:1</div>
-              <div className="text-[10px] leading-snug text-muted-foreground">{step.usage}</div>
+              <div className="font-mono text-[11px] text-foreground/80">viz-{index}</div>
+              <div className="font-mono text-[11px] tabular-nums text-muted-foreground">{step.ratio}:1</div>
+              <div className="mt-0.5 text-xs leading-[18px] text-muted-foreground">{step.usage}</div>
             </div>
           ))}
         </div>
@@ -396,6 +436,63 @@ export function ColorSection() {
           ]}
         />
       </Specimen>
+
+      <Specimen
+        name="Terminal"
+        title="终端色"
+        description={<>终端是全站唯一的常驻深色面，配色沿用 VS Code Dark。界面层（标签栏、分隔线、悬停）和程序输出（ANSI 色）都是 <Code className="whitespace-nowrap">--terminal-*</Code> 变量。</>}
+        span={2}
+        dos={['选中的标签、行用 bg-terminal：和终端正文同一种材质，表示「打开的就是它」', 'xterm 用 readTerminalTheme() 取色；终端里的状态点用 ANSI 色']}
+        donts={['终端以外出现深色面；终端里弹出的菜单也用普通的浅色 Menu / Popover', '在代码里另抄一份终端色值']}
+      >
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="min-w-0">
+            <div aria-hidden="true" className="overflow-hidden rounded-lg bg-terminal">
+              <div className="flex items-end gap-0.5 bg-terminal-chrome px-1.5 pt-1.5">
+                <TerminalTab state="selected" dot="bg-terminal-green">pnpm dev</TerminalTab>
+                <TerminalTab state="hover" dot="bg-terminal-blue">vitest</TerminalTab>
+                <TerminalTab state="idle" dot="bg-terminal-red">build</TerminalTab>
+                <span className="mb-2 ml-auto h-4 w-px bg-terminal-border" />
+                <span className="mb-1 flex size-7 items-center justify-center rounded-md text-terminal-muted-foreground">
+                  <Plus className="size-3.5" />
+                </span>
+              </div>
+              <div className="p-3 font-mono text-xs leading-5">
+                <div className="text-terminal-foreground"><span className="text-terminal-bright-black">$ </span>pnpm dev</div>
+                <div className="text-terminal-bright-black">&gt; vite --host</div>
+                <div className="text-terminal-green">VITE v7.1.3 ready in 412 ms</div>
+                <div className="text-terminal-foreground">Local: <span className="text-terminal-cyan">http://localhost:5173/</span></div>
+                <div className="text-terminal-yellow">(!) Port 5173 is in use, trying another one…</div>
+              </div>
+            </div>
+            <Caption className="mt-2">选中的标签和下面的终端连成一片；中间是悬停态，右边是未选中。</Caption>
+            <div className="mt-5 grid grid-cols-4 gap-x-3 gap-y-3">
+              {TERMINAL_ANSI.map(color => (
+                <div key={color.name} className="min-w-0">
+                  <span className="flex h-7 items-center justify-center rounded-md bg-terminal">
+                    <span className={cn('size-2.5 rounded-full', color.className)} />
+                  </span>
+                  <div className="mt-1 truncate font-mono text-[11px] text-foreground/80">{color.name}</div>
+                  <div className="text-xs text-muted-foreground">{color.usage}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-col divide-y divide-border/50">
+              {TERMINAL_TOKENS.map(item => (
+                <div key={item.token} className="flex items-center gap-3 py-2 first:pt-0">
+                  <span className="flex h-7 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-terminal">{item.preview}</span>
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-[11px] text-foreground/80">{item.token}</div>
+                    <div className="text-xs leading-[18px] text-muted-foreground">{item.usage}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Specimen>
     </ShowcaseSection>
   )
 }
@@ -403,32 +500,32 @@ export function ColorSection() {
 /* ── 文字 ─────────────────────────────────────────────────── */
 
 const TYPE_SCALE = [
-  { spec: '26 / 34 · 500', className: 'text-[26px] leading-[34px] font-medium tracking-tight', sample: '你需要在 agent-tower 中做点什么？', usage: '首屏标题，每屏至多一个' },
-  { spec: '22 / 28 · 600', className: 'text-[22px] leading-7 font-semibold tracking-tight', sample: '项目设置', usage: '页面与章节标题' },
+  { spec: '26 / 36 · 500', className: 'text-[26px] leading-9 font-medium tracking-tight', sample: '你需要在 agent-tower 中做点什么？', usage: '首屏标题，每屏至多一个' },
+  { spec: '22 / 30 · 600', className: 'text-[22px] leading-[30px] font-semibold tracking-tight', sample: '项目设置', usage: '页面与章节标题' },
   { spec: '15 / 24 · 400', className: 'text-[15px] leading-6', sample: '把左侧任务面板改成紧凑的两行布局', usage: '输入卡正文' },
-  { spec: '14 / 20 · 400', className: 'text-sm leading-5', sample: '重塑左侧任务面板样式与交互', usage: '正文、侧栏行（默认字号）' },
-  { spec: '13 / 20 · 400', className: 'text-[13px] leading-5', sample: '在新标签页中打开 · 复制分支名', usage: '菜单项、按钮、表格、对话' },
-  { spec: '12 / 16 · 500', className: 'text-xs leading-4 font-medium', sample: '待审查 · 运行中 · 已完成', usage: '分组标题、胶囊、表单说明' },
-  { spec: '11 / 16 · 400', className: 'text-[11px] leading-4', sample: 'agent-tower · 12 分钟 · 1,284', usage: '元信息、时间、计数、表头' },
-  { spec: '10 / 12 · 500', className: 'text-[10px] leading-3 font-medium', sample: 'P0 · KR1 · W42', usage: '优先级编号、角标（最小字号）' },
+  { spec: '14 / 22 · 400', className: 'text-sm leading-[22px]', sample: '重塑左侧任务面板样式与交互', usage: '正文、侧栏行（默认字号）' },
+  { spec: '13 / 20 · 400', className: 'text-[13px] leading-5', sample: '在新标签页中打开 · 复制分支名', usage: '菜单项、按钮、表格、样张说明' },
+  { spec: '12 / 18 · 500', className: 'text-xs leading-[18px] font-medium', sample: '待审查 · 运行中 · 已完成', usage: '徽章、表头、字段说明（中文最小）' },
+  { spec: '11 / 16 · 400', className: 'text-[11px] leading-4 tabular-nums', sample: '12:04 · 1,284 · +412 −187 · ⌘K', usage: '单行数字：时间、计数、刻度' },
+  { spec: '10 / 12 · 500', className: 'text-[10px] leading-3 font-medium', sample: 'P0 · KR1 · W42', usage: '拉丁编号、头像缩写（最小）' },
 ]
 
 export function TypographySection() {
   return (
     <ShowcaseSection
       id="typography"
-      description="系统字体栈，不加载网络字体。字号以 14px 为正文基准，向下最小到 10px；字重只用 400 / 500 / 600。"
+      description="系统字体栈，不加载网络字体。字号以 14px 为正文基准；中文最小 12px、行高不低于 1.5 倍，11px 和 10px 只留给数字与编号；字重只用 400 / 500 / 600。"
     >
       <Specimen
         name="Type scale"
         title="字号阶梯"
         span={2}
-        dos={['同一区域最多三档字号；层级优先用字重和颜色拉开']}
-        donts={['小于 10px 的文字', '700 以上的字重和全大写中文']}
+        dos={['同一区域最多三档字号；层级优先用字重和颜色拉开', '中文句子至少 12px、行高 1.5 倍以上：小字省下的空间不值得读者眯眼']}
+        donts={['用 10–11px 写中文说明——11px 只给数字，10px 只给编号', '700 以上的字重和全大写中文']}
       >
         <div className="flex flex-col divide-y divide-border/50">
           {TYPE_SCALE.map(row => (
-            <div key={row.spec} className="grid grid-cols-1 items-baseline gap-1 py-3 first:pt-0 last:pb-0 md:grid-cols-[120px_minmax(0,1fr)_220px] md:gap-6">
+            <div key={row.spec} className="grid grid-cols-1 items-baseline gap-1 py-3 first:pt-0 last:pb-0 md:grid-cols-[112px_minmax(0,1fr)_240px] md:gap-6">
               <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{row.spec}</span>
               <span className={cn('min-w-0 truncate text-foreground', row.className)}>{row.sample}</span>
               <span className="text-xs text-muted-foreground">{row.usage}</span>
@@ -440,11 +537,11 @@ export function TypographySection() {
       <Specimen name="Family" title="字体" description="正文用系统无衬线；代码、分支、哈希、路径用等宽。">
         <div className="space-y-4">
           <div>
-            <div className="text-[11px] text-muted-foreground">Sans · ui-sans-serif, system-ui</div>
+            <div className="text-xs text-muted-foreground">Sans · ui-sans-serif, system-ui</div>
             <p className="mt-1 text-[15px] text-foreground">Agent Tower 让多个 AI Agent 并行工作</p>
           </div>
           <div>
-            <div className="text-[11px] text-muted-foreground">Mono · ui-monospace, SFMono-Regular, Menlo</div>
+            <div className="text-xs text-muted-foreground">Mono · ui-monospace, SFMono-Regular, Menlo</div>
             <p className="mt-1 font-mono text-[13px] text-foreground">feat/design-system · 8721b9c · src/index.css</p>
           </div>
         </div>
@@ -453,11 +550,11 @@ export function TypographySection() {
       <Specimen name="Numerals" title="数字" description="会变化或需要上下对齐的数字一律 tabular-nums；千分位用逗号，大数用紧凑写法。">
         <div className="grid grid-cols-2 gap-6">
           <div>
-            <div className="mb-1 text-[11px] text-muted-foreground">比例数字（默认）</div>
+            <div className="mb-1 text-xs text-muted-foreground">比例数字（默认）</div>
             {['1,111', '8,888', '4,701'].map(value => <div key={value} className="text-right text-lg font-semibold text-foreground">{value}</div>)}
           </div>
           <div>
-            <div className="mb-1 text-[11px] text-muted-foreground">等宽数字 tabular-nums</div>
+            <div className="mb-1 text-xs text-muted-foreground">等宽数字 tabular-nums</div>
             {['1,111', '8,888', '4,701'].map(value => <div key={value} className="text-right text-lg font-semibold tabular-nums text-foreground">{value}</div>)}
           </div>
         </div>
@@ -520,7 +617,7 @@ export function LayoutSection() {
               <span className="w-12 shrink-0">
                 <span className="block h-2 rounded-[2px] bg-viz-6" style={{ width: space.px }} />
               </span>
-              <span className="min-w-0 truncate text-[11px] text-muted-foreground">{space.usage}</span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{space.usage}</span>
             </div>
           ))}
         </div>
@@ -534,20 +631,22 @@ export function LayoutSection() {
               <span className="w-24 shrink-0">
                 <Button size={control.size}>按钮 {control.size}</Button>
               </span>
-              <span className="min-w-0 truncate text-[11px] text-muted-foreground">{control.usage}</span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{control.usage}</span>
             </div>
           ))}
         </div>
       </Specimen>
 
       <Specimen name="Radius" title="圆角" description="由 --radius（10px）派生；外层容器的圆角 ≥ 内层：内容岛 14 → 输入框 10 → 行 8。">
-        <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-5 sm:grid-cols-3">
           {RADII.map(radius => (
             <div key={radius.token} className="min-w-0">
-              <div className={cn('aspect-square w-full border border-foreground/25 bg-foreground/[0.03]', radius.className)} />
-              <div className="mt-2 font-mono text-[11px] text-foreground/80">{radius.label}</div>
-              <div className="truncate font-mono text-[10px] text-muted-foreground">{radius.token}</div>
-              <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{radius.usage}</p>
+              <div className={cn('size-14 border border-foreground/25 bg-foreground/[0.03]', radius.className)} />
+              <div className="mt-2.5 flex min-w-0 items-baseline gap-1.5 font-mono text-[11px]">
+                <span className="text-foreground/80">{radius.label}</span>
+                <span className="truncate text-muted-foreground">{radius.token}</span>
+              </div>
+              <p className="mt-0.5 text-xs leading-[18px] text-muted-foreground">{radius.usage}</p>
             </div>
           ))}
         </div>
@@ -559,8 +658,8 @@ export function LayoutSection() {
             <div key={level.token} className="min-w-0">
               <div className={cn('h-16 rounded-lg bg-background', level.className)} />
               <div className="mt-2.5 text-xs font-medium text-foreground">{level.name}</div>
-              <div className="font-mono text-[10px] text-muted-foreground">{level.token}</div>
-              <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{level.usage}</p>
+              <div className="font-mono text-[11px] text-muted-foreground">{level.token}</div>
+              <p className="mt-1 text-xs leading-[18px] text-muted-foreground">{level.usage}</p>
             </div>
           ))}
         </div>
@@ -577,7 +676,7 @@ export function LayoutSection() {
             <span className="h-2 w-14 rounded-full bg-foreground/80" />
             <span className="h-1.5 w-16 rounded-full bg-foreground/20" />
             <span className="ml-auto h-4 w-4 rounded-[4px] bg-foreground/10" />
-            <span className="font-mono text-[10px] text-muted-foreground">顶栏 48</span>
+            <span className="font-mono text-[11px] text-muted-foreground">顶栏 48</span>
           </div>
           <div className="flex min-h-0 flex-1">
             <div className="flex w-[34%] shrink-0 flex-col gap-1 px-2 py-1">
@@ -589,13 +688,13 @@ export function LayoutSection() {
                   <span className="h-1.5 rounded-full bg-foreground/40" style={{ width: `${width}%` }} />
                 </span>
               ))}
-              <span className="mt-auto font-mono text-[10px] text-muted-foreground">侧栏 400（260–600）</span>
+              <span className="mt-auto font-mono text-[11px] text-muted-foreground">侧栏 400（260–600）</span>
             </div>
             <div className="w-1 shrink-0" />
             <div className="mb-2 mr-2 flex min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-border/50 bg-background">
               <span className="h-2 w-40 max-w-[70%] rounded-full bg-foreground/70" />
               <span className="h-12 w-64 max-w-[80%] rounded-xl border border-border shadow-raised" />
-              <span className="font-mono text-[10px] text-muted-foreground">内容岛 · rounded-xl · mb-2 mr-2</span>
+              <span className="font-mono text-[11px] text-muted-foreground">内容岛 · rounded-xl · mb-2 mr-2</span>
             </div>
           </div>
         </div>

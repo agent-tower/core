@@ -62,12 +62,12 @@ export function GanttChart({ tasks, start, days, today, locale, className, ...pr
             </span>
           ))}
           {weekStarts.map(day => (
-            <span key={day} className="absolute bottom-0.5 -translate-x-1/2 text-[10px] tabular-nums text-muted-foreground" style={{ left: pct(day) }}>
+            <span key={day} className="absolute bottom-0.5 -translate-x-1/2 text-[11px] tabular-nums text-muted-foreground" style={{ left: pct(day) }}>
               {addDays(start, day).getDate()}
             </span>
           ))}
           {showToday && (
-            <span className="absolute -bottom-px z-[1] -translate-x-1/2 rounded bg-foreground px-1 py-px text-[10px] font-medium leading-3 text-background" style={{ left: pct(today + 0.5) }}>
+            <span className="absolute -bottom-px z-[1] -translate-x-1/2 rounded bg-foreground px-1 py-px text-[11px] font-medium leading-[13px] text-background" style={{ left: pct(today + 0.5) }}>
               {t('Today')}
             </span>
           )}
@@ -82,7 +82,7 @@ export function GanttChart({ tasks, start, days, today, locale, className, ...pr
           <div key={task.id} role="row" className="group grid grid-cols-[minmax(7rem,9rem)_minmax(0,1fr)]">
             <div role="rowheader" className="flex min-w-0 flex-col justify-center py-1.5 pr-3">
               <span className="truncate text-xs text-foreground/90">{task.label}</span>
-              {task.meta && <span className="truncate text-[11px] text-muted-foreground">{task.meta}</span>}
+              {task.meta && <span className="truncate text-xs text-muted-foreground">{task.meta}</span>}
             </div>
             <div role="cell" className="relative h-11 transition-colors group-hover:bg-foreground/[0.02]">
               {weekStarts.map(day => (
@@ -160,7 +160,7 @@ export function MonthCalendar({ year, month, events, today, locale, maxPerDay = 
     <div className={cn('overflow-hidden rounded-lg border border-border/70', className)}>
       <div className="grid grid-cols-7 border-b border-border/60 bg-foreground/[0.015]">
         {cells.slice(0, 7).map(date => (
-          <div key={date.getDay()} className="px-2 py-1.5 text-[11px] text-muted-foreground">{weekdayFormat.format(date)}</div>
+          <div key={date.getDay()} className="px-2 py-1.5 text-xs text-muted-foreground">{weekdayFormat.format(date)}</div>
         ))}
       </div>
       <div className="grid grid-cols-7">
@@ -189,7 +189,7 @@ export function MonthCalendar({ year, month, events, today, locale, maxPerDay = 
               </span>
               <ul className="mt-1 space-y-0.5">
                 {list.slice(0, maxPerDay).map(event => (
-                  <li key={event.id} className={cn('flex min-w-0 items-center gap-1 text-[11px] leading-4', !inMonth && 'opacity-50')}>
+                  <li key={event.id} className={cn('flex min-w-0 items-center gap-1 text-xs leading-[18px]', !inMonth && 'opacity-50')}>
                     <span aria-hidden="true" className={cn('h-2.5 w-0.5 shrink-0 rounded-full', event.tone ? TONE_DOT[event.tone] : 'bg-viz-6')} />
                     {event.time && <span className="shrink-0 tabular-nums text-muted-foreground">{event.time}</span>}
                     <span className="truncate text-foreground/85">{event.title}</span>

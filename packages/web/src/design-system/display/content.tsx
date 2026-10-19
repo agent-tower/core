@@ -3,13 +3,15 @@ import { File, FileCode, FileImage, FileText, GitCommitHorizontal } from 'lucide
 import { cn } from '@/lib/utils'
 import { CopyButton } from '../actions/copy-button'
 import { DiffStat } from '../domain/tags'
-import { TERMINAL_THEME, TONE_INK, TONE_SOFT, type Tone } from '../tokens'
+import { TONE_INK, TONE_SOFT } from '../tokens'
+import { fileChangeTone, type FileChangeStatus } from './file-change'
 
 const CODE_EXTENSIONS = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'json', 'css', 'html', 'py', 'go', 'rs', 'java', 'sh', 'yml', 'yaml', 'toml', 'prisma', 'sql'])
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
 const TEXT_EXTENSIONS = new Set(['md', 'mdx', 'txt', 'log'])
 
-function FileGlyph({ name, className }: { name: string; className?: string }) {
+/** 文件类型图标：按扩展名分代码 / 图片 / 文本 / 其他，一律中性灰（类型不是状态，不着色） */
+export function FileGlyph({ name, className }: { name: string; className?: string }) {
   const extension = name.split('.').pop()?.toLowerCase() ?? ''
   const Glyph = CODE_EXTENSIONS.has(extension) ? FileCode : IMAGE_EXTENSIONS.has(extension) ? FileImage : TEXT_EXTENSIONS.has(extension) ? FileText : File
   return <Glyph aria-hidden="true" className={cn('size-3.5 shrink-0 text-muted-foreground', className)} />
@@ -22,9 +24,31 @@ function splitPath(path: string) {
 
 /* ── 文件 ─────────────────────────────────────────────────── */
 
-export type FileChangeStatus = 'A' | 'M' | 'D' | 'R'
+export interface FileStatusBadgeProps {
+  /** Git 状态字母：A 新增 · M 修改 · D 删除 · R 重命名；其他字母按修改显示 */
+  status: string
+  /** sm 16px（列表行，默认）· md 20px（手机上的触控行） */
+  size?: 'sm' | 'md'
+  className?: string
+}
 
-const CHANGE_TONE: Record<FileChangeStatus, Tone> = { A: 'success', M: 'warning', D: 'danger', R: 'info' }
+/** 文件变更状态字母：浅着色方块 + *-ink 字母，全站文件列表共用这一种 */
+export function FileStatusBadge({ status, size = 'sm', className }: FileStatusBadgeProps) {
+  const tone = fileChangeTone(status)
+  return (
+    <span
+      className={cn(
+        'flex shrink-0 items-center justify-center rounded-[3px] font-mono font-semibold',
+        size === 'sm' ? 'size-4 text-[10px]' : 'size-5 text-[11px]',
+        TONE_SOFT[tone],
+        TONE_INK[tone],
+        className,
+      )}
+    >
+      {status}
+    </span>
+  )
+}
 
 export interface FileRowProps extends Omit<ComponentProps<'button'>, 'children'> {
   path: string
@@ -49,13 +73,9 @@ export function FileRow({ path, status, additions, deletions, active = false, cl
       )}
       {...props}
     >
-      {status && (
-        <span className={cn('flex size-4 shrink-0 items-center justify-center rounded-[3px] font-mono text-[10px] font-semibold', TONE_SOFT[CHANGE_TONE[status]], TONE_INK[CHANGE_TONE[status]])}>
-          {status}
-        </span>
-      )}
+      {status && <FileStatusBadge status={status} />}
       <FileGlyph name={name} />
-      <span className="shrink-0 font-mono text-xs text-foreground/90">{name}</span>
+      <span className="min-w-0 truncate font-mono text-xs text-foreground/90">{name}</span>
       {/* rtl 让过长的目录从左侧截断；内层 ltr 隔离，避免首尾的「/」「.」被挪到另一端 */}
       <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-muted-foreground [direction:rtl]">
         <span dir="ltr">{dir}</span>
@@ -97,7 +117,7 @@ export function CommitItem({ message, hash, author, time, additions, deletions, 
       </span>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] text-foreground/90">{message}</div>
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           {author}
           {author && time && <span aria-hidden="true">·</span>}
           {time}
@@ -149,30 +169,31 @@ export interface TerminalLine {
   text: string
 }
 
+/** 程序输出用 ANSI 色（--terminal-*，与 xterm 同一套） */
 const TERMINAL_COLOR: Record<NonNullable<TerminalLine['kind']>, string> = {
-  command: TERMINAL_THEME.foreground,
-  output: TERMINAL_THEME.foreground,
-  success: TERMINAL_THEME.green,
-  error: TERMINAL_THEME.red,
-  warning: TERMINAL_THEME.yellow,
-  info: TERMINAL_THEME.blue,
-  muted: TERMINAL_THEME.muted,
+  command: 'text-terminal-foreground',
+  output: 'text-terminal-foreground',
+  success: 'text-terminal-green',
+  error: 'text-terminal-red',
+  warning: 'text-terminal-yellow',
+  info: 'text-terminal-blue',
+  muted: 'text-terminal-bright-black',
 }
 
 /** 终端输出：全站唯一的常驻深色面，配色与 xterm 主题一致，像「窗口中的窗口」 */
 export function TerminalBlock({ title, status, lines, className }: { title?: ReactNode; status?: ReactNode; lines: TerminalLine[]; className?: string }) {
   return (
-    <div className={cn('overflow-hidden rounded-lg', className)} style={{ background: TERMINAL_THEME.background }}>
+    <div className={cn('overflow-hidden rounded-lg bg-terminal', className)}>
       {(title || status) && (
-        <div className="flex h-8 items-center justify-between gap-3 border-b border-white/[0.06] px-3 text-[11px]" style={{ color: TERMINAL_THEME.muted }}>
+        <div className="flex h-8 items-center justify-between gap-3 border-b border-terminal-border px-3 text-[11px] text-terminal-muted-foreground">
           <span className="truncate font-mono">{title}</span>
           {status}
         </div>
       )}
       <pre className="overflow-x-auto p-3 font-mono text-xs leading-5 scrollbar-app-thin">
         {lines.map((line, index) => (
-          <div key={index} className="whitespace-pre" style={{ color: TERMINAL_COLOR[line.kind ?? 'output'] }}>
-            {line.kind === 'command' && <span style={{ color: TERMINAL_THEME.muted }}>$ </span>}
+          <div key={index} className={cn('whitespace-pre', TERMINAL_COLOR[line.kind ?? 'output'])}>
+            {line.kind === 'command' && <span className="text-terminal-bright-black">$ </span>}
             {line.text}
           </div>
         ))}

@@ -22,22 +22,22 @@ export function ShowcaseSection({ id, description, columns = 2, children }: Show
   const meta = SECTIONS.find(section => section.id === id)
   const number = sectionNumber(id)
   return (
-    <section id={id} data-ds-section="" aria-labelledby={`${id}-title`} className="scroll-mt-6 [counter-reset:ds-specimen]">
-      <header className="mb-5">
+    <section id={id} data-ds-section="" aria-labelledby={`${id}-title`} className="scroll-mt-8 [counter-reset:ds-specimen]">
+      <header className="mb-6">
         <div className="flex items-center gap-2 font-mono text-[11px] tracking-wide text-muted-foreground">
-          <span className="tabular-nums text-foreground">{number}</span>
+          <span className="tabular-nums text-foreground/80">{number}</span>
           <span aria-hidden="true" className="h-px w-5 bg-border" />
           <span className="uppercase">{meta?.en}</span>
         </div>
-        <h2 id={`${id}-title`} className="mt-2 text-[22px] font-semibold leading-tight tracking-tight text-foreground">
+        <h2 id={`${id}-title`} className="mt-2.5 text-[22px] font-semibold leading-[30px] tracking-tight text-foreground">
           {meta?.title ?? id}
         </h2>
-        {description && <p className="mt-1.5 max-w-3xl text-[13px] leading-relaxed text-muted-foreground">{description}</p>}
+        {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>}
       </header>
       <SectionNumberContext.Provider value={number}>
         <div
           className={cn(
-            'grid grid-cols-1 gap-4',
+            'grid grid-cols-1 gap-5',
             columns === 2 && 'xl:grid-cols-2',
             columns === 3 && 'lg:grid-cols-2 2xl:grid-cols-3',
           )}
@@ -64,9 +64,9 @@ export function ShowcasePart({ index, title, description }: { index: string; tit
 }
 
 export interface SpecimenProps {
-  /** 组件名（等宽），即代码里的名字 */
+  /** 组件名（等宽），即代码里的名字；跟在中文名后面作注，没有中文名时直接作标题 */
   name: string
-  /** 中文名 */
+  /** 中文名：样张标题 */
   title?: ReactNode
   /** 一句话：什么时候用 */
   description?: ReactNode
@@ -95,19 +95,20 @@ export function Specimen({ name, title, description, span = 1, dos, donts, canva
         className,
       )}
     >
-      <header className="border-b border-border/50 px-4 py-3">
+      {/* 标题区不画分隔线：靠字号和留白和示例分开，卡片里只剩「示例 | 用法」一条线 */}
+      <header className={cn('px-6 pt-5', canvas === 'chrome' ? 'pb-5' : 'pb-1')}>
         <div className="flex min-w-0 items-baseline gap-2">
-          <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/60">
+          <h3 className="min-w-0 truncate text-sm font-semibold text-foreground">{title ?? name}</h3>
+          {title && <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{name}</span>}
+          <span className="ml-auto shrink-0 pl-2 font-mono text-[11px] tabular-nums text-muted-foreground/50">
             {number}.<span className="before:content-[counter(ds-specimen)]" />
           </span>
-          <h3 className="shrink-0 font-mono text-xs font-medium text-foreground">{name}</h3>
-          {title && <span className="min-w-0 truncate text-xs text-muted-foreground">{title}</span>}
         </div>
-        {description && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{description}</p>}
+        {description && <p className="mt-1.5 max-w-3xl text-[13px] leading-[22px] text-muted-foreground">{description}</p>}
       </header>
-      <div className={cn('min-w-0 flex-1 p-5', canvas === 'chrome' && 'bg-sidebar', bodyClassName)}>{children}</div>
+      <div className={cn('min-w-0 flex-1 px-6 pb-6', canvas === 'chrome' ? 'bg-sidebar pt-6' : 'pt-5', bodyClassName)}>{children}</div>
       {hasRules && (
-        <footer className="grid gap-x-6 gap-y-2 border-t border-border/50 bg-foreground/[0.015] px-4 py-3 sm:grid-cols-2">
+        <footer className="grid gap-x-8 gap-y-2.5 border-t border-border/50 px-6 py-4 sm:grid-cols-2">
           {dos?.length ? <RuleList kind="do" rules={dos} /> : null}
           {donts?.length ? <RuleList kind="dont" rules={donts} /> : null}
         </footer>
@@ -119,10 +120,11 @@ export function Specimen({ name, title, description, span = 1, dos, donts, canva
 function RuleList({ kind, rules }: { kind: 'do' | 'dont'; rules: ReactNode[] }) {
   const Glyph = kind === 'do' ? Check : X
   return (
-    <ul className="flex flex-col gap-1" aria-label={kind === 'do' ? '推荐' : '避免'}>
+    <ul className="flex flex-col gap-1.5" aria-label={kind === 'do' ? '推荐' : '避免'}>
       {rules.map((rule, index) => (
-        <li key={index} className="flex gap-1.5 text-xs leading-relaxed text-muted-foreground">
-          <Glyph aria-hidden="true" className={cn('mt-[3px] size-3 shrink-0', kind === 'do' ? 'text-success' : 'text-destructive')} strokeWidth={2.5} />
+        <li key={index} className="flex gap-2 text-xs leading-5 text-muted-foreground">
+          {/* 规则是读物不是警报：对勾和叉只用浅一档的状态色 */}
+          <Glyph aria-hidden="true" className={cn('mt-1 size-3 shrink-0', kind === 'do' ? 'text-success/80' : 'text-destructive/70')} strokeWidth={2.5} />
           <span>{rule}</span>
         </li>
       ))}
@@ -134,7 +136,7 @@ function RuleList({ kind, rules }: { kind: 'do' | 'dont'; rules: ReactNode[] }) 
 export function DemoRow({ label, className, children }: { label?: ReactNode; className?: string; children: ReactNode }) {
   return (
     <div className={cn('flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4', className)}>
-      {label !== undefined && <span className="w-20 shrink-0 text-[11px] text-muted-foreground">{label}</span>}
+      {label !== undefined && <span className="w-20 shrink-0 text-xs text-muted-foreground">{label}</span>}
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">{children}</div>
     </div>
   )
@@ -142,7 +144,7 @@ export function DemoRow({ label, className, children }: { label?: ReactNode; cla
 
 /** 示例下方的说明 */
 export function Caption({ className, children }: { className?: string; children: ReactNode }) {
-  return <p className={cn('text-[11px] leading-relaxed text-muted-foreground', className)}>{children}</p>
+  return <p className={cn('text-xs leading-5 text-muted-foreground', className)}>{children}</p>
 }
 
 /** 等宽的 token / 类名 */
