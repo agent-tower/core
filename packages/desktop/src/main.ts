@@ -435,7 +435,9 @@ async function verifyTerminalCreate(baseUrl: string): Promise<void> {
   await fetchJson<{ success: boolean }>(
     `${baseUrl}/api/terminals/${encodeURIComponent(terminal.terminalId)}`,
     { method: 'DELETE' },
-    5_000,
+    // Windows identity probes and verified tree cleanup can exceed a short
+    // HTTP timeout; use the same bounded budget as the startup verification.
+    getStartupTimeoutMs(),
   );
   log('Terminal cleanup verification passed');
 }
