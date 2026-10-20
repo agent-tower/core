@@ -114,6 +114,8 @@
 <review_result>
 ## 审查结论与汇报
 
+审查期间不向 Team Room 发送接单确认、开工说明、审查计划、进度、疑点或阶段性结果，仅在审查完成后或确认问题导致无法继续时使用 `post_room_message` 一次性反馈结论。
+
 完成审查或确认无法继续时，使用 post_room_message 向 Team Room 发送 result，并按共享协议用结构化 mentions 通知派活负责人。不要只在普通输出中结束工作。
 
 结论使用以下一种：
