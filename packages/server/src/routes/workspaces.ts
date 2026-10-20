@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
+import type { ConflictRecoveryIdentityResponse } from '@agent-tower/shared';
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
+import { authorizeConflictResolutionContext, refreshConflictResolutionContext } from '../services/conflict-resolution-context.js';
+import { prisma } from '../utils/index.js';
+import { requireTranslationOwner } from './translations.js';
+import { isUserInput } from './user-input-origin.js';
 import { WorkspaceService } from '../services/workspace.service.js';
 import { ServiceError, NotFoundError } from '../errors.js';
 import { GitError, MergeConflictError, RebaseInProgressError } from '../git/worktree.manager.js';
@@ -44,6 +49,7 @@ function resolveEditorCommand(editorType?: string | null): string {
 }
 
 const createWorkspaceSchema = z.object({
+  clientSubmissionId: z.string().uuid().optional(),
   branchName: z.string().min(1).optional(),
   workspaceKind: z.nativeEnum(WorkspaceKind).optional(),
 });
@@ -70,9 +76,15 @@ function getInvocationId(request: { headers: Record<string, unknown> }): string 
 export async function workspaceRoutes(app: FastifyInstance) {
   const workspaceService = new WorkspaceService();
 
+  // Opaque owner identity for same-tab recovery storage; never authority to send a request.
+  app.get('/conflict-recovery-identity', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    return { actor: await requireTranslationOwner(request) } satisfies ConflictRecoveryIdentityResponse;
+  });
+
   // ── 错误处理钩子 ────────────────────────────────────────────────────────────
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler(async (error, request, reply) => {
     // ServiceError（业务错误）
     if (error instanceof ServiceError) {
       reply.code(error.statusCode);
@@ -95,6 +107,8 @@ export async function workspaceRoutes(app: FastifyInstance) {
         targetWorktreePath: error.targetWorktreePath,
         sourceWorkspaceId: error.sourceWorkspaceId,
         targetWorkspaceId: error.targetWorkspaceId,
+        resolutionContextToken: error.resolutionContextToken && isUserInput(request)
+          ? await authorizeConflictResolutionContext(error.resolutionContextToken, await requireTranslationOwner(request), prisma) : undefined,
       };
     }
 
@@ -150,6 +164,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
       const workspace = await workspaceService.create(
         request.params.taskId,
         {
+          clientSubmissionId: body.clientSubmissionId,
           branchName: body.branchName,
           workspaceKind: body.workspaceKind,
         }
@@ -252,6 +267,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     '/workspaces/:id/merge',
     async (request) => {
+      if (isUserInput(request)) await requireTranslationOwner(request);
       const body = mergeSchema.parse(request.body || {});
       const invocationId = getInvocationId(request) ?? undefined;
       const identity = await workspaceService.resolveInvocationMemberForWorkspace(request.params.id, invocationId);
@@ -323,6 +339,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     '/workspaces/:id/rebase',
     async (request) => {
+      if (isUserInput(request)) await requireTranslationOwner(request);
       await workspaceService.rebase(request.params.id);
       return { success: true };
     }
@@ -330,10 +347,25 @@ export async function workspaceRoutes(app: FastifyInstance) {
 
   // ── 获取工作空间 Git 操作状态 ──────────────────────────────────────────────
 
+  // Read-only recovery uses the original server proof to locate the actual target,
+  // including project directories and targets outside the receiving Session directory.
+  app.post<{ Params: { id: string } }>(
+    '/workspaces/:id/conflict-context',
+    async (request) => {
+      const actor = await requireTranslationOwner(request);
+      const input = z.object({ resolutionContextToken: z.string().min(1).max(256 * 1024) }).strict().parse(request.body);
+      return { resolutionContextToken: await refreshConflictResolutionContext(prisma, input.resolutionContextToken, request.params.id, actor) };
+    }
+  );
+
   app.get<{ Params: { id: string } }>(
     '/workspaces/:id/git-status',
     async (request) => {
-      return workspaceService.getGitStatus(request.params.id);
+      if (isUserInput(request)) await requireTranslationOwner(request);
+      const status = await workspaceService.getGitStatus(request.params.id);
+      if (status.resolutionContextToken) status.resolutionContextToken = isUserInput(request)
+        ? await authorizeConflictResolutionContext(status.resolutionContextToken, await requireTranslationOwner(request), prisma) : undefined;
+      return status;
     }
   );
 

@@ -1,3 +1,4 @@
+import type { TextBlockLifecycle } from '@agent-tower/shared';
 /**
  * 日志标准化类型系统
  * 参考 vibe-kanban Rust 实现
@@ -93,6 +94,10 @@ export interface NormalizedEntry {
   entryType: NormalizedEntryType
   content: string
   metadata?: {
+    deliveryId?: string;
+    textBlock?: TextBlockLifecycle
+    /** Recoverable ACP protocol identity, independent of canonical entry/block IDs. */
+    acpTextIdentity?: { sessionId: string; streamId: string; messageId: string }
     action?: ActionType
     toolName?: string
     toolId?: string

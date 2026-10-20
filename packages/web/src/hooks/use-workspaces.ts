@@ -65,7 +65,7 @@ export function useCreateWorkspace(taskId: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (data: { branchName?: string; workspaceKind?: WorkspaceKind }) =>
+    mutationFn: (data: { clientSubmissionId?: string; branchName?: string; workspaceKind?: WorkspaceKind }) =>
       apiClient.post<Workspace>(`/tasks/${taskId}/workspaces`, data),
     onSuccess: () => {
       // 创建 workspace 会同时影响 task 状态，所以两者都需要 invalidate

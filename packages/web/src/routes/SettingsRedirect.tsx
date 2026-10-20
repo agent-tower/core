@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom'
 import { useUIStore, type SettingsTab } from '@/stores/ui-store'
 import { useDesktopNavigate } from '@/lib/desktop-titlebar'
 
-const VALID_SETTINGS_TABS = new Set<string>(['general', 'agent-environment', 'agents', 'team', 'projects', 'notifications', 'mcp', 'agents-legacy'])
+const VALID_SETTINGS_TABS = new Set<string>(['general', 'translation', 'agent-environment', 'agents', 'team', 'projects', 'notifications', 'mcp', 'agents-legacy'])
 
 /** Legacy `/settings/:tab` entry point: opens the settings dialog and returns home. */
 export function SettingsRedirect() {

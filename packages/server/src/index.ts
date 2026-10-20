@@ -1,15 +1,11 @@
 import path from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
-import { buildApp } from './app.js';
 import { getDevPort } from '@agent-tower/shared/dev-port';
-import { getBundledPrismaCommand } from './utils/process-launch.js';
-import { preparePrismaCliEnv } from './utils/prisma-cli-env.js';
+import { synchronizeDatabaseSchema } from './utils/database-schema.js';
 import { installProcessErrorLogging, registerProcessShutdownHandler, writeErrorLog } from './utils/error-log.js';
 import { getOrCreateInternalApiToken, INTERNAL_API_TOKEN_ENV } from './utils/internal-api-token.js';
-import { destroyApplicationProcesses } from './core/container.js';
 import { createServerEntryShutdownCoordinator, finishFailedServerEntry, installServerEntryShutdownRequests } from './runtime/server-entry-shutdown.js';
 import type { ReferencedShutdownCoordinator } from './runtime/shutdown-coordinator.js';
 
@@ -33,33 +29,21 @@ process.env.AGENT_TOWER_PORT = String(PORT);
 process.env.AGENT_TOWER_URL = `http://127.0.0.1:${PORT}`;
 process.env[INTERNAL_API_TOKEN_ENV] = getOrCreateInternalApiToken(dataDir);
 
-// 确保数据库 schema 与当前版本一致
-const schemaPath = path.resolve(__dirname, '../prisma/schema.prisma');
-const prisma = getBundledPrismaCommand(__dirname);
-try {
-  execFileSync(prisma.command, [...prisma.args, 'db', 'push', '--skip-generate', `--schema=${schemaPath}`], {
-    stdio: 'pipe',
-    env: preparePrismaCliEnv(dataDir, dbPath),
-  });
-} catch (err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.error('Failed to initialize dev database:', msg);
-  writeErrorLog({
-    level: 'error',
-    source: 'server.index.ensureDatabase',
-    message: 'Failed to initialize dev database',
-    error: err,
-    metadata: {
-      dbPath,
-      schemaPath,
-    },
-  }, { dataDir });
-  // No application owner has been created before this synchronous bootstrap.
-  // An IPC parent would keep exitCode-only failures alive indefinitely.
-  process.exit(1);
-}
-
 async function main() {
+  // Keep the application singleton and worker imports behind schema validation.
+  const schemaPath = path.resolve(__dirname, '../prisma/schema.prisma');
+  try {
+    await synchronizeDatabaseSchema({ dataDir, dbPath, schemaPath, entryDir: __dirname });
+  } catch (err) {
+    writeErrorLog({
+      level: 'error', source: 'server.index.ensureDatabase',
+      message: 'Failed to initialize dev database', error: err,
+      metadata: { dbPath, schemaPath, stdout: (err as { stdout?: string }).stdout, stderr: (err as { stderr?: string }).stderr },
+    }, { dataDir });
+    throw err;
+  }
+  const { buildApp } = await import('./app.js');
+  const { destroyApplicationProcesses } = await import('./core/container.js');
   let app: Awaited<ReturnType<typeof buildApp>> | undefined;
 
   // 优雅关闭处理。Fastify 的 onClose hook 失败后不会再次执行，因此在

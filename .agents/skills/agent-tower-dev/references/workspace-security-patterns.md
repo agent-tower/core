@@ -38,6 +38,15 @@
 - Access Cookie 名称在请求时按规范化绝对 data dir 派生，不按端口或模块加载时的环境缓存。仅兼容当前实例名称和旧 `agent-tower-access`；preview 过滤需识别完整合法名称族。
 - 使用 `utils/error-log.ts:writeErrorLog()` 并沿脱敏边界传递上下文；不能将 token、cookie、prompt、Provider secret、Agent credential 或 TeamRun identity 放进诊断日志。
 
+## 翻译配置与外发边界
+
+- `routes/translations.ts` 提供配置、草稿测试及 Session/房间 overlay/retry；团队共享任务输入位于 `routes/team-runs.ts`，用户投递沿 MessageDeliveryService 接入任务、独立对话和 TeamRun。配置默认关闭，只有合格正文取得翻译资格；不开放任意来源或私聊翻译接口，来源读取和投递动作分别核验当前实体权限。
+- 配置和草稿测试只允许现有 owner 入口及经过校验的 internal credential，明确拒绝托管 Agent credential。密码关闭时沿现有普通 owner 访问，不额外要求 browser cookie；非 internal 写请求继续复用 `hasValidSameOriginSignal()`，缺失 Origin 不意味着 internal 身份。不能信任 body 中的成员或身份声明。
+- Key 只在独立服务端配置和执行内存中使用；普通配置读取只返回 `keyConfigured`，attempt 快照不得包含 Key。错误响应及日志不得携带请求正文、模板展开值、Authorization、第三方响应体或含凭据 URL；Zod 错误也不能回显用户提交的凭据。
+- 外发只使用服务端保存或 owner 草稿中的 HTTP(S) endpoint，禁止 URL 内凭据、query/fragment 和 redirect，不能附带浏览器 Cookie、Agent/internal token。允许 owner 配置本地翻译服务不构成逐条消息自带 URL 的代理能力。
+- 代码、路径、链接目标、提及、图片引用及资源/交付指令留在本地，译文必须通过 token 和结构完整性校验再还原。只有待译自然语言、随机保护 token 与必要翻译指令进入 HTTP；不发送历史、系统运行规则、thinking、工具内容或附件全文。保护不是授权替代物，调用方仍需先取得有类型的合格正文。
+- 草稿测试不保存配置、不创建 runtime/消息/派活，并与普通翻译共用全局请求额度；独立身份和实例等待数均受限。关闭与 app shutdown 要取消并等待请求句柄退出，不能因 abort 已发出就转借仍未退出请求的额度。
+
 ## Preview Gateway
 
 入口为 `services/preview.service.ts`、`preview-runtime-manager.ts`、`routes/previews.ts` 和 `packages/web/src/hooks/use-previews.ts`。新 UI 通过 `/api/previews/:workspaceId/sessions` 获取独立根路径 gateway；`/view/:workspaceId` 是旧客户端兼容路径。
@@ -65,6 +74,7 @@
 | Workspace / Git | `packages/server/src/services/__tests__/workspace.service.test.ts`、`packages/server/src/git/worktree.manager.test.ts`、`packages/server/src/routes/__tests__/workspaces.test.ts` / `git.test.ts` |
 | 后台服务 / 身份 | `packages/server/src/services/__tests__/workspace-background-service.service.test.ts`、`workspace-background-process-manager.test.ts`，以及 routes / mcp 的 `__tests__/workspace-services.test.ts` |
 | 认证 / Cookie | `packages/server/src/middleware/__tests__/access-auth.test.ts`、`tunnel-auth.test.ts`、`agent-cli-local-only.test.ts`、`packages/server/src/services/__tests__/access-auth.service.test.ts` |
+| 翻译权限 / 脱敏 / 外发 | `packages/server/src/routes/__tests__/translations.test.ts`、`packages/server/src/services/__tests__/translation-settings.service.test.ts`、`translation.service.test.ts`、`translation-queue.test.ts`、`translation-protection.test.ts`、`translation-client.test.ts` |
 | Preview | `packages/server/src/routes/__tests__/previews.integration.test.ts`、`packages/server/src/services/__tests__/preview-runtime-manager.test.ts` / `preview.service.test.ts` |
 | 文件 / 交付 | `packages/server/src/routes/__tests__/files.test.ts`、`filesystem.test.ts`、`attachments.test.ts`、`sessions-visualizations.test.ts`，以及 `packages/server/src/services/__tests__/agent-artifact.service.test.ts` |
 

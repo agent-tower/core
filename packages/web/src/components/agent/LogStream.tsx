@@ -1,4 +1,16 @@
-import { useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
+import { mergeDeliveryLogs } from '@/lib/delivery-logs'
+import { useQuery } from '@tanstack/react-query'
+import { apiClient } from '@/lib/api-client'
+import { useOutgoingSubmissions } from '@/hooks/outgoing-submissions'
+import { OutgoingSubmissionBubble } from './OutgoingSubmissionBubble'
+import { createContext, useContext, useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
+import type { MessageDelivery, SessionTranslationOverlay } from '@agent-tower/shared'
+import { matchingTranslation, useSessionTranslations } from '@/hooks/use-session-translations'
+import { useTranslationReveals } from '@/hooks/translation-reveals'
+import { useTranslationSettings } from '@/hooks/use-translation-settings'
+import { useMessageDeliveries } from '@/hooks/use-message-deliveries'
+import { MessageDeliveryAttachments, MessageDeliveryFeedback } from './MessageDeliveryStatus'
+import { TranslationComparison, TranslationReveal, TranslationStatus } from './TranslationComparison'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { shouldAdjustScrollPositionOnItemSizeChange } from './scrollAnchoring'
 import { type LogEntry, LogType, type ToolStatus } from '@agent-tower/shared/log-adapter'
@@ -20,6 +32,8 @@ import 'streamdown/styles.css'
 
 interface LogStreamProps {
   logs: LogEntry[]
+  /** Actual transcript Session, never inferred from the task or UI turn key. */
+  sessionId?: string
   /** Whether the latest agent turn is still producing output. Omit to keep legacy rendering. */
   isOutputActive?: boolean
   /** Precise end time for the latest turn observed in this client. */
@@ -445,16 +459,29 @@ const MarkdownMessage = memo(({
 MarkdownMessage.displayName = 'MarkdownMessage'
 
 // 1. User Message — 右对齐聊天气泡
-const UserMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler }) => (
+function HistoricalDelivery({ id }: { id: string }) {
+  const { data } = useQuery({ queryKey: ['message-delivery', id], queryFn: () => apiClient.get<MessageDelivery>(`/message-deliveries/${encodeURIComponent(id)}`), staleTime: Infinity })
+  return data ? <MessageDeliveryFeedback delivery={data} /> : null
+}
+const DeliveryContext = createContext<ReadonlyMap<string, MessageDelivery>>(new Map())
+const UserMessage = memo(({ content, deliveryId, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl }: { content: string; deliveryId?: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler }) => {
+  const delivery = useContext(DeliveryContext).get(deliveryId ?? '')
+  return (
   <div className={compact ? 'flex justify-end mb-4 mt-2' : 'flex justify-end mb-8 mt-4'}>
-    {/* ds-allow radius: 用户消息气泡，与 DS MessageBubble 同为 rounded-2xl */}
-    <div className={`relative bg-foreground/[0.08] text-foreground rounded-2xl rounded-tr-sm max-w-[85%] min-w-0 leading-relaxed ${
-      compact ? 'px-3.5 py-2.5 text-[13px]' : 'px-5 py-3.5 text-sm'
-    }`}>
-      <MarkdownMessage content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
+    <div className="flex max-w-[85%] min-w-0 flex-col items-end">
+      {/* ds-allow radius: 用户消息气泡，与 DS MessageBubble 同为 rounded-2xl */}
+      <div className={`relative bg-foreground/[0.08] text-foreground rounded-2xl rounded-tr-sm max-w-full min-w-0 leading-relaxed ${
+        compact ? 'px-3.5 py-2.5 text-[13px]' : 'px-5 py-3.5 text-sm'
+      }`}>
+        <MarkdownMessage content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
+        {delivery && <MessageDeliveryAttachments delivery={delivery} />}
+      </div>
+      {deliveryId && <div className="mt-1 max-w-full px-0.5" data-message-feedback>
+        {delivery ? <MessageDeliveryFeedback delivery={delivery} /> : <HistoricalDelivery id={deliveryId} />}
+      </div>}
     </div>
   </div>
-))
+)})
 UserMessage.displayName = 'UserMessage'
 
 // 2. Thinking — 沉浸式折叠区块，视觉降权但内容可达
@@ -780,11 +807,24 @@ const AgentText = memo(({ content, compact }: { content: string; compact?: boole
 AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
-const AssistantMessage = memo(({ content, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }: { content: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler; onOpenVisualization?: OpenVisualizationHandler; downloadSessionId?: string }) => (
-  <div className={`text-foreground min-w-0 ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
-    <MarkdownMessage className="space-y-2" content={content} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} onOpenVisualization={onOpenVisualization} downloadSessionId={downloadSessionId} />
+const TranslationContext = createContext<{ sessionId: string; overlays: SessionTranslationOverlay[]; enabled: boolean; claimReveal: (version: string) => boolean } | null>(null)
+
+const AssistantMessage = memo(({ log, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }: { log: LogEntry; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler; onOpenVisualization?: OpenVisualizationHandler; downloadSessionId?: string }) => {
+  const context = useContext(TranslationContext)
+  const overlay = context ? matchingTranslation(context.sessionId, log, context.overlays) : undefined
+  const translated = overlay?.state === 'SUCCESS' && overlay.translatedText !== null
+  const displayed = translated ? overlay.translatedText! : log.content
+  const markdownProps = { workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }
+  return <div className={`relative text-foreground min-w-0 ${overlay && overlay.state !== 'NOT_REQUIRED' ? 'pr-8' : ''} ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
+    <TranslationReveal claim={context?.claimReveal} version={translated ? `${overlay.sourceId}:${overlay.sourceRevision}` : null}><MarkdownMessage className="space-y-2" content={displayed} {...markdownProps} /></TranslationReveal>
+    {overlay && overlay.state !== 'NOT_REQUIRED' && <div className="absolute bottom-0 right-0">
+      <TranslationComparison key={`${overlay.sourceId}:${overlay.sourceRevision}`} original={log.content}>
+        <MarkdownMessage content={log.content} {...markdownProps} />
+        <TranslationStatus overlay={overlay} enabled={context?.enabled ?? false} />
+      </TranslationComparison>
+    </div>}
   </div>
-))
+})
 AssistantMessage.displayName = 'AssistantMessage'
 
 // 6. Error Message — 红色提示条
@@ -969,7 +1009,7 @@ function renderItem(
 
   switch (log.type) {
     case LogType.User:
-      return <UserMessage content={log.content} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
+      return <UserMessage content={log.content} deliveryId={log.deliveryId} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
 
     case LogType.Tool:
       return <ToolBlock type={log.type} title={log.title || 'Tool'} content={log.content} />
@@ -978,7 +1018,7 @@ function renderItem(
       return <ToolBlock type={log.type} title="Action" content={log.content} />
 
     case LogType.Assistant:
-      return <AssistantMessage content={log.content} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} onOpenVisualization={onOpenVisualization} downloadSessionId={downloadSessionId} />
+      return <AssistantMessage log={log} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} onOpenVisualization={onOpenVisualization} downloadSessionId={downloadSessionId} />
 
     case LogType.Info:
             // 跳过 token_usage_info 条目的文本渲染（已由 TokenUsageIndicator 聚合展示）
@@ -1003,7 +1043,32 @@ function renderItem(
 
 const OVERSCAN_ROWS = 8
 
-export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
+const SessionLogStream = forwardRef<LogStreamHandle, LogStreamProps & { sessionId: string }>(function SessionLogStream(props, ref) {
+  const translations = useSessionTranslations(props.sessionId, props.logs)
+  const settings = useTranslationSettings()
+  const claimReveal = useTranslationReveals(props.sessionId,
+    props.logs.filter(log => log.textBlock).map(log => ({ id: JSON.stringify([log.textBlock!.turnId, log.textBlock!.blockId]), revision: log.textBlock!.sourceRevision, streaming: log.textBlock!.state === 'OPEN' })),
+    translations.overlays.map(row => ({ id: JSON.stringify([row.turnId, row.blockId]), version: `${row.sourceId}:${row.sourceRevision}`, state: row.state })), props.logs.some(log => log.type !== LogType.Cursor))
+  const context = useMemo(() => ({ sessionId: props.sessionId, overlays: translations.overlays,
+    claimReveal, enabled: !settings.isError && settings.data?.enabled === true }), [props.sessionId, settings.data?.enabled, settings.isError, translations.overlays, claimReveal])
+  const pending = useMessageDeliveries(props.sessionId)
+  const sent = useMessageDeliveries(props.sessionId, 'sent')
+  const deliveries = useMemo(() => new Map([...pending.data?.pages.flatMap(p => p.items) ?? [], ...sent.data?.pages.flatMap(p => p.items) ?? []].sort((a, b) => a.revision - b.revision).map(item => [item.id, item])), [pending.data, sent.data])
+  const acknowledged = useMemo(() => [...deliveries.values()].map(item => item.clientSubmissionId), [deliveries])
+  const outgoing = useOutgoingSubmissions(props.sessionId, acknowledged)
+  const logs = useMemo(() => mergeDeliveryLogs(props.logs, [...deliveries.values()]), [props.logs, deliveries])
+  return <TranslationContext.Provider value={context}><DeliveryContext.Provider value={deliveries}>
+    <LogStreamView {...props} logs={logs} ref={ref} />
+    {outgoing.filter(item => ![...deliveries.values()].some(delivery => delivery.clientSubmissionId === item.id)).map(item => <OutgoingSubmissionBubble key={item.id} item={item} />)}
+    {pending.hasNextPage && <button type="button" className="text-xs underline" onClick={() => void pending.fetchNextPage()}>Load more</button>}
+  </DeliveryContext.Provider></TranslationContext.Provider>
+})
+
+export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(function LogStream(props, ref) {
+  return props.sessionId ? <SessionLogStream key={props.sessionId} {...props} sessionId={props.sessionId} ref={ref} /> : <LogStreamView {...props} ref={ref} />
+})
+
+const LogStreamView = forwardRef<LogStreamHandle, LogStreamProps>(
   function LogStream({ logs, isOutputActive, lastExitAt, onUserToggleDetails, scrollElementRef, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }, ref) {
     const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null)
     const [scrollResolved, setScrollResolved] = useState(false)
@@ -1145,6 +1210,7 @@ export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(
           return (
             <UserMessage
               content={row.log.content}
+              deliveryId={row.log.deliveryId}
               workingDir={workingDir}
               onOpenWorkspaceFile={onOpenWorkspaceFile}
               onOpenPreviewUrl={onOpenPreviewUrl}

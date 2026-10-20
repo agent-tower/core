@@ -69,7 +69,8 @@ description: 当前代码库中公开的主要 REST 端点。
 | `DELETE` | `/api/workspaces/:id` | 删除 workspace |
 | `POST` | `/api/workspaces/:id/open-editor` | 在 IDE 中打开 workspace |
 | `POST` | `/api/workspaces/:id/rebase` | rebase workspace |
-| `GET` | `/api/workspaces/:id/git-status` | 获取 Git 状态 |
+| `GET` | `/api/workspaces/:id/git-status` | 获取所查目录的 Git 状态 |
+| `POST` | `/api/workspaces/:id/conflict-context` | owner 只读核验原冲突证明并换签；id 为原 source workspace |
 | `POST` | `/api/workspaces/:id/abort-operation` | 中止当前 Git 操作 |
 | `POST` | `/api/workspaces/:id/reactivate` | 唤醒休眠 workspace |
 | `POST` | `/api/system/cleanup` | 清理可清理的 workspace |
@@ -288,3 +289,77 @@ Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspac
 | `ANY` | `/view/:workspaceId/*` | 兼容旧客户端的同源代理子路径 |
 
 预览目标只允许 loopback HTTP/HTTPS 地址。新客户端通过 session API 获取独立根路径 gateway URL；远程 session 会按 workspace 复用独立 Quick Tunnel。session API 使用现有 access password/tunnel session，gateway URL 使用短期 bootstrap token 换取独立 HttpOnly Cookie，并支持 HTTP 与 WebSocket 转发。`/view/:workspaceId` 仅用于兼容。
+
+
+## 会话正文翻译（服务端入口）
+
+翻译默认关闭。设置、会话正文对照、任务/独立对话用户投递、PUBLIC Agent 房间正文对照、现有团队用户投递及 TEAM_INITIAL 新建团队首条原子投递均已接入。
+
+| Method | Path | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/translation-settings` | 独立翻译配置，凭据仅返回是否设置 |
+| `PUT` | `/api/translation-settings` | `expectedRevision` 与凭据 `keep/replace/clear` 保存意图 |
+| `POST` | `/api/translation-settings/test` | 临时草稿测试，不保存配置或历史 |
+| `GET` | `/api/sessions/:id/translations` | `blockIds` 逗号分隔（最多 100），可选 `cursor`；返回 `items/nextCursor`，每页最多 100 条 |
+| `POST` | `/api/sessions/:id/translations/:sourceId/retry` | `{expectedRevision}`；仅已有可重试来源，采用当前配置 |
+
+这些入口要求应用 owner 或受信任 internal 身份，拒绝托管 Agent credential；密码关闭时沿用正常本地 owner 入口，写操作保留同源校验。来源读取还要求会话属于可读的未删除对话或未删除任务/未归档项目，内部自动提交会话不提供翻译 overlay。
+
+只翻译新增或继续更新的 `assistant_message` 正文。原文即时输出，遇工具/思考或显式块完成时提交已结束的正文；尾块在轮结束时提交。思考、工具参数、工具结果和静态历史不进入翻译。会话停止不会删除已完成且仍可读的展示翻译。
+
+`translation:invalidated` 是独立 Socket 通知，仅携带 `sessionId/sourceId/sourceRevision/overlayRevision`，发给订阅该 Session 且认证有效的 owner 浏览器。通知只用于失效缓存；重连和刷新使用 REST 补读，按 revision 丢弃旧响应。译文不写入原文 patch 流，也不表示 Agent 活跃或触发派活。
+
+## PUBLIC Agent 房间正文翻译
+
+启用时新增的 PUBLIC Agent 房间消息自动登记。历史未标记消息不回填；关闭期间的消息不在重新开启后补翻。译文仅用于桌面/移动房间展示，不改变原始消息、派活或 Agent 输入。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/team-runs/:id/translations?messageIds=a,b` | 已加载消息ID去重后最多100；返回完整权威summary快照，有界preview |
+| `GET` | `/api/team-runs/:id/messages/:messageId/translation` | 单条完整原文/译文及版本 |
+| `POST` | `/api/team-runs/:id/translations/:sourceId/retry` | `{expectedRevision}`为sourceRevision；仅已有可重试项，使用当前配置 |
+
+这些入口拒绝Agent credential，遵循owner/internal及同源写入策略。缺失、不合格或失去资格的消息不返回summary项；单条缺失404，版本冲突409，容量不足429。读取不会创建来源或重翻。已成功且仍可读的历史译文不因关闭或换语言消失。
+
+独立 `translation:invalidated` 房间分支仅含 `teamRunId/messageId/sourceId/sourceRevision/overlayRevision`；只作为失效信号，重连与刷新以REST为权威，不承诺退订重订后完全没有多余旧信号。
+
+## 用户输入投递与翻译
+
+浏览器的 `POST /api/sessions/:id/start`、`POST /api/sessions/:id/message`、`POST /api/conversations` 和 `POST /api/conversations/:id/message` 返回 **202 MessageDeliverySubmission**：`operationId`、`destinationId`、`sessionId`、`state` 和 `delivery`。202 只确认意图已持久化；仅 `delivery.state === SENT` 表示 Driver 输入提交已确认。Conversation 客户端再按 destinationId 获取实体。
+
+用户输入使用稳定 UUID `clientSubmissionId`，相同请求重试返回同一操作，修改内容复用该 ID 返回409。创建 Workspace 和待启动 Session 也接受该字段，各自保存创建 fingerprint。附件用 `attachmentIds` 独立传递；Task 原字段及用户日志保留原文。普通 Agent MCP 输入沿用原调用路径；可信 internal 的用户输入需显式携带 `x-agent-tower-input-origin: user`。
+
+每个投递通道最多64条未决意图、实例最多512条。仅 SENT/CANCELLED 释放额度，翻译失败、暂停和 UNKNOWN 继续占额。超限返回429、`code: DELIVERY_QUEUE_FULL`、`accepted: false`；首次 Conversation/Session 的创建随事务回滚。相同已有 UUID 先恢复操作，不受容量拒绝。
+
+AI 冲突处理的 owner 请求使用 `systemAction: resolve_conflicts` 和 Git 冲突响应/只读 `git-status` 返回的 `resolutionContextToken`。服务端验证当前调用身份、真实操作目标和用户选定 Session（须属于源或目标 workspace），重建并冻结完整指令；客户端 message/附件不会成为系统指令，也不会外发翻译。相同已受理 UUID 先返回原操作，签名过期或进程重启不改变冻结正文；不同目的/意图复用 UUID 返回409。
+
+未受理的签名会随进程密钥或有效期失效，返回409 `CONFLICT_CONTEXT_INVALID`、`accepted: false`。保留原提交 UUID/输入；对带持久恢复证明且仍未改变的 merge/rebase 现场，使用 `POST /api/workspaces/:sourceWorkspaceId/conflict-context`，body 为 `{ "resolutionContextToken": "原 token" }`，返回 `{ "resolutionContextToken": "新 token" }`。该 owner 接口按证明定位真实 worktree/项目目录，核验原身份、源/目标实体及目录、HEAD、Git 操作元数据和未合并 index，保留原源/目标 Session 范围，不写 Git、不重做操作、不创建投递。普通 `git-status` 仅返回所查目录状态，不能用于推断跨目录接收权限。旧版 token 无持久证明、服务端恢复密钥丢失或现场/实体变化时仍返回409，不能恢复未经核实的历史授权。若已 abort 且无可验证资料，须用户检查目标/策略后明确重新执行原 Git 操作；刷新、核验和重试发送不会执行 Git，再次操作成功则无需发送冲突指令。旧的无签名系统请求仅能从仍存在的真实现场只读重建。
+
+| Method | Path | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/message-deliveries?scopeType=SESSION&scopeId=:id` | 每页最多100；亦支持 CONVERSATION、TEAM_TASK（scopeId 为 taskId），cursor 取 nextCursor；filter=pending 排除历史，filter=sent 倒序查询已发送 |
+| `GET` | `/api/message-deliveries/:id` | 恢复单个输入操作、原文和冻结的实际发送正文 |
+| `POST` | `/api/message-deliveries/:id/actions` | action、expectedRevision 和 UUID actionId；重复相同 actionId 幂等，过期 revision 返回409 |
+
+动作包括 retry_translation、send_original、retry_delivery、cancel。DELIVERY_UNKNOWN 不自动重投，只能在核对未发送后 confirm_not_sent，或 end_unknown 结束操作（Agent 可能已收到）。ACCEPTED 仅为 ConversationTurn 入队，可在 dispatch claim 前取消；DISPATCHING 不能宣称撤回。关闭/重开翻译设置不自动释放之前的暂停项。
+
+查询和人工动作仅允许现有 owner 策略，拒绝 Agent credential；写入校验同源。
+
+## 团队用户投递与固定任务输入
+
+owner 浏览器及显式 internal-user 的 `POST /api/team-runs/:id/messages` 必须携带 UUID `clientSubmissionId`，返回202、`operationId/state/destination/delivery`，destination.kind 为 TEAM_ROOM，无 sessionId。相同 UUID/请求恢复同操作，修改正文、附件或路由复用 UUID 返回409。有效团队 Agent 保留201发布路径；solo或无效Agent不回退为用户。
+
+202表示受理，TEAM_USER 的 SENT表示唯一房间消息、全部派活、共享输入引用和发布凭据已原子提交；CONFIRM仍待批准，不表示成员已运行。附件与mentions/target及实际收件人在受理时冻结。前序正文或共享任务输入失败会阻塞同Task通道，关闭开关不自动发送原文。
+
+| Method | Path | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/team-runs/:id/task-inputs` | owner共享输入摘要，每页最多50，cursor取nextCursor |
+| `GET` | `/api/team-runs/:id/task-inputs/:snapshotId` | owner单项完整原文/已采纳正文 |
+| `POST` | `/api/team-runs/:id/task-inputs/:snapshotId/actions` | `{action,expectedRevision,actionId}`；action为retry_translation或send_original |
+| `GET` | `/api/team-runs/:id/task-input?view=preview\|full` | 仅当前团队Agent credential，固定本次Invocation的ACCEPTED快照 |
+
+MCP `get_team_task_input` 与Agent输入GET使用同一快照；Task后续编辑不改变该Invocation的prompt或输入。无引用的历史Invocation返回409 `LEGACY_TASK_INPUT_NOT_SNAPSHOTTED`，不补造历史。普通get_task/get_context继续提供Task元数据。Task编辑不触发翻译，仅实际投递/调度消费者登记共享版本。
+
+owner房间消息显示用户原文，可按需对照冻结的实际发送正文；Agent房间读取和prompt仅使用实际投递文本，不包含owner原文副本。团队 `message-delivery:invalidated` 仅携带 taskId/teamRunId/operationId/deliveryRevision，限当前认证和订阅有效的owner；刷新/重连以REST为权威。待发重试应保留原UUID/body，并与新草稿及附件分离。
+
+新建团队的 `POST /api/tasks/:taskId/team-runs` 同样要求稳定 UUID `clientSubmissionId`。无等待时返回201真实 TeamRun；等待翻译或前序时返回202 MessageDeliverySubmission，目的为 `TEAM_ROOM_PENDING`（taskId/plannedTeamRunId），不含 destinationId。pending 不提前创建团队、成员或派活；SENT 后目的转为 `TEAM_ROOM`，才可使用真实 teamRunId 导航。首条采纳正文同时作为固定任务输入，不重复翻译；等待期间 Task 原字段变化会推进来源版本并撤销旧尝试。

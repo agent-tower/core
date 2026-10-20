@@ -118,7 +118,7 @@ Agent 专属配置使用结构化解析：Codex TOML、Claude JSON 及现有标�
 
 ## Parser、Projector 与快照
 
-CLI 的 Claude Code、Cursor Agent、Codex 使用结构化 Parser；Gemini CLI 保留 raw stdout。ACP 的所有 Agent 走通用 Projector，ACP stdout 是协议流，不进入普通终端日志。
+CLI 的 Claude Code、Cursor Agent、Codex、Gemini CLI 使用结构化 Parser（Gemini stream-json fixture 核实到 0.27.0）。ACP 的所有 Agent 走通用 Projector，ACP stdout 是协议流，不进入普通终端日志。
 
 `OutputParser` 实现 `processData()`、`finish()`，可选逻辑完成/失败回调；`onPatch`/`onSessionId` 属于 MsgStore。Parser 缓冲不完整 frame，使用 `output/utils/patch.ts` 生成 RFC 6902 patch。Pipeline 先保存 raw stdout，再解析；捕获 parser 异常，退出/destroy 只 finish 一次，并在解除 patch listener 前 flush 残留输出。
 
@@ -127,6 +127,16 @@ ACP `tool_call_update` 是按 `toolCallId` 合并的局部更新，省略字段�
 ACP 帧和工具输出保持有界：帧预算统一取 Definition 的 `maxStdoutFrameBytes`（缺省 1 MiB），**原始行与 transform 后的重序列化帧共用同一预算**，不要在 ProcessManager 内另设常量卡口覆盖它。内联回传大工具结果的 adapter（base64 图片/音频）必须同时声明更大预算**和** `transformStdoutFrame`（`agents/tool-frame-normalizer.ts`）：只提高预算不生效，只做 transform 则大帧仍会撞默认上限。Projector 的 terminal delta 使用有界首尾预览。不要让完成事件重新把完整聚合输出塞回 snapshot。
 
 MsgStore 的 patch `seq` 单调递增，restore 后继续计数；淘汰旧 patch 时折叠入 base snapshot。使用导出的 `sessionMsgStoreManager`。改 `NormalizedEntry` 时同时检查 `shared/log-adapter.ts`、前端日志/Todo/Token 与 `useNormalizedLogs` 的 seq-gap/reconnect 恢复。
+
+`MsgStore.textBlocks` 在规范化提交处维护每轮/每子流的 assistant 正文身份及 OPEN/SEALED/ABORTED 生命周期，Parser/Projector 负责真实语义切换和显式完成信号。Coordinator 的共同 MsgStore listener 转发规范化 patch，并按 seq 忽略 Driver 重复转发；生命周期专用 metadata patch 不刷新 runtime 活跃时间或 TeamRun 心跳。原文摘要修订复用 blockId 并升 sourceRevision；ACP load 回放保留既有身份，回放新增历史不获得翻译 admission 标记。Claude CLI 的 parent_tool_use_id 和 ACP 的 _meta.claudeCode.parentToolUseId 隔离子流；没有协议 chunk ID 时不按内容去重 delta。
+
+ACP 的 `metadata.acpTextIdentity` 持久保存原生 session/message 和子流，角色由 entryType 区分，与 canonical entry/block ID 独立；连续段及跨轮复用 ID 按出现次序关联。load 的 main `user_message_chunk` 结束所有投影子流的段，child 的用户边界只结束自身段；用户原文仍由本地日志负责，不因回放重复新增。reconciler 先为完整回放预留精确协议 occurrence 和旧 acp-message/thought ID，再执行内容兜底，避免更早的新增历史抢占后续已知身份。兜底游标按原生 session/子流隔离，只由语义匹配推进，精确关联不推进该游标（新增历史可能位于本地列表末尾）；保留真正的 ID 漂移恢复，不跨子流按相同内容关联。load 修订保留原 block 身份、升版本并去掉 admission 标记，不补翻历史。
+
+Claude 已知旧 message 的完整摘要在 tracker 的历史修订作用域更新自身节点，不能推进当前流或清空新消息正文指针。普通 OPEN 正文 delta 只写 content；metadata 仅在生命周期或 admission 变化时更新，保持 MsgStore 的 replace 历史压缩。
+
+正文块边界经 SessionManager 的同一 snapshot writer 持久化，随后 TranslationService 异步消费带 translationEpoch 的检查点。只有启用期间观察到的内容取得标记，静态历史不扫描；OPEN 不外发。observer/翻译故障不能抛回 Parser/Driver，重启从持久标记补偿。译文只写 TranslationSource/Attempt，独立 translation:invalidated 通知和 owner overlay REST 提供展示/恢复，禁止将译文送回 session:patch、心跳或派活。任务/独立对话与 TeamRun 用户实际投递均接入 MessageDeliveryService，PUBLIC Agent 群消息沿持久资格登记展示来源；完整维护入口见 `docs/conversation-language-translation.md`。
+
+翻译 claim 必须区分当前版本、已过期版本和真实删除。内存修订可能早于持久检查点；此时只取消旧版本，不能写 deletedAt，后续检查点仍更新同一 Source。只有来源身份消失或所属实体不可读才 tombstone。
 
 `session:patch` 只标记快照 dirty，运行中低频 checkpoint；所有 Session 的快照和 external session ID 经串行 writer 写入，终态及替换边界等待强制 flush。保持相同快照去重，避免每个 patch 都写库或连续输出导致 debounce 永远不落盘。
 
@@ -155,3 +165,17 @@ pnpm exec vitest run packages/server/src/services/mcp-config.service.test.ts
 ```
 
 生命周期改动重点验证 early data/exit、启动失败、停止与重发并发、取消/权限失效、旧连接迟到事件、清理失败重试和 snapshot restore。Provider 改动验证有效连接、继承环境冲突和脱敏；用户可见行为变化同步 `packages/docs-site/docs/guide/sessions.md`、`packages/docs-site/docs/integrations/agent-providers.md` 或对应 API 文档。
+
+## 用户投递 receipt 与执行队列
+
+MessageDeliveryService 取得 DISPATCHING claim 后才允许 SessionManager start/send；用户日志保留 originalText 和稳定 `user:<deliveryId>`，Driver 收到转换后的正文及本地附件/规则。任务追问沿用取消/续跑，直接重试沿用 TaskService.retry，但副作用延后至门禁通过。
+
+`InputSubmissionObserver` 只由实际输入传输调用：普通 CLI 使用 BaseExecutor raw duplex 的 child stdin write ACK；Claude native 包住初始化/权限之后的 user body write；Codex native 包住 turn/start 写 ACK（RPC response 不替代 ACK）；ACP 在真实 SDK NDJSON writable 的 session/prompt 帧下游 write 完成后确认。started、Model result、runTurn 返回、ConversationTurn RUNNING 均不证明已发送。raw EOF 由发送位置单独关闭，快速 result 不可再次 end stdin。
+
+只有 receipt 确认事务冻结 actualSentText/SENT。写入和落库之间无法保证外部 exactly-once：WRITING 后失败或重启进入 DELIVERY_UNKNOWN，禁止自动重放。CLAIMED 且未触及输入写入的受控失败可重试；已 SENT 的执行失败只走原执行队列。ConversationTurn 始终由 SessionManager 唯一 pump 执行；取出后先等上一轮结束，再按 deliveryRevision claim；取消/关闭可撤销尚未 claim 的 ACCEPTED，恢复期间的 kick 必须保留。
+
+验证入口：`services/__tests__/message-delivery.integration.test.ts`（临时 SQLite/受控 HTTP/实际 SessionManager→CLI），`runtime/__tests__/cli-driver-submission.test.ts`（真实 BaseExecutor/wrapper），`acp-driver-submission.test.ts`（真实 SDK），以及 Claude/Codex control 测试。测试中的长期 fixture 必须有 teardown。
+
+claim 的 settle 闭包仅在输入传输结束后登记 generation 绑定补偿；确认与恢复落库连续失败时，worker 以退避和有界批次重试状态恢复到 UNKNOWN，不重新写正文，不扫描正常等待 ACK 的 DISPATCHING。异 runtime/turn/transport 的确认拒绝本身不能把正常 ACK 标记未知。Claude 图片分段及 Codex 图片提取必须保留文本的首尾空白、换行和片段间空白，不能 trim 后仍以未 trim 正文冻结 actualSentText。Codex 仅删除已接受为本地图片输入的具体 Markdown 匹配；远程/缺失图片引用和重复匹配之间的正文保持原样。
+
+翻译 HTTP 的固定 system 格式协议负责告知上游逐字保留 opaque 保护占位符与边界；用户仍只配置一份共用翻译模板。该协议不能替代 restore 的严格结构校验，损坏的译文仍拒绝投递/展示。

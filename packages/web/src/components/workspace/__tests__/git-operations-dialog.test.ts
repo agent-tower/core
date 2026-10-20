@@ -17,6 +17,7 @@ describe('GitOperationsDialog conflict details', () => {
       targetWorkspaceId: 'main-ws',
       sourceWorktreePath: '/tmp/child-ws',
       targetWorktreePath: '/tmp/main-ws',
+      resolutionContextToken: 'server-signed-context',
     })
 
     expect(getConflictDetails(error)).toEqual({
@@ -30,6 +31,7 @@ describe('GitOperationsDialog conflict details', () => {
       targetWorkspaceId: 'main-ws',
       sourceWorktreePath: '/tmp/child-ws',
       targetWorktreePath: '/tmp/main-ws',
+      resolutionContextToken: 'server-signed-context',
     })
   })
 

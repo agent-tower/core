@@ -9,7 +9,7 @@ import { copyProjectFiles } from './copy-files.service.js';
 import { defaultTeamLockService, type TeamLockService } from './team-lock.service.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Prisma } from '@prisma/client';
@@ -43,6 +43,7 @@ import {
 } from './workspace-kind.js';
 import type { WorkspaceBackgroundService } from './workspace-background-service.service.js';
 import { defaultWorkspaceLifecycleBarrier } from './workspace-lifecycle-barrier.js';
+import { issueConflictResolutionContext, observeLiveConflict } from './conflict-resolution-context.js';
 import { stopSessionForResourceCleanup, withSessionResourceCleanup } from './session-resource-cleanup.js';
 
 const DEFAULT_IDLE_THRESHOLD_HOURS = 24;
@@ -92,6 +93,7 @@ const activeBackgroundServiceWhere = {
 const finalChildWorkspaceStatuses = [WorkspaceStatus.MERGED, WorkspaceStatus.ABANDONED];
 
 export interface CreateWorkspaceOptions {
+  clientSubmissionId?: string;
   branchName?: string;
   branchNamePrefix?: string;
   startPoint?: string | null;
@@ -232,7 +234,7 @@ type MergeableComputationContext = {
   activeServiceWorkspaceIds: Set<string>;
 };
 
-type NormalizedCreateWorkspaceOptions = Required<CreateWorkspaceOptions>;
+type NormalizedCreateWorkspaceOptions = Required<Omit<CreateWorkspaceOptions, 'clientSubmissionId'>>;
 
 type MergeLockTarget = {
   key: string;
@@ -413,6 +415,7 @@ function resultSummary(
 }
 
 export class WorkspaceService {
+  private static readonly creationClaims = new Map<string, Promise<WorkspaceWithVisibleSessions>>();
   private static readonly mainWorkspaceClaims = new Map<string, Promise<WorkspaceWithVisibleSessions>>();
   private static readonly dedicatedWorkspaceClaims = new Map<string, Promise<WorkspaceWithVisibleSessions>>();
   private sessionService = getSessionManager();
@@ -1317,8 +1320,32 @@ export class WorkspaceService {
    * - 创建后自动将关联 Task 状态改为 IN_PROGRESS
    * - 失败时回滚已创建的数据库记录
    */
-  async create(taskId: string, branchNameOrOptions?: string | CreateWorkspaceOptions) {
+  async create(taskId: string, branchNameOrOptions?: string | CreateWorkspaceOptions): Promise<WorkspaceWithVisibleSessions> {
     const options = normalizeCreateOptions(branchNameOrOptions);
+    const submissionId = typeof branchNameOrOptions === 'object' ? branchNameOrOptions.clientSubmissionId : undefined;
+    if (!submissionId) return this.createWorkspace(taskId, options);
+    const fingerprint = createHash('sha256').update(JSON.stringify([taskId, options])).digest('hex');
+    const inFlight = WorkspaceService.creationClaims.get(submissionId);
+    if (inFlight) {
+      await inFlight;
+      return this.create(taskId, branchNameOrOptions);
+    }
+    const claim = (async () => {
+      const existing = await prisma.workspace.findUnique({ where: { creationSubmissionId: submissionId }, include: { sessions: visibleSessionsFilter, task: { include: { project: true } } } });
+      if (existing) {
+        ensureTaskNotDeleted(existing.task);
+        ensureProjectIsMutable(existing.task.project, 'create workspaces');
+        if (existing.creationFingerprint !== fingerprint) throw new ServiceError('Workspace submission changed', 'DELIVERY_CONFLICT', 409);
+        if (!getWorkspaceWorkingDir(existing)) throw new ServiceError('Workspace creation requires reconciliation', 'WORKSPACE_CREATION_INTERRUPTED', 409);
+        return existing;
+      }
+      return this.createWorkspace(taskId, { ...options, reuseInactive: false }, { creationSubmissionId: submissionId, creationFingerprint: fingerprint });
+    })();
+    WorkspaceService.creationClaims.set(submissionId, claim);
+    try { return await claim; } finally { if (WorkspaceService.creationClaims.get(submissionId) === claim) WorkspaceService.creationClaims.delete(submissionId); }
+  }
+
+  private async createWorkspace(taskId: string, options: NormalizedCreateWorkspaceOptions, creation: { creationSubmissionId?: string; creationFingerprint?: string } = {}): Promise<WorkspaceWithVisibleSessions> {
     const task = await prisma.task.findUnique({
       where: { id: taskId },
       include: { project: true, teamRun: { select: { id: true } } },
@@ -1331,7 +1358,7 @@ export class WorkspaceService {
     ensureProjectIsMutable(task.project, 'create workspaces');
 
     if (options.workspaceKind === WorkspaceKind.MAIN_DIRECTORY) {
-      return this.createMainDirectoryWorkspace(taskId, task, options);
+      return this.createMainDirectoryWorkspace(taskId, task, options, creation);
     }
 
     await ensureProjectSupportsWorktrees(task.project, 'create a worktree workspace');
@@ -1362,6 +1389,7 @@ export class WorkspaceService {
     // 先在数据库创建记录以获取 ID（用于生成默认分支名）
     const workspace = await prisma.workspace.create({
       data: {
+        ...creation,
         taskId,
         parentWorkspaceId: options.parentWorkspaceId,
         ownerMemberId: options.ownerMemberId,
@@ -1437,6 +1465,7 @@ export class WorkspaceService {
     taskId: string,
     task: Prisma.TaskGetPayload<{ include: { project: true; teamRun: { select: { id: true } } } }>,
     options: NormalizedCreateWorkspaceOptions,
+    creation: { creationSubmissionId?: string; creationFingerprint?: string } = {},
   ): Promise<WorkspaceWithVisibleSessions> {
     if (task.teamRun) {
       throw new ServiceError(
@@ -1469,6 +1498,7 @@ export class WorkspaceService {
 
     const workspace = await prisma.workspace.create({
       data: {
+        ...creation,
         taskId,
         branchName: '',
         baseBranch: currentBranch ?? task.project.mainBranch,
@@ -2031,10 +2061,29 @@ export class WorkspaceService {
     this.assertWorktreeWorkspace(workspace);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-    await worktreeManager.rebase(
-      workspace.worktreePath,
-      this.getBaseBranch(workspace)
-    );
+    try {
+      await worktreeManager.rebase(workspace.worktreePath, this.getBaseBranch(workspace));
+    } catch (error) {
+      if (error instanceof MergeConflictError) {
+        error.targetWorkspaceId = workspace.id;
+        error.targetWorktreePath = workspace.worktreePath;
+        this.sealConflictContext(error, workspace);
+      }
+      throw error;
+    }
+  }
+
+  private sealConflictContext(error: MergeConflictError, workspace: WorkspaceWithTaskProject) {
+    error.sourceWorkspaceId ??= workspace.id;
+    error.sourceWorktreePath ??= workspace.worktreePath;
+    error.sourceBranch ??= workspace.branchName;
+    error.targetBranch ??= this.getBaseBranch(workspace);
+    error.targetWorktreePath ??= workspace.task.project.repoPath;
+    error.resolutionContextToken = issueConflictResolutionContext({
+      projectId: workspace.task.projectId, sourceWorkspaceBranch: workspace.branchName, sourceWorkspaceId: error.sourceWorkspaceId, targetWorkspaceId: error.targetWorkspaceId,
+      sourceWorktreePath: error.sourceWorktreePath, targetWorktreePath: error.targetWorktreePath, sourceBranch: error.sourceBranch, targetBranch: error.targetBranch,
+      conflictedFiles: error.conflictedFiles, conflictOp: error.conflictOp, mergeAborted: error.mergeAborted, mergeStrategy: error.mergeStrategy,
+    });
   }
 
   /**
@@ -2061,10 +2110,14 @@ export class WorkspaceService {
     }
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-    return worktreeManager.getGitOperationStatus(
+    const status = await worktreeManager.getGitOperationStatus(
       workspace.worktreePath,
       this.getBaseBranch(workspace)
     );
+    if (status.conflictOp && status.conflictedFiles.length) {
+      status.resolutionContextToken = await observeLiveConflict(prisma, workspace.id);
+    }
+    return status;
   }
 
   /**
@@ -2339,6 +2392,7 @@ export class WorkspaceService {
         error.targetWorktreePath ??= parentWorkspace.worktreePath;
         error.sourceBranch ??= workspace.branchName;
         error.targetBranch ??= parentWorkspace.branchName;
+        this.sealConflictContext(error, workspace);
       }
       throw error;
     }
@@ -2368,6 +2422,7 @@ export class WorkspaceService {
         error.sourceWorktreePath ??= workspace.worktreePath;
         error.sourceBranch ??= workspace.branchName;
         error.targetBranch ??= targetBranch;
+        this.sealConflictContext(error, workspace);
       }
       throw error;
     }

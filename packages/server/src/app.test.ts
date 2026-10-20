@@ -9,6 +9,10 @@ const memberHeartbeatStartMock = vi.fn()
 const memberHeartbeatStopMock = vi.fn()
 const backgroundReconcileMock = vi.fn(async () => {})
 const backgroundShutdownMock = vi.fn(async () => {})
+const deliveryStartMock = vi.fn(async () => {})
+const deliveryShutdownMock = vi.fn(async () => {})
+const translationStartMock = vi.fn(async () => {})
+const translationShutdownMock = vi.fn(async () => {})
 
 vi.mock('./routes/index.js', () => ({
   registerRoutes: vi.fn(async () => {}),
@@ -28,7 +32,14 @@ vi.mock('./services/workspace.service.js', () => ({
 vi.mock('./core/container.js', () => ({
   getEventBus: vi.fn(() => ({ on: vi.fn(), emit: vi.fn(), off: vi.fn() })),
   getSessionManager: vi.fn(() => ({ startConversationQueue: vi.fn(async () => {}), stopConversationQueue: vi.fn() })),
-  destroyApplicationProcesses: vi.fn(async () => backgroundShutdownMock()),
+  destroyApplicationProcesses: vi.fn(async () => {
+    await Promise.all([backgroundShutdownMock(), translationShutdownMock(), deliveryShutdownMock()])
+  }),
+  getMessageDeliveryService: vi.fn(() => ({ start: deliveryStartMock, shutdown: deliveryShutdownMock })),
+  getTranslationService: vi.fn(() => ({
+    start: translationStartMock,
+    shutdown: translationShutdownMock,
+  })),
   getTaskCleanupService: vi.fn(() => ({
     start: taskCleanupStartMock,
     stop: taskCleanupStopMock,
@@ -67,10 +78,19 @@ vi.mock('./services/database-maintenance.service.js', () => ({
 }))
 
 import { buildApp } from './app.js'
+import { initializeSocket } from './socket/index.js'
 
 const originalWebDir = process.env.AGENT_TOWER_WEB_DIR
 
 let tempWebDir = ''
+
+beforeEach(() => {
+  deliveryStartMock.mockClear()
+  deliveryShutdownMock.mockClear()
+  translationStartMock.mockClear()
+  translationShutdownMock.mockClear()
+  vi.mocked(initializeSocket).mockClear()
+})
 
 describe('buildApp static web hosting', () => {
   beforeEach(() => {
@@ -110,6 +130,8 @@ describe('buildApp static web hosting', () => {
     }
     expect(backgroundReconcileMock).toHaveBeenCalledOnce()
     expect(backgroundShutdownMock).toHaveBeenCalledOnce()
+    expect(translationStartMock).toHaveBeenCalledOnce()
+    expect(translationShutdownMock).toHaveBeenCalledOnce()
   })
 
   it('serves the web app when AGENT_TOWER_WEB_DIR is set', async () => {
@@ -156,4 +178,59 @@ describe('buildApp startup services', () => {
     await app.close()
     expect(taskCleanupStopMock).toHaveBeenCalledTimes(1)
   })
+
+  it('waits for translation recovery before starting socket and other app services', async () => {
+    let finishRecovery!: () => void
+    const recovery = new Promise<void>((resolve) => { finishRecovery = resolve })
+    translationStartMock.mockImplementationOnce(() => recovery)
+    const app = await buildApp()
+    const ready = app.ready()
+
+    try {
+      await vi.waitFor(() => expect(translationStartMock).toHaveBeenCalledOnce())
+      expect(initializeSocket).not.toHaveBeenCalled()
+      expect(taskCleanupStartMock).not.toHaveBeenCalled()
+      finishRecovery()
+      await expect(ready).resolves.toBe(app)
+      expect(initializeSocket).toHaveBeenCalledOnce()
+    } finally {
+      finishRecovery()
+      await ready
+      await app.close()
+    }
+    expect(translationShutdownMock).toHaveBeenCalledOnce()
+  })
+
+  it('waits for translation request cleanup before completing app close', async () => {
+    let finishCleanup!: () => void
+    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve })
+    translationShutdownMock.mockImplementationOnce(() => cleanup)
+    const app = await buildApp()
+    await app.ready()
+    let closed = false
+    const closing = app.close().then(() => { closed = true })
+
+    try {
+      await vi.waitFor(() => expect(translationShutdownMock).toHaveBeenCalledOnce())
+      expect(closed).toBe(false)
+    } finally {
+      finishCleanup()
+      await closing
+    }
+    expect(closed).toBe(true)
+  })
+  it('waits for durable delivery reconciliation before Socket and conversation scheduling', async () => {
+    let finish!: () => void
+    deliveryStartMock.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    const app = await buildApp()
+    const ready = app.ready()
+    try {
+      await vi.waitFor(() => expect(deliveryStartMock).toHaveBeenCalledOnce())
+      expect(translationStartMock).toHaveBeenCalledOnce()
+      expect(initializeSocket).not.toHaveBeenCalled()
+      finish(); await ready
+    } finally { finish(); await ready; await app.close() }
+    expect(deliveryShutdownMock).toHaveBeenCalledOnce()
+  })
+
 })

@@ -18,6 +18,39 @@ function setup() {
 }
 
 describe('AcpProjector', () => {
+  it('uses main user chunks to separate every stream without adding user log entries', () => {
+    const { msgStore, projector } = setup();
+    msgStore.textBlocks.begin('turn');
+    const send = (sessionUpdate: string, text: string, child = false) => projector.project(notification({
+      sessionUpdate, messageId: 'reused', content: { type: 'text', text },
+      ...(child ? { _meta: { claudeCode: { parentToolUseId: 'child' } } } : {}),
+    }));
+    send('user_message_chunk', 'User 1');
+    send('agent_message_chunk', 'Main 1'); send('agent_message_chunk', ' tail');
+    send('agent_message_chunk', 'Child 1', true);
+    send('user_message_chunk', 'User 2'); send('user_message_chunk', ' continued');
+    send('agent_message_chunk', 'Main 2'); send('agent_message_chunk', ' tail');
+    send('agent_message_chunk', 'Child 2', true);
+    const entries = msgStore.getSnapshot().entries;
+    expect(entries.map(e => e.content)).toEqual(['Main 1 tail', 'Child 1', 'Main 2 tail', 'Child 2']);
+    expect(entries.slice(0, 2).every(e => e.metadata!.textBlock!.state === 'SEALED')).toBe(true);
+    expect(entries.slice(2).every(e => e.metadata!.textBlock!.state === 'OPEN')).toBe(true);
+    expect(new Set(entries.map(e => e.metadata!.textBlock!.blockId)).size).toBe(4);
+    msgStore.textBlocks.end();
+  });
+
+  it('keeps child user boundaries local to the child stream', () => {
+    const { msgStore, projector } = setup();
+    const send = (sessionUpdate: string, text: string, child = false) => projector.project(notification({
+      sessionUpdate, messageId: 'reused', content: { type: 'text', text },
+      ...(child ? { _meta: { claudeCode: { parentToolUseId: 'child' } } } : {}),
+    }));
+    send('agent_message_chunk', 'Main'); send('agent_message_chunk', 'Child 1', true);
+    send('user_message_chunk', 'Child user', true);
+    send('agent_message_chunk', ' tail'); send('agent_message_chunk', 'Child 2', true);
+    expect(msgStore.getSnapshot().entries.map(e => e.content)).toEqual(['Main tail', 'Child 1', 'Child 2']);
+  });
+
   it('projects streaming messages without duplicating entries', () => {
     const { msgStore, projector } = setup();
 

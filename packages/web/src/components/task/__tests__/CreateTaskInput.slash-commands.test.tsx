@@ -129,6 +129,18 @@ beforeEach(() => {
 })
 
 describe('CreateTaskInput Provider availability', () => {
+  it('clears a Conversation snapshot immediately and preserves the newer draft when its request fails', async () => {
+    let reject!: (error: Error) => void
+    const onSubmit = vi.fn(() => new Promise<void>((_resolve, fail) => { reject = fail }))
+    render({ variant: 'conversation', onSubmit })
+    const textarea = await setTextareaValue('Submitted original')
+    await pressEnter(textarea)
+    expect(textarea.value).toBe('')
+    await setTextareaValue('New draft')
+    await act(async () => reject(new Error('response lost')))
+    expect(textarea.value).toBe('New draft')
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
   it.each(['task', 'conversation'] as const)('shows blocked %s Providers and prevents keyboard selection or submission', async variant => {
     const reason = 'Remove sandbox_workspace_write from Codex advanced settings before using automatic sandbox approval.'
     const { onSubmit, rerender } = render({

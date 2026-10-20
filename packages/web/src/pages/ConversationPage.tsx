@@ -1,3 +1,5 @@
+import { useOutgoingSubmissions } from '@/hooks/outgoing-submissions'
+import { OutgoingSubmissionBubble } from '@/components/agent/OutgoingSubmissionBubble'
 import { getProviderStartIssue } from '@/components/provider/provider-draft'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
@@ -340,8 +342,13 @@ export function ConversationPage() {
 
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [step, setStep] = useState<StartStep>('idle')
-  const [error, setError] = useState<string | null>(null)
   const [isCreatingNew, setIsCreatingNew] = useState(false)
+  const [creationEpoch, setCreationEpoch] = useState(0)
+  const creationView = useRef({ conversationId, isCreatingNew, epoch: creationEpoch })
+  if (creationView.current.conversationId !== conversationId || creationView.current.isCreatingNew !== isCreatingNew || creationView.current.epoch !== creationEpoch) {
+    creationView.current = { conversationId, isCreatingNew, epoch: creationEpoch }
+  }
+  const currentCreationView = creationView.current
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   const [conversationReadTimes, setConversationReadTimes] = useState<ConversationReadTimes>(loadConversationReadTimes)
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set())
@@ -349,6 +356,7 @@ export function ConversationPage() {
   const { data: conversations = [], isLoading: isListLoading } = useConversations()
   const { data: selectedConversation, isLoading: isConversationLoading } = useConversation(conversationId)
   const { data: providersData = [], isLoading: isProvidersLoading } = useProviders()
+  const outgoing = useOutgoingSubmissions('new-conversation')
   const createConversation = useCreateConversation()
   const sendConversationMessage = useSendConversationMessage()
   const stopConversation = useStopConversation()
@@ -497,7 +505,10 @@ export function ConversationPage() {
   ])
 
   const handleNewConversation = () => {
-    setError(null)
+    // Opening the same route is a new intent, even while its old POST is pending.
+    creationView.current = { conversationId: undefined, isCreatingNew: true, epoch: creationView.current.epoch + 1 }
+    setCreationEpoch(creationView.current.epoch)
+    setStep('idle')
     setIsCreatingNew(true)
     navigate('/conversations')
   }
@@ -521,28 +532,29 @@ export function ConversationPage() {
     if (!data.providerId || !data.title.trim() || step !== 'idle') return
 
     setStep('starting-session')
-    setError(null)
+    const submittedView = creationView.current
     try {
       const conversation = await createConversation.mutateAsync({
         prompt: data.title.trim(),
         providerId: data.providerId,
         attachmentIds: data.attachmentIds,
       })
-      setSelectedProviderId(data.providerId)
-      setIsCreatingNew(false)
-      navigate(`/conversations/${conversation.id}`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('Failed to start. Please try again.'))
+      if (creationView.current === submittedView) {
+        setSelectedProviderId(data.providerId)
+        setIsCreatingNew(false)
+        navigate(`/conversations/${conversation.id}`)
+      }
     } finally {
-      setStep('idle')
+      if (creationView.current === submittedView) setStep('idle')
     }
   }
 
   const handleSend = async (input: AgentSessionSendInput) => {
-    if (!activeConversation || !input.message.trim() || sendConversationMessage.isPending) return
+    if (!activeConversation || (!input.message.trim() && !input.attachmentIds?.length) || sendConversationMessage.isPending) return
 
     await sendConversationMessage.mutateAsync({
       id: activeConversation.id,
+      sessionId: activeConversation.sessionId,
       message: input.message,
       providerId: input.providerId || selectedProviderId || undefined,
       attachmentIds: input.attachmentIds,
@@ -723,10 +735,12 @@ export function ConversationPage() {
           ) : !activeConversation ? (
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 pb-[10vh] md:px-8">
               <div className="w-full max-w-2xl animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
+                {outgoing.map(item => <OutgoingSubmissionBubble key={item.id} item={item} onConversationCreated={id => { if (creationView.current === currentCreationView) navigate(`/conversations/${id}`) }} />)}
                 <h1 className="mb-8 max-w-full break-words text-center text-[26px] leading-tight tracking-tight text-foreground">
                   {t('需要我帮你做点什么？')}
                 </h1>
                 <CreateTaskInput
+                  key={creationEpoch}
                   variant="conversation"
                   projects={[]}
                   providers={startProviderOptions}
@@ -741,11 +755,6 @@ export function ConversationPage() {
                     await handleStartConversation({ title, providerId, attachmentIds })
                   }}
                 />
-                {error ? (
-                  <div className="mt-3 rounded-lg border border-destructive/15 bg-destructive/5 px-3 py-2 text-sm text-destructive-ink">
-                    {error}
-                  </div>
-                ) : null}
               </div>
             </div>
           ) : (

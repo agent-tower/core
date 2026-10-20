@@ -68,6 +68,7 @@ export class MergeConflictError extends GitError {
   targetWorktreePath?: string;
   sourceWorkspaceId?: string;
   targetWorkspaceId?: string;
+  resolutionContextToken?: string;
 
   constructor(
     conflictedFiles: string[],
@@ -129,6 +130,7 @@ export class BranchesDivergedError extends GitError {
 export interface ExecGitOptions {
   timeout?: number;
   optionalLocks?: boolean;
+  signal?: AbortSignal;
 }
 
 /**
@@ -145,6 +147,7 @@ export async function execGit(
       cwd: repoPath,
       maxBuffer: 10 * 1024 * 1024, // 10 MB
       timeout: options?.timeout ?? 30_000,
+      signal: options?.signal,
       env: options?.optionalLocks === false
         ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
         : undefined,

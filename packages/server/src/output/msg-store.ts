@@ -3,6 +3,8 @@
  * Keeps patches/stdout history and snapshot reconstruction.
  */
 
+import { TextBlockTracker } from './text-block-tracker.js';
+import type { NormalizedEntry } from './types.js';
 import jsonpatch from 'fast-json-patch';
 import type { Operation } from 'fast-json-patch';
 import { EntryIndexProvider } from './utils/patch.js';
@@ -67,6 +69,20 @@ export class MsgStore {
   // patches that arrived between SUBSCRIBE join and snapshot fetch.
   private patchSeq = 0;
   private patchListeners = new Set<(patch: JsonPatch, seq: number) => void>();
+
+  readonly textBlocks = new TextBlockTracker(this);
+  private blockListeners = new Set<(entry: NormalizedEntry) => void>();
+
+  onTextBlock(handler: (entry: NormalizedEntry) => void): () => void {
+    this.blockListeners.add(handler);
+    return () => this.blockListeners.delete(handler);
+  }
+
+  notifyTextBlock(entry: NormalizedEntry): void {
+    for (const handler of this.blockListeners) {
+      try { handler(structuredClone(entry)); } catch { /* Observers cannot fail runtime output. */ }
+    }
+  }
 
   constructor() {
     this.entryIndex = new EntryIndexProvider();
@@ -151,8 +167,10 @@ export class MsgStore {
    * @returns 分配给此 patch 的 seq（调用方需要直接 emit 时使用）
    */
   pushPatch(patch: JsonPatch): number {
+    this.textBlocks.decorate(patch);
     const seq = ++this.patchSeq;
     this.push({ type: 'patch', patch, seq });
+    this.textBlocks.committed();
     return seq;
   }
 

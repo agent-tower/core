@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,6 +33,19 @@ let SessionManager: typeof import('../session-manager.js').SessionManager;
 let TEAM_ROOM_REPLY_REMINDER: string;
 let createMcpServer: typeof import('../../mcp/server.js').createMcpServer;
 let teamRunRoutes: typeof import('../../routes/team-runs.js').teamRunRoutes;
+let accessAuthHook: typeof import('../../middleware/access-auth.js').accessAuthHook;
+let agentCredentials: typeof import('../../utils/agent-api-credential.js');
+const credentialByInvocation = new Map<string, string>();
+function agentHeaders(invocationId: string) {
+  const credential = credentialByInvocation.get(invocationId);
+  if (!credential) throw new Error('Fixture credential missing');
+  return { 'x-agent-tower-invocation-id': invocationId, 'x-agent-tower-agent-credential': credential };
+}
+function authenticatedApp() {
+  const app = Fastify({ logger: false });
+  app.addHook('onRequest', accessAuthHook);
+  return app;
+}
 let workRequestSequence = 0;
 let gitRepoSequence = 0;
 
@@ -321,7 +335,7 @@ async function createRunningInvocation(options: {
       },
     });
 
-  return prisma.agentInvocation.create({
+  const invocation = await prisma.agentInvocation.create({
     data: {
       teamRunId: options.teamRunId,
       workRequestId: options.workRequestId,
@@ -332,6 +346,8 @@ async function createRunningInvocation(options: {
       roomReplyReminderCount: options.roomReplyReminderCount ?? 0,
     },
   });
+  credentialByInvocation.set(invocation.id, agentCredentials.createAgentApiCredential({ sessionId: session.id, invocationId: invocation.id }));
+  return invocation;
 }
 
 describe('TeamReconcilerService', () => {
@@ -361,13 +377,18 @@ describe('TeamReconcilerService', () => {
     TeamReconcilerService = reconcilerModule.TeamReconcilerService;
     SessionManager = sessionManagerModule.SessionManager;
     TEAM_ROOM_REPLY_REMINDER = reconcilerModule.TEAM_ROOM_REPLY_REMINDER;
-    createMcpServer = mcpServerModule.createMcpServer;
+    accessAuthHook = (await import('../../middleware/access-auth.js')).accessAuthHook;
+    agentCredentials = await import('../../utils/agent-api-credential.js');
+    createMcpServer = (baseUrl, options = {}) => mcpServerModule.createMcpServer(baseUrl, {
+      ...options, agentApiCredential: options.agentApiCredential ?? credentialByInvocation.get(process.env.AGENT_TOWER_INVOCATION_ID ?? ''),
+    });
     teamRunRoutes = teamRunRoutesModule.teamRunRoutes;
   });
 
   beforeEach(async () => {
     vi.restoreAllMocks();
     workRequestSequence = 0;
+    credentialByInvocation.clear(); agentCredentials.clearAgentApiCredentials();
     lockService = new TeamLockService();
     scheduler = createSchedulerMock(lockService);
     messenger = createMessengerMock();
@@ -2378,7 +2399,7 @@ describe('TeamReconcilerService', () => {
       memberId: members[0]!.id,
       workspaceId: workspace.id,
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       process.env.AGENT_TOWER_TEAM_RUN_ID = teamRun.id;
@@ -2539,7 +2560,7 @@ describe('TeamReconcilerService', () => {
       where: { id: agentMessage.id },
       data: { createdAt: new Date('2026-01-01T00:00:02.000Z') },
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       setTeamRunEnv({
@@ -2559,7 +2580,7 @@ describe('TeamReconcilerService', () => {
       const restListResponse = await app.inject({
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages`,
-        headers: { 'x-agent-tower-invocation-id': invocation.id },
+        headers: agentHeaders(invocation.id),
       });
       expect(restListResponse.statusCode).toBe(200);
       const restList = restListResponse.json() as Array<{
@@ -2588,7 +2609,7 @@ describe('TeamReconcilerService', () => {
       const limitedRestListResponse = await app.inject({
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages?limit=1`,
-        headers: { 'x-agent-tower-invocation-id': invocation.id },
+        headers: agentHeaders(invocation.id),
       });
       expect(limitedRestListResponse.statusCode).toBe(200);
       expect((limitedRestListResponse.json() as Array<{ id: string }>).map((message) => message.id)).toEqual([
@@ -2598,7 +2619,7 @@ describe('TeamReconcilerService', () => {
       const restDetailResponse = await app.inject({
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages/${roomMessage.id}`,
-        headers: { 'x-agent-tower-invocation-id': invocation.id },
+        headers: agentHeaders(invocation.id),
       });
       expect(restDetailResponse.statusCode).toBe(200);
       expect(restDetailResponse.json()).toMatchObject({
@@ -2751,7 +2772,7 @@ describe('TeamReconcilerService', () => {
       where: { id: workspace.id },
       data: { worktreePath: contextWorktreePath },
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       delete process.env.AGENT_TOWER_TEAM_RUN_ID;
@@ -2771,7 +2792,7 @@ describe('TeamReconcilerService', () => {
       let server;
       try {
         process.chdir(contextWorktreePath);
-        server = await createMcpServer(`http://127.0.0.1:${address.port}`);
+        server = await createMcpServer(`http://127.0.0.1:${address.port}`, { agentApiCredential: credentialByInvocation.get(invocation.id) });
       } finally {
         process.chdir(previousCwd);
       }
@@ -2869,7 +2890,7 @@ describe('TeamReconcilerService', () => {
       workspaceId: workspace.id,
       status: 'RUNNING',
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       setTeamRunEnv({
@@ -2955,7 +2976,7 @@ describe('TeamReconcilerService', () => {
       workspaceId: workspace.id,
     });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       setTeamRunEnv({
@@ -3058,7 +3079,7 @@ describe('TeamReconcilerService', () => {
       memberId: observer.id,
       workspaceId: workspace.id,
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api' });
@@ -3084,7 +3105,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/members/${recipient.id}/work-requests`,
         headers: {
-          'x-agent-tower-invocation-id': observerInvocation.id,
+          ...agentHeaders(observerInvocation.id),
         },
       });
       expect(spoofedQueueResponse.statusCode).toBe(403);
@@ -3095,7 +3116,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/members/${observer.id}/work-requests`,
         headers: {
-          'x-agent-tower-invocation-id': observerInvocation.id,
+          ...agentHeaders(observerInvocation.id),
         },
       });
       expect(ownQueueResponse.statusCode).toBe(200);
@@ -3123,7 +3144,7 @@ describe('TeamReconcilerService', () => {
       memberId: actualSender.id,
       workspaceId: workspace.id,
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api' });
@@ -3132,7 +3153,7 @@ describe('TeamReconcilerService', () => {
         method: 'POST',
         url: `/api/team-runs/${teamRun.id}/private-messages`,
         headers: {
-          'x-agent-tower-invocation-id': senderInvocation.id,
+          ...agentHeaders(senderInvocation.id),
         },
         payload: {
           content: 'Forged sender should be ignored',
@@ -3201,14 +3222,14 @@ describe('TeamReconcilerService', () => {
       workspaceId: workspace.id,
       status: 'COMPLETED',
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api' });
       const response = await app.inject({
         method: 'POST',
         url: `/api/team-runs/${teamRun.id}/private-messages`,
-        headers: { 'x-agent-tower-invocation-id': senderInvocation.id },
+        headers: agentHeaders(senderInvocation.id),
         payload: {
           content: 'Late terminal private result',
           recipientMemberIds: [members[1]!.id],
@@ -3264,7 +3285,7 @@ describe('TeamReconcilerService', () => {
       memberId: observer.id,
       workspaceId: workspace.id,
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api' });
@@ -3308,7 +3329,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages`,
         headers: {
-          'x-agent-tower-invocation-id': senderInvocation.id,
+          ...agentHeaders(senderInvocation.id),
         },
       });
       expect(senderMessagesResponse.statusCode).toBe(200);
@@ -3318,7 +3339,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages`,
         headers: {
-          'x-agent-tower-invocation-id': recipientInvocation.id,
+          ...agentHeaders(recipientInvocation.id),
         },
       });
       expect(recipientMessagesResponse.statusCode).toBe(200);
@@ -3328,7 +3349,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages`,
         headers: {
-          'x-agent-tower-invocation-id': observerInvocation.id,
+          ...agentHeaders(observerInvocation.id),
         },
       });
       expect(observerMessagesResponse.statusCode).toBe(200);
@@ -3338,7 +3359,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/members/${observer.id}/work-requests`,
         headers: {
-          'x-agent-tower-invocation-id': observerInvocation.id,
+          ...agentHeaders(observerInvocation.id),
         },
       });
       expect(observerQueueResponse.statusCode).toBe(200);
@@ -3398,7 +3419,7 @@ describe('TeamReconcilerService', () => {
       memberId: observer.id,
       workspaceId: workspace.id,
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api' });
@@ -3458,7 +3479,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages`,
         headers: {
-          'x-agent-tower-invocation-id': senderInvocation.id,
+          ...agentHeaders(senderInvocation.id),
         },
       });
       expect(senderMessagesResponse.statusCode).toBe(200);
@@ -3468,7 +3489,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages`,
         headers: {
-          'x-agent-tower-invocation-id': recipientInvocation.id,
+          ...agentHeaders(recipientInvocation.id),
         },
       });
       expect(recipientMessagesResponse.statusCode).toBe(200);
@@ -3478,7 +3499,7 @@ describe('TeamReconcilerService', () => {
         method: 'GET',
         url: `/api/team-runs/${teamRun.id}/messages`,
         headers: {
-          'x-agent-tower-invocation-id': observerInvocation.id,
+          ...agentHeaders(observerInvocation.id),
         },
       });
       expect(observerMessagesResponse.statusCode).toBe(200);
@@ -3560,7 +3581,7 @@ describe('TeamReconcilerService', () => {
       where: { id: revokedInvocation.id },
       data: { dispatchRevokedAt: new Date() },
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api' });
@@ -3727,7 +3748,7 @@ describe('TeamReconcilerService', () => {
       status: 'PENDING_APPROVAL',
       instruction: 'Other pending approval',
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       setTeamRunEnv({
@@ -3853,10 +3874,10 @@ describe('TeamReconcilerService', () => {
     }
   });
 
-  it('posts MCP room messages as user when bound TeamRun identity is partial', async () => {
+  it('rejects MCP room messages when bound TeamRun identity is partial', async () => {
     const previousEnv = captureTeamRunEnv();
     const { teamRun, members } = await createFixture({ memberCount: 2 });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       setTeamRunEnv({
@@ -3879,38 +3900,15 @@ describe('TeamReconcilerService', () => {
 
       await server.connect(serverTransport);
       await client.connect(clientTransport);
-      let messageId: string;
       try {
-        const result = await client.callTool({
-          name: 'post_room_message',
-          arguments: {
-            content: 'Partial identity should not be sent as agent',
-          },
-        });
-
-        expect(result.isError, getMcpToolText(result)).not.toBe(true);
-        const message = JSON.parse(getMcpToolText(result)) as {
-          id: string;
-          senderType: string;
-          senderId: string | null;
-          senderInvocationId: string | null;
-        };
-        messageId = message.id;
-        expect(message).toMatchObject({
-          senderType: 'user',
-          senderId: null,
-          senderInvocationId: null,
-        });
+        const result = await client.callTool({ name: 'post_room_message', arguments: { content: 'Partial identity cannot fall back to user' } });
+        expect(result.isError).toBe(true);
+        expect(getMcpToolText(result)).toContain('Current TeamRun invocation identity is required');
+        expect(await prisma.roomMessage.count({ where: { teamRunId: teamRun.id } })).toBe(0);
       } finally {
         await client.close();
         await server.close();
       }
-
-      await expect(prisma.roomMessage.findUnique({ where: { id: messageId! } })).resolves.toMatchObject({
-        senderType: 'user',
-        senderId: null,
-        senderInvocationId: null,
-      });
     } finally {
       restoreTeamRunEnv(previousEnv);
       await app.close();
@@ -3941,7 +3939,7 @@ describe('TeamReconcilerService', () => {
       status: 'QUEUED',
       instruction: 'Manager cancellable request',
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api' });
@@ -4010,7 +4008,7 @@ describe('TeamReconcilerService', () => {
       instruction: 'Other rejection',
     });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4072,7 +4070,7 @@ describe('TeamReconcilerService', () => {
     routeScheduler.stopMemberWork = vi.fn(async () => {
       throw new Error('stop failed');
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4109,57 +4107,42 @@ describe('TeamReconcilerService', () => {
     }
   });
 
-  it('auto-starts USER_MESSAGES work when a user posts an unmentioned room message', async () => {
-    const { teamRun, members } = await createFixture({
-      memberCount: 2,
-      teamRunMode: 'AUTO',
-      triggerPolicies: ['USER_MESSAGES', 'MENTION_ONLY'],
-    });
+  it('accepts user input before publication and starts USER_MESSAGES work only after atomic publication', async () => {
+    const { teamRun, members } = await createFixture({ memberCount: 2, teamRunMode: 'AUTO', triggerPolicies: ['USER_MESSAGES', 'MENTION_ONLY'] });
     const routeScheduler = createRouteSchedulerMock();
-    const startedTeamRunIds: string[] = [];
-    routeScheduler.startNextSessions = vi.fn(async (teamRunId: string) => {
-      startedTeamRunIds.push(teamRunId);
-      return await new Promise<AgentInvocation[]>(() => {});
+    // The controlled scheduler never creates a real Session or starts a provider.
+    routeScheduler.startNextSessions = vi.fn(async () => []);
+    const container = await import('../../core/container.js');
+    const { TranslationSettingsService } = await import('../translation-settings.service.js');
+    const { TranslationService } = await import('../translation.service.js');
+    const { TeamTaskInputService } = await import('../team-task-input.service.js');
+    const { MessageDeliveryService } = await import('../message-delivery.service.js');
+    const { TeamRunService } = await import('../team-run.service.js');
+    const settings = new TranslationSettingsService(prisma);
+    const translation = new TranslationService(prisma, settings);
+    const inputs = new TeamTaskInputService(prisma, translation);
+    const delivery = new MessageDeliveryService(prisma, settings, translation, { setMessageDeliveryService: vi.fn() } as never, {
+      taskInputs: inputs, teamRuns: new TeamRunService(),
+      roomPublished: async id => { await routeScheduler.startNextSessions(id); },
     });
-    const app = Fastify({ logger: false });
-
+    vi.spyOn(container, 'getMessageDeliveryService').mockReturnValue(delivery);
+    const app = authenticatedApp();
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: `/api/team-runs/${teamRun.id}/messages`,
-        payload: {
-          content: '普通用户消息',
-          senderType: 'user',
-        },
-      });
-
-      expect(response.statusCode).toBe(201);
-      const message = response.json() as { id: string; workRequestIds: string[]; mentions: unknown[] };
-      expect(message.mentions).toEqual([]);
-      expect(message.workRequestIds).toHaveLength(1);
+      const response = await app.inject({ method: 'POST', url: `/api/team-runs/${teamRun.id}/messages`, payload: { clientSubmissionId: randomUUID(), content: '普通用户消息' } });
+      expect(response.statusCode, response.body).toBe(202);
+      expect(await prisma.roomMessage.count()).toBe(0);
       expect(routeScheduler.startNextSessions).not.toHaveBeenCalled();
-
-      await expect(prisma.workRequest.findUnique({ where: { id: message.workRequestIds[0]! } })).resolves.toMatchObject({
-        targetMemberId: members[0]!.id,
-        instruction: '普通用户消息',
-        status: 'QUEUED',
-      });
-      await expect(prisma.agentInvocation.count({
-        where: {
-          teamRunId: teamRun.id,
-          memberId: members[0]!.id,
-        },
-      })).resolves.toBe(0);
-
-      await vi.waitFor(() => {
-        expect(routeScheduler.startNextSessions).toHaveBeenCalledWith(teamRun.id);
-        expect(startedTeamRunIds).toEqual([teamRun.id]);
-      });
-    } finally {
-      await app.close();
-    }
+      await delivery.start();
+      await vi.waitFor(async () => { expect((await delivery.get(response.json().operationId)).state).toBe('SENT'); });
+      const message = await prisma.roomMessage.findUniqueOrThrow({ where: { deliveryId: response.json().operationId } });
+      expect(JSON.parse(message.mentions)).toEqual([]);
+      const requests = await prisma.workRequest.findMany({ where: { triggerMessageId: message.id } });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ targetMemberId: members[0]!.id, instruction: '普通用户消息', status: 'QUEUED' });
+      expect(await prisma.agentInvocation.count()).toBe(0);
+      await vi.waitFor(() => { expect(routeScheduler.startNextSessions).toHaveBeenCalledExactlyOnceWith(teamRun.id); });
+    } finally { await delivery.shutdown(); await translation.shutdown(); await app.close(); }
   });
 
   it('creates an initial Team Room message without WorkRequests for unmentioned MENTION_ONLY members', async () => {
@@ -4179,7 +4162,7 @@ describe('TeamReconcilerService', () => {
     const implementerPreset = await createMemberPreset({ name: 'Implementer', triggerPolicy: 'MENTION_ONLY' });
     const reviewerPreset = await createMemberPreset({ name: 'Reviewer', triggerPolicy: 'MENTION_ONLY' });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4261,7 +4244,7 @@ describe('TeamReconcilerService', () => {
     });
     const preset = await createMemberPreset({ name: 'Leader', triggerPolicy: 'USER_MESSAGES' });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4316,7 +4299,7 @@ describe('TeamReconcilerService', () => {
     const implementerPreset = await createMemberPreset({ name: 'Implementer', triggerPolicy: 'MENTION_ONLY' });
     const reviewerPreset = await createMemberPreset({ name: 'Reviewer', triggerPolicy: 'MENTION_ONLY' });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4384,7 +4367,7 @@ describe('TeamReconcilerService', () => {
     const qaPreset = await createMemberPreset({ name: 'QA', triggerPolicy: 'MENTION_ONLY' });
     const qaLeadPreset = await createMemberPreset({ name: 'QA-Lead', triggerPolicy: 'MENTION_ONLY' });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4444,7 +4427,7 @@ describe('TeamReconcilerService', () => {
       data: { aliases: stringifyJson(['reviewer']) },
     });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4498,7 +4481,7 @@ describe('TeamReconcilerService', () => {
       data: { aliases: stringifyJson(['reviewer']) },
     });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4545,7 +4528,7 @@ describe('TeamReconcilerService', () => {
     });
     const preset = await createMemberPreset({ name: 'Leader', triggerPolicy: 'USER_MESSAGES' });
     const routeScheduler = createRouteSchedulerMock();
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
 
     try {
       await app.register(teamRunRoutes, { prefix: '/api', scheduler: routeScheduler });
@@ -4616,7 +4599,7 @@ describe('TeamReconcilerService', () => {
         return arg(failingTx);
       }, ...rest);
     });
-    const app = Fastify({ logger: false });
+    const app = authenticatedApp();
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     try {

@@ -1,3 +1,6 @@
+import { submitOutgoing } from './outgoing-submissions'
+import { cacheDelivery } from './delivery-cache'
+import { userSubmission } from './user-submission'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   SessionStatus,
@@ -5,6 +8,7 @@ import {
   type RuntimeStateDto,
   type RuntimeTurnState,
   type Session,
+  type MessageDeliverySubmission,
 } from '@agent-tower/shared'
 import {
   ServerEvents,
@@ -108,7 +112,7 @@ export function useCreateSession(workspaceId: string) {
 
   return useMutation({
     mutationFn: (data: { agentType: AgentType; prompt: string }) =>
-      apiClient.post<Session>(`/workspaces/${workspaceId}/sessions`, data),
+      userSubmission(`session:create:${workspaceId}`, data, body => apiClient.post<Session>(`/workspaces/${workspaceId}/sessions`, body)),
     onSuccess: () => {
       // 新建 session 后 invalidate workspace 详情（含 sessions 列表）
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.detail(workspaceId) })
@@ -121,9 +125,9 @@ export function useStartSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.post<Session>(`/sessions/${id}/start`),
-    onSuccess: (_data, id) => {
+    mutationFn: (id: string) => userSubmission(`start:${id}`, {}, body => apiClient.post<MessageDeliverySubmission | { success: true }>(`/sessions/${id}/start`, body)),
+    onSuccess: (data, id) => {
+      if ('operationId' in data) cacheDelivery(queryClient, data.delivery)
       queryClient.invalidateQueries({ queryKey: queryKeys.sessions.detail(id) })
       // Starting a session transitions the task from TODO → IN_PROGRESS (server-side).
       // Invalidate all task queries so the kanban board reflects this immediately,
@@ -184,9 +188,10 @@ export function useSendMessage() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ id, message, providerId }: { id: string; message: string; providerId?: string }) =>
-      apiClient.post<void>(`/sessions/${id}/message`, { message, providerId }),
-    onSuccess: () => {
+    mutationFn: ({ id, ...input }: { id: string; message: string; providerId?: string; attachmentIds?: string[]; systemAction?: 'resolve_conflicts'; resolutionContextToken?: string }) =>
+      userSubmission(`message:${id}`, input, body => submitOutgoing<MessageDeliverySubmission | { success: true }>(queryClient, id, `/sessions/${id}/message`, body)),
+    onSuccess: data => {
+      if ('operationId' in data) cacheDelivery(queryClient, data.delivery)
       // sendMessage 现在可能 spawn 新 PTY（从 COMPLETED → RUNNING），
       // 需要 invalidate workspaces 让前端 session 状态刷新
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })

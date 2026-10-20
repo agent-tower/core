@@ -1,3 +1,5 @@
+import { compactWhitespace, truncateWithEllipsis, buildTextPreview } from '../utils/text-preview.js';
+export { buildTextPreview } from '../utils/text-preview.js';
 import { prisma } from '../utils/index.js';
 import { TaskStatus, SessionStatus, SessionPurpose, WorkspaceKind, WorkspaceStatus } from '../types/index.js';
 import { getWorkspaceWorkingDir } from './workspace-kind.js';
@@ -90,28 +92,6 @@ type TaskBoardTaskRow = {
   position: number;
   updatedAt: Date | string | number;
 };
-
-function compactWhitespace(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-function truncateWithEllipsis(value: string, maxLength: number): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  const limit = Math.max(1, maxLength - 3);
-  const sliced = value.slice(0, limit);
-  const boundary = Math.max(
-    sliced.lastIndexOf(' '),
-    sliced.lastIndexOf('，'),
-    sliced.lastIndexOf('。'),
-    sliced.lastIndexOf(','),
-    sliced.lastIndexOf('.')
-  );
-  const candidate = boundary >= Math.floor(limit * 0.6) ? sliced.slice(0, boundary) : sliced;
-  return `${candidate.trimEnd()}...`;
-}
 
 function sliceAtCompleteCodePointBoundary(value: string, maxLength: number): string {
   let end = 0;
@@ -329,13 +309,6 @@ function normalizeUpdateTaskInput(
   };
 }
 
-export function buildTextPreview(value: string | null | undefined, maxLength = TASK_PREVIEW_MAX_LENGTH): string {
-  const trimmed = (value ?? '').trim();
-  if (trimmed.length <= maxLength) {
-    return trimmed;
-  }
-  return truncateWithEllipsis(compactWhitespace(trimmed), maxLength);
-}
 
 function withTaskPreviews<T extends { title: string; description?: string | null }>(
   task: T,
@@ -1097,7 +1070,7 @@ export class TaskService {
    * 3. 重置 Task 状态为 TODO
    * 4. 通知前端 — 用户可重新派发 Agent（会创建新 Worktree）
    */
-  async retry(id: string) {
+  async retry(id: string, options: { preserveWorkspaceId?: string; preserveSessionId?: string } = {}) {
     const task = await prisma.task.findFirst({
       where: { id, deletedAt: null },
       include: {
@@ -1116,7 +1089,7 @@ export class TaskService {
     // 停止活跃 Session 并归档 Workspace
     for (const workspace of task.workspaces) {
       const activeSessions = workspace.sessions.filter(
-        (s) => s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING
+        (s) => s.id !== options.preserveSessionId && (s.status === SessionStatus.PENDING || s.status === SessionStatus.RUNNING)
       );
       for (const session of activeSessions) {
         try {
@@ -1125,7 +1098,7 @@ export class TaskService {
           console.warn(`[TaskService] retry: failed to stop session ${session.id}:`, err);
         }
       }
-      await prisma.workspace.update({
+      if (workspace.id !== options.preserveWorkspaceId) await prisma.workspace.update({
         where: { id: workspace.id },
         data: { status: WorkspaceStatus.ABANDONED },
       });

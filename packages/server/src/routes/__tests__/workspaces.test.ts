@@ -13,6 +13,7 @@ import type { WorkspaceSetupProgressPayload } from '@agent-tower/shared/socket';
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-workspace-routes-'));
 const dbPath = path.join(testDir, 'test.db');
 process.env.AGENT_TOWER_DATABASE_URL = `file:${dbPath}`;
+process.env.AGENT_TOWER_DATA_DIR = path.join(testDir, 'data');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -174,6 +175,100 @@ describe('workspace routes', () => {
       await app.close();
     }
   });
+
+  it('rejects foreign-origin owner operations before Git execution or context issuance', async () => {
+    const merge = vi.spyOn(WorkspaceService.prototype, 'merge'); const rebase = vi.spyOn(WorkspaceService.prototype, 'rebase');
+    const app = await buildTestApp();
+    try {
+      for (const action of ['merge', 'rebase']) {
+        const response = await app.inject({ method: 'POST', url: `/api/workspaces/unused/${action}`, headers: { origin: 'https://foreign.example' }, payload: {} });
+        expect(response.statusCode).toBe(403);
+      }
+      expect(merge).not.toHaveBeenCalled(); expect(rebase).not.toHaveBeenCalled();
+    } finally { merge.mockRestore(); rebase.mockRestore(); await app.close() }
+  });
+
+  it('seals real rebase conflict details and live Git status into scoped system instructions', async () => {
+    const { project, workspace, git, worktreeGit } = await createBranchSettingsFixture();
+    fs.appendFileSync(path.join(project.repoPath, '.git/info/exclude'), '\ntask-worktree/\n');
+    git('checkout', 'develop'); fs.writeFileSync(path.join(project.repoPath, 'base.txt'), 'target change\n'); git('add', 'base.txt'); git('commit', '-m', 'target conflict'); git('checkout', 'main');
+    fs.writeFileSync(path.join(workspace.worktreePath, 'base.txt'), 'source change\n'); worktreeGit('add', '.'); worktreeGit('commit', '-m', 'source conflict');
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { baseBranch: 'develop' } });
+    const receiver = await prisma.session.create({ data: { workspaceId: workspace.id, agentType: 'CURSOR_AGENT', prompt: 'resolve' } });
+    const app = await buildTestApp();
+    try {
+      const response = await app.inject({ method: 'POST', url: `/api/workspaces/${workspace.id}/rebase` });
+      expect(response.statusCode).toBe(409);
+      const details = response.json(); expect(details).toMatchObject({ conflictOp: 'REBASE', sourceWorkspaceId: workspace.id, targetWorkspaceId: workspace.id, sourceBranch: 'feature/settings', targetBranch: 'develop', conflictedFiles: ['base.txt'] });
+      expect(details.resolutionContextToken).toEqual(expect.any(String));
+      const { resolveConflictInstructions } = await import('../../services/conflict-resolution-context.js');
+      const instructions = await prisma.$transaction(tx => resolveConflictInstructions(tx, details.resolutionContextToken, receiver.id, 'owner'));
+      expect(instructions).toContain(JSON.stringify(workspace.worktreePath)); expect(instructions).toContain('rebase --continue');
+      const status = await app.inject({ url: `/api/workspaces/${workspace.id}/git-status` });
+      expect(status.statusCode).toBe(200);
+      expect(await prisma.$transaction(tx => resolveConflictInstructions(tx, status.json().resolutionContextToken, receiver.id, 'owner'))).toContain('base.txt');
+      const gitModule = await import('../../git/git-cli.js'); const readOnly = vi.spyOn(gitModule, 'execGit');
+      try {
+        expect(await prisma.$transaction(tx => resolveConflictInstructions(tx, undefined, receiver.id, 'owner'))).toContain('rebase --continue');
+        expect(readOnly.mock.calls.every(([, args]) => !['merge', 'rebase', 'reset', 'checkout', 'add', 'commit'].includes(args[0]))).toBe(true);
+      } finally { readOnly.mockRestore() }
+      const unaccepted = details.resolutionContextToken.split('.');
+      await expect(prisma.$transaction(tx => resolveConflictInstructions(tx, `${unaccepted[0]}.lost-process-key`, receiver.id, 'owner'))).rejects.toMatchObject({ code: 'CONFLICT_CONTEXT_INVALID' });
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('seals a real cross-worktree no_ff merge conflict even after Git abort removes the live conflict state', async () => {
+    const { project, task, workspace, git, worktreeGit } = await createBranchSettingsFixture();
+    fs.appendFileSync(path.join(project.repoPath, '.git/info/exclude'), '\ntask-worktree/\n');
+    fs.writeFileSync(path.join(project.repoPath, 'base.txt'), 'target change\n'); git('add', 'base.txt'); git('commit', '-m', 'target conflict');
+    fs.writeFileSync(path.join(workspace.worktreePath, 'base.txt'), 'source change\n'); worktreeGit('add', '.'); worktreeGit('commit', '-m', 'source conflict');
+    const target = await prisma.workspace.create({ data: { taskId: task.id, branchName: 'main', worktreePath: project.repoPath, workingDir: project.repoPath } });
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { parentWorkspaceId: target.id } });
+    const receiver = await prisma.session.create({ data: { workspaceId: workspace.id, agentType: 'CURSOR_AGENT', prompt: 'resolve' } });
+    const app = await buildTestApp();
+    try {
+      const response = await app.inject({ method: 'POST', url: `/api/workspaces/${workspace.id}/merge`, payload: {} });
+      expect({ status: response.statusCode, body: response.json() }).toMatchObject({ status: 409, body: { mergeAborted: true } });
+      const details = response.json(); expect(details).toMatchObject({ mergeAborted: true, mergeStrategy: 'no_ff', sourceWorkspaceId: workspace.id, targetWorkspaceId: target.id, conflictedFiles: ['base.txt'] });
+      expect(git('status', '--porcelain')).toBe('');
+      const { resolveConflictInstructions } = await import('../../services/conflict-resolution-context.js');
+      const instructions = await prisma.$transaction(tx => resolveConflictInstructions(tx, details.resolutionContextToken, receiver.id, 'owner'));
+      expect(instructions).toContain(JSON.stringify(project.repoPath)); expect(instructions).toContain('already aborted'); expect(instructions).toContain("merge --no-ff -- 'feature/settings'");
+      const gitModule = await import('../../git/git-cli.js'); const readOnly = vi.spyOn(gitModule, 'execGit');
+      try {
+        await expect(prisma.$transaction(tx => resolveConflictInstructions(tx, undefined, receiver.id, 'owner'))).rejects.toMatchObject({ code: 'CONFLICT_CONTEXT_INVALID', message: expect.stringContaining('explicitly run the original Git operation again') });
+        expect(readOnly.mock.calls.every(([, args]) => !['merge', 'rebase', 'reset', 'checkout', 'add', 'commit'].includes(args[0]))).toBe(true);
+        expect(git('status', '--porcelain')).toBe('');
+      } finally { readOnly.mockRestore() }
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('seals real project-directory squash conflicts when the target advances after preflight and abort cannot clear squash state', async () => {
+    const { project, workspace, git, worktreeGit } = await createBranchSettingsFixture();
+    fs.appendFileSync(path.join(project.repoPath, '.git/info/exclude'), '\ntask-worktree/\n');
+    fs.writeFileSync(path.join(workspace.worktreePath, 'base.txt'), 'source change\n'); worktreeGit('add', '.'); worktreeGit('commit', '-m', 'source conflict');
+    const { WorktreeManager } = await import('../../git/worktree.manager.js');
+    const preflight = WorktreeManager.prototype.getBranchStatus;
+    const race = vi.spyOn(WorktreeManager.prototype, 'getBranchStatus').mockImplementation(async function (this: InstanceType<typeof WorktreeManager>, ...args) {
+      const result = await preflight.apply(this, args);
+      if (result.behind === 0) {
+        fs.writeFileSync(path.join(project.repoPath, 'base.txt'), 'target advanced after preflight\n'); git('add', 'base.txt'); git('commit', '-m', 'concurrent target update');
+      }
+      return result;
+    });
+    const receiver = await prisma.session.create({ data: { workspaceId: workspace.id, agentType: 'CURSOR_AGENT', prompt: 'resolve' } });
+    const app = await buildTestApp();
+    try {
+      const response = await app.inject({ method: 'POST', url: `/api/workspaces/${workspace.id}/merge`, payload: {} });
+      expect(response.statusCode).toBe(409);
+      const details = response.json(); expect(details).toMatchObject({ mergeAborted: false, mergeStrategy: 'squash', sourceWorkspaceId: workspace.id, targetWorktreePath: project.repoPath });
+      expect(details.targetWorkspaceId).toBeUndefined(); expect(git('diff', '--name-only', '--diff-filter=U')).toBe('base.txt');
+      const { resolveConflictInstructions } = await import('../../services/conflict-resolution-context.js');
+      const instructions = await prisma.$transaction(tx => resolveConflictInstructions(tx, details.resolutionContextToken, receiver.id, 'owner'));
+      expect(instructions).toContain('"targetKind":"PROJECT"'); expect(instructions).toContain('"mergeStrategy":"squash"');
+      expect(instructions).toContain('was not aborted'); expect(instructions).toContain(' commit'); expect(instructions).not.toContain('reproduce the original');
+    } finally { race.mockRestore(); await app.close() }
+  }, 15_000);
 
   it('changes the saved base branch without moving HEAD, then rebases and merges into the chosen branch', async () => {
     const { project, task, workspace, git, worktreeGit, mainHead } = await createBranchSettingsFixture();

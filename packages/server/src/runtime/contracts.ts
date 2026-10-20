@@ -13,10 +13,11 @@ import type { JsonPatch, MsgStore } from '../output/index.js';
 
 export type RuntimeStreamEvent =
   | { type: 'stdout'; data: string }
-  | { type: 'conversation_patch'; patch: JsonPatch; seq: number }
+  | { type: 'conversation_patch'; patch: JsonPatch; seq: number; lifecycleOnly?: boolean }
   | { type: 'external_session_id'; externalSessionId: string }
   | { type: 'permission_requested'; request: RuntimePermissionRequest }
   | { type: 'permission_invalidated'; requestId: string }
+  | { type: 'text_block'; entry: import('../output/types.js').NormalizedEntry }
   | { type: 'progress' }
   | { type: 'execution_permission_applied'; mode: ExecutionPermissionMode };
 
@@ -106,7 +107,17 @@ export interface RuntimeOpenInput {
 /** `load` restores this transcript; `resume` only continues the agent's native context. */
 export type RuntimeResumeMode = 'load' | 'resume';
 
-export interface RuntimeRunTurnInput {
+export interface InputSubmissionEvidence {
+  runtimeInstanceId: string;
+  turnId: string;
+  transport: 'CLI_STDIN_ACK' | 'CLAUDE_STDIN_ACK' | 'CODEX_TURN_ACK' | 'ACP_PROMPT_WRITE';
+}
+export interface InputSubmissionObserver {
+  onSubmitting?: (evidence: InputSubmissionEvidence) => Promise<void>;
+  onSubmitted?: (evidence: InputSubmissionEvidence) => Promise<void>;
+}
+
+export interface RuntimeRunTurnInput extends InputSubmissionObserver {
   turnId: string;
   providerSnapshot?: Provider;
   executionPermission?: ExecutionPermissionMode;
@@ -182,7 +193,7 @@ export interface RuntimeCoordinatorHost {
   ): void | Promise<void>;
 }
 
-export interface StartRuntimeTurnInput extends RuntimeOpenInput {
+export interface StartRuntimeTurnInput extends RuntimeOpenInput, InputSubmissionObserver {
   msgStore: MsgStore;
   prompt: string;
   resumeExternalSessionId?: string | null;

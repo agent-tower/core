@@ -322,6 +322,10 @@ export class AgentTowerClient {
     return this.request<any[]>('GET', `/api/team-runs/${teamRunId}/messages`, undefined, query);
   }
 
+  async getTeamTaskInput(teamRunId: string, view: 'preview' | 'full' = 'preview') {
+    return this.request<import('@agent-tower/shared').AgentTeamTaskInput>('GET', `/api/team-runs/${teamRunId}/task-input`, undefined, { view });
+  }
+
   async getRoomMessage(teamRunId: string, messageId: string) {
     return this.request<any>('GET', `/api/team-runs/${teamRunId}/messages/${messageId}`);
   }

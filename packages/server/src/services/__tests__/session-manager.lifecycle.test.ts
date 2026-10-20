@@ -1334,6 +1334,36 @@ describe('SessionManager session status vs real process state', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
+  it('checkpoints a sealed text block before turn end and isolates translation observer failure', async () => {
+    const { getTranslationService } = await import('../../core/container.js');
+    const translations = getTranslationService();
+    const admission = vi.spyOn(translations, 'getAdmissionEpoch').mockReturnValue(7);
+    const checkpoint = vi.spyOn(translations, 'checkpointCommitted').mockImplementation(() => { throw new Error('observer storage unavailable'); });
+    const { session } = await createSessionFixture({ agentType: AgentType.CLAUDE_CODE });
+    const pty = new ControlledPty(); spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+    const eventBus = new EventBus(); const manager = new SessionManager(eventBus);
+    const seqs: number[] = []; eventBus.on('session:patch', event => seqs.push(event.seq));
+    const completed = waitForEvent(eventBus, 'session:completed');
+    const feed = (event: object) => pty.emitData(JSON.stringify(event) + '\n');
+    try {
+      await manager.start(session.id);
+      feed({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'A before tool' } } });
+      feed({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tool', name: 'bash', input: {} } } });
+      await vi.waitFor(async () => {
+        const row = await prisma.session.findUniqueOrThrow({ where: { id: session.id } });
+        expect(row.status).toBe('RUNNING');
+        expect(JSON.parse(row.logSnapshot!).entries[0]).toMatchObject({ content: 'A before tool', metadata: { textBlock: { state: 'SEALED', sealedReason: 'TYPE_SWITCH', translationEpoch: 7 } } });
+      });
+      expect(checkpoint).toHaveBeenCalledWith(session.id);
+      feed({ type: 'stream_event', event: { type: 'content_block_start', index: 2, content_block: { type: 'text', text: 'B after tool' } } });
+      feed({ type: 'result', subtype: 'success', num_turns: 1 });
+      await completed;
+      const row = await prisma.session.findUniqueOrThrow({ where: { id: session.id } });
+      expect(JSON.parse(row.logSnapshot!).entries.at(-1)).toMatchObject({ content: 'B after tool', metadata: { textBlock: { state: 'SEALED', sealedReason: 'TURN_END' } } });
+      expect(new Set(seqs).size).toBe(seqs.length);
+    } finally { await manager.destroyAll(); admission.mockRestore(); checkpoint.mockRestore(); }
+  });
+
   it('moves the session to COMPLETED with a persisted snapshot when the PTY exits normally', async () => {
     const { session } = await createSessionFixture();
     const pty = new ControlledPty();

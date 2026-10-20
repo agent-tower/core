@@ -9,6 +9,9 @@ import { SettingsPageContainer, SettingsFormSkeleton } from '@/components/settin
 const GeneralSettingsPage = lazy(() =>
   import('@/pages/GeneralSettingsPage').then(m => ({ default: m.GeneralSettingsPage })),
 )
+const TranslationSettingsPage = lazy(() =>
+  import('@/pages/TranslationSettingsPage').then(m => ({ default: m.TranslationSettingsPage })),
+)
 const ProviderSettingsPage = lazy(() =>
   import('@/pages/ProviderSettingsPage').then(m => ({ default: m.ProviderSettingsPage })),
 )
@@ -33,6 +36,7 @@ const ProfileSettingsPage = lazy(() =>
 
 const NAV_ITEMS: Array<{ id: SettingsTab; label: string; icon: typeof Languages }> = [
   { id: 'general', label: '通用', icon: Languages },
+  { id: 'translation', label: '语言转换', icon: Languages },
   { id: 'agent-environment', label: 'Agent 环境', icon: Bot },
   { id: 'agents', label: 'Agent 配置', icon: Cpu },
   { id: 'team', label: '团队协作', icon: Users },
@@ -45,6 +49,8 @@ function TabContent({ tab }: { tab: SettingsTab }) {
   switch (tab) {
     case 'general':
       return <GeneralSettingsPage />
+    case 'translation':
+      return <TranslationSettingsPage />
     case 'agent-environment':
       return <AgentEnvironmentSettingsPage />
     case 'agents':
@@ -213,7 +219,7 @@ export function SettingsDialog() {
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-y-auto scrollbar-app-thin bg-background">
             <Suspense fallback={<LoadingFallback />}>
-              <TabContent tab={activeTab} />
+              {isOpen && <TabContent tab={activeTab} />}
             </Suspense>
           </div>
         </div>

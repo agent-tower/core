@@ -6,6 +6,7 @@ import type {
 } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
+import { clearRoomTranslationAccess } from './room-translation-access'
 
 export type {
   AccessAuthPublicStatus,
@@ -33,6 +34,9 @@ export function useLoginAccessAuth() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    mutationKey: queryKeys.accessAuth.identityChange,
+    onMutate: () => Promise.all([clearRoomTranslationAccess(queryClient), queryClient.cancelQueries({ queryKey: queryKeys.accessAuth.conflictRecoveryIdentity })]),
+    onSettled: () => queryClient.resetQueries({ queryKey: queryKeys.accessAuth.conflictRecoveryIdentity }),
     mutationFn: (password: string) =>
       apiClient.post<AccessAuthPublicStatus>('/access-auth/login', { password }),
     onSuccess: (status) => {
@@ -46,6 +50,9 @@ export function useLogoutAccessAuth() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    mutationKey: queryKeys.accessAuth.identityChange,
+    onMutate: () => Promise.all([clearRoomTranslationAccess(queryClient), queryClient.cancelQueries({ queryKey: queryKeys.accessAuth.conflictRecoveryIdentity })]),
+    onSettled: () => queryClient.resetQueries({ queryKey: queryKeys.accessAuth.conflictRecoveryIdentity }),
     mutationFn: () => apiClient.post<AccessAuthPublicStatus>('/access-auth/logout', {}),
     onSuccess: (status) => {
       queryClient.setQueryData(queryKeys.accessAuth.status, status)

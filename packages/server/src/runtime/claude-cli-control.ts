@@ -23,14 +23,16 @@ export class ClaudeCliControl {
     private readonly callbacks: { requested(request: RuntimePermissionRequest): void; invalidated(id: string): void; failed(error: unknown): void },
   ) {}
 
-  async start(initialInput: string, confirmed: () => void = () => undefined): Promise<void> {
+  async start(initialInput: string, confirmed: () => void = () => undefined, submission?: { before(): Promise<void>; after(): Promise<void> }): Promise<void> {
     await this.request({ subtype: 'initialize' });
     const mode = await this.request({ subtype: 'set_permission_mode', mode: 'default' });
     if (!object(mode) || mode.mode !== 'default') throw error('permission_mode_unconfirmed', 'Claude did not confirm default permission mode.');
     if (this.closed) throw error('permission_not_found', 'Claude execution has ended.');
     this.ready = true;
     confirmed();
+    await submission?.before();
     await this.io.write(initialInput, () => !this.closed);
+    await submission?.after();
   }
 
   handle(message: unknown): void {

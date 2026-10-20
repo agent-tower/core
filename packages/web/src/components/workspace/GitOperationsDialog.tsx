@@ -34,6 +34,7 @@ interface GitOperationsDialogProps {
 type MergeStep = 'select' | 'confirm'
 
 export interface ConflictDetails {
+  resolutionContextToken?: string
   conflictOp: ConflictOp
   conflictedFiles: string[]
   mergeAborted?: boolean
@@ -75,6 +76,7 @@ export function getConflictDetails(error: unknown): ConflictDetails | undefined 
     targetWorktreePath: getOptionalString(details, 'targetWorktreePath'),
     sourceWorkspaceId: getOptionalString(details, 'sourceWorkspaceId'),
     targetWorkspaceId: getOptionalString(details, 'targetWorkspaceId'),
+    resolutionContextToken: getOptionalString(details, 'resolutionContextToken'),
   }
 }
 

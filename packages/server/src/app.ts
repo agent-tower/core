@@ -15,6 +15,8 @@ import {
   getSessionManager,
   getTaskCleanupService,
   getWorkspaceBackgroundService,
+  getTranslationService,
+  getMessageDeliveryService,
   destroyApplicationProcesses,
 } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
@@ -100,6 +102,10 @@ export async function buildApp() {
   app.addHook('onReady', async () => {
     const readyStartedAt = Date.now();
     const elapsed = () => `${Date.now() - readyStartedAt}ms`;
+
+    await getTranslationService().start();
+    getSessionManager().stopConversationQueue();
+    await getMessageDeliveryService().start();
 
     app.log.info(`[startup:onReady] enter elapsed=${elapsed()}`);
     app.log.info(`[startup:onReady] initializeSocket start elapsed=${elapsed()}`);

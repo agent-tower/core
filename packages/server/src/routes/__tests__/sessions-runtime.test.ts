@@ -1,3 +1,4 @@
+import { AccessAuthService } from '../../services/access-auth.service.js';
 import Fastify from 'fastify';
 import { AgentType, RuntimeType } from '@agent-tower/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,6 +17,7 @@ const { findWorkspace, findSession, createSession, getRuntimeState, resolveRunti
 }));
 
 vi.mock('../../core/container.js', () => ({
+  getMessageDeliveryService: () => ({ submitSession: (input: { sessionId: string; message: string; providerId?: string }) => sendMessage(input.sessionId, input.message, input.providerId, undefined) }),
   getSessionManager: () => ({
     create: createSession,
     getRuntimeState,
@@ -53,6 +55,7 @@ async function buildTestApp(options: { internalAuth?: boolean } = {}) {
 
 describe('session runtime routes', () => {
   beforeEach(() => {
+    vi.spyOn(AccessAuthService, 'isEnabled').mockResolvedValue(false);
     findWorkspace.mockReset();
     findSession.mockReset();
     createSession.mockReset();

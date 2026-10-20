@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { taskStartSubmission } from '@/hooks/task-start-submission'
 import { useQueryClient } from '@tanstack/react-query'
 import { TaskPriority, WorkspaceKind, type Task, type TaskBoardItem } from '@agent-tower/shared'
 import { TaskList } from '@/components/task/TaskList'
@@ -337,25 +338,11 @@ export function ProjectKanbanPage() {
 
     void (async () => {
       try {
-        const workspace = await apiClient.post<{ id: string }>(
-          `/tasks/${taskId}/workspaces`,
-          { workspaceKind: workspaceMode },
-        )
-        setBackgroundStarts(current => ({
-          ...current,
-          [taskId]: { status: 'creating-session', setupScript },
-        }))
-
-        const session = await apiClient.post<{ id: string }>(
-          `/workspaces/${workspace.id}/sessions`,
-          { providerId, prompt },
-        )
-        setBackgroundStarts(current => ({
-          ...current,
-          [taskId]: { status: 'starting-session', setupScript },
-        }))
-
-        await startSession.mutateAsync(session.id)
+        await taskStartSubmission(taskId, { providerId, prompt, workspaceKind: workspaceMode }, {
+          createWorkspace: clientSubmissionId => apiClient.post<{ id: string }>(`/tasks/${taskId}/workspaces`, { clientSubmissionId, workspaceKind: workspaceMode }),
+          startSession: id => startSession.mutateAsync(id),
+          onStep: status => setBackgroundStarts(current => ({ ...current, [taskId]: { status, setupScript } })),
+        })
         await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
         await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.setupProgress(taskId) })
         await queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
@@ -541,10 +528,10 @@ export function ProjectKanbanPage() {
     } catch (error) {
       setCreateStep('idle')
       if (createdTask && mode === 'TEAM') {
-        // TeamRun creation failed — clean up orphan task and treat as complete failure
-        try { await deleteTask.mutateAsync(createdTask.id) } catch { /* best-effort cleanup */ }
-        toast.error(t('TeamRun 创建失败，请检查团队配置后重试'))
-        throw error
+        // The creation may already be durably accepted. Preserve its Task recovery scope.
+        revealCreatedTask(createdTask)
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+        toast.error(error instanceof Error ? error.message : t('TeamRun 创建失败，请检查团队配置后重试'))
       } else if (createdTask) {
         if (effectiveFilterProjectId && projectId !== effectiveFilterProjectId) {
           setFilterProjectId(null)
@@ -557,7 +544,7 @@ export function ProjectKanbanPage() {
         throw error
       }
     }
-  }, [activeProjects, createTaskTeamRun, startTaskInBackground, deleteTask, queryClient, t, effectiveFilterProjectId, revealCreatedTask, providerLastUsedAt])
+  }, [createTaskTeamRun, startTaskInBackground, queryClient, t, effectiveFilterProjectId, revealCreatedTask, providerLastUsedAt])
 
 
   const isLoading = isProjectsLoading || isTaskBoardLoading

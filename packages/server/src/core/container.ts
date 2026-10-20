@@ -8,6 +8,13 @@ import { WorkspaceBackgroundService } from '../services/workspace-background-ser
 import { WorkspaceSetupProgressStore } from '../services/workspace-setup-progress.js';
 import { prisma } from '../utils/index.js';
 import { TunnelService } from '../services/tunnel.service.js';
+import { TranslationSettingsService } from '../services/translation-settings.service.js';
+import { TeamTaskInputService } from '../services/team-task-input.service.js';
+import { TeamRunService } from '../services/team-run.service.js';
+import { emitTeamRunInvalidated } from '../services/team-run-events.js';
+import { MessageDeliveryService } from '../services/message-delivery.service.js';
+import { TaskService } from '../services/task.service.js';
+import { TranslationService } from '../services/translation.service.js';
 import { assertApplicationProcessStartAllowed, beginApplicationProcessShutdown, cleanupApplicationProcessOwners } from '../runtime/application-process-cleanup.js';
 // TerminalManager is lazy-imported to avoid eager native module (node-pty) loading
 // that could break getEventBus()/getSessionManager() if the import fails.
@@ -22,7 +29,44 @@ let notificationService: NotificationService | null = null;
 let taskCleanupService: TaskCleanupService | null = null;
 let agentCliEnvironmentService: AgentCliEnvironmentService | null = null;
 let workspaceBackgroundService: WorkspaceBackgroundService | null = null;
+let translationSettingsService: TranslationSettingsService | null = null;
+let translationService: TranslationService | null = null;
+let teamTaskInputService: TeamTaskInputService | null = null;
+let messageDeliveryService: MessageDeliveryService | null = null;
 const workspaceSetupProgressStore = new WorkspaceSetupProgressStore();
+
+export function getTeamTaskInputService(): TeamTaskInputService {
+  return teamTaskInputService ??= new TeamTaskInputService(prisma, getTranslationService());
+}
+
+export function getMessageDeliveryService(): MessageDeliveryService {
+  if (!messageDeliveryService) {
+    messageDeliveryService = new MessageDeliveryService(prisma, getTranslationSettingsService(), getTranslationService(), getSessionManager(), {
+      taskInputs: getTeamTaskInputService(), teamRuns: new TeamRunService(),
+      roomPublished: async (teamRunId, taskId) => {
+        await emitTeamRunInvalidated({ teamRunId, taskId, scopes: ['room-messages', 'work-requests', 'team-run'], reason: 'room-message-created' });
+        // Durable QUEUED requests also recover through the existing bounded queue pump.
+        const { TeamSchedulerService } = await import('../services/team-scheduler.service.js');
+        void new TeamSchedulerService().startNextSessions(teamRunId).catch(() => undefined);
+      },
+      retryTask: (taskId, workspaceId, sessionId) => new TaskService(getEventBus(), getSessionManager()).retry(taskId, { preserveWorkspaceId: workspaceId, preserveSessionId: sessionId }),
+    });
+    messageDeliveryService.onInvalidated(payload => getEventBus().emit('message-delivery:invalidated', payload));
+  }
+  return messageDeliveryService;
+}
+
+export function getTranslationSettingsService(): TranslationSettingsService {
+  return translationSettingsService ??= new TranslationSettingsService(prisma);
+}
+
+export function getTranslationService(): TranslationService {
+  if (!translationService) {
+    translationService = new TranslationService(prisma, getTranslationSettingsService());
+    translationService.onInvalidated(payload => getEventBus().emit('translation:invalidated', payload));
+  }
+  return translationService;
+}
 
 export function getWorkspaceSetupProgressStore(): WorkspaceSetupProgressStore {
   return workspaceSetupProgressStore;
@@ -82,6 +126,8 @@ export async function getTerminalManager(): Promise<TerminalManager> {
 export async function destroyApplicationProcesses(): Promise<void> {
   beginApplicationProcessShutdown();
   await cleanupApplicationProcessOwners([
+    () => messageDeliveryService?.shutdown(),
+    () => translationService?.shutdown(),
     () => sessionManager?.destroyAll(),
     () => workspaceBackgroundService?.shutdown(),
     () => agentCliEnvironmentService?.shutdown(),

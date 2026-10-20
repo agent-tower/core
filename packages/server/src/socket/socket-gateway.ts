@@ -1,3 +1,7 @@
+import { getTranslationService } from '../core/container.js';
+import { AGENT_API_CREDENTIAL_HEADER } from '../utils/agent-api-credential.js';
+import { INTERNAL_API_TOKEN_HEADER } from '../utils/internal-api-token.js';
+import type { TranslationInvalidatedPayload } from '@agent-tower/shared';
 import type { Namespace, Socket } from 'socket.io';
 import type { EventBus } from '../core/event-bus.js';
 import type { SessionManager } from '../services/session-manager.js';
@@ -23,7 +27,11 @@ import {
 } from './events.js';
 
 export class SocketGateway {
+  private destroyed = false;
   private cleanups: Array<() => void> = [];
+  private taskDeliverySubscriptions = new WeakMap<Socket, Map<string, symbol>>();
+  private sessionSubscriptions = new WeakMap<Socket, Map<string, symbol>>();
+  private roomTranslationSubscriptions = new WeakMap<Socket, Map<string, symbol>>();
 
   constructor(
     private readonly nsp: Namespace,
@@ -35,6 +43,7 @@ export class SocketGateway {
   }
 
   destroy(): void {
+    this.destroyed = true;
     for (const cleanup of this.cleanups) {
       cleanup();
     }
@@ -45,12 +54,12 @@ export class SocketGateway {
     // --- Subscribe / Unsubscribe ---
     socket.on(ClientEvents.SUBSCRIBE, (payload: SubscribePayload, ack?: (res: AckResponse) => void) => {
       if (!this.ensureSocketAuthIsCurrent(socket, ack)) return;
-      this.handleSubscribe(socket, payload, ack);
+      void this.handleSubscribe(socket, payload, ack);
     });
 
     socket.on(ClientEvents.UNSUBSCRIBE, (payload: UnsubscribePayload, ack?: (res: AckResponse) => void) => {
       if (!this.ensureSocketAuthIsCurrent(socket, ack)) return;
-      this.handleUnsubscribe(socket, payload, ack);
+      void this.handleUnsubscribe(socket, payload, ack);
     });
 
     // --- Agent session I/O ---
@@ -127,6 +136,80 @@ export class SocketGateway {
         }
       }
     };
+
+    const onTranslation = (payload: TranslationInvalidatedPayload) => {
+      void (async () => {
+        if (payload.teamRunId !== undefined) {
+          const { teamRunId, messageId, sourceId, sourceRevision, overlayRevision } = payload;
+          if (!teamRunId || teamRunId === 'all' || payload.sessionId !== undefined) return;
+          const room = `team-run:${teamRunId}`;
+          for (const socketId of this.nsp.adapter.rooms.get(room) ?? []) {
+            const socket = this.nsp.sockets.get(socketId) as AuthenticatedSocket | undefined;
+            if (!socket) continue;
+            const subscription = this.roomTranslationSubscriptions.get(socket)?.get(teamRunId);
+            if (!subscription) continue;
+            const isCurrentOwner = await this.prepareRoomOwnerSocketValidation(socket);
+            if (!isCurrentOwner()) continue;
+            try { await getTranslationService().assertReadableRoomTranslation(teamRunId, messageId, sourceId); } catch { continue; }
+            // Recheck synchronously after every await, including auth loading.
+            if (!isCurrentOwner() || this.roomTranslationSubscriptions.get(socket)?.get(teamRunId) !== subscription || !this.nsp.adapter.rooms.get(room)?.has(socketId)) continue;
+            socket.emit(ServerEvents.TRANSLATION_INVALIDATED, { teamRunId, messageId, sourceId, sourceRevision, overlayRevision });
+          }
+          return;
+        }
+        try { await getTranslationService().assertReadableSession(payload.sessionId); } catch { return; }
+        if (this.destroyed) return;
+        for (const socketId of this.nsp.adapter.rooms.get(`session:${payload.sessionId}`) ?? []) {
+          const socket = this.nsp.sockets.get(socketId) as AuthenticatedSocket | undefined;
+          if (!socket || !this.isCurrentOwnerSocket(socket)) continue;
+          socket.emit(ServerEvents.TRANSLATION_INVALIDATED, payload);
+        }
+      })().catch(() => undefined);
+    };
+    this.eventBus.on('translation:invalidated', onTranslation);
+    this.cleanups.push(() => this.eventBus.off('translation:invalidated', onTranslation));
+
+    const onDelivery = (payload: import('@agent-tower/shared').MessageDeliveryInvalidatedPayload) => {
+      void (async () => {
+        if (payload.taskId !== undefined) {
+          const { taskId, teamRunId, operationId, deliveryRevision } = payload;
+          if (teamRunId === 'all' || payload.sessionId !== undefined || taskId === 'all') return;
+          if (!teamRunId) {
+            try { await getTranslationService().assertReadableTeamTask(taskId); } catch { return; }
+            for (const socketId of this.nsp.adapter.rooms.get(`task:${taskId}`) ?? []) {
+              const socket = this.nsp.sockets.get(socketId) as AuthenticatedSocket | undefined;
+              if (!socket) continue;
+              const subscription = this.taskDeliverySubscriptions.get(socket)?.get(taskId);
+              if (!subscription) continue;
+              const isOwner = await this.prepareRoomOwnerSocketValidation(socket);
+              if (isOwner() && this.taskDeliverySubscriptions.get(socket)?.get(taskId) === subscription && this.nsp.adapter.rooms.get(`task:${taskId}`)?.has(socketId)) socket.emit(ServerEvents.MESSAGE_DELIVERY_INVALIDATED, { taskId, operationId, deliveryRevision });
+            }
+            return;
+          }
+          const room = `team-run:${teamRunId}`;
+          for (const socketId of this.nsp.adapter.rooms.get(room) ?? []) {
+            const socket = this.nsp.sockets.get(socketId) as AuthenticatedSocket | undefined;
+            if (!socket) continue;
+            const subscription = this.roomTranslationSubscriptions.get(socket)?.get(teamRunId);
+            if (!subscription) continue;
+            const isOwner = await this.prepareRoomOwnerSocketValidation(socket);
+            if (!isOwner()) continue;
+            try { await getTranslationService().assertReadableTeamRun(teamRunId); } catch { continue; }
+            if (!isOwner() || this.roomTranslationSubscriptions.get(socket)?.get(teamRunId) !== subscription || !this.nsp.adapter.rooms.get(room)?.has(socketId)) continue;
+            socket.emit(ServerEvents.MESSAGE_DELIVERY_INVALIDATED, { taskId, teamRunId, operationId, deliveryRevision });
+          }
+          return;
+        }
+        try { await getTranslationService().assertReadableSession(payload.sessionId); } catch { return; }
+        if (this.destroyed) return;
+        for (const socketId of this.nsp.adapter.rooms.get(`session:${payload.sessionId}`) ?? []) {
+          const socket = this.nsp.sockets.get(socketId) as AuthenticatedSocket | undefined;
+          if (socket && this.isCurrentOwnerSocket(socket)) socket.emit(ServerEvents.MESSAGE_DELIVERY_INVALIDATED, payload);
+        }
+      })().catch(() => undefined);
+    };
+    this.eventBus.on('message-delivery:invalidated', onDelivery);
+    this.cleanups.push(() => this.eventBus.off('message-delivery:invalidated', onDelivery));
 
     // --- Session events: broadcast to entire namespace (no room filtering) ---
     const onStdout = ({ sessionId, data }: { sessionId: string; data: string }) => {
@@ -251,6 +334,18 @@ export class SocketGateway {
     return socket.accessAuthSessionSecretGeneration === AccessAuthService.getSessionSecretGeneration();
   }
 
+  private isCurrentOwnerSocket(socket: AuthenticatedSocket): boolean {
+    const headers = socket.request.headers;
+    return this.isSocketAuthCurrent(socket) && headers[AGENT_API_CREDENTIAL_HEADER] === undefined && headers[INTERNAL_API_TOKEN_HEADER] === undefined;
+  }
+
+  private async prepareRoomOwnerSocketValidation(socket: AuthenticatedSocket): Promise<() => boolean> {
+    if (this.destroyed || socket.disconnected || !this.isCurrentOwnerSocket(socket)) return () => false;
+    const token = AccessAuthService.extractCookieFromHeader(socket.request.headers.cookie);
+    const validate = await AccessAuthService.prepareSessionTokenValidation(token);
+    return () => !this.destroyed && !socket.disconnected && this.isCurrentOwnerSocket(socket) && validate();
+  }
+
   private ensureSocketAuthIsCurrent(
     socket: AuthenticatedSocket,
     ack?: (res: AckResponse) => void,
@@ -276,16 +371,119 @@ export class SocketGateway {
     }
   }
 
-  private handleSubscribe(socket: Socket, payload: SubscribePayload, ack?: (res: AckResponse) => void): void {
-    if (payload.topic === 'terminal' && payload.id) {
+  private async handleSubscribe(socket: AuthenticatedSocket, payload: SubscribePayload, ack?: (res: AckResponse) => void): Promise<void> {
+    if (payload?.topic === 'team-run') {
+      const id = payload.id;
+      const denied = () => ack?.({ success: false, error: { code: 'TRANSLATION_SUBSCRIPTION_DENIED', message: 'Room translation subscription is unavailable' } });
+      if (typeof id !== 'string' || !id.trim() || id === 'all' || !this.isCurrentOwnerSocket(socket)) { denied(); return; }
+      let pending = this.roomTranslationSubscriptions.get(socket);
+      if (!pending) { pending = new Map(); this.roomTranslationSubscriptions.set(socket, pending); }
+      const request = Symbol(); pending.set(id, request);
+      try {
+        if (!(await this.prepareRoomOwnerSocketValidation(socket))()) {
+          if (pending.get(id) === request) { pending.delete(id); await socket.leave(`team-run:${id}`); }
+          denied(); return;
+        }
+        await getTranslationService().assertReadableTeamRun(id);
+        if (this.destroyed || socket.disconnected || !this.isCurrentOwnerSocket(socket) || pending.get(id) !== request) {
+          if (pending.get(id) === request) { pending.delete(id); await socket.leave(`team-run:${id}`); }
+          denied(); return;
+        }
+        await socket.join(`team-run:${id}`);
+        const isCurrentAfterJoin = await this.prepareRoomOwnerSocketValidation(socket);
+        if (!isCurrentAfterJoin() || pending.get(id) !== request) {
+          if (pending.get(id) === request) pending.delete(id);
+          if (!pending.has(id) || !isCurrentAfterJoin()) await socket.leave(`team-run:${id}`);
+          denied(); return;
+        }
+        await getTranslationService().assertReadableTeamRun(id);
+        // Nothing may await between this current-login/intent check and success.
+        if (!isCurrentAfterJoin() || pending.get(id) !== request) {
+          if (pending.get(id) === request) pending.delete(id);
+          if (!pending.has(id) || !isCurrentAfterJoin()) await socket.leave(`team-run:${id}`);
+          denied(); return;
+        }
+        ack?.({ success: true });
+      } catch {
+        if (pending.get(id) === request) { pending.delete(id); await socket.leave(`team-run:${id}`); }
+        denied();
+      }
+      return;
+    }
+    if (payload?.topic === 'session') {
+      const id = payload.id;
+      const denied = () => ack?.({ success: false, error: { code: 'SESSION_SUBSCRIPTION_DENIED', message: 'Session subscription is unavailable' } });
+      if (typeof id !== 'string' || !id.trim() || id === 'all' || !this.isCurrentOwnerSocket(socket)) { denied(); return; }
+      let pending = this.sessionSubscriptions.get(socket);
+      if (!pending) { pending = new Map(); this.sessionSubscriptions.set(socket, pending); }
+      const request = Symbol(); pending.set(id, request);
+      try {
+        await getTranslationService().assertReadableSession(id);
+        if (this.destroyed || socket.disconnected || !this.isCurrentOwnerSocket(socket) || pending.get(id) !== request) { denied(); return; }
+        await socket.join(`session:${id}`);
+        if (this.destroyed || socket.disconnected || !this.isCurrentOwnerSocket(socket) || pending.get(id) !== request) {
+          // A newer subscribe may already own this room. Only revoke it when
+          // there is no remaining subscription intent, or the socket is invalid.
+          if (!pending.has(id) || this.destroyed || socket.disconnected || !this.isCurrentOwnerSocket(socket)) await socket.leave(`session:${id}`);
+          denied(); return;
+        }
+        socket.emit(ServerEvents.SESSION_SUBSCRIBED, { sessionId: id });
+        ack?.({ success: true });
+      } catch {
+        if (pending.get(id) === request) { pending.delete(id); await socket.leave(`session:${id}`); }
+        denied();
+      }
+      return;
+    }
+    if (payload?.topic === 'task') {
+      const id = payload.id;
+      const denied = () => ack?.({ success: false, error: { code: 'TASK_SUBSCRIPTION_DENIED', message: 'Task delivery subscription is unavailable' } });
+      if (typeof id !== 'string' || !id.trim() || id === 'all' || !this.isCurrentOwnerSocket(socket)) { denied(); return; }
+      let pending = this.taskDeliverySubscriptions.get(socket);
+      if (!pending) { pending = new Map(); this.taskDeliverySubscriptions.set(socket, pending); }
+      const request = Symbol(); pending.set(id, request);
+      try {
+        const currentOwner = await this.prepareRoomOwnerSocketValidation(socket);
+        if (!currentOwner()) { denied(); return; }
+        await getTranslationService().assertReadableTeamTask(id);
+        if (!currentOwner() || pending.get(id) !== request) { denied(); return; }
+        await socket.join(`task:${id}`);
+        const afterJoin = await this.prepareRoomOwnerSocketValidation(socket);
+        if (!afterJoin() || pending.get(id) !== request) {
+          if (!pending.has(id) || !afterJoin()) await socket.leave(`task:${id}`);
+          denied(); return;
+        }
+        ack?.({ success: true });
+      } catch {
+        if (pending.get(id) === request) { pending.delete(id); await socket.leave(`task:${id}`); }
+        denied();
+      }
+      return;
+    }
+    if (payload?.topic === 'terminal' && payload.id) {
       socket.join(`terminal:${payload.id}`);
       socket.emit(ServerEvents.TERMINAL_SUBSCRIBED, { terminalId: payload.id });
     }
     ack?.({ success: true });
   }
 
-  private handleUnsubscribe(socket: Socket, payload: UnsubscribePayload, ack?: (res: AckResponse) => void): void {
-    if (payload.topic === 'terminal' && payload.id) {
+  private async handleUnsubscribe(socket: Socket, payload: UnsubscribePayload, ack?: (res: AckResponse) => void): Promise<void> {
+    if (payload?.topic === 'team-run' && typeof payload.id === 'string' && payload.id !== 'all') {
+      this.roomTranslationSubscriptions.get(socket)?.delete(payload.id);
+      try { await socket.leave(`team-run:${payload.id}`); }
+      catch { ack?.({ success: false, error: { code: 'TRANSLATION_SUBSCRIPTION_DENIED', message: 'Room translation subscription is unavailable' } }); return; }
+    }
+    if (payload?.topic === 'task' && typeof payload.id === 'string' && payload.id !== 'all') {
+      this.taskDeliverySubscriptions.get(socket)?.delete(payload.id);
+      await socket.leave(`task:${payload.id}`);
+    }
+    if (payload?.topic === 'session' && typeof payload.id === 'string' && payload.id !== 'all') {
+      this.sessionSubscriptions.get(socket)?.delete(payload.id);
+      try { await socket.leave(`session:${payload.id}`); }
+      catch { ack?.({ success: false, error: { code: 'SESSION_SUBSCRIPTION_DENIED', message: 'Session subscription is unavailable' } }); return; }
+      socket.emit(ServerEvents.SESSION_UNSUBSCRIBED, { sessionId: payload.id });
+    }
+    if (payload?.topic === 'terminal' && payload.id) {
       socket.leave(`terminal:${payload.id}`);
       socket.emit(ServerEvents.TERMINAL_UNSUBSCRIBED, { terminalId: payload.id });
     }

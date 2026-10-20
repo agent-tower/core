@@ -44,14 +44,18 @@ import type {
   WorkRequest as PrismaWorkRequest,
 } from '@prisma/client';
 import { ServiceError, NotFoundError, ValidationError } from '../errors.js';
+import { randomUUID } from 'node:crypto';
+import { getProviderById } from '../executors/index.js';
 import { prisma } from '../utils/index.js';
-import { getEventBus, getSessionManager } from '../core/container.js';
+import { getEventBus, getSessionManager, getTranslationService } from '../core/container.js';
 import { appendAttachmentMarkdownContext } from './attachment-context.js';
 import { emitTeamRunInvalidated } from './team-run-events.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
 import { ensureTaskNotDeleted } from './deleted-task-guard.js';
 import { buildTextPreview, TASK_TITLE_MAX_LENGTH } from './task.service.js';
 import { ensureProjectSupportsWorktrees } from './project-guards.js';
+import { taskInputHash, buildTaskUserText, adoptTaskInputInTransaction, type TaskInputAcceptanceToken } from './team-task-input.js';
+import { readTeamDeliveryIntent, verifyPublishedTeamDelivery, roomDeliveryIntegrityError, teamInitialIntentSchema, type TeamInitialDeliveryIntent } from './team-room-delivery.js';
 import { isRuntimeAwaitingPermission } from '../runtime/runtime-state-view.js';
 
 const TERMINAL_AGENT_INVOCATION_STATUSES = new Set<AgentInvocationStatus>([
@@ -205,7 +209,9 @@ type PrismaTeamTemplateWithMembers = PrismaTeamTemplate & {
   members?: PrismaTeamTemplateMember[];
 };
 
+const ownerDeliverySelect = { clientSubmissionId: true, id: true, originalText: true, actualSentText: true, sentMode: true, revision: true } as const;
 type PrismaRoomMessageWithParticipants = PrismaRoomMessage & {
+  delivery?: { clientSubmissionId: string; id: string; originalText: string; actualSentText: string | null; sentMode: string | null; revision: number } | null;
   participants?: PrismaRoomMessageParticipant[];
 };
 
@@ -1170,7 +1176,7 @@ export class TeamRunService {
       }),
       prisma.roomMessage.findMany({
         where: buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
-        include: { participants: true },
+        include: { participants: true, delivery: !options.viewerMemberId ? { select: ownerDeliverySelect } : false },
         orderBy: normalizedLimit
           ? [{ createdAt: 'desc' }, { id: 'desc' }]
           : [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -1181,7 +1187,7 @@ export class TeamRunService {
       throw new NotFoundError('TeamRun', teamRunId);
     }
     const orderedMessages = normalizedLimit ? [...messages].reverse() : messages;
-    return orderedMessages.map((message) => this.serializeRoomMessage(message));
+    return orderedMessages.map((message) => this.serializeRoomMessage(message, { owner: !options.viewerMemberId }));
   }
 
   async getRoomMessage(teamRunId: string, messageId: string, options: TeamRunVisibilityOptions = {}): Promise<RoomMessage> {
@@ -1195,7 +1201,7 @@ export class TeamRunService {
           id: messageId,
           ...buildRoomMessageVisibilityWhere(teamRunId, options.viewerMemberId),
         },
-        include: { participants: true },
+        include: { participants: true, delivery: !options.viewerMemberId ? { select: ownerDeliverySelect } : false },
       }),
     ]);
     if (!teamRun) {
@@ -1205,7 +1211,7 @@ export class TeamRunService {
       throw new NotFoundError('RoomMessage', messageId);
     }
     return this.serializeRoomMessage(message, {
-      includeFullContent: true,
+      includeFullContent: true, owner: !options.viewerMemberId,
     });
   }
 
@@ -1306,6 +1312,148 @@ export class TeamRunService {
       .map((invocation) => this.serializeAgentInvocation(invocation));
   }
 
+  /** The admission transaction freezes identities and preset expansion, without creating a team. */
+  async prepareInitialDelivery(tx: Prisma.TransactionClient, task: { title: string; description: string | null }, input: CreateTeamRunInput): Promise<TeamInitialDeliveryIntent> {
+    const members = applyStableInstanceNames(await this.buildTeamMemberSnapshots(input, tx)).map(m => ({ ...m, id: randomUUID() }));
+    const intent = teamInitialIntentSchema.parse({ version: 2, plannedTeamRunId: randomUUID(), members, mode: input.mode,
+      heartbeatTimeoutMinutes: await this.resolveHeartbeatTimeoutMinutes(input, tx), originalTitle: task.title, originalDescription: task.description,
+      sourceRevision: 1, taskSourceHash: taskInputHash(task.title, task.description), kind: 'chat', mentions: [], artifactRefs: [], resolvedRecipients: [], mentionTokenCount: 0 });
+    this.assertFrozenInitialMembers(intent);
+    return this.refreshInitialIntent(intent, task);
+  }
+
+  refreshInitialIntent(intent: TeamInitialDeliveryIntent, task: { title: string; description: string | null }): TeamInitialDeliveryIntent {
+    const members = intent.members.map(m => ({ ...m, aliases: JSON.stringify(m.aliases), membershipStatus: 'ACTIVE' }));
+    const parsed = deriveStructuredMentionsFromContent(buildTaskUserText(task.title, task.description), members);
+    const recipients = resolveRoomMessageTargetRequests({ mentions: parsed.mentions, members, senderType: 'user', requesterMemberId: null, allowUserMessageFallback: parsed.tokenCount === 0 });
+    return { ...intent, taskSourceHash: taskInputHash(task.title, task.description), originalTitle: task.title, originalDescription: task.description,
+      sourceRevision: intent.sourceRevision + (intent.taskSourceHash === taskInputHash(task.title, task.description) ? 0 : 1), mentions: parsed.mentions, mentionTokenCount: parsed.tokenCount,
+      resolvedRecipients: recipients.map(r => ({ memberId: r.targetMemberId, ifBusy: r.ifBusy, cancelQueued: r.cancelQueued, target: null, targetSourceMemberId: null })) };
+  }
+
+  private assertFrozenInitialMembers(intent: TeamInitialDeliveryIntent) {
+    for (const m of intent.members) if (!getProviderById(m.providerId)) throw new ServiceError('Frozen member Provider unavailable', 'RECIPIENT_UNAVAILABLE', 409);
+  }
+
+  /** Git inspection is outside the short publication transaction. */
+  async prepareInitialPublication(taskId: string) {
+    const task = await prisma.task.findFirst({ where: { id: taskId, deletedAt: null, project: { archivedAt: null, repoDeletedAt: null } }, include: { project: true } });
+    if (!task) throw new NotFoundError('Task', taskId);
+    await ensureProjectSupportsWorktrees(task.project, 'create TeamRun');
+    return { projectId: task.projectId, repoPath: task.project.repoPath };
+  }
+
+  async publishAcceptedInitialDelivery(tx: Prisma.TransactionClient, deliveryId: string, expectedRevision: number, prepared: { projectId: string; repoPath: string }) {
+    const row = await tx.messageDelivery.findUniqueOrThrow({ where: { id: deliveryId } });
+    const intent = readTeamDeliveryIntent(row);
+    if (row.state === 'SENT') return verifyPublishedTeamDelivery(tx, row);
+    if (intent.version !== 2 || row.origin !== 'TEAM_INITIAL') roomDeliveryIntegrityError();
+    if (await tx.roomMessage.count({ where: { deliveryId } }) || await tx.deliveryReceipt.count({ where: { deliveryId } }) || await tx.teamRun.count({ where: { id: intent.plannedTeamRunId } })) roomDeliveryIntegrityError();
+    if (row.revision !== expectedRevision || !['READY','WAITING_PREDECESSOR'].includes(row.state) || row.acceptedText == null || !row.sentMode) throw new ServiceError('Delivery changed', 'DELIVERY_CONFLICT', 409);
+    const config = await tx.translationSettings.findUniqueOrThrow({ where: { id: 'singleton' } });
+    if (config.enableEpoch !== row.enableEpoch || row.requiresTranslation && !config.enabled) throw new ServiceError('Translation epoch changed', 'DELIVERY_CONFLICT', 409);
+    if (await tx.messageDelivery.count({ where: { channelKey: row.channelKey, sequence: { lt: row.sequence }, state: { notIn: ['SENT','CANCELLED'] } } })) throw new ServiceError('Waiting for an earlier delivery', 'DELIVERY_PREDECESSOR', 409);
+    const task = await tx.task.findUnique({ where: { id: row.taskId! }, include: { project: true } });
+    if (!task || task.deletedAt || task.project.archivedAt || task.project.repoDeletedAt) throw new NotFoundError('Task', row.taskId!);
+    if (task.projectId !== prepared.projectId || task.project.repoPath !== prepared.repoPath || !task.project.worktreeReady) throw new ServiceError('Project changed', 'PROJECT_CHANGED', 409);
+    if (taskInputHash(task.title, task.description) !== intent.taskSourceHash) throw new ServiceError('Task input changed', 'TASK_INPUT_CHANGED', 409);
+    if (await tx.teamRun.findUnique({ where: { taskId: task.id } })) throw toConflict('Task already has a TeamRun');
+    this.assertFrozenInitialMembers(intent);
+    const team = await tx.teamRun.create({ data: { id: intent.plannedTeamRunId, taskId: task.id, mode: intent.mode, heartbeatTimeoutMinutes: intent.heartbeatTimeoutMinutes } });
+    for (const m of intent.members) {
+      // A removed preset must not be re-expanded or silently replaced.
+      if (m.presetId && !await tx.memberPreset.findUnique({ where: { id: m.presetId } })) throw new ServiceError('Frozen preset unavailable', 'RECIPIENT_UNAVAILABLE', 409);
+      await tx.teamMember.create({ data: { ...m, teamRunId: team.id, aliases: JSON.stringify(m.aliases), capabilities: JSON.stringify(m.capabilities), membershipStatus: 'ACTIVE' } });
+    }
+    const source = row.translationSourceId ? await tx.translationSource.findUnique({ where: { id: row.translationSourceId } }) : null;
+    const attempt = source?.effectiveAttemptId ? await tx.translationAttempt.findUnique({ where: { id: source.effectiveAttemptId } }) : null;
+    // Explicit retry_delivery keeps the committed translation across a disable.
+    // The delivery epoch above still arbitrates a concurrent disable; the saved
+    // source and attempt must agree with each other, not with newer settings.
+    if (row.sentMode === 'TRANSLATED' && (!source || source.deletedAt || !attempt || source.sourceKind !== 'USER_DELIVERY' || source.deliveryId !== row.id || source.sourceKey !== row.id || source.scopeType !== 'TASK' || source.scopeId !== task.id || source.laneKey !== row.channelKey
+      || source.sourceHash !== row.sourceHash || source.sourceRevision !== row.sourceRevision || attempt.sourceId !== source.id || attempt.sourceHash !== source.sourceHash
+      || attempt.enableEpoch !== source.enableEpoch || row.requiresTranslation && source.enableEpoch !== config.enableEpoch || attempt.generation !== source.generation || attempt.attemptVersion !== source.currentAttemptVersion || attempt.sourceRevision !== source.sourceRevision || attempt.resultText !== row.acceptedText || !['SUCCESS','NOT_REQUIRED'].includes(attempt.status))) roomDeliveryIntegrityError();
+    const snapshot = await tx.teamTaskInputSnapshot.create({ data: { teamRunId: team.id, taskId: task.id, taskSourceHash: intent.taskSourceHash,
+      originalTitle: intent.originalTitle, originalDescription: intent.originalDescription, state: 'ACCEPTED', effectiveUserText: row.acceptedText, translationSourceId: row.translationSourceId,
+      acceptedAttemptId: row.sentMode === 'TRANSLATED' ? attempt!.id : null, sentMode: row.sentMode, acceptedAt: new Date() } });
+    // Link the initial delivery before validating its same-source snapshot evidence.
+    await tx.messageDelivery.update({ where: { id: row.id }, data: { teamRunId: team.id, taskInputSnapshotId: snapshot.id } });
+    await tx.teamRun.update({ where: { id: team.id }, data: { currentTaskInputSnapshotId: snapshot.id } });
+    const message = await tx.roomMessage.create({ data: { deliveryId: row.id, teamRunId: team.id, senderType: 'user', kind: intent.kind, content: row.acceptedText, mentions: JSON.stringify(intent.mentions), artifactRefs: '[]', attachmentIds: row.attachmentIds, workRequestIds: '[]' } });
+    const workRequestIds: string[] = [];
+    for (const r of intent.resolvedRecipients) {
+      const request = await tx.workRequest.create({ data: { teamRunId: team.id, requesterType: 'user', targetMemberId: r.memberId, triggerMessageId: message.id, instruction: this.contentPreview(row.acceptedText), ifBusy: r.ifBusy, cancelQueued: r.cancelQueued, status: team.mode === 'CONFIRM' ? 'PENDING_APPROVAL' : 'QUEUED', taskInputSnapshotId: snapshot.id } });
+      workRequestIds.push(request.id);
+    }
+    await tx.roomMessage.update({ where: { id: message.id }, data: { workRequestIds: JSON.stringify(workRequestIds) } });
+    const now = new Date(); const revision = row.revision + 1;
+    await tx.deliveryReceipt.create({ data: { deliveryId: row.id, generation: revision, phase: 'SUBMITTED', evidence: 'ROOM_PUBLISHED', submittedAt: now } });
+    const changed = await tx.messageDelivery.updateMany({ where: { id: row.id, revision: row.revision, state: row.state, enableEpoch: row.enableEpoch }, data: { state: 'SENT', actualSentText: row.acceptedText, sentAt: now, acceptedDestinationId: message.id, lastError: null, revision } });
+    if (changed.count !== 1) throw new ServiceError('Delivery changed', 'DELIVERY_CONFLICT', 409);
+    return verifyPublishedTeamDelivery(tx, await tx.messageDelivery.findUniqueOrThrow({ where: { id: row.id } }));
+  }
+
+  /** Freeze routing before translating; publication revalidates every saved recipient and target owner. */
+  async prepareUserDelivery(tx: Prisma.TransactionClient, teamRunId: string, input: { mentions?: StructuredMention[]; artifactRefs?: string[]; kind?: string }) {
+    const team = await tx.teamRun.findFirst({ where: { id: teamRunId, task: { deletedAt: null, project: { archivedAt: null } } }, include: { task: true } });
+    if (!team) throw new NotFoundError('TeamRun', teamRunId);
+    const members = await tx.teamMember.findMany({ where: activeTeamMembersWhere(teamRunId) });
+    const mentions = input.mentions ?? [];
+    assertMentionsReferenceMembers(mentions, new Set(members.map(m => m.id)));
+    if (new Set(mentions.map(m => m.memberId)).size !== mentions.length) throw new ValidationError('Duplicate mentions');
+    const recipients = resolveRoomMessageTargetRequests({ mentions, members, senderType: 'user', requesterMemberId: null });
+    const resolvedRecipients = [];
+    for (const r of recipients) {
+      const target = await buildWorkRequestTargetData(tx, teamRunId, r.target);
+      resolvedRecipients.push({ memberId: r.targetMemberId, ifBusy: r.ifBusy, cancelQueued: r.cancelQueued, target: r.target ?? null, targetSourceMemberId: target.targetSourceMemberId ?? null });
+    }
+    return { team, intent: { version: 1 as const, taskSourceHash: taskInputHash(team.task.title, team.task.description), kind: input.kind ?? (mentions.length ? 'work_request' : 'chat'), mentions, artifactRefs: input.artifactRefs ?? [], resolvedRecipients } };
+  }
+
+  /** Foundation only: no production caller until the entire Team input path is enabled. */
+  async publishAcceptedUserDelivery(tx: Prisma.TransactionClient, envelope: {
+    deliveryId: string; expectedRevision: number; enableEpoch: number; acceptedText: string; taskInput: TaskInputAcceptanceToken;
+  }) {
+    const row = await tx.messageDelivery.findUniqueOrThrow({ where: { id: envelope.deliveryId } });
+    const intent = readTeamDeliveryIntent(row);
+    // A lost commit response recovers the immutable facts, even if the Task/membership changed later.
+    if (row.state === 'SENT') return verifyPublishedTeamDelivery(tx, row);
+    if (await tx.roomMessage.count({ where: { deliveryId: row.id } }) || await tx.deliveryReceipt.count({ where: { deliveryId: row.id } })) roomDeliveryIntegrityError();
+    if (row.origin !== 'TEAM_USER' || row.revision !== envelope.expectedRevision || !['READY', 'WAITING_PREDECESSOR'].includes(row.state)
+      || row.acceptedText == null || row.acceptedText !== envelope.acceptedText || !row.sentMode || row.enableEpoch !== envelope.enableEpoch) throw new ServiceError('Delivery changed', 'DELIVERY_CONFLICT', 409);
+    const config = await tx.translationSettings.findUniqueOrThrow({ where: { id: 'singleton' } });
+    if (config.enableEpoch !== row.enableEpoch || row.requiresTranslation && !config.enabled) throw new ServiceError('Translation epoch changed', 'DELIVERY_DISABLED', 409);
+    if (await tx.messageDelivery.count({ where: { channelKey: row.channelKey, sequence: { lt: row.sequence }, state: { notIn: ['SENT', 'CANCELLED'] } } })) throw new ServiceError('Waiting for an earlier delivery', 'DELIVERY_PREDECESSOR', 409);
+    const team = await tx.teamRun.findUnique({ where: { id: row.teamRunId! }, include: { task: { include: { project: true } } } });
+    if (!team || team.taskId !== row.taskId || team.task.deletedAt || team.task.project.archivedAt) throw new ServiceError('Delivery scope not found', 'NOT_FOUND', 404);
+    if (intent.taskSourceHash !== envelope.taskInput.taskSourceHash) throw new ServiceError('Task input changed', 'TASK_INPUT_CHANGED', 409);
+    const targets = [];
+    for (const recipient of intent.resolvedRecipients) {
+      if (!await tx.teamMember.findFirst({ where: { id: recipient.memberId, teamRunId: team.id, membershipStatus: 'ACTIVE' } })) throw new ServiceError('Frozen recipient unavailable', 'RECIPIENT_UNAVAILABLE', 409);
+      try {
+        const target = await buildWorkRequestTargetData(tx, team.id, recipient.target);
+        if ((target.targetSourceMemberId ?? null) !== (recipient.targetSourceMemberId ?? null)) throw new Error('Target owner changed');
+        targets.push(target);
+      }
+      catch { throw new ServiceError('Frozen target unavailable', 'TARGET_UNAVAILABLE', 409); }
+    }
+    const earlierInput = await tx.workRequest.findFirst({ where: { teamRunId: team.id, status: 'QUEUED', taskInputSnapshot: { state: 'PENDING', id: { not: envelope.taskInput.snapshotId } }, OR: [{ createdAt: { lt: row.createdAt } }, { createdAt: row.createdAt, id: { lt: row.id } }] }, select: { id: true } });
+    if (earlierInput) throw new ServiceError('Waiting for an earlier task input', 'TASK_INPUT_PREDECESSOR', 409);
+    const snapshotId = await adoptTaskInputInTransaction(tx, team.id, team.taskId, envelope.taskInput);
+    const message = await tx.roomMessage.create({ data: { deliveryId: row.id, teamRunId: team.id, senderType: 'user', kind: intent.kind, visibility: 'PUBLIC', content: row.acceptedText, mentions: JSON.stringify(intent.mentions), artifactRefs: JSON.stringify(intent.artifactRefs), attachmentIds: row.attachmentIds, workRequestIds: '[]' } });
+    const workRequestIds: string[] = [];
+    for (const [index, recipient] of intent.resolvedRecipients.entries()) {
+      const request = await tx.workRequest.create({ data: { teamRunId: team.id, requesterType: 'user', targetMemberId: recipient.memberId, ...targets[index], triggerMessageId: message.id, instruction: this.contentPreview(row.acceptedText), ifBusy: recipient.ifBusy, cancelQueued: recipient.cancelQueued, status: team.mode === 'CONFIRM' ? 'PENDING_APPROVAL' : 'QUEUED', taskInputSnapshotId: snapshotId } });
+      workRequestIds.push(request.id);
+    }
+    await tx.roomMessage.update({ where: { id: message.id }, data: { workRequestIds: JSON.stringify(workRequestIds) } });
+    const now = new Date(); const revision = row.revision + 1;
+    await tx.deliveryReceipt.create({ data: { deliveryId: row.id, generation: revision, phase: 'SUBMITTED', evidence: 'ROOM_PUBLISHED', submittedAt: now } });
+    const changed = await tx.messageDelivery.updateMany({ where: { id: row.id, revision: row.revision, state: row.state, enableEpoch: row.enableEpoch }, data: { state: 'SENT', actualSentText: row.acceptedText, sentAt: now, acceptedDestinationId: message.id, taskInputSnapshotId: snapshotId, lastError: null, revision } });
+    if (changed.count !== 1) throw new ServiceError('Delivery changed', 'DELIVERY_CONFLICT', 409);
+    return verifyPublishedTeamDelivery(tx, await tx.messageDelivery.findUniqueOrThrow({ where: { id: row.id } }));
+  }
+
   async createRoomMessage(teamRunId: string, input: CreateRoomMessageInput): Promise<RoomMessage> {
     const teamRun = await prisma.teamRun.findUnique({
       where: { id: teamRunId },
@@ -1372,6 +1520,11 @@ export class TeamRunService {
         }
       }
 
+      // The message and its dispatch requests share the same durable admission
+      // decision. Never use the worker's in-memory epoch or upsert settings here.
+      const translationSettings = senderType === 'agent'
+        ? await tx.translationSettings.findUnique({ where: { id: 'singleton' }, select: { enabled: true, enableEpoch: true } })
+        : null;
       const message = await tx.roomMessage.create({
         data: {
           teamRunId,
@@ -1381,6 +1534,7 @@ export class TeamRunService {
           kind,
           visibility: 'PUBLIC',
           content: input.content,
+          translationEligibilityEpoch: translationSettings?.enabled ? translationSettings.enableEpoch : null,
           mentions: stringifyJson(mentions),
           artifactRefs: stringifyJson(input.artifactRefs ?? []),
           attachmentIds: stringifyJson(input.attachmentIds ?? []),
@@ -1425,6 +1579,12 @@ export class TeamRunService {
         });
       }
     });
+
+    // Best-effort, bounded ID admission only. Durable eligibility repairs a lost
+    // notification, including a crash or a later reconciler failure.
+    if (senderType === 'agent') {
+      try { getTranslationService().roomMessageCommitted(messageId); } catch { /* Original publication remains authoritative. */ }
+    }
 
     // 成员（agent）就某次 invocation 发出 room message 后立即交给 reconciler 处理：
     // WAITING_ROOM_REPLY → 转 COMPLETED、释放锁、推进调度/review；RUNNING → 清零唤醒计数/绝对兜底并刷新心跳（不终态）。
@@ -1618,11 +1778,11 @@ export class TeamRunService {
     }));
   }
 
-  private async buildTeamMemberSnapshots(input: CreateTeamRunInput): Promise<TeamMemberSnapshot[]> {
+  private async buildTeamMemberSnapshots(input: CreateTeamRunInput, tx: Prisma.TransactionClient = prisma): Promise<TeamMemberSnapshot[]> {
     const snapshots: TeamMemberSnapshot[] = [];
 
     if (input.teamTemplateId) {
-      const template = await prisma.teamTemplate.findUnique({
+      const template = await tx.teamTemplate.findUnique({
         where: { id: input.teamTemplateId },
         include: { members: { orderBy: { position: 'asc' } } },
       });
@@ -1630,13 +1790,13 @@ export class TeamRunService {
         throw new NotFoundError('TeamTemplate', input.teamTemplateId);
       }
       const presets = await this.findMemberPresetsByIds(
-        template.members.map((member) => member.memberPresetId)
+        template.members.map((member) => member.memberPresetId), tx
       );
       snapshots.push(...presets.map((preset) => this.memberPresetToSnapshot(preset)));
     }
 
     if (input.memberPresetIds && input.memberPresetIds.length > 0) {
-      const presets = await this.findMemberPresetsByIds(input.memberPresetIds);
+      const presets = await this.findMemberPresetsByIds(input.memberPresetIds, tx);
       snapshots.push(...presets.map((preset) => this.memberPresetToSnapshot(preset)));
     }
 
@@ -1659,11 +1819,11 @@ export class TeamRunService {
     return snapshots;
   }
 
-  private async resolveHeartbeatTimeoutMinutes(input: CreateTeamRunInput): Promise<number> {
+  private async resolveHeartbeatTimeoutMinutes(input: CreateTeamRunInput, tx: Prisma.TransactionClient = prisma): Promise<number> {
     if (!input.teamTemplateId) {
       return 10;
     }
-    const template = await prisma.teamTemplate.findUnique({
+    const template = await tx.teamTemplate.findUnique({
       where: { id: input.teamTemplateId },
       select: { heartbeatTimeoutMinutes: true },
     });
@@ -1730,12 +1890,12 @@ export class TeamRunService {
     };
   }
 
-  private async findMemberPresetsByIds(ids: string[]): Promise<PrismaMemberPreset[]> {
+  private async findMemberPresetsByIds(ids: string[], tx: Prisma.TransactionClient = prisma): Promise<PrismaMemberPreset[]> {
     if (ids.length === 0) {
       return [];
     }
 
-    const presets = await prisma.memberPreset.findMany({
+    const presets = await tx.memberPreset.findMany({
       where: { id: { in: ids } },
     });
     const presetById = new Map(presets.map((preset) => [preset.id, preset]));
@@ -1816,7 +1976,7 @@ export class TeamRunService {
   private teamRunInclude() {
     return {
       members: { orderBy: { createdAt: 'asc' as const } },
-      messages: { orderBy: { createdAt: 'asc' as const }, include: { participants: true } },
+      messages: { orderBy: { createdAt: 'asc' as const }, include: { participants: true, delivery: { select: ownerDeliverySelect } } },
       workRequests: { orderBy: { createdAt: 'asc' as const } },
       invocations: { orderBy: { createdAt: 'asc' as const } },
     };
@@ -1887,7 +2047,7 @@ export class TeamRunService {
       createdAt: toIso(teamRun.createdAt),
       updatedAt: toIso(teamRun.updatedAt),
       members: teamRun.members?.map((member) => this.serializeTeamMember(member, memberStatuses.get(member.id))),
-      messages: visibleMessages?.map((message) => this.serializeRoomMessage(message)),
+      messages: visibleMessages?.map((message) => this.serializeRoomMessage(message, { owner: !options.viewerMemberId })),
       workRequests: visibleWorkRequests?.map((workRequest) => this.serializeWorkRequest(workRequest)),
       invocations: visibleInvocations?.map((invocation) => this.serializeAgentInvocation(invocation)),
     };
@@ -1958,7 +2118,7 @@ export class TeamRunService {
 
   private serializeRoomMessage(
     message: PrismaRoomMessageWithParticipants,
-    options: { includeFullContent?: boolean } = {}
+    options: { includeFullContent?: boolean; owner?: boolean } = {}
   ): RoomMessage {
     const participants = (message.participants ?? []).map((participant) => this.serializeRoomMessageParticipant(participant));
     const recipientMemberIds = participants
@@ -1966,13 +2126,17 @@ export class TeamRunService {
       .map((participant) => participant.memberId);
     const participantMemberIds = participants.map((participant) => participant.memberId);
 
-    const serializedContent = this.serializePreviewField(message.content);
+    const ownerDelivery = options.owner && message.senderType === 'user' ? message.delivery : null;
+    const displayContent = ownerDelivery?.originalText ?? message.content;
+    const serializedContent = this.serializePreviewField(displayContent);
     const contentMode: RoomMessageContentMode = options.includeFullContent || !serializedContent.isTruncated
       ? 'full'
       : 'preview';
+    const { translationEligibilityEpoch: _eligibility, delivery: _delivery, ...publicMessage } = message;
     return {
-      ...message,
-      content: options.includeFullContent ? message.content : serializedContent.value,
+      ...publicMessage,
+      content: options.includeFullContent ? displayContent : serializedContent.value,
+      ...(ownerDelivery ? { userDelivery: { operationId: ownerDelivery.id, clientSubmissionId: ownerDelivery.clientSubmissionId, revision: ownerDelivery.revision, sentMode: ownerDelivery.sentMode as 'ORIGINAL' | 'TRANSLATED', actualSentText: options.includeFullContent || (ownerDelivery.actualSentText?.length ?? 0) <= 240 ? ownerDelivery.actualSentText : this.contentPreview(ownerDelivery.actualSentText ?? ''), isTruncated: !options.includeFullContent && (ownerDelivery.actualSentText?.length ?? 0) > 240 } } : {}),
       contentPreview: serializedContent.preview,
       contentMode,
       fullContentAvailable: contentMode === 'preview',

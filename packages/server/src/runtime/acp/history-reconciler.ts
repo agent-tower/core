@@ -55,60 +55,89 @@ export function reconcileAcpHistoryEntries(
     anonymousIndexes.set(fingerprint, indexes);
   }
   const anonymousMatches = new Map<string, number>();
-  const claimedLocalIndexes = new Set<number>();
   const assistantIndexes = merged.flatMap((entry, index) => (
     entry.entryType === 'assistant_message' ? [index] : []
   ));
-  const assistantPositions = new Map(assistantIndexes.map((index, position) => [index, position]));
-  let assistantCursor = 0;
+  const assistantCursors = new Map<string, number>();
   const localStableIds = new Set(merged
     .filter((entry) => hasStableAcpIdentity(entry.id))
     .map((entry) => entry.id));
+  const protocolIndexes = new Map<string, number[]>();
+  for (let index = 0; index < merged.length; index++) {
+    const identity = protocolIdentityKey(merged[index]);
+    if (!identity) continue;
+    const indexes = protocolIndexes.get(identity) ?? [];
+    indexes.push(index);
+    protocolIndexes.set(identity, indexes);
+  }
+  const protocolOccurrences = new Map<string, number>();
+  const exactMatches = new Map<number, number>();
+  // Reserve the whole replay's exact identities before any content fallback.
+  // Otherwise a newly recovered earlier message can consume a later exact block.
+  const claimedLocalIndexes = new Set<number>();
+  for (let replayedIndex = 0; replayedIndex < replayedEntries.length; replayedIndex += 1) {
+    const replayed = replayedEntries[replayedIndex];
+    if (replayed.entryType === 'user_message') continue;
+    let index: number | undefined;
+    const identity = protocolIdentityKey(replayed);
+    if (identity) {
+      const occurrence = protocolOccurrences.get(identity) ?? 0;
+      protocolOccurrences.set(identity, occurrence + 1);
+      const native = replayed.metadata!.acpTextIdentity!;
+      const legacyId = native.streamId === 'main'
+        ? `acp-${replayed.entryType === 'assistant_message' ? 'message' : 'thought'}-${Buffer.from(native.messageId).toString('base64url').slice(0, 96)}`
+        : undefined;
+      const legacyIndex = legacyId === undefined ? undefined : stableIndexes.get(legacyId);
+      index = protocolIndexes.get(identity)?.[occurrence]
+        ?? (legacyIndex !== undefined && !merged[legacyIndex].metadata?.acpTextIdentity ? legacyIndex : undefined);
+    }
+    index ??= hasStableAcpIdentity(replayed.id) ? stableIndexes.get(replayed.id) : undefined;
+    if (index !== undefined && !claimedLocalIndexes.has(index)) {
+      exactMatches.set(replayedIndex, index);
+      claimedLocalIndexes.add(index);
+    }
+  }
   const matchedThinkingReplayIndexes = matchReplayedThinkingEntries(
     merged,
     replayedEntries,
     localStableIds,
+    claimedLocalIndexes,
+    exactMatches,
   );
 
   for (let replayedIndex = 0; replayedIndex < replayedEntries.length; replayedIndex += 1) {
     const replayed = replayedEntries[replayedIndex];
     if (replayed.entryType === 'user_message') continue;
-
-    if (hasStableAcpIdentity(replayed.id)) {
-      const existingIndex = stableIndexes.get(replayed.id);
-      if (existingIndex !== undefined) {
-        claimedLocalIndexes.add(existingIndex);
-        const assistantPosition = assistantPositions.get(existingIndex);
-        if (assistantPosition !== undefined) assistantCursor = Math.max(assistantCursor, assistantPosition + 1);
-
-        const existing = merged[existingIndex];
-        const replacement = { ...replayed, timestamp: existing.timestamp };
-        if (!entriesEqual(existing, replacement)) {
-          merged[existingIndex] = replacement;
-          changed = true;
-        }
-        continue;
+    const existingIndex = exactMatches.get(replayedIndex)
+      ?? (hasStableAcpIdentity(replayed.id) ? stableIndexes.get(replayed.id) : undefined);
+    if (existingIndex !== undefined) {
+      claimedLocalIndexes.add(existingIndex);
+      // Exact anchors may appear out of local order after missing history was
+      // appended. Only semantic matches advance the fallback cursor.
+      const existing = merged[existingIndex];
+      const replacement = preserveOriginalBlock(existing, replayed);
+      if (!entriesEqual(existing, replacement)) {
+        merged[existingIndex] = replacement;
+        changed = true;
       }
+      continue;
     }
 
     if (replayed.entryType === 'assistant_message') {
+      const scope = protocolScopeKey(replayed);
       const match = findAssistantMatch(
         merged,
         replayed,
         assistantIndexes,
-        assistantCursor,
+        assistantCursors.get(scope) ?? 0,
         claimedLocalIndexes,
       );
       if (match) {
         claimedLocalIndexes.add(match.index);
-        assistantCursor = match.position + 1;
+        assistantCursors.set(scope, match.position + 1);
         if (match.replayIsMoreComplete) {
           const existing = merged[match.index];
-          const replacement = {
-            ...replayed,
-            id: existing.id,
-            timestamp: existing.timestamp,
-          };
+          const replacement = preserveOriginalBlock(existing, replayed);
           if (!entriesEqual(existing, replacement)) {
             merged[match.index] = replacement;
             changed = true;
@@ -160,7 +189,7 @@ function findAssistantMatch(
 
   for (let position = startPosition; position < assistantIndexes.length; position += 1) {
     const index = assistantIndexes[position];
-    if (claimedIndexes.has(index)) continue;
+    if (claimedIndexes.has(index) || !compatibleProtocolIdentity(localEntries[index], replayed)) continue;
     const localContent = normalizeMessageContent(localEntries[index].content);
     if (localContent === replayedContent) {
       return { index, position, replayIsMoreComplete: false };
@@ -169,7 +198,7 @@ function findAssistantMatch(
 
   for (let position = startPosition; position < assistantIndexes.length; position += 1) {
     const index = assistantIndexes[position];
-    if (claimedIndexes.has(index)) continue;
+    if (claimedIndexes.has(index) || !compatibleProtocolIdentity(localEntries[index], replayed)) continue;
     const localContent = normalizeMessageContent(localEntries[index].content);
     if (!localContent) continue;
     if (replayedContent.startsWith(localContent)) {
@@ -186,29 +215,52 @@ function matchReplayedThinkingEntries(
   localEntries: NormalizedEntry[],
   replayedEntries: NormalizedEntry[],
   localStableIds: Set<string>,
+  reservedIndexes: Set<number>,
+  exactMatches: ReadonlyMap<number, number>,
 ): Set<number> {
-  const localStream = localEntries
-    .filter((entry) => entry.entryType === 'thinking')
-    .map((entry) => normalizeThinkingContent(entry.content))
-    .join('');
   const matches = new Set<number>();
-  let cursor = 0;
+  const streams = new Map<string, string>();
+  const cursors = new Map<string, number>();
 
   for (let index = 0; index < replayedEntries.length; index += 1) {
     const replayed = replayedEntries[index];
-    if (replayed.entryType !== 'thinking' || localStableIds.has(replayed.id)) continue;
+    // Protocol matches also have random canonical IDs. They must not consume
+    // the unreserved content pool or advance its cursor before ID-drift replay.
+    if (replayed.entryType !== 'thinking' || exactMatches.has(index) || localStableIds.has(replayed.id)) continue;
     const content = normalizeThinkingContent(replayed.content);
     if (!content) continue;
-    const matchIndex = localStream.indexOf(content, cursor);
+    // Keep ID-drift/chunk-boundary recovery within the same native child stream.
+    const scope = protocolScopeKey(replayed);
+    if (!streams.has(scope)) streams.set(scope, localEntries
+      .filter((entry, index) => entry.entryType === 'thinking' && !reservedIndexes.has(index) && compatibleProtocolIdentity(entry, replayed))
+      .map(entry => normalizeThinkingContent(entry.content)).join(''));
+    const matchIndex = streams.get(scope)!.indexOf(content, cursors.get(scope) ?? 0);
     if (matchIndex < 0) continue;
     matches.add(index);
-    cursor = matchIndex + content.length;
+    cursors.set(scope, matchIndex + content.length);
   }
   return matches;
 }
 
 function normalizeMessageContent(content: string): string {
   return content.replace(/\s+/g, ' ').trim();
+}
+
+function compatibleProtocolIdentity(local: NormalizedEntry, replayed: NormalizedEntry): boolean {
+  const localIdentity = local.metadata?.acpTextIdentity;
+  const replayIdentity = replayed.metadata?.acpTextIdentity;
+  return !localIdentity || !replayIdentity || local.entryType === replayed.entryType
+    && localIdentity.sessionId === replayIdentity.sessionId && localIdentity.streamId === replayIdentity.streamId;
+}
+
+function protocolIdentityKey(entry: NormalizedEntry): string | undefined {
+  const identity = entry.metadata?.acpTextIdentity;
+  return identity && JSON.stringify([identity.sessionId, identity.streamId, entry.entryType, identity.messageId]);
+}
+
+function protocolScopeKey(entry: NormalizedEntry): string {
+  const identity = entry.metadata?.acpTextIdentity;
+  return identity ? JSON.stringify([identity.sessionId, identity.streamId]) : 'legacy';
 }
 
 function normalizeThinkingContent(content: string): string {
@@ -229,4 +281,15 @@ function entriesEqual(left: NormalizedEntry, right: NormalizedEntry): boolean {
     && left.entryType === right.entryType
     && left.content === right.content
     && JSON.stringify(left.metadata ?? null) === JSON.stringify(right.metadata ?? null);
+}
+
+function preserveOriginalBlock(existing: NormalizedEntry, replayed: NormalizedEntry): NormalizedEntry {
+  const block = existing.metadata?.textBlock;
+  const { sealedReason: _reason, translationEpoch: _epoch, ...revised } = block ?? {};
+  const identity = replayed.metadata?.acpTextIdentity ?? existing.metadata?.acpTextIdentity;
+  const metadata = { ...replayed.metadata, ...(identity ? { acpTextIdentity: identity } : {}) };
+  return { ...replayed, id: existing.id, timestamp: existing.timestamp,
+    ...(identity ? { metadata } : {}),
+    ...(block ? { metadata: { ...metadata, textBlock: existing.content === replayed.content ? block : { ...revised, sourceRevision: block.sourceRevision + 1, state: 'OPEN' } as typeof block } } : {}),
+  };
 }

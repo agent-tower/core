@@ -136,7 +136,7 @@ describe('StartAgentDialog Provider permissions', () => {
     expect(button('启动').disabled).toBe(false)
     await act(async () => button('启动').click())
     expect(mocks.createSession).toHaveBeenCalledWith('/workspaces/workspace-1/sessions', {
-      providerId: 'alternate', prompt: 'Review this change',
+      providerId: 'alternate', prompt: 'Review this change', retryTask: undefined, clientSubmissionId: expect.any(String),
     })
   })
 })

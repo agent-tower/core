@@ -1,3 +1,7 @@
+import { rememberTeamInitialSubmission, forgetTeamInitialSubmission } from './team-initial-submission'
+import type { MessageDeliverySubmission } from '@agent-tower/shared'
+import { cacheDelivery } from './delivery-cache'
+import { rememberTeamRoomSubmission, forgetTeamRoomSubmission } from './team-room-submission'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   AgentInvocation,
@@ -41,6 +45,7 @@ const TEAM_RUN_REFRESH_INTERVAL_MS = 5000
 const STOP_MEMBER_WORK_REQUEST_TIMEOUT_MS = 45_000
 
 export type PostRoomMessageInput = {
+  clientSubmissionId?: string;
   content: string
   mentions?: StructuredMention[]
   attachmentIds?: string[]
@@ -96,6 +101,7 @@ export type CreateTeamTemplateInput = {
 export type UpdateTeamTemplateInput = Partial<CreateTeamTemplateInput>
 
 export type CreateTaskTeamRunInput = {
+  clientSubmissionId?: string
   mode: TeamRunMode
   teamTemplateId?: string
   memberPresetIds?: string[]
@@ -302,9 +308,23 @@ export function useCreateTaskTeamRun() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ taskId, ...input }: CreateTaskTeamRunInput & { taskId: string }) =>
-      apiClient.post<TeamRun>(`/tasks/${taskId}/team-runs`, input),
+    mutationFn: async ({ taskId, ...input }: CreateTaskTeamRunInput & { taskId: string }) => {
+      const body = rememberTeamInitialSubmission(taskId, input)
+      try {
+        const result = await apiClient.post<TeamRun | MessageDeliverySubmission>(`/tasks/${taskId}/team-runs`, body)
+        forgetTeamInitialSubmission(taskId, body.clientSubmissionId)
+        return result
+      } catch (error) {
+        if (error instanceof ApiError && [400, 401, 403, 404, 409, 422, 429].includes(error.status)) forgetTeamInitialSubmission(taskId, body.clientSubmissionId)
+        throw error
+      }
+    },
     onSuccess: (teamRun, variables) => {
+      if ('operationId' in teamRun) {
+        cacheDelivery(queryClient, teamRun.delivery)
+        void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.task(variables.taskId) })
+        return
+      }
       queryClient.setQueryData(teamRunQueryKeys.task(variables.taskId), teamRun)
       queryClient.setQueryData(teamRunQueryKeys.detail(teamRun.id), teamRun)
       queryClient.setQueryData(teamRunQueryKeys.messages(teamRun.id), teamRun.messages ?? [])
@@ -400,9 +420,18 @@ export function usePostRoomMessage(teamRunId: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (input: PostRoomMessageInput) =>
-      apiClient.post<RoomMessage>(`/team-runs/${teamRunId}/messages`, input),
+    mutationFn: async (input: PostRoomMessageInput) => {
+      const body = rememberTeamRoomSubmission(teamRunId, input)
+      const result = await apiClient.post<RoomMessage | MessageDeliverySubmission>(`/team-runs/${teamRunId}/messages`, body)
+      forgetTeamRoomSubmission(teamRunId, body.clientSubmissionId)
+      return result
+    },
     onSuccess: (message) => {
+      if ('operationId' in message) {
+        cacheDelivery(queryClient, message.delivery)
+        void queryClient.invalidateQueries({ queryKey: teamRunQueryKeys.all })
+        return
+      }
       queryClient.setQueryData<RoomMessage[]>(
         teamRunQueryKeys.messages(teamRunId),
         (current) => upsertRoomMessage(current, message),

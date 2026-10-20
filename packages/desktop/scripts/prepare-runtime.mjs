@@ -80,7 +80,9 @@ if (existsSync(selfWorkspaceLink)) {
 }
 
 requirePath(path.join(serverRuntimeDir, 'dist/cli.js'), 'server CLI build output');
+requirePath(path.join(serverRuntimeDir, 'dist/utils/database-schema.js'), 'startup schema compatibility helper');
 requirePath(path.join(serverRuntimeDir, 'prisma/schema.prisma'), 'Prisma schema');
+requirePath(path.join(serverRuntimeDir, 'prisma/migrations/20261016010000_add_message_deliveries/migration.sql'), 'P3 schema SQL');
 requirePath(path.join(serverRuntimeDir, 'node_modules/prisma/build/index.js'), 'Prisma CLI runtime');
 requirePath(path.join(serverRuntimeDir, 'node_modules/@prisma/client'), 'Prisma client runtime');
 requirePath(path.join(serverRuntimeDir, 'node_modules/@shitiandmw/node-pty'), 'node-pty runtime');

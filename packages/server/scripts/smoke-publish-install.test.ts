@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   statSync: vi.fn(),
   writeFileSync: vi.fn(),
   verifyCliStartup: vi.fn(),
+  verifyP3Startup: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -23,6 +24,7 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('../../../scripts/verify-cli-startup.mjs', () => ({
   verifyCliStartup: mocks.verifyCliStartup,
+  verifyP3Startup: mocks.verifyP3Startup,
 }));
 
 vi.mock('node:fs', () => ({
@@ -53,6 +55,7 @@ const npmShell = process.platform === 'win32';
 const npmArg = (value: string) => (npmShell && value.includes(' ') ? `"${value}"` : value);
 const piVersion = '0.85.1';
 const originalArgv = process.argv;
+const originalEnv = { ...process.env };
 let existingFiles: Set<string>;
 let packageMetadata: Map<string, object>;
 
@@ -108,6 +111,7 @@ beforeEach(() => {
     [path.join(installedRoot, 'node_modules/@prisma/client/package.json'), { version: '5.22.0' }],
   ]);
   mocks.verifyCliStartup.mockResolvedValue('cli=1.2.3-beta.4 health=ok web=ok mcp=agent-tower');
+  mocks.verifyP3Startup.mockResolvedValue('legacy=preserved');
   mocks.existsSync.mockImplementation(filePath => existingFiles.has(filePath));
   mocks.statSync.mockReturnValue({ isFile: () => true });
   mocks.mkdtempSync.mockReturnValue(tempRoot);
@@ -129,6 +133,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.argv = originalArgv;
+  process.env = { ...originalEnv };
   vi.restoreAllMocks();
 });
 
@@ -243,6 +248,7 @@ describe('publish install smoke tarball reuse', () => {
     await runSmoke(['--tarball', externalTarball]);
 
     expect(mocks.verifyCliStartup).toHaveBeenCalledWith(installedRoot, '1.2.3-beta.4', tempRoot);
+    expect(mocks.verifyP3Startup).toHaveBeenCalledWith(installedRoot, path.join(tempRoot, 'p3-upgrade'));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('health=ok'));
   });
 

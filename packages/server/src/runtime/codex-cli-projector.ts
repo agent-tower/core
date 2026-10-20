@@ -20,7 +20,7 @@ export class CodexCliProjector {
     if (usage && Number.isFinite(usage.inputTokens) && Number.isFinite(usage.outputTokens)) this.put('usage', createTokenUsageInfo(usage.inputTokens + usage.outputTokens));
   }
   error(message: string) { this.put('error', createErrorMessage(message)); }
-  item(item: Item) {
+  item(item: Item, completed = false) {
     if (typeof item.id !== 'string') return;
     const status: ToolStatus = item.status === 'declined' ? 'denied' : item.status === 'failed' || item.error ? 'failed'
       : item.status === 'completed' ? 'success' : 'in_progress';
@@ -39,7 +39,8 @@ export class CodexCliProjector {
     } else if (item.type === 'mcpToolCall') {
       const entry = createToolUse(String(item.tool ?? 'mcp'), `${item.server}/${item.tool}\n${JSON.stringify(item.arguments ?? {})}\n${JSON.stringify(item.result ?? item.error ?? '')}`, 'tool', item.id, item.id);
       this.put(item.id, { ...entry, metadata: { ...entry.metadata, status } });
-    } else if (item.type === 'plan') this.put(item.id, createAssistantMessage(String(item.text ?? ''), item.id));
+    } else if (item.type === 'plan') this.put(item.id, createToolUse('plan', String(item.text ?? ''), 'plan_presentation', item.id));
+    if (completed && item.type === 'agentMessage') this.store.textBlocks.complete(this.entries.get(item.id)!.index);
   }
   delta(method: string, itemId: string, delta: string) {
     const previous = this.entries.get(itemId); if (!previous) return;

@@ -1,3 +1,4 @@
+import type { PrismaClient } from '@prisma/client';
 import { prisma } from '../utils/index.js';
 
 interface AttachmentContextItem {
@@ -43,8 +44,28 @@ export async function buildAttachmentMarkdownContext(
 
 export async function appendAttachmentMarkdownContext(
   content: string,
-  attachmentIds: string[] | null | undefined
+  attachmentIds: string[] | null | undefined,
+  preserveText = false
 ): Promise<string> {
   const attachmentContext = await buildAttachmentMarkdownContext(attachmentIds, content);
-  return [content.trim(), attachmentContext].filter(Boolean).join('\n\n');
+  return [preserveText ? content : content.trim(), attachmentContext].filter(Boolean).join('\n\n');
+}
+
+/** Recover only exact, server-generated attachment lines from legacy task prompts. */
+export async function splitAttachmentReferences(content: string, db: Pick<PrismaClient, 'attachment'> = prisma): Promise<{ text: string; attachmentIds: string[] }> {
+  const lines = content.split('\n');
+  const paths = lines.flatMap(line => {
+    const match = /^!?\[[^\n]*\]\(([^\n]*)\)$/.exec(line);
+    return match ? [match[1]!] : [];
+  });
+  if (!paths.length) return { text: content, attachmentIds: [] };
+  const attachments = await db.attachment.findMany({ where: { storagePath: { in: paths } } });
+  const references = new Map(attachments.map(attachment => [formatAttachmentMarkdown(attachment), attachment.id]));
+  const attachmentIds: string[] = [];
+  const body = lines.filter(line => {
+    const id = references.get(line);
+    if (!id) return true;
+    attachmentIds.push(id); return false;
+  }).join('\n');
+  return { text: attachmentIds.length ? body.trim() : content, attachmentIds: uniqueIds(attachmentIds) };
 }

@@ -92,7 +92,8 @@ export async function extractImagePaths(prompt: string): Promise<{
 }> {
   const imageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
   const imagePaths: string[] = [];
-  let textPrompt = prompt;
+  const textParts: string[] = [];
+  let lastIndex = 0;
 
   let match: RegExpExecArray | null;
   while ((match = imageRegex.exec(prompt)) !== null) {
@@ -100,17 +101,17 @@ export async function extractImagePaths(prompt: string): Promise<{
     const exists = await fileExists(imagePath);
     if (exists) {
       imagePaths.push(imagePath);
+      // Remove this occurrence only after accepting its path as an image input.
+      // Failed/remote matches and every intervening whitespace remain literal text.
+      textParts.push(prompt.slice(lastIndex, match.index));
+      lastIndex = match.index + match[0].length;
     } else {
       console.warn(`[image-utils] Image file not found: ${imagePath}`);
     }
   }
 
-  // 移除所有图片语法，保留纯文本
-  if (imagePaths.length > 0) {
-    textPrompt = prompt.replace(imageRegex, '').replace(/\n{3,}/g, '\n\n').trim();
-  }
-
-  return { textPrompt, imagePaths };
+  textParts.push(prompt.slice(lastIndex));
+  return { textPrompt: textParts.join(''), imagePaths };
 }
 
 /**
@@ -133,7 +134,7 @@ export async function parsePromptWithImages(prompt: string): Promise<ParsedPromp
 
     // 添加图片前的文本
     if (matchIndex > lastIndex) {
-      const textBefore = prompt.substring(lastIndex, matchIndex).trim();
+      const textBefore = prompt.substring(lastIndex, matchIndex);
       if (textBefore) {
         contentBlocks.push({
           type: 'text',
@@ -183,7 +184,7 @@ export async function parsePromptWithImages(prompt: string): Promise<ParsedPromp
 
   // 添加剩余的文本
   if (lastIndex < prompt.length) {
-    const textAfter = prompt.substring(lastIndex).trim();
+    const textAfter = prompt.substring(lastIndex);
     if (textAfter) {
       contentBlocks.push({
         type: 'text',

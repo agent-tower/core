@@ -45,6 +45,8 @@ model Task {
   projectId   String
   project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workspaces  Workspace[]
+  deliveries MessageDelivery[]
+  taskInputSnapshots TeamTaskInputSnapshot[]
   teamRun     TeamRun?
   deletedAt   DateTime?
   createdAt   DateTime    @default(now())
@@ -130,6 +132,10 @@ model TeamRun {
   workRequests            WorkRequest[]
   invocations             AgentInvocation[]
   verdicts                WorkspaceVerdict[]
+  deliveries              MessageDelivery[]
+  taskInputSnapshots      TeamTaskInputSnapshot[] @relation("TeamSnapshots")
+  currentTaskInputSnapshotId String?
+  currentTaskInputSnapshot TeamTaskInputSnapshot? @relation("CurrentTaskInput", fields: [currentTaskInputSnapshotId], references: [id], onDelete: SetNull)
 
   @@index([mainWorkspaceId])
 }
@@ -161,6 +167,8 @@ model TeamMember {
 }
 
 model RoomMessage {
+  deliveryId         String? @unique
+  delivery           MessageDelivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
   id                 String                   @id @default(uuid())
   teamRunId          String
   teamRun            TeamRun                  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
@@ -170,6 +178,7 @@ model RoomMessage {
   kind               String
   visibility         String                   @default("PUBLIC")
   content            String
+  translationEligibilityEpoch Int?
   mentions           String // JSON StructuredMention[]
   workRequestIds     String? // JSON string[]
   artifactRefs       String? // JSON string[]
@@ -180,6 +189,7 @@ model RoomMessage {
   @@index([teamRunId])
   @@index([teamRunId, visibility])
   @@index([senderInvocationId])
+  @@index([translationEligibilityEpoch, id])
 }
 
 model RoomMessageParticipant {
@@ -199,6 +209,8 @@ model RoomMessageParticipant {
 }
 
 model WorkRequest {
+  taskInputSnapshotId String?
+  taskInputSnapshot TeamTaskInputSnapshot? @relation(fields: [taskInputSnapshotId], references: [id], onDelete: SetNull)
   id                      String    @id @default(uuid())
   teamRunId               String
   teamRun                 TeamRun   @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
@@ -229,9 +241,12 @@ model WorkRequest {
   @@index([targetHeadSha])
   @@index([status])
   @@index([status, nextStartRetryAt])
+  @@index([taskInputSnapshotId, status])
 }
 
 model AgentInvocation {
+  taskInputSnapshotId String?
+  taskInputSnapshot TeamTaskInputSnapshot? @relation(fields: [taskInputSnapshotId], references: [id], onDelete: SetNull)
   id                      String    @id @default(uuid())
   teamRunId               String
   teamRun                 TeamRun   @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
@@ -274,6 +289,8 @@ model AgentInvocation {
 // WorkspaceStatus: ACTIVE, MERGED, ABANDONED, HIBERNATED
 // WorkspaceKind: WORKTREE, MAIN_DIRECTORY
 model Workspace {
+  creationSubmissionId String? @unique
+  creationFingerprint String?
   id                String             @id @default(uuid())
   taskId            String
   task              Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
@@ -404,6 +421,11 @@ model Session {
   tokenUsage     String? // JSON: { totalTokens, modelContextWindow? }
   processes      ExecutionProcess[]
   artifacts      AgentArtifact[]
+  creationSubmissionId String? @unique
+  creationFingerprint String?
+  inputIntent String? // JSON original user input and attachment references
+  initialDeliveryId String? @unique
+  deliveries MessageDelivery[]
   conversationTurns ConversationTurn[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
@@ -418,6 +440,10 @@ model ConversationTurn {
   id          String    @id @default(uuid())
   sessionId   String
   session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  deliveryId String? @unique
+  delivery MessageDelivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  originalText String?
+  deliveryRevision Int?
   message     String
   userEntryId String?
   providerId  String?
@@ -511,6 +537,98 @@ model AppSettings {
   dataMigrationVersion    Int     @default(0)
 }
 
+// Independent, default-off instance translation configuration. apiKey is server-only.
+// null means unset; the empty string means an explicitly credential-free service.
+model TranslationSettings {
+  id                    String   @id @default("singleton")
+  enabled               Boolean  @default(false)
+  revision              Int      @default(0)
+  enableEpoch           Int      @default(0)
+  apiBaseUrl            String   @default("")
+  model                 String   @default("")
+  apiKey                String?
+  credentialRevision    Int      @default(0)
+  sendTargetLanguage    String   @default("English")
+  displayTargetLanguage String   @default("简体中文")
+  promptTemplate        String   @default("请将以下内容翻译为 {{target_language}}，保持原意，只返回译文：\n\n{{text}}")
+  maxConcurrency        Int      @default(4)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+// Polymorphic ownership is checked by TranslationService, never by caller-supplied keys.
+model TranslationSource {
+  id                    String   @id @default(uuid())
+  scopeType             String
+  scopeId               String
+  sourceKind            String
+  sourceKey             String
+  laneKey               String
+  sessionId             String?
+  turnId                String?
+  blockId               String?
+  messageId             String?
+  deliveryId            String?
+  delivery              MessageDelivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  direction             String
+  originalText          String
+  sourceRevision        Int      @default(1)
+  sourceHash            String
+  blockState            String   @default("OPEN")
+  jobState              String   @default("OPEN")
+  currentAttemptVersion Int      @default(0)
+  effectiveAttemptId    String?
+  generation            Int      @default(0)
+  enableEpoch           Int      @default(0)
+  retryChainId          String?
+  retryCount            Int      @default(0)
+  budgetStartedAt       DateTime?
+  nextRetryAt           DateTime?
+  deletedAt             DateTime?
+  overlayRevision       Int      @default(0)
+  errorCode             String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  attempts              TranslationAttempt[]
+  taskInputSnapshot     TeamTaskInputSnapshot?
+
+  @@unique([sourceKind, sourceKey, direction])
+  @@index([scopeType, scopeId, deletedAt])
+  @@index([jobState, nextRetryAt])
+  @@index([sessionId])
+  @@index([messageId])
+}
+
+model TranslationAttempt {
+  id                      String   @id @default(uuid())
+  sourceId                String
+  source                  TranslationSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceRevision          Int
+  sourceHash              String
+  attemptVersion          Int
+  configRevision          Int
+  credentialRevision      Int
+  targetLanguage          String
+  sanitizedConfigSnapshot String // JSON; never contains a credential.
+  protectionVersion       String
+  status                  String   @default("RUNNING")
+  resultText              String?
+  errorCode               String?
+  generation              Int
+  enableEpoch             Int
+  retryIndex              Int      @default(0)
+  nextRetryAt             DateTime?
+  leaseOwner              String?
+  leaseExpiresAt          DateTime?
+  startedAt               DateTime @default(now())
+  completedAt             DateTime?
+  acceptedTaskInputs      TeamTaskInputSnapshot[]
+
+  @@unique([sourceId, attemptVersion])
+  @@index([status, nextRetryAt])
+  @@index([sourceId, sourceRevision])
+}
+
 // 访问密码配置 (单例，只有一行)
 model AccessAuthSettings {
   id                String    @id @default("singleton")
@@ -536,4 +654,110 @@ model NotificationSettings {
   // 通知模板
   taskInReviewTitleTemplate String @default("Agent Tower")
   taskInReviewBodyTemplate  String @default("✅ \"{taskTitle}\" 已完成，等待审查")
+}
+
+// Durable owner submission. A transport receipt, rather than queue acceptance, releases the channel.
+model MessageDelivery {
+  id String @id @default(uuid())
+  clientSubmissionId String @unique
+  requestFingerprint String
+  sessionId String?
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  taskId String?
+  task Task? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  teamRunId String?
+  teamRun TeamRun? @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  taskInputSnapshotId String?
+  taskInputSnapshot TeamTaskInputSnapshot? @relation(fields: [taskInputSnapshotId], references: [id], onDelete: SetNull)
+  channelKey String
+  sequence Int
+  origin String
+  originalText String
+  attachmentIds String @default("[]")
+  intent String @default("{}")
+  sourceRevision Int @default(1)
+  sourceHash String
+  translationSourceId String? @unique
+  enableEpoch Int
+  requiresTranslation Boolean
+  state String
+  sentMode String?
+  acceptedText String?
+  actualSentText String?
+  sentAt DateTime?
+  acceptedDestinationId String?
+  lastError String?
+  revision Int @default(1)
+  translationSources TranslationSource[]
+  receipt DeliveryReceipt?
+  actions DeliveryAction[]
+  conversationTurn ConversationTurn?
+  roomMessage RoomMessage?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([channelKey, sequence])
+  @@index([sessionId, sequence])
+  @@index([taskId, sequence])
+  @@index([teamRunId, sequence])
+  @@index([taskInputSnapshotId])
+  @@index([channelKey, state, sequence])
+  @@index([state, updatedAt])
+}
+
+model DeliveryReceipt {
+  deliveryId String @id
+  delivery MessageDelivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  generation Int
+  phase String // CLAIMED, WRITING, SUBMITTED, NOT_SUBMITTED, UNKNOWN
+  runtimeInstanceId String?
+  turnId String?
+  evidence String?
+  submittedAt DateTime?
+  updatedAt DateTime @updatedAt
+}
+
+model DeliveryAction {
+  actionId String @id
+  deliveryId String
+  delivery MessageDelivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  fingerprint String
+  createdAt DateTime @default(now())
+}
+
+// Persistent candidate and immutable accepted task input. Production dispatch is not connected yet.
+model TeamTaskInputSnapshot {
+  id String @id @default(uuid())
+  teamRunId String
+  teamRun TeamRun @relation("TeamSnapshots", fields: [teamRunId], references: [id], onDelete: Cascade)
+  taskId String
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskSourceHash String
+  originalTitle String
+  originalDescription String?
+  state String @default("PENDING")
+  effectiveUserText String?
+  translationSourceId String? @unique
+  translationSource TranslationSource? @relation(fields: [translationSourceId], references: [id], onDelete: SetNull)
+  acceptedAttemptId String?
+  acceptedAttempt TranslationAttempt? @relation(fields: [acceptedAttemptId], references: [id], onDelete: SetNull)
+  sentMode String?
+  acceptedAt DateTime?
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  currentForTeams TeamRun[] @relation("CurrentTaskInput")
+  deliveries MessageDelivery[]
+  workRequests WorkRequest[]
+  invocations AgentInvocation[]
+  actions TeamTaskInputAction[]
+  @@unique([teamRunId, taskSourceHash])
+  @@index([teamRunId, state])
+}
+
+model TeamTaskInputAction {
+  actionId String @id
+  snapshotId String
+  snapshot TeamTaskInputSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  fingerprint String
+  createdAt DateTime @default(now())
 }

@@ -64,7 +64,7 @@ function requestOriginMatchesHost(request: FastifyRequest, value: string): boole
   return origin.host.toLowerCase() === host.toLowerCase();
 }
 
-function hasValidSameOriginSignal(request: FastifyRequest): boolean {
+export function hasValidSameOriginSignal(request: FastifyRequest): boolean {
   const origin = firstHeaderValue(request.headers.origin);
   if (origin) return requestOriginMatchesHost(request, origin);
 

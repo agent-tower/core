@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getEventBus } from '../../core/container.js';
+import { getEventBus, getTranslationService } from '../../core/container.js';
 import { AccessAuthService } from '../../services/access-auth.service.js';
 import { ClientEvents, ServerEvents } from '../events.js';
 import { SocketGateway } from '../socket-gateway.js';
@@ -21,6 +21,7 @@ class FakeNamespace {
 }
 
 class FakeSocket {
+  request = { headers: {} as Record<string, string> };
   id: string;
   accessAuthSessionSecretGeneration = AccessAuthService.getSessionSecretGeneration();
   emitted: Array<{ event: string; payload: unknown }> = [];
@@ -223,4 +224,83 @@ describe('SocketGateway access auth session revocation', () => {
       await manager.stopAll().catch(() => undefined);
     }
   }, 15_000);
+  it.each(['translation:invalidated', 'message-delivery:invalidated'] as const)('subscribes and unsubscribes overlay notifications through the public gateway with current owner permissions', async event => {
+    const service = getTranslationService();
+    const readable = vi.spyOn(service, 'assertReadableSession').mockResolvedValue(undefined);
+    const { namespace, gateway, eventBus } = buildGateway();
+    const owner = makeSocket(namespace, 'owner');
+    const other = makeSocket(namespace, 'other');
+    const all = makeSocket(namespace, 'all');
+    const agent = makeSocket(namespace, 'agent'); agent.request.headers['x-agent-tower-agent-credential'] = 'agent';
+    const internal = makeSocket(namespace, 'internal'); internal.request.headers['x-agent-tower-internal-token'] = 'internal';
+    const stale = makeSocket(namespace, 'stale'); stale.accessAuthSessionSecretGeneration = -1;
+    for (const socket of [owner, other, all, agent, internal, stale]) gateway.register(socket);
+    const subscribe = (socket: typeof owner, id?: string) => new Promise<unknown>(resolve => socket.receive(ClientEvents.SUBSCRIBE, { topic: 'session', id }, resolve));
+    const payload = event === 'translation:invalidated' ? { sessionId: 's', sourceId: 'source', sourceRevision: 1, overlayRevision: 2 } : { sessionId: 's', operationId: 'operation', deliveryRevision: 2 };
+    const settle = () => new Promise(resolve => setImmediate(resolve));
+    const notifications = (socket: typeof owner) => socket.emitted.filter(e => e.event === event);
+    try {
+      expect(await subscribe(owner, 's')).toEqual({ success: true });
+      expect(namespace.adapter.rooms.get('session:s')?.has(owner.id)).toBe(true);
+      await subscribe(other, 'other');
+      for (const [socket, id] of [[all, 'all'], [agent, 's'], [internal, 's'], [stale, 's']] as const) {
+        expect(await subscribe(socket, id)).toMatchObject({ success: false });
+      }
+      expect(await subscribe(all)).toMatchObject({ success: false });
+      eventBus.emit(event, payload as never); await settle();
+      expect(notifications(owner)).toEqual([{ event: event, payload }]);
+      for (const socket of [other, all, agent, internal, stale]) expect(notifications(socket)).toEqual([]);
+      await new Promise(resolve => owner.receive(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: 's' }, resolve));
+      expect(namespace.adapter.rooms.get('session:s')?.has(owner.id)).toBe(false);
+      eventBus.emit(event, payload as never); await settle(); expect(notifications(owner)).toHaveLength(1);
+      await subscribe(owner, 's');
+      owner.request.headers['x-agent-tower-agent-credential'] = 'late-agent';
+      eventBus.emit(event, payload as never); await settle(); expect(notifications(owner)).toHaveLength(1);
+      delete owner.request.headers['x-agent-tower-agent-credential'];
+      readable.mockRejectedValueOnce(new Error('scope deleted'));
+      eventBus.emit(event, payload as never); await settle(); expect(notifications(owner)).toHaveLength(1);
+      AccessAuthService.__test.notifySessionSecretRotated();
+      eventBus.emit(event, payload as never); await settle(); expect(notifications(owner)).toHaveLength(1);
+      gateway.destroy(); eventBus.emit(event, payload as never); await settle(); expect(notifications(owner)).toHaveLength(1);
+    } finally { gateway.destroy(); readable.mockRestore(); }
+  });
+
+  it('sends pending creation IDs only to the current owner of a readable task subscription', async () => {
+    const auth = vi.spyOn(AccessAuthService, 'prepareSessionTokenValidation').mockResolvedValue(() => true);
+    const service = getTranslationService(); const readable = vi.spyOn(service, 'assertReadableTeamTask').mockResolvedValue(undefined);
+    const { namespace, gateway, eventBus } = buildGateway(); const owner = makeSocket(namespace, 'owner-initial'); const agent = makeSocket(namespace, 'agent-initial'); agent.request.headers['x-agent-tower-agent-credential'] = 'agent';
+    const other = makeSocket(namespace, 'other-initial'); for (const socket of [owner, agent, other]) gateway.register(socket);
+    const subscribe = (socket: typeof owner, id: string) => new Promise(resolve => socket.receive(ClientEvents.SUBSCRIBE, { topic: 'task', id }, resolve));
+    const payload = { taskId: 'pending-task', operationId: 'operation', deliveryRevision: 3 };
+    const settle = () => new Promise(resolve => setImmediate(resolve)); const notices = () => owner.emitted.filter(e => e.event === ServerEvents.MESSAGE_DELIVERY_INVALIDATED);
+    try {
+      expect(await subscribe(owner, 'pending-task')).toEqual({ success: true }); expect(await subscribe(agent, 'pending-task')).toMatchObject({ success: false }); await subscribe(other, 'other');
+      eventBus.emit('message-delivery:invalidated', payload); await settle(); expect(notices()).toEqual([{ event: ServerEvents.MESSAGE_DELIVERY_INVALIDATED, payload }]);
+      expect(agent.emitted.filter(e => e.event === ServerEvents.MESSAGE_DELIVERY_INVALIDATED)).toEqual([]); expect(other.emitted.filter(e => e.event === ServerEvents.MESSAGE_DELIVERY_INVALIDATED)).toEqual([]);
+      readable.mockRejectedValueOnce(new Error('deleted')); eventBus.emit('message-delivery:invalidated', payload); await settle(); expect(notices()).toHaveLength(1);
+      await new Promise(resolve => owner.receive(ClientEvents.UNSUBSCRIBE, { topic: 'task', id: 'pending-task' }, resolve)); eventBus.emit('message-delivery:invalidated', payload); await settle(); expect(notices()).toHaveLength(1);
+      expect(await subscribe(owner, 'all')).toMatchObject({ success: false });
+    } finally { gateway.destroy(); readable.mockRestore(); auth.mockRestore(); }
+  });
+
+  it('does not join after a pending subscription was revoked or its authentication became stale', async () => {
+    const service = getTranslationService();
+    let finish: () => void = () => {};
+    const readable = vi.spyOn(service, 'assertReadableSession').mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const { namespace, gateway } = buildGateway(); const owner = makeSocket(namespace, 'pending'); gateway.register(owner);
+    try {
+      const firstAck = vi.fn();
+      owner.receive(ClientEvents.SUBSCRIBE, { topic: 'session', id: 's' }, firstAck);
+      owner.receive(ClientEvents.UNSUBSCRIBE, { topic: 'session', id: 's' });
+      finish(); await new Promise(resolve => setImmediate(resolve));
+      expect(firstAck).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+      expect(namespace.adapter.rooms.get('session:s')?.has(owner.id) ?? false).toBe(false);
+      const staleAck = vi.fn();
+      owner.receive(ClientEvents.SUBSCRIBE, { topic: 'session', id: 's' }, staleAck);
+      AccessAuthService.__test.notifySessionSecretRotated(); finish(); await new Promise(resolve => setImmediate(resolve));
+      expect(staleAck).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+      expect(namespace.adapter.rooms.get('session:s')?.has(owner.id) ?? false).toBe(false);
+    } finally { gateway.destroy(); readable.mockRestore(); }
+  });
+
 });

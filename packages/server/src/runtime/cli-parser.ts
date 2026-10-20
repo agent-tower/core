@@ -1,3 +1,4 @@
+import { GeminiParser } from '../output/gemini-parser.js';
 import { AgentType } from '../types/index.js';
 import {
   createClaudeCodeParser,
@@ -22,5 +23,6 @@ export function createCliParser(
   if (agentType === AgentType.CODEX) {
     return createCodexParser(msgStore);
   }
+  if (agentType === AgentType.GEMINI_CLI) return new GeminiParser(msgStore);
   return null;
 }

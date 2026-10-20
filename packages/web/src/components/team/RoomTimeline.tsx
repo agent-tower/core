@@ -1,9 +1,15 @@
+import type { MessageDelivery } from '@agent-tower/shared'
+import { MessageDeliveryFeedback } from '@/components/agent/MessageDeliveryStatus'
+import { TeamRoomDeliveryStatus } from './TeamRoomDeliveryStatus'
+import { pendingTeamRoomSubmissions, forgetTeamRoomSubmission } from '@/hooks/team-room-submission'
+import { useMessageDeliveries } from '@/hooks/use-message-deliveries'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useState, useRef } from 'react'
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import {
   ArrowDown,
   ArrowUp,
+  Loader2,
   AtSign,
   Check,
   ChevronDown,
@@ -19,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import { Streamdown } from 'streamdown'
-import type { AgentInvocation, Attachment, Provider, RoomMessage, StructuredMention, TeamMember, TeamRun, WorkRequest } from '@agent-tower/shared'
+import type { AgentInvocation, Attachment, Provider, RoomMessage, StructuredMention, TeamMember, TeamRun, WorkRequest, TeamRunTranslationOverlay, TeamRunTranslationOverlaySummary } from '@agent-tower/shared'
 import type { PostRoomMessageInput } from '@/hooks/use-team-run'
 import { useAttachmentMetadata, useAttachments } from '@/hooks/use-attachments'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
@@ -30,6 +36,9 @@ import {
   useStopMemberWork,
 } from '@/hooks/use-team-run'
 import { useProviders } from '@/hooks/use-providers'
+import { useTeamRunTranslations, type RoomTranslations } from '@/hooks/use-team-run-translations'
+import { useTranslationSettings } from '@/hooks/use-translation-settings'
+import { TranslationComparison, TranslationReveal, TranslationState } from '@/components/agent/TranslationComparison'
 import { AgentLogo } from '@/components/agent'
 import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
@@ -81,14 +90,13 @@ type PendingRoomMessageStatus = 'sending' | 'failed'
 type PendingRoomMessage = RoomMessage & {
   pendingStatus: PendingRoomMessageStatus
   error?: string
+  submissionInput: PostRoomMessageInput
 }
 
-let pendingRoomMessageCounter = 0
-
 function createPendingRoomMessage(teamRunId: string, input: PostRoomMessageInput): PendingRoomMessage {
-  pendingRoomMessageCounter += 1
   return {
-    id: `pending-room-message-${Date.now()}-${pendingRoomMessageCounter}`,
+    id: input.clientSubmissionId ?? crypto.randomUUID(),
+    submissionInput: input,
     teamRunId,
     senderType: input.senderType ?? 'user',
     senderId: input.senderId ?? null,
@@ -363,6 +371,7 @@ function RoomMessageBody({
   onOpenPreviewUrl,
   onOpenVisualization,
   downloadSessionId,
+  textVersion,
 }: {
   message: RoomMessage
   content: string
@@ -375,6 +384,7 @@ function RoomMessageBody({
   onOpenPreviewUrl?: OpenPreviewUrlHandler
   onOpenVisualization?: OpenVisualizationHandler
   downloadSessionId?: string
+  textVersion?: RoomTextVersion
 }) {
   const ids = useMemo(() => Array.from(new Set(attachmentIds ?? [])), [attachmentIds])
   const { data: attachments = [], isLoading } = useAttachmentMetadata(ids)
@@ -396,6 +406,7 @@ function RoomMessageBody({
           onOpenPreviewUrl={onOpenPreviewUrl}
           onOpenVisualization={onOpenVisualization}
           downloadSessionId={downloadSessionId}
+          textVersion={textVersion}
         />
       )}
       <MessageAttachments
@@ -505,6 +516,7 @@ export function buildRoomMessageSubmitInput({
 }
 
 type RoomMessageTone = 'agent' | 'user' | 'system'
+type RoomTextVersion = { kind: 'translated'; truncated: boolean; full?: string; loading: boolean; load: () => Promise<string> }
 
 function CollapsibleRoomMessageContent({
   message,
@@ -517,6 +529,7 @@ function CollapsibleRoomMessageContent({
   onOpenPreviewUrl,
   onOpenVisualization,
   downloadSessionId,
+  textVersion,
 }: {
   message: RoomMessage
   content: string
@@ -528,6 +541,7 @@ function CollapsibleRoomMessageContent({
   onOpenPreviewUrl?: OpenPreviewUrlHandler
   onOpenVisualization?: OpenVisualizationHandler
   downloadSessionId?: string
+  textVersion?: RoomTextVersion
 }) {
   const { t } = useI18n()
   const contentId = useId()
@@ -536,13 +550,13 @@ function CollapsibleRoomMessageContent({
   const [isCollapsible, setIsCollapsible] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const detailQuery = useRoomMessageDetail(message.teamRunId, message.id, false)
-  const detailContent = detailQuery.data?.content
+  const detailContent = textVersion ? textVersion.full : detailQuery.data?.content
   const filteredDetailContent = detailContent
     ? filterGeneratedAttachmentMarkdown(detailContent, attachments)
     : undefined
   const hasFullContent = Boolean(filteredDetailContent && filteredDetailContent !== content)
   const renderContent = hasFullContent ? filteredDetailContent! : content
-  const canLoadFullContent = Boolean(message.isTruncated && !isPendingRoomMessage(message))
+  const canLoadFullContent = Boolean((textVersion ? textVersion.truncated : message.isTruncated) && !isPendingRoomMessage(message))
   const isExpanded = expandedState?.messageId === message.id
     && expandedState.content === renderContent
     && expandedState.expanded
@@ -581,6 +595,13 @@ function CollapsibleRoomMessageContent({
     }
 
     if (canLoadFullContent && !detailContent) {
+      if (textVersion) {
+        try {
+          const full = await textVersion.load()
+          setExpandedState({ messageId: message.id, content: filterGeneratedAttachmentMarkdown(full, attachments), expanded: true })
+        } catch { setLoadError(t('Failed to load full message')) }
+        return
+      }
       const result = await detailQuery.refetch()
       if (result.error) {
         setLoadError(getErrorMessage(result.error, t('Failed to load full message')))
@@ -594,11 +615,11 @@ function CollapsibleRoomMessageContent({
     }
 
     setExpandedState({ messageId: message.id, content: renderContent, expanded: true })
-  }, [attachments, canLoadFullContent, detailContent, detailQuery, isExpanded, message.id, renderContent, t])
+  }, [attachments, canLoadFullContent, detailContent, detailQuery, isExpanded, message.id, renderContent, t, textVersion])
 
   const isCollapsed = (isCollapsible || canLoadFullContent) && !isExpanded
   const showToggle = isCollapsible || canLoadFullContent
-  const isLoadingFullContent = detailQuery.isFetching
+  const isLoadingFullContent = textVersion ? textVersion.loading : detailQuery.isFetching
 
   return (
     <div className="relative">
@@ -675,6 +696,7 @@ function RoomMessageRow({
   isSystem,
   children,
   headerAddon,
+  footer,
   bubbleClassName,
   isPending,
 }: {
@@ -685,6 +707,7 @@ function RoomMessageRow({
   isSystem?: boolean
   children: ReactNode
   headerAddon?: ReactNode
+  footer?: ReactNode
   bubbleClassName?: string
   isPending?: boolean
 }) {
@@ -737,6 +760,7 @@ function RoomMessageRow({
         >
           {children}
         </div>
+        {footer && <div className="mt-1 max-w-full px-0.5" data-message-feedback>{footer}</div>}
       </div>
       {isUser && (
         <MemberAvatar
@@ -758,6 +782,58 @@ function ProviderBadge({ provider }: { provider: Provider }) {
   )
 }
 
+function RoomTranslationBody({ overlay, translations, enabled, body }: {
+  overlay: TeamRunTranslationOverlaySummary
+  translations: RoomTranslations
+  enabled: boolean
+  body: Parameters<typeof RoomMessageBody>[0]
+}) {
+  const { t } = useI18n()
+  const [full, setFull] = useState<TeamRunTranslationOverlay | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const pending = useRef<Promise<TeamRunTranslationOverlay> | null>(null)
+  const alive = useRef(true)
+  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
+  const valid = () => alive.current && translations.isCurrent(overlay)
+  const load = async () => {
+    if (!valid()) throw new DOMException('Aborted', 'AbortError')
+    if (full) return full
+    if (pending.current) return pending.current
+    setLoading(true); setError(null)
+    pending.current = translations.loadFull(overlay).then(result => {
+      if (!valid()) throw new DOMException('Aborted', 'AbortError')
+      // Only complete bytes can be compared. The two preview lengths differ.
+      if (!body.message.isTruncated && body.message.contentMode === 'full' && body.message.content !== result.originalText) throw new Error('Message changed')
+      setFull(result)
+      return result
+    }).catch(cause => {
+      if (valid()) setError(t('Failed to load full message'))
+      throw cause
+    }).finally(() => { pending.current = null; if (alive.current) setLoading(false) })
+    return pending.current
+  }
+  const translated = overlay.state === 'SUCCESS' && overlay.translatedTextPreview !== null
+  const original = full?.originalText ?? overlay.originalTextPreview
+  const translatedText = full?.translatedText ?? overlay.translatedTextPreview ?? ''
+  const originalText = async () => overlay.originalTextTruncated ? (await load()).originalText : original
+  const displayedText = async () => translated
+    ? overlay.translatedTextTruncated ? (await load()).translatedText ?? '' : translatedText
+    : originalText()
+  return <div className={`relative ${overlay.state === 'NOT_REQUIRED' ? '' : 'pr-8'}`}>
+      <RoomMessageBody {...body} content={translated ? translatedText : body.content}
+        textVersion={translated ? { kind: 'translated', truncated: overlay.translatedTextTruncated, full: full?.translatedText ?? undefined, loading, load: displayedText } : undefined} />
+    {overlay.state !== 'NOT_REQUIRED' && <div className="absolute bottom-0 right-0">
+      <TranslationComparison original={original} getOriginal={originalText} canCopy={valid}
+        onOpen={() => { if (overlay.originalTextTruncated) void load().catch(() => undefined) }} loading={loading} error={error}>
+        <RoomMessageMarkdown content={original} workingDir={body.workingDir} onOpenWorkspaceFile={body.onOpenWorkspaceFile}
+          onOpenPreviewUrl={body.onOpenPreviewUrl} onOpenVisualization={body.onOpenVisualization} downloadSessionId={body.downloadSessionId} />
+        <TranslationState state={overlay.state} enabled={enabled} onRetry={() => translations.retry(overlay)} />
+      </TranslationComparison>
+    </div>}
+  </div>
+}
+
 function RoomChatMessage({
   message,
   senderName,
@@ -772,6 +848,11 @@ function RoomChatMessage({
   onOpenVisualization,
   previewWorkspaceId,
   previewSessionId,
+  overlay,
+  translations,
+  translationEnabled,
+  delivery,
+  onRetrySubmission,
 }: {
   message: RoomMessage
   senderName: string
@@ -786,11 +867,16 @@ function RoomChatMessage({
   onOpenVisualization?: (sessionId: string, file: string, workspaceId?: string) => void
   previewWorkspaceId?: string
   previewSessionId?: string
+  overlay?: TeamRunTranslationOverlaySummary
+  translations: RoomTranslations
+  translationEnabled: boolean
+  delivery?: MessageDelivery
+  onRetrySubmission?: () => void
 }) {
   const { t } = useI18n()
   const isUser = message.senderType === 'user'
   const isSystem = message.senderType === 'system'
-  const pendingStatus = isPendingRoomMessage(message) ? message.pendingStatus : null
+  const pendingStatus = !delivery && isPendingRoomMessage(message) ? message.pendingStatus : null
   const mentions = message.mentions ?? []
   const workRequestCount = message.workRequestIds?.length ?? 0
   const isPrivate = message.visibility === 'PRIVATE'
@@ -801,6 +887,13 @@ function RoomChatMessage({
     if (previewSessionId) onOpenVisualization?.(previewSessionId, file, previewWorkspaceId)
   }, [onOpenVisualization, previewSessionId, previewWorkspaceId])
   const recipientLabels = isPrivate ? getPrivateRecipientLabels(message, memberById) : []
+  const body = {
+    message, content: displayContent, attachmentIds: message.attachmentIds, isUser: isUser && pendingStatus !== 'failed',
+    tone: isSystem ? 'system' as const : undefined, onOpenImage, workingDir, onOpenWorkspaceFile,
+    onOpenPreviewUrl: onOpenPreviewUrl ? handleOpenPreviewUrl : undefined,
+    onOpenVisualization: onOpenVisualization && previewSessionId ? handleOpenVisualization : undefined,
+    downloadSessionId: previewSessionId,
+  }
   const headerAddon = (
     <>
       {!isUser && !isSystem && senderProvider && (
@@ -820,14 +913,9 @@ function RoomChatMessage({
           {t('Work requests')}: {workRequestCount}
         </span>
       )}
-      {pendingStatus === 'sending' && (
-        <span className="ml-0.5 shrink-0 rounded-full bg-foreground/[0.08] px-1.5 py-0.5 text-xs font-medium leading-none text-muted-foreground">
-          {t('发送中...')}
-        </span>
-      )}
       {pendingStatus === 'failed' && (
         <span className="ml-0.5 shrink-0 rounded-full bg-destructive/10 px-1.5 py-0.5 text-xs font-medium leading-none text-destructive-ink">
-          {t('发送失败')}
+          {t('Acceptance unknown')}
         </span>
       )}
     </>
@@ -843,22 +931,32 @@ function RoomChatMessage({
       headerAddon={headerAddon}
       bubbleClassName={isUser && pendingStatus === 'failed' ? 'border border-destructive/25 bg-destructive/10 text-destructive-ink' : undefined}
       isPending={pendingStatus === 'sending'}
+      footer={(delivery || message.userDelivery || pendingStatus === 'failed') ? <>
+        {delivery && <MessageDeliveryFeedback delivery={delivery} />}
+        {message.userDelivery && !delivery && <SentRoomComparison message={message} />}
+        {pendingStatus === 'failed' && !delivery && <div className="text-xs"><p>{t('Acceptance unknown; check or retry the same submission.')}</p>{isPendingRoomMessage(message) && message.error && <p>{message.error}</p>}<button type="button" className="underline" onClick={onRetrySubmission}>{t('Retry original submission')}</button></div>}
+      </> : undefined}
     >
-      <RoomMessageBody
-        message={message}
-        content={displayContent}
-        attachmentIds={message.attachmentIds}
-        isUser={isUser && pendingStatus !== 'failed'}
-        tone={isSystem ? 'system' : undefined}
-        onOpenImage={onOpenImage}
-        workingDir={workingDir}
-        onOpenWorkspaceFile={onOpenWorkspaceFile}
-        onOpenPreviewUrl={onOpenPreviewUrl ? handleOpenPreviewUrl : undefined}
-        onOpenVisualization={onOpenVisualization && previewSessionId ? handleOpenVisualization : undefined}
-        downloadSessionId={previewSessionId}
-      />
+      <TranslationReveal claim={translations.claimReveal} version={overlay?.state === 'SUCCESS' ? `${overlay.sourceId}:${overlay.sourceRevision}` : null}>{overlay ? <RoomTranslationBody key={`${overlay.sourceId}:${overlay.sourceRevision}:${overlay.overlayRevision}`} overlay={overlay} translations={translations} enabled={translationEnabled} body={body} />
+        : <RoomMessageBody {...body} />}</TranslationReveal>
     </RoomMessageRow>
   )
+}
+
+function SentRoomComparison({ message }: { message: RoomMessage }) {
+  const detail = useRoomMessageDetail(message.teamRunId, message.id, false)
+  const delivery = message.userDelivery!
+  if (delivery.sentMode !== 'TRANSLATED') return null
+  const text = detail.data?.userDelivery?.actualSentText ?? delivery.actualSentText ?? ''
+  const load = async () => {
+    if (!delivery.isTruncated) return text
+    const result = await detail.refetch()
+    if (result.error || !result.data?.userDelivery) throw new Error('Failed to load sent text')
+    return result.data.userDelivery.actualSentText ?? ''
+  }
+  return <TranslationComparison label="Actual sent text" original={text} getOriginal={load} onOpen={() => { if (delivery.isTruncated) void detail.refetch() }} loading={detail.isFetching} error={detail.error?.message}>
+    <pre className="whitespace-pre-wrap">{text}</pre>
+  </TranslationComparison>
 }
 
 function PendingApprovalBubble({
@@ -945,6 +1043,9 @@ export function RoomTimeline({
 }: RoomTimelineProps) {
   const { t } = useI18n()
   const approveWorkRequest = useApproveWorkRequest(teamRun.id)
+  const translations = useTeamRunTranslations(teamRun.id, messages)
+  const { data: translationSettings } = useTranslationSettings()
+  const translationByMessage = new Map(translations.overlays.map(row => [row.messageId, row]))
   const rejectWorkRequest = useRejectWorkRequest(teamRun.id)
   const stopMemberWork = useStopMemberWork(teamRun.id)
   const [draft, setDraft] = useState('')
@@ -953,7 +1054,9 @@ export function RoomTimeline({
   const [highlightedMentionIndex, setHighlightedMentionIndex] = useState(0)
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const deliveryRecovery = useMessageDeliveries(readOnly ? '' : `task:${teamRun.taskId}`, 'pending', 'TEAM_TASK')
+  const sentRecovery = useMessageDeliveries(readOnly ? '' : `task:${teamRun.taskId}`, 'sent', 'TEAM_TASK')
+  const recovered = useMemo(() => new Map([...deliveryRecovery.data?.pages.flatMap(p => p.items) ?? [], ...sentRecovery.data?.pages.flatMap(p => p.items) ?? []].filter(item => item.destination.kind === 'TEAM_ROOM' && item.destination.teamRunId === teamRun.id).sort((a, b) => a.revision - b.revision).map(item => [item.clientSubmissionId, item])), [deliveryRecovery.data, sentRecovery.data, teamRun.id])
   const [pendingMessages, setPendingMessages] = useState<PendingRoomMessage[]>([])
   const [stopPromptInvocationId, setStopPromptInvocationId] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -963,7 +1066,6 @@ export function RoomTimeline({
     addFiles,
     removeFile,
     clear: clearAttachments,
-    restoreFiles: restoreAttachments,
     buildMarkdownLinks,
     getDoneAttachments,
     isUploading,
@@ -1020,16 +1122,26 @@ export function RoomTimeline({
     return new Map((teamRun.invocations ?? []).map((invocation) => [invocation.id, invocation]))
   }, [teamRun.invocations])
 
-  const messageList = useMemo(() => {
-    const confirmedIds = new Set(messages.map((message) => message.id))
-    const visiblePendingMessages = pendingMessages.filter((message) => !confirmedIds.has(message.id))
+  const acceptedSubmissionIds = useMemo(() => new Set([
+    ...messages.flatMap(message => message.userDelivery ? [message.userDelivery.clientSubmissionId] : []),
+    ...(deliveryRecovery.data?.pages.flatMap(page => page.items.map(item => item.clientSubmissionId)) ?? []),
+  ]), [messages, deliveryRecovery.data])
+  useEffect(() => {
+    for (const id of acceptedSubmissionIds) forgetTeamRoomSubmission(teamRun.id, id)
+    setPendingMessages(current => current.some(message => acceptedSubmissionIds.has(message.id))
+      ? current.filter(message => !acceptedSubmissionIds.has(message.id)) : current)
+  }, [acceptedSubmissionIds, teamRun.id])
 
-    return [...messages, ...visiblePendingMessages].sort((a, b) => {
-      const aTime = Date.parse(a.createdAt ?? '')
-      const bTime = Date.parse(b.createdAt ?? '')
-      return (Number.isNaN(aTime) ? 0 : aTime) - (Number.isNaN(bTime) ? 0 : bTime)
-    })
-  }, [messages, pendingMessages])
+  const messageList = useMemo(() => {
+    const confirmedIds = new Set(messages.map(message => message.id))
+    const published = new Set(messages.flatMap(message => message.userDelivery ? [message.userDelivery.clientSubmissionId] : []))
+    const recoveredMessages = [...recovered.values()].filter(item => item.state !== 'CANCELLED' && !published.has(item.clientSubmissionId)).map(item => ({
+      ...createPendingRoomMessage(teamRun.id, { content: item.originalText, clientSubmissionId: item.clientSubmissionId, attachmentIds: item.attachmentIds }),
+      pendingStatus: 'sending' as const, createdAt: item.createdAt,
+    }))
+    const visiblePendingMessages = pendingMessages.filter(message => !confirmedIds.has(message.id) && !published.has(message.id) && !recovered.has(message.id))
+    return [...messages, ...recoveredMessages, ...visiblePendingMessages].sort((a, b) => Date.parse(a.createdAt ?? '') - Date.parse(b.createdAt ?? ''))
+  }, [messages, pendingMessages, recovered, teamRun.id])
 
   const workRequestById = useMemo(() => {
     return new Map((teamRun.workRequests ?? []).map((request) => [request.id, request]))
@@ -1129,7 +1241,6 @@ export function RoomTimeline({
   const handleDraftChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value
     setDraft(value)
-    setSubmitError(null)
     const element = event.target
     element.style.height = 'auto'
     element.style.height = `${Math.max(compactComposer ? 40 : 72, Math.min(element.scrollHeight, compactComposer ? 140 : 240))}px`
@@ -1141,7 +1252,6 @@ export function RoomTimeline({
     const fileList = event.target.files
     if (fileList && fileList.length > 0) {
       void addFiles(Array.from(fileList))
-      setSubmitError(null)
     }
     event.target.value = ''
   }, [addFiles])
@@ -1157,7 +1267,6 @@ export function RoomTimeline({
     if (files.length > 0) {
       event.preventDefault()
       void addFiles(files)
-      setSubmitError(null)
     }
   }, [addFiles])
 
@@ -1174,10 +1283,8 @@ export function RoomTimeline({
     })
     if (!input || (!draft.trim() && !hasSendableAttachments)) return
 
+    input.clientSubmissionId = crypto.randomUUID()
     const pendingMessage = createPendingRoomMessage(teamRun.id, input)
-    const previousDraft = draft
-    const previousSelectedMemberIds = selectedMemberIds
-    const previousAttachmentFiles = attachmentFiles
 
     setPendingMessages((current) => [...current, pendingMessage])
     setDraft('')
@@ -1191,7 +1298,6 @@ export function RoomTimeline({
     requestAnimationFrame(() => scrollToBottom())
 
     setIsSubmitting(true)
-    setSubmitError(null)
     try {
       const savedMessage = await onSendMessage(input)
       setPendingMessages((current) => current.filter((message) => message.id !== pendingMessage.id))
@@ -1203,15 +1309,11 @@ export function RoomTimeline({
       setPendingMessages((current) => current.map((item) => item.id === pendingMessage.id
         ? { ...item, pendingStatus: 'failed', error: message }
         : item))
-      setDraft((current) => current.length === 0 ? previousDraft : current)
-      setSelectedMemberIds((current) => current.length === 0 ? previousSelectedMemberIds : current)
-      restoreAttachments(previousAttachmentFiles)
-      setSubmitError(message)
       requestAnimationFrame(() => scrollToBottom())
     } finally {
       setIsSubmitting(false)
     }
-  }, [activeMembers, attachmentFiles, buildMarkdownLinks, clearAttachments, compactComposer, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, restoreAttachments, scrollToBottom, selectedMemberIds, teamRun.id])
+  }, [activeMembers, buildMarkdownLinks, clearAttachments, compactComposer, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, scrollToBottom, selectedMemberIds, teamRun.id])
 
   const handleDraftKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
@@ -1252,8 +1354,7 @@ export function RoomTimeline({
     setSelectedMemberIds([])
     setMentionPickerOpen(false)
     setInlineMention(null)
-    setSubmitError(null)
-    setPendingMessages([])
+    setPendingMessages(pendingTeamRoomSubmissions(teamRun.id).map(input => ({ ...createPendingRoomMessage(teamRun.id, input), pendingStatus: 'failed', error: 'Acceptance unknown; check or retry the same submission.' })))
     clearAttachments()
     userScrolledAwayRef.current = false
     previousLatestItemKeyRef.current = null
@@ -1354,6 +1455,15 @@ export function RoomTimeline({
                     senderProvider={senderProvider}
                     memberById={memberById}
                     displayContent={displayContent}
+                    overlay={translationByMessage.get(message.id)}
+                    translations={translations}
+                    translationEnabled={translationSettings?.enabled === true}
+                    delivery={recovered.get(message.userDelivery?.clientSubmissionId ?? message.id)}
+                    onRetrySubmission={isPendingRoomMessage(message) ? () => {
+                      if (isSubmitting) return
+                      setIsSubmitting(true)
+                      void onSendMessage(message.submissionInput).then(() => setPendingMessages(current => current.filter(item => item.id !== message.id))).finally(() => setIsSubmitting(false)).catch(() => undefined)
+                    } : undefined}
                     onOpenImage={(images, index) => setLightboxState({ images, index })}
                     workingDir={workingDir}
                     onOpenWorkspaceFile={onOpenWorkspaceFile}
@@ -1366,6 +1476,7 @@ export function RoomTimeline({
               })
             )}
 
+            <TeamRoomDeliveryStatus taskId={teamRun.taskId} teamRunId={teamRun.id} enabled={!readOnly} showDeliveries={false} />
             {pendingApprovalError && (
               <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive-ink">
                 {getErrorMessage(pendingApprovalError, t('Failed to update work request'))}
@@ -1561,6 +1672,7 @@ export function RoomTimeline({
                 type="button"
                 onClick={() => void handleSubmit()}
                 disabled={readOnly || isSubmitting || isUploading || (!draft.trim() && !hasSendableAttachments)}
+                aria-busy={isSubmitting}
                 title={isUploading ? t('Uploading...') : isSubmitting ? t('发送中...') : t('发送')}
                 aria-label={isUploading ? t('Uploading...') : isSubmitting ? t('发送中...') : t('发送')}
                 className={cn(
@@ -1572,15 +1684,11 @@ export function RoomTimeline({
                   isSubmitting || isUploading ? 'opacity-70' : '',
                 )}
               >
-                <ArrowUp size={compactComposer ? 15 : 18} />
+                {isSubmitting ? <Loader2 size={compactComposer ? 15 : 18} className="animate-spin" /> : <ArrowUp size={compactComposer ? 15 : 18} />}
               </button>
             </div>
 
-            {submitError && (
-              <div className="border-t border-border/60 px-3 py-2 text-xs text-destructive-ink">
-                {submitError}
-              </div>
-            )}
+
           </div>
         )}
         </div>

@@ -1,8 +1,13 @@
+import { resolveConversationSubmission, submitOutgoing } from './outgoing-submissions'
+import { cacheDelivery } from './delivery-cache'
+import { userSubmission } from './user-submission'
+import { deliveryKey } from './use-message-deliveries'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   Conversation,
   ConversationCreateInput,
   ConversationMessageInput,
+  SessionMessageDeliverySubmission,
 } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
@@ -29,7 +34,15 @@ export function useCreateConversation() {
 
   return useMutation({
     mutationFn: (input: ConversationCreateInput) =>
-      apiClient.post<Conversation>('/conversations', input),
+      userSubmission('conversation:create', input, async body => {
+        const result = await submitOutgoing<Conversation | SessionMessageDeliverySubmission>(queryClient, 'new-conversation', '/conversations', body, result => resolveConversationSubmission(queryClient, result) as Promise<Conversation | SessionMessageDeliverySubmission>)
+        if ('operationId' in result) {
+          cacheDelivery(queryClient, result.delivery)
+          void queryClient.invalidateQueries({ queryKey: deliveryKey(result.sessionId) })
+          return apiClient.get<Conversation>(`/conversations/${result.destinationId}`)
+        }
+        return result
+      }),
     onSuccess: (conversation) => {
       queryClient.setQueryData(
         queryKeys.conversations.detail(conversation.id),
@@ -45,8 +58,16 @@ export function useSendConversationMessage() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ id, ...input }: { id: string } & ConversationMessageInput) =>
-      apiClient.post<Conversation>(`/conversations/${id}/message`, input),
+    mutationFn: ({ id, sessionId, ...input }: { id: string; sessionId?: string } & ConversationMessageInput) =>
+      userSubmission(`conversation:message:${id}`, input, async body => {
+        const result = await submitOutgoing<Conversation | SessionMessageDeliverySubmission>(queryClient, sessionId ?? queryClient.getQueryData<Conversation>(queryKeys.conversations.detail(id))?.sessionId ?? `conversation:${id}`, `/conversations/${id}/message`, body)
+        if ('operationId' in result) {
+          cacheDelivery(queryClient, result.delivery)
+          void queryClient.invalidateQueries({ queryKey: deliveryKey(result.sessionId) })
+          return apiClient.get<Conversation>(`/conversations/${result.destinationId}`)
+        }
+        return result
+      }),
     onSuccess: (conversation) => {
       queryClient.setQueryData(
         queryKeys.conversations.detail(conversation.id),

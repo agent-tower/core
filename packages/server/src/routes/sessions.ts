@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { createReadStream } from 'node:fs';
 import { z } from 'zod';
-import { getSessionManager } from '../core/container.js';
+import { requireTranslationOwner } from './translations.js';
+import { isUserInput } from './user-input-origin.js';
+import { getSessionManager, getMessageDeliveryService } from '../core/container.js';
 import { AgentType, SessionContext } from '../types/index.js';
 import { sessionMsgStoreManager } from '../output/index.js';
 import { prisma } from '../utils/index.js';
@@ -55,6 +57,9 @@ export function parseSessionTokenUsage<T extends { tokenUsage?: string | null }>
 }
 
 const createSessionSchema = z.object({
+  clientSubmissionId: z.string().uuid().optional(),
+  attachmentIds: z.array(z.string().min(1)).optional(),
+  retryTask: z.boolean().optional(),
   agentType: z.nativeEnum(AgentType).optional(),
   prompt: z.string().min(1),
   variant: z.string().optional(),
@@ -62,6 +67,10 @@ const createSessionSchema = z.object({
 });
 
 const sendMessageSchema = z.object({
+  systemAction: z.literal('resolve_conflicts').optional(),
+  resolutionContextToken: z.string().min(1).max(256 * 1024).optional(),
+  clientSubmissionId: z.string().uuid().optional(),
+  attachmentIds: z.array(z.string().min(1)).optional(),
   message: z.string().min(1),
   providerId: z.string().optional(),
 });
@@ -198,7 +207,8 @@ export async function sessionRoutes(app: FastifyInstance) {
           agentType,
           body.prompt,
           body.variant,
-          body.providerId
+          body.providerId,
+          { clientSubmissionId: body.clientSubmissionId, attachmentIds: body.attachmentIds, retryTask: isUserInput(request) && body.retryTask },
         );
         reply.code(201);
         return session;
@@ -308,6 +318,17 @@ export async function sessionRoutes(app: FastifyInstance) {
       const workspaceError = validateWorkspaceBackedSession(existing, reply);
       if (workspaceError) return workspaceError;
 
+      if (isUserInput(request)) {
+        await requireTranslationOwner(request);
+        const body = z.object({ clientSubmissionId: z.string().uuid().optional() }).parse(request.body ?? {});
+        try {
+          const result = await getMessageDeliveryService().submitSession({ sessionId: request.params.id, initial: true, clientSubmissionId: body.clientSubmissionId });
+          return reply.code(202).send(result);
+        } catch (error) {
+          if (error instanceof ServiceError) return reply.code(error.statusCode).send({ error: error.message, code: error.code, ...(['DELIVERY_QUEUE_FULL', 'CONFLICT_CONTEXT_INVALID'].includes(error.code) ? { accepted: false } : {}) });
+          throw error;
+        }
+      }
       const result = await sessionService.start(request.params.id);
       if (!result) {
         reply.code(404);
@@ -336,6 +357,8 @@ export async function sessionRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = sendMessageSchema.parse(request.body);
       try {
+        // System actions are owner-only even if an Agent/internal caller supplies the flag.
+        const conflictActor = body.systemAction ? await requireTranslationOwner(request) : undefined;
         const existing = await prisma.session.findUnique({
           where: { id: request.params.id },
           include: {
@@ -350,6 +373,11 @@ export async function sessionRoutes(app: FastifyInstance) {
         const workspaceError = validateWorkspaceBackedSession(existing, reply);
         if (workspaceError) return workspaceError;
 
+        if (isUserInput(request) || body.systemAction) {
+          await requireTranslationOwner(request);
+          const result = await getMessageDeliveryService().submitSession({ sessionId: request.params.id, message: body.message, providerId: body.providerId, attachmentIds: body.systemAction ? [] : body.attachmentIds, systemAction: body.systemAction, resolutionContextToken: body.resolutionContextToken, conflictActor, clientSubmissionId: body.clientSubmissionId });
+          return reply.code(202).send(result);
+        }
         const headerInvocationId = request.headers[INTERNAL_API_INVOCATION_ID_HEADER];
         const trustedInvocationId = request.agentTowerAgentIdentity?.invocationId
           ?? (request.agentTowerAuthKind === 'internal' && typeof headerInvocationId === 'string'
@@ -370,7 +398,7 @@ export async function sessionRoutes(app: FastifyInstance) {
         console.error(`[sessions] sendMessage failed for session ${request.params.id}:`, error);
         if (error instanceof ServiceError) {
           reply.code(error.statusCode);
-          return { error: error.message, code: error.code };
+          return { error: error.message, code: error.code, ...(['DELIVERY_QUEUE_FULL', 'CONFLICT_CONTEXT_INVALID'].includes(error.code) ? { accepted: false } : {}) };
         }
         reply.code(500);
         return { error: error instanceof Error ? error.message : 'Failed to send message' };

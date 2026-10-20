@@ -107,7 +107,7 @@ describe('owned external commands', () => {
     await manager.shutdown();
   }, 10_000);
 
-  it.skipIf(process.platform === 'win32')('reclaims a real Git hook before returning a timeout error', async () => {
+  it.skipIf(process.platform === 'win32').each(['timeout', 'signal'] as const)('reclaims a real Git hook before returning %s', async mode => {
     const dir = directory();
     execFileSync('git', ['init', '-q'], { cwd: dir });
     execFileSync('git', ['config', 'user.email', 'audit@example.invalid'], { cwd: dir });
@@ -115,11 +115,13 @@ describe('owned external commands', () => {
     const ready = path.join(dir, 'hook.pid');
     const hook = path.join(dir, '.git/hooks/pre-commit');
     fs.writeFileSync(hook, `#!${process.execPath}\nprocess.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{},1000);\n`, { mode: 0o700 });
-    const pending = execGit(dir, ['commit', '--allow-empty', '-m', 'test'], { timeout: 500 });
-    const rejected = expect(pending).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    const controller = new AbortController();
+    const pending = execGit(dir, ['commit', '--allow-empty', '-m', 'test'], { timeout: mode === 'timeout' ? 500 : 10_000, signal: controller.signal });
+    const rejected = expect(pending).rejects.toMatchObject({ code: mode === 'timeout' ? 'ETIMEDOUT' : 'ABORT_ERR' });
     await vi.waitFor(() => expect(fs.existsSync(ready)).toBe(true), { timeout: 5000 });
     const pid = Number(fs.readFileSync(ready, 'utf8'));
     fixturePids.add(pid);
+    if (mode === 'signal') controller.abort();
     await rejected;
     expect(alive(pid)).toBe(false);
   }, 10_000);

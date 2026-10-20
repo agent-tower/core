@@ -162,6 +162,7 @@ class CliDriverSession implements DriverSession {
     const spawnConfig = {
       workingDir: this.input.workingDir,
       prompt: input.prompt,
+      deliveryReceipt: !!input.onSubmitted,
       env: this.input.env,
     };
     let spawnResult: SpawnedChild;
@@ -171,7 +172,7 @@ class CliDriverSession implements DriverSession {
         try {
           spawnResult = await executor.spawnFollowUp(spawnConfig, resumeId);
         } catch (error) {
-          if (!isPreChildProcessFailure(error) || (this.input.agentType === AgentType.CODEX && (input.executionPermission === 'ASK' || input.executionPermission === 'AUTO_SANDBOX'))) throw error;
+          if (input.onSubmitted || !isPreChildProcessFailure(error) || (this.input.agentType === AgentType.CODEX && (input.executionPermission === 'ASK' || input.executionPermission === 'AUTO_SANDBOX'))) throw error;
           spawnResult = await executor.spawn(spawnConfig);
         }
       } else {
@@ -239,9 +240,19 @@ class CliDriverSession implements DriverSession {
       active.processEventsReleased = true;
       await this.flushProcessEvents(active, sink);
       if (input.admissionSignal?.aborted) throw new AgentRuntimeError('turn_cancelled', 'open', 'CLI admission was cancelled', true);
-      if (active.control) {
+      const evidence = { runtimeInstanceId: active.runtimeInstanceId, turnId: input.turnId, transport: (active.control instanceof CodexCliControl ? 'CODEX_TURN_ACK' : active.control ? 'CLAUDE_STDIN_ACK' : 'CLI_STDIN_ACK') as import('./contracts.js').InputSubmissionEvidence['transport'] };
+      if (input.onSubmitted && !active.control && spawnResult.inputMode !== 'raw') {
+        await input.onSubmitting?.(evidence);
+        throw new AgentRuntimeError('submission_evidence_unavailable', 'prompt', 'CLI input submission cannot be confirmed', false);
+      }
+      if (spawnResult.inputMode === 'raw') {
+        await input.onSubmitting?.(evidence);
+        await spawnResult.duplex!.write(spawnResult.initialInput!, () => !input.admissionSignal?.aborted);
+        await input.onSubmitted?.(evidence);
+        await spawnResult.duplex!.end().catch(() => active.requestProcessStop?.());
+      } else if (active.control) {
         if (!spawnResult.initialInput || active.settled) throw new AgentRuntimeError('control_start_failed', 'open', 'Native control transport ended before initialization', false);
-        await active.control.start(spawnResult.initialInput, () => sink.stream({ type: 'execution_permission_applied', mode: input.executionPermission ?? 'ASK' }));
+        await active.control.start(spawnResult.initialInput, () => sink.stream({ type: 'execution_permission_applied', mode: input.executionPermission ?? 'ASK' }), { before: () => input.onSubmitting?.(evidence) ?? Promise.resolve(), after: () => input.onSubmitted?.(evidence) ?? Promise.resolve() });
       }
     } catch (error) {
       // Preserve early exit evidence even when the started row is rejected.
@@ -391,13 +402,13 @@ class CliDriverSession implements DriverSession {
     };
     const onCompleted = () => {
       active.control?.close();
-      void active.duplex?.end().catch(() => active.requestProcessStop?.());
+      if (spawnResult.inputMode !== 'raw') void active.duplex?.end().catch(() => active.requestProcessStop?.());
       this.settleSuccess(active, {});
       this.schedulePipelineCleanup(active);
     };
     const onFailed = () => {
       active.control?.close();
-      void active.duplex?.end().catch(() => active.requestProcessStop?.());
+      if (spawnResult.inputMode !== 'raw') void active.duplex?.end().catch(() => active.requestProcessStop?.());
       this.settleFailure(
         active,
         new AgentRuntimeError('turn_failed', 'prompt', 'CLI agent reported a failed turn', true),
@@ -502,7 +513,7 @@ class CliDriverSession implements DriverSession {
       this.settleFailure(active, failure);
       active.requestProcessStop?.();
     };
-    if (spawnResult.duplex) {
+    if (spawnResult.duplex && spawnResult.inputMode !== 'raw') {
       const context = {
         sessionId: this.input.towerSessionId, turnId: active.turnId, runtimeInstanceId: active.runtimeInstanceId,
         executionPermission,
@@ -528,7 +539,7 @@ class CliDriverSession implements DriverSession {
       earlyEvents,
       spawnResult.duplex,
       event => {
-        if ((event.type === 'disconnected' || event.type === 'eof') && !active.settled) {
+        if ((event.type === 'disconnected' || event.type === 'eof') && !active.settled && spawnResult.inputMode !== 'raw') {
           protocolFailed(new AgentRuntimeError('control_disconnected', 'runtime', 'Native control channel ended before its result', false));
         }
       },

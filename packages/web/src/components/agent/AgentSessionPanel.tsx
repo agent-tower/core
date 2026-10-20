@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
-import { ArrowDown, ArrowUp, Paperclip, Square } from 'lucide-react'
+import { ArrowDown, ArrowUp, Loader2, Paperclip, Square } from 'lucide-react'
 import { SessionStatus, type RuntimeType } from '@agent-tower/shared'
 import { LogStream } from './LogStream'
 import { TodoPanel } from './TodoPanel'
@@ -69,7 +69,6 @@ export function AgentSessionPanel({
   const [selectedProviderId, setSelectedProviderId] = useState(providerId ?? '')
   const selectedProviderIssue = getSelectedProviderStartIssue(providers, selectedProviderId || providerId)
   const [isDragOver, setIsDragOver] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputContainerRef = useRef<HTMLDivElement>(null)
@@ -102,7 +101,6 @@ export function AgentSessionPanel({
     addFiles,
     removeFile,
     clear: clearAttachments,
-    buildMarkdownLinks,
     getDoneAttachments,
     hasFiles: hasAttachments,
     isUploading,
@@ -151,14 +149,12 @@ export function AgentSessionPanel({
     ) return
     sendingRef.current = true
 
-    const attachmentLinks = buildMarkdownLinks()
     const attachmentIds = getDoneAttachments().map((attachment) => attachment.id)
-    const message = [input.trim(), attachmentLinks].filter(Boolean).join('\n\n')
+    const message = input.trim() || (attachmentIds.length ? ' ' : '')
 
     setInput('')
     clearAttachments()
     resetTextareaHeight()
-    setError(null)
 
     try {
       await onSend({
@@ -168,9 +164,8 @@ export function AgentSessionPanel({
       })
       await attach()
       requestAnimationFrame(() => scrollToBottom('smooth'))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('Send failed. Please try again.'))
-      setInput(message)
+    } catch {
+      // The immutable submission and its retry action remain in the message list.
     } finally {
       sendingRef.current = false
     }
@@ -181,7 +176,6 @@ export function AgentSessionPanel({
     isStopping,
     isSessionCancelling,
     isUploading,
-    buildMarkdownLinks,
     getDoneAttachments,
     clearAttachments,
     resetTextareaHeight,
@@ -190,7 +184,6 @@ export function AgentSessionPanel({
     selectedProviderIssue,
     attach,
     scrollToBottom,
-    t,
   ])
 
   const handleStop = useCallback(async () => {
@@ -253,7 +246,7 @@ export function AgentSessionPanel({
                 </svg>
                 <span className="text-sm">{t('Loading logs...')}</span>
               </div>
-            ) : logs.length === 0 ? (
+            ) : logs.length === 0 && !sessionId ? (
               <div className="py-8 text-center text-muted-foreground">
                 {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
               </div>
@@ -261,6 +254,7 @@ export function AgentSessionPanel({
               <LogViewBoundary>
                 <LogStream
                   logs={logs}
+                  sessionId={sessionId}
                   downloadSessionId={sessionId}
                   isOutputActive={isOutputActive}
                   lastExitAt={lastExitAt}
@@ -301,9 +295,6 @@ export function AgentSessionPanel({
       >
         <div className="mx-auto max-w-4xl">
           <RuntimePermissionPrompt sessionId={sessionId} />
-          {error ? (
-            <div className="mb-2 text-sm text-destructive-ink">{error}</div>
-          ) : null}
           <div
             ref={inputContainerRef}
             className={cn(
@@ -360,7 +351,7 @@ export function AgentSessionPanel({
                   onSelect={handleProviderSelect}
                 />
                 <TokenUsageIndicator usage={tokenUsage} />
-                {canStopSession && isSessionActive && !input.trim() && !hasAttachments ? (
+                {canStopSession && isSessionActive && !isSending && !input.trim() && !hasAttachments ? (
                   <button
                     type="button"
                     onClick={handleStop}
@@ -394,9 +385,11 @@ export function AgentSessionPanel({
                         ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                         : 'cursor-not-allowed bg-transparent text-muted-foreground',
                     )}
-                    title={t('Send')}
+                    title={t(isSending ? '发送中...' : 'Send')}
+                    aria-label={t(isSending ? '发送中...' : 'Send')}
+                    aria-busy={isSending}
                   >
-                    <ArrowUp size={18} />
+                    {isSending ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
                   </button>
                 )}
               </div>

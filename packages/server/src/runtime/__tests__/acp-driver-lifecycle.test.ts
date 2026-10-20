@@ -166,7 +166,7 @@ vi.mock('@agentclientprotocol/sdk', () => {
     PROTOCOL_VERSION: 1,
     methods,
     client: vi.fn(() => app),
-    ndJsonStream: vi.fn(() => ({})),
+    ndJsonStream: vi.fn(() => ({ readable: new ReadableStream(), writable: new WritableStream() })),
   };
 });
 
@@ -782,7 +782,7 @@ describe('AcpRuntimeDriver lifecycle', () => {
     });
     expect(msgStore.getSnapshot().entries).toEqual([
       localEntries[0],
-      { ...localEntries[1], content: 'partial response completed' },
+      { ...localEntries[1], content: 'partial response completed', metadata: { acpTextIdentity: { sessionId: 'external-1', streamId: 'main', messageId: 'message-1' } } },
     ]);
 
     await session.cancelTurn('turn-1');

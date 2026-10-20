@@ -24,7 +24,7 @@ import type {
 } from '@prisma/client';
 import { AgentType } from '../types/index.js';
 import { getProviderById, type Provider } from '../executors/index.js';
-import { getEventBus, getSessionManager } from '../core/container.js';
+import { getEventBus, getSessionManager, getTeamTaskInputService } from '../core/container.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 import { prisma } from '../utils/index.js';
 import { TeamLockService, defaultTeamLockService, type LockRequest } from './team-lock.service.js';
@@ -35,6 +35,8 @@ import { TeamReconcilerService } from './team-reconciler.service.js';
 import { acquireTeamMemberAdmission, DEFAULT_MEMBER_ADMISSION_ACQUIRE_TIMEOUT_MS } from './team-member-admission-barrier.js';
 import { ensureTaskNotDeleted, isTaskDeleted } from './deleted-task-guard.js';
 import { TEAM_ROOM_SYSTEM_SHARED_PROTOCOL } from '../prompts/team-room-system-shared-protocol.js';
+import type { TeamTaskInputService } from './team-task-input.service.js';
+import type { TaskInputAcceptanceToken } from './team-task-input.js';
 import { evaluateSessionRuntimeCleanup } from './session-runtime-cleanup-gate.js';
 
 export interface SchedulePlan {
@@ -146,6 +148,7 @@ type WorkRequestStartFailureContext = {
 };
 
 interface TeamSchedulerDependencies {
+  taskInputs?: TeamTaskInputService;
   workspaceService?: WorkspaceStarter;
   sessionManager?: SessionStarter;
   getProviderById?: (providerId: string) => Provider | null;
@@ -350,6 +353,7 @@ function serializeTargetSyncStatus(value: string | null): AgentInvocationTargetS
 
 export class TeamSchedulerService {
   private static readonly sharedWorkspaceClaims = new Map<string, Promise<{ id: string }>>();
+  private readonly taskInputs: TeamTaskInputService;
   private readonly workspaceService: WorkspaceStarter;
   private readonly sessionManager: SessionStarter;
   private readonly providerLookup: (providerId: string) => Provider | null;
@@ -361,6 +365,7 @@ export class TeamSchedulerService {
     private readonly lockService = defaultTeamLockService,
     dependencies: TeamSchedulerDependencies = {}
   ) {
+    this.taskInputs = dependencies.taskInputs ?? getTeamTaskInputService();
     this.workspaceService = dependencies.workspaceService ?? new WorkspaceService();
     this.sessionManager = dependencies.sessionManager ?? getSessionManager();
     this.providerLookup = dependencies.getProviderById ?? getProviderById;
@@ -486,12 +491,24 @@ export class TeamSchedulerService {
   async startNext(teamRunId: string): Promise<AgentInvocation[]> {
     const context = await this.getSchedulingContext(teamRunId);
     const startedInvocations: AgentInvocation[] = [];
+    const inputBlocked = new Set<string>();
 
     for (const workRequest of context.workRequests) {
       const member = context.memberById.get(workRequest.targetMemberId);
       if (!member) {
         continue;
       }
+
+      if (inputBlocked.has(member.id)) continue;
+      let input;
+      try {
+        input = await this.taskInputs.ensureForDispatch(teamRunId, { kind: 'WORK_REQUEST', id: workRequest.id });
+      } catch (error) {
+        // An earlier claim/cancel can invalidate this scheduling context's queue entry.
+        if (error instanceof ServiceError && error.code === 'TASK_INPUT_CHANGED') continue;
+        throw error;
+      }
+      if (input.state === 'BLOCKED') { inputBlocked.add(member.id); continue; }
 
       const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(teamRunId, member.id, {
         holder: 'startNext',
@@ -522,6 +539,7 @@ export class TeamSchedulerService {
           context.teamRun,
           member,
           freshWorkRequest,
+          input.token,
           invocationId,
           workspaceId
         );
@@ -536,6 +554,11 @@ export class TeamSchedulerService {
         await this.emitTeamRunInvalidated(context.teamRun, ['work-requests', 'agent-invocations'], 'agent-invocation-updated');
         invocationId = null;
       } catch (error) {
+        if (error instanceof ServiceError && error.code === 'TASK_INPUT_CHANGED') {
+          if (invocationId) this.lockService.releaseByOwner(invocationId);
+          inputBlocked.add(member.id);
+          continue;
+        }
         if (invocationId) {
           this.lockService.releaseByOwner(invocationId);
         }
@@ -553,6 +576,7 @@ export class TeamSchedulerService {
     const startedInvocations: AgentInvocation[] = [];
     let createdTerminalInvocation = false;
     const retryBlockedMemberIds = new Set<string>();
+    const inputBlocked = new Set<string>();
 
     for (const workRequest of context.workRequests) {
       const member = context.memberById.get(workRequest.targetMemberId);
@@ -571,11 +595,23 @@ export class TeamSchedulerService {
         continue;
       }
 
+      if (inputBlocked.has(member.id)) continue;
+      let input;
+      try {
+        input = await this.taskInputs.ensureForDispatch(teamRunId, { kind: 'WORK_REQUEST', id: workRequest.id });
+      } catch (error) {
+        // An earlier claim/cancel can invalidate this scheduling context's queue entry.
+        if (error instanceof ServiceError && error.code === 'TASK_INPUT_CHANGED') continue;
+        throw error;
+      }
+      if (input.state === 'BLOCKED') { inputBlocked.add(member.id); continue; }
+
       const releaseMemberSchedulingLock = await acquireTeamMemberAdmission(teamRunId, member.id, {
         holder: 'startNextSessions',
       });
 
       let invocationId: string | null = null;
+      let pendingSessionId: string | null = null;
       try {
         if (await this.hasActiveInvocation(teamRunId, member.id)) {
           continue;
@@ -715,15 +751,17 @@ export class TeamSchedulerService {
         const session = await this.sessionManager.create(
           workspace.id,
           provider.agentType as AgentType,
-          await this.buildSessionPrompt(context.teamRun, member, freshWorkRequest),
+          await this.buildSessionPrompt(context.teamRun, member, freshWorkRequest, input.token),
           'DEFAULT',
           member.providerId
         );
 
+        pendingSessionId = session.id;
         const createdInvocation = await this.createRunningInvocationForClaimedWorkRequest(
           context.teamRun,
           member,
           freshWorkRequest,
+          input.token,
           invocationId,
           workspace.id,
           session.id,
@@ -741,6 +779,8 @@ export class TeamSchedulerService {
           invocationId = null;
           continue;
         }
+
+        pendingSessionId = null;
 
         // A stop/cancel can win after the initial queue claim but before the
         // expensive provider/session spawn. Recheck the authoritative DB state
@@ -791,6 +831,12 @@ export class TeamSchedulerService {
         await this.emitTeamRunInvalidated(context.teamRun, ['work-requests', 'agent-invocations', 'workspaces'], 'agent-invocation-updated');
         invocationId = null;
       } catch (error) {
+        if (error instanceof ServiceError && error.code === 'TASK_INPUT_CHANGED') {
+          if (pendingSessionId) await prisma.session.deleteMany({ where: { id: pendingSessionId, status: 'PENDING', runtimeLaunchClaimCount: 0 } });
+          if (invocationId) this.lockService.releaseByOwner(invocationId);
+          inputBlocked.add(member.id);
+          continue;
+        }
         if (invocationId) {
           this.lockService.releaseByOwner(invocationId);
         }
@@ -1209,11 +1255,13 @@ export class TeamSchedulerService {
     teamRun: SchedulerTeamRun,
     member: PrismaTeamMember,
     workRequest: PrismaWorkRequest,
+    taskInput: TaskInputAcceptanceToken,
     invocationId: string,
     workspaceId: string | null,
     targetStartData: InvocationTargetStartData = {}
   ): Promise<PrismaAgentInvocation | null> {
     return prisma.$transaction(async (tx) => {
+      await this.taskInputs.assertForClaim(tx, teamRun.id, { kind: 'WORK_REQUEST', id: workRequest.id }, taskInput);
       const claimed = await tx.workRequest.updateMany({
         where: {
           id: workRequest.id,
@@ -1248,6 +1296,7 @@ export class TeamSchedulerService {
           id: invocationId,
           teamRunId: teamRun.id,
           workRequestId: workRequest.id,
+          taskInputSnapshotId: taskInput.snapshotId,
           memberId: member.id,
           workspaceId,
           sessionId: null,
@@ -1268,6 +1317,7 @@ export class TeamSchedulerService {
     teamRun: SchedulerTeamRun,
     member: PrismaTeamMember,
     workRequest: PrismaWorkRequest,
+    taskInput: TaskInputAcceptanceToken,
     invocationId: string,
     workspaceId: string,
     sessionId: string,
@@ -1286,6 +1336,7 @@ export class TeamSchedulerService {
         return null;
       }
 
+      await this.taskInputs.assertForClaim(tx, teamRun.id, { kind: 'WORK_REQUEST', id: workRequest.id }, taskInput);
       const claimed = await tx.workRequest.updateMany({
         where: {
           id: workRequest.id,
@@ -1320,6 +1371,7 @@ export class TeamSchedulerService {
           id: invocationId,
           teamRunId: teamRun.id,
           workRequestId: workRequest.id,
+          taskInputSnapshotId: taskInput.snapshotId,
           memberId: member.id,
           workspaceId,
           sessionId,
@@ -1863,17 +1915,15 @@ export class TeamSchedulerService {
   private async buildSessionPrompt(
     teamRun: SchedulerTeamRun,
     member: PrismaTeamMember,
-    workRequest: PrismaWorkRequest
+    workRequest: PrismaWorkRequest,
+    taskInput: TaskInputAcceptanceToken
   ): Promise<string> {
     const triggerMessage = await prisma.roomMessage.findUnique({
       where: { id: workRequest.triggerMessageId },
       select: { content: true, attachmentIds: true },
     });
     const attachmentIds = parseJsonField<string[]>(triggerMessage?.attachmentIds, []);
-    const taskContext = [
-      teamRun.task.title.trim(),
-      teamRun.task.description?.trim() ?? '',
-    ].filter(Boolean).join('\n\n');
+    const taskContext = taskInput.effectiveUserText;
     const targetContext = buildTargetHandoffPrompt(workRequest);
     const triggerContent = triggerMessage?.content?.trim() ?? '';
     const instructionParts = [

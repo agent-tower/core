@@ -37,7 +37,8 @@ Task -> TeamRun -> TeamMember
 - 普通消息有显式 mentions 时仅投递给被提及成员；没有 mentions 时，`USER_MESSAGES` 成员会接收 user 或其他 agent 的消息，排除发送者自身，system 消息不触发。不要因策略名称推断它仅接受 user。
 - 普通消息不会解析显示文本中的 `@name`。例外是创建 TeamRun 的首条任务消息：从完整 title/description 精确匹配名称或别名；有 mention token 但匹配不唯一/不存在时，不回退为 `USER_MESSAGES` 广播。
 - `CONFIRM` 创建 `PENDING_APPROVAL`，批准后变为 `QUEUED`；`AUTO` 直接入 `QUEUED`。HTTP 在消息持久化后后台调用 `startNextSessions`，不要让普通发消息响应等待 Agent 整轮执行。
-- RoomMessage 保存全文，列表返回 preview；详情通过相同可见性规则获取全文。WorkRequest 的 `instruction` 可能只是摘要，构造 Session prompt 时复用 `buildSessionPrompt` 从 Task、触发消息全文及 attachmentIds 恢复上下文。
+- RoomMessage 保存全文，列表返回 preview；详情通过相同可见性规则获取全文。WorkRequest 的 `instruction` 可能只是摘要，构造 Session prompt 时复用 `buildSessionPrompt`，Task 段使用本次 Invocation 固定共享输入，触发消息全文和 attachmentIds 沿原上下文规则。
+- PUBLIC Agent 展示翻译资格在原消息＋WorkRequest 事务写入数据库 enableEpoch；NULL历史不回填。提交后的有界 ID 通知位于 reconciler 前，翻译失败不改变原消息/派活/心跳/Invocation状态。唯一 TranslationService 负责首次登记和持久候选补偿，RoomTimeline独立overlay只供owner查看；不得把译文写回scheduler或MCP输入。
 - 只有与 invocation 绑定的 PUBLIC agent 消息是完成汇报。RUNNING 时发公开消息刷新真实进展，不立即终止；WAITING_ROOM_REPLY 时收到公开汇报会 reconcile 完成。私聊、user/system 消息不替代公开汇报。
 - `FAILED`/`CANCELLED` 的 Session 不会再有汇报：`isSessionRuntimeDead()` 在无 active turn 且 cleanup gate 确认时立即把 invocation 置 `FAILED`。正常完成一轮的 `COMPLETED` Session 同样是"无 active turn + cleanup 已确认"，必须继续走补催/续跑，不能按 gate 结果单独判死。
 
@@ -99,3 +100,12 @@ SessionManager 注入 `AGENT_TOWER_TEAM_RUN_ID`、`AGENT_TOWER_MEMBER_ID`、`AGE
 | 完成、停止、cleanup、恢复、权限等待 | `services/__tests__/team-reconciler.service.test.ts`、`services/__tests__/session-manager.team-run.test.ts`、`services/__tests__/member-heartbeat.test.ts`、`services/__tests__/member-heartbeat-scheduler.test.ts` |
 | 资源锁、worktree、verdict、部分合并 | `services/__tests__/team-lock.service.test.ts`、`services/__tests__/workspace.service.test.ts`、`routes/__tests__/team-runs-merge.test.ts`、`mcp/tools/__tests__/workspaces.test.ts` |
 | 凭证与 transport identity | `middleware/__tests__/access-auth.test.ts`、`mcp/http-client.test.ts` |
+
+## Team 用户投递与共享输入
+
+- `MessageDeliveryService` 受理 TEAM_USER 202 并推进翻译/顺序/共享输入门禁，在短事务调用 `TeamRunService.publishAcceptedUserDelivery(tx,envelope)`。冻结收件人/target（含 source owner）、精确 Task hash、snapshot token、revision/epoch 与前序屏障在实际发布事务中复核，RoomMessage/全部 WR/采纳引用/ROOM_PUBLISHED receipt/SENT 全有或全无。有效团队 Agent 沿原201发布路径；solo/失效Agent不能回退用户。
+- `TeamTaskInputService` 在真实 delivery/WR 消费时登记共享输入，Task 编辑本身不翻译。两个 scheduler 都在 admission/锁/workspace/Session 前预检；claim 再验当前 hash/head/ACCEPTED 并固定 WR/Invocation。预检后变版保留 QUEUED，清理未启动 PENDING Session且不计启动失败。prompt/MCP只读固定 effectiveUserText，nudge不重新采纳当前Task。TEAM_INITIAL 最终事务直接复用初始 USER_DELIVERY 文本/source/attempt为ACCEPTED snapshot，不再为同正文注册TASK_INPUT。
+- `TeamTaskInputSnapshot` 的 ACCEPTED 输入是历史事实。发布/恢复/启动共用 `assertTaskInputSnapshot` 检查精确原字段/hash、固定 team/hash Source 归属及 mode/正文/attempt，不比较当前 Task/config、Source revision/generation/epoch 或最新 attempt。启动扫描所有采纳记录，不能只检查 delivery 历史；已有 Invocation 无引用不补造，Agent输入接口返回409。owner按50条分页恢复共享输入，retry_translation/send_original使用actionId/revision；旧未决消费者不能因关闭开关解屏障。
+- 房间 receipt 恢复核验实际全部 WR 与消息声明 IDs 的完整集合及 frozen target；delivery 发布快照固定，WR 依赖在 claim 前可换为同 team/task 的合法 PENDING/ACCEPTED。PENDING 仅等待/拒绝/取消；按 WR 加载全部 Invocation 后校验，不能在查询时排除 NULL 输入或错误归属。四种活动状态（含尚未终态的 revoked）均需非空合法 ACCEPTED、同 team/member/WR 且与 WR 当前依赖一致；启动失败重排后的 WR 可换版，终态 Invocation 保留原 ACCEPTED 引用。启动从所有非空 `RoomMessage.deliveryId` 反查团队目的、PUBLIC 用户身份及完整发布事实；损坏不重造，旧 NULL 关联保持。既有 Agent 房间消息继续原有发布/reconcile 路径。详细契约见 `docs/conversation-language-translation.md`。
+
+TEAM_INITIAL 受理固定version2 intent（团队/成员UUID、preset展开配置、客户端指纹及Task精确原字段/hash/原文路由），pending没有TeamRun/成员/WR。Task等待中改版递增sourceRevision、撤销旧attempt并按同成员重算路由，不能改变客户端fingerprint。Git准备在事务外，最终事务复验Task/Project/能力/hash/配置/顺序/epoch，团队、成员、初始消息、快照、全部WR、receipt和SENT一次提交。取消/失败/关闭沿原CAS/动作账本，显式retry_delivery保留成功译文。丢响应及启动恢复核全部发布事实，损坏拒绝重建。详细契约见 `docs/conversation-language-translation.md`。

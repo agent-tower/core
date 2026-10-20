@@ -640,6 +640,9 @@ export class CursorAgentParser {
       this.flushThinking();
     }
 
+    if (['thinking', 'tool_call', 'interaction_query'].includes(msg.type)) this.msgStore.textBlocks.boundary();
+    if (msg.type === 'result') this.msgStore.textBlocks.end();
+
     // 分类处理
     switch (msg.type) {
       case 'system':

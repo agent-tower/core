@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import type { TeamRunMode } from '@agent-tower/shared'
-import { ApiError } from '@/lib/api-client'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
@@ -51,10 +50,6 @@ export function CreateTeamRunDialog({ isOpen, onClose, taskId }: CreateTeamRunDi
       })
       onClose()
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
-        setSubmitError(t('该任务已经存在 TeamRun。请刷新后再试。'))
-        return
-      }
       setSubmitError(error instanceof Error ? error.message : t('创建 TeamRun 失败'))
     }
   }

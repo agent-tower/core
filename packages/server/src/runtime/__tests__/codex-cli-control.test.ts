@@ -213,4 +213,21 @@ describe('Codex app-server RPC approval contract', () => {
     h.control.finish(); h.control.finish(); expect(completed).toHaveBeenCalledTimes(1); h.control.close();
     const oversized = setup(); oversized.control.processData('x'.repeat(8 * 1024 * 1024 + 1)); expect(oversized.failed).toHaveBeenCalled();
   });
+  it('turn/start response and started event cannot outrun the actual turn body write ACK', async () => {
+    const h = setup(); let release!: () => void;
+    const before = vi.fn(async () => undefined); const after = vi.fn(async () => undefined);
+    h.write(async frame => {
+      if (frame.method === 'initialize') queueMicrotask(() => h.control.handle({ id: frame.id, result: {} }));
+      if (frame.method === 'thread/start') queueMicrotask(() => h.control.handle({ id: frame.id, result: { thread: { id: 'thread' }, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'workspaceWrite', writableRoots: [], networkAccess: false } } }));
+      if (frame.method === 'turn/start') {
+        h.control.handle({ id: frame.id, result: { turn: { id: 'native-turn' } } });
+        h.control.handle({ method: 'turn/started', params: { threadId: 'thread', turn: { id: 'native-turn' } } });
+        await new Promise<void>(resolve => { release = resolve; });
+      }
+    });
+    const start = h.control.start(JSON.stringify({ cwd: '/workspace', input: [{ type: 'text', text: 'actual body', text_elements: [] }] }), vi.fn(), { before, after });
+    await vi.waitFor(() => expect(before).toHaveBeenCalledOnce()); expect(after).not.toHaveBeenCalled();
+    release(); await start; expect(after).toHaveBeenCalledOnce(); expect(h.frames.filter(frame => frame.method === 'turn/start')).toHaveLength(1); h.control.close();
+  });
+
 });

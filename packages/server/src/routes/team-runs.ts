@@ -1,8 +1,12 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ZodError, z } from 'zod';
 import { ServiceError, ValidationError } from '../errors.js';
 import { TeamRunService } from '../services/team-run.service.js';
 import { TeamSchedulerService } from '../services/team-scheduler.service.js';
+import { getMessageDeliveryService, getTeamTaskInputService } from '../core/container.js';
+import { prisma } from '../utils/index.js';
+import { requireTranslationOwner } from './translations.js';
+import { isUserInput } from './user-input-origin.js';
 import { WorkspaceService } from '../services/workspace.service.js';
 
 type TeamRunRouteScheduler = Pick<
@@ -91,6 +95,7 @@ const addTeamRunMemberSchema = z.object({
 const patchTeamRunMemberSchema = teamMemberSnapshotSchema.partial();
 
 const createTeamRunSchema = z.object({
+  clientSubmissionId: z.string().uuid(),
   mode: z.enum(['CONFIRM', 'AUTO']).default('AUTO'),
   teamTemplateId: z.string().min(1).optional(),
   memberPresetIds: z.array(z.string().min(1)).optional(),
@@ -98,7 +103,8 @@ const createTeamRunSchema = z.object({
 });
 
 const roomMessageSchema = z.object({
-  content: z.string().min(1),
+  clientSubmissionId: z.string().uuid().optional(),
+  content: z.string().min(1).max(256 * 1024),
   mentions: z.array(structuredMentionSchema).optional(),
   attachmentIds: z.array(z.string().min(1)).optional(),
   artifactRefs: z.array(z.string().min(1)).optional(),
@@ -205,26 +211,27 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
   const scheduler = options.scheduler ?? new TeamSchedulerService();
   const workspaceService = options.workspaceService ?? new WorkspaceService();
 
-  async function resolveViewerMemberId(teamRunId: string, request: { headers: Record<string, unknown> }) {
-    const invocationId = getInvocationId(request);
-    if (!invocationId) {
+  async function resolveAgentInvocationIdentity(teamRunId: string, request: FastifyRequest) {
+    if (request.agentTowerAuthKind !== 'agent') {
+      if (getInvocationId(request)) throw new ServiceError('Agent credential required', 'FORBIDDEN', 403);
       return null;
     }
-    const invocationIdentity = await service.resolveAgentInvocationIdentity(teamRunId, invocationId);
-    if (!invocationIdentity) {
-      throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
-    }
-    return invocationIdentity.memberId;
+    const identity = request.agentTowerAgentIdentity;
+    if (!identity?.invocationId) throw new ServiceError('Agent invocation required', 'FORBIDDEN', 403);
+    const invocation = await prisma.agentInvocation.findFirst({ where: { id: identity.invocationId, teamRunId, sessionId: identity.sessionId } });
+    const member = invocation ? await prisma.teamMember.findFirst({ where: { id: invocation.memberId, teamRunId, membershipStatus: 'ACTIVE' } }) : null;
+    const session = await prisma.session.findUnique({ where: { id: identity.sessionId } });
+    if (!invocation || !member || !session) throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
+    return { invocationId: invocation.id, memberId: member.id };
   }
-
-  async function resolveAgentInvocationIdentity(teamRunId: string, request: { headers: Record<string, unknown> }) {
-    return service.resolveAgentInvocationIdentity(teamRunId, getInvocationId(request));
+  async function resolveViewerMemberId(teamRunId: string, request: FastifyRequest) {
+    return (await resolveAgentInvocationIdentity(teamRunId, request))?.memberId ?? null;
   }
 
   async function resolveWorkRequestControlOptions(
     action: 'approving' | 'rejecting',
     body: z.infer<typeof scopedWorkRequestControlSchema>,
-    request: { headers: Record<string, unknown> }
+    request: FastifyRequest
   ) {
     const invocationId = getInvocationId(request);
     if (invocationId && !body.teamRunId) {
@@ -344,13 +351,16 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
 
   app.post<{ Params: { taskId: string } }>('/tasks/:taskId/team-runs', async (request, reply) => {
     try {
+      await requireTranslationOwner(request);
+      if (!isUserInput(request)) throw new ServiceError('Explicit user input origin required', 'USER_ORIGIN_REQUIRED', 403);
       const body = createTeamRunSchema.parse(request.body);
-      const teamRun = await service.createTeamRunWithInitialRoomMessage(request.params.taskId, body);
-      if (teamRun.mode === 'AUTO' && (teamRun.workRequests?.length ?? 0) > 0) {
-        startNextSessionsInBackground(app, scheduler, teamRun.id);
+      const submission = await getMessageDeliveryService().submitTeamInitial(request.params.taskId, body);
+      if (submission.state === 'SENT' && submission.destination.kind === 'TEAM_ROOM') {
+        reply.code(201);
+        return service.getTeamRunById(submission.destination.teamRunId);
       }
-      reply.code(201);
-      return teamRun;
+      reply.code(202);
+      return submission;
     } catch (error) {
       return handleError(error, reply);
     }
@@ -402,6 +412,30 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
     }
   });
 
+  app.get<{ Params: { id: string } }>('/team-runs/:id/task-input', async (request, reply) => {
+    try {
+      if (request.agentTowerAuthKind !== 'agent' || !request.agentTowerAgentIdentity) throw new ServiceError('Agent credential required', 'FORBIDDEN', 403);
+      const query = z.object({ view: z.enum(['preview', 'full']).default('preview') }).strict().parse(request.query);
+      return await getTeamTaskInputService().getForAgent(request.params.id, request.agentTowerAgentIdentity, query.view === 'full');
+    } catch (error) { return handleError(error, reply); }
+  });
+  app.get<{ Params: { id: string } }>('/team-runs/:id/task-inputs', async (request, reply) => {
+    try { await requireTranslationOwner(request); const query = z.object({ cursor: z.string().uuid().optional() }).strict().parse(request.query); return await getTeamTaskInputService().list(request.params.id, query.cursor); }
+    catch (error) { return handleError(error, reply); }
+  });
+  app.get<{ Params: { id: string; snapshotId: string } }>('/team-runs/:id/task-inputs/:snapshotId', async (request, reply) => {
+    try { await requireTranslationOwner(request); return await getTeamTaskInputService().get(request.params.id, request.params.snapshotId); }
+    catch (error) { return handleError(error, reply); }
+  });
+  app.post<{ Params: { id: string; snapshotId: string } }>('/team-runs/:id/task-inputs/:snapshotId/actions', async (request, reply) => {
+    try {
+      await requireTranslationOwner(request);
+      const body = z.object({ action: z.enum(['retry_translation', 'send_original']), expectedRevision: z.number().int().positive(), actionId: z.string().uuid() }).strict().parse(request.body);
+      const result = await getTeamTaskInputService().action(request.params.id, request.params.snapshotId, body.action, body.expectedRevision, body.actionId);
+      startNextSessionsInBackground(app, scheduler, request.params.id); return result;
+    } catch (error) { return handleError(error, reply); }
+  });
+
   app.post<{ Params: { id: string } }>('/team-runs/:id/messages', async (request, reply) => {
     try {
       const body = roomMessageSchema.parse(request.body);
@@ -411,6 +445,14 @@ export async function teamRunRoutes(app: FastifyInstance, options: TeamRunRouteD
       const invocationIdentity = await resolveAgentInvocationIdentity(request.params.id, request);
       if (invocationId && !invocationIdentity) {
         throw new ServiceError('Agent invocation identity is invalid for this TeamRun', 'FORBIDDEN', 403);
+      }
+      if (!invocationIdentity) {
+        await requireTranslationOwner(request);
+        if (!isUserInput(request)) throw new ServiceError('Explicit user input origin required', 'USER_ORIGIN_REQUIRED', 403);
+        if (!body.clientSubmissionId) throw new ValidationError('clientSubmissionId is required');
+        if (body.kind === 'work_started') throw new ValidationError('work_started is an Agent event');
+        const submission = await getMessageDeliveryService().submitTeamUser({ ...body, teamRunId: request.params.id, clientSubmissionId: body.clientSubmissionId });
+        reply.code(202); return submission;
       }
       const message = await service.createRoomMessage(request.params.id, {
         ...body,

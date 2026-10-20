@@ -4,6 +4,7 @@ import { ConflictOp } from '@agent-tower/shared';
 import type { GitOperationStatus } from '@agent-tower/shared';
 import {
   execGit,
+  type ExecGitOptions,
   isValidBranchName,
   GitError,
   BranchExistsError,
@@ -599,9 +600,9 @@ export class WorktreeManager {
   /**
    * Get the current Git operation status of a worktree.
    */
-  async getGitOperationStatus(worktreePath: string, baseBranch: string): Promise<GitOperationStatus> {
-    const rebaseInProgress = await this.isRebaseInProgress(worktreePath);
-    const mergeInProgress = await this.isMergeInProgress(worktreePath);
+  async getGitOperationStatus(worktreePath: string, baseBranch: string, conflictRead?: () => ExecGitOptions): Promise<GitOperationStatus> {
+    const rebaseInProgress = await this.isRebaseInProgress(worktreePath, conflictRead);
+    const mergeInProgress = await this.isMergeInProgress(worktreePath, conflictRead);
 
     let operation: GitOperationStatus['operation'] = 'idle';
     let conflictOp: ConflictOp | null = null;
@@ -616,8 +617,10 @@ export class WorktreeManager {
 
     let conflictedFiles: string[] = [];
     if (operation !== 'idle') {
-      conflictedFiles = await this.getConflictedFilesIn(worktreePath);
+      conflictedFiles = await this.getConflictedFilesIn(worktreePath, conflictRead);
     }
+
+    if (conflictRead) return { operation, conflictedFiles, conflictOp, ahead: 0, behind: 0, hasUncommittedChanges: false, uncommittedCount: 0, untrackedCount: 0 };
 
     // Get branch divergence info
     let ahead = 0;
@@ -840,14 +843,15 @@ export class WorktreeManager {
   /**
    * Get the list of conflicted files in a specific worktree path.
    */
-  private async getConflictedFilesIn(worktreePath: string): Promise<string[]> {
+  private async getConflictedFilesIn(worktreePath: string, options?: () => ExecGitOptions): Promise<string[]> {
     try {
-      const output = await execGit(worktreePath, ['diff', '--name-only', '--diff-filter=U']);
+      const output = await execGit(worktreePath, ['diff', '--name-only', '--diff-filter=U'], options?.());
       return output
         .split('\n')
         .map((f) => f.trim())
         .filter((f) => f.length > 0);
-    } catch {
+    } catch (error) {
+      if (options) throw error;
       return [];
     }
   }
@@ -856,10 +860,10 @@ export class WorktreeManager {
    * Check if a rebase is in progress in the given worktree.
    * Detects by checking for rebase-merge or rebase-apply directories.
    */
-  private async isRebaseInProgress(worktreePath: string): Promise<boolean> {
+  private async isRebaseInProgress(worktreePath: string, options?: () => ExecGitOptions): Promise<boolean> {
     try {
-      const rebaseMergePath = (await execGit(worktreePath, ['rev-parse', '--git-path', 'rebase-merge'])).trim();
-      const rebaseApplyPath = (await execGit(worktreePath, ['rev-parse', '--git-path', 'rebase-apply'])).trim();
+      const rebaseMergePath = (await execGit(worktreePath, ['rev-parse', '--git-path', 'rebase-merge'], options?.())).trim();
+      const rebaseApplyPath = (await execGit(worktreePath, ['rev-parse', '--git-path', 'rebase-apply'], options?.())).trim();
 
       const [mergeExists, applyExists] = await Promise.all([
         fs.access(rebaseMergePath).then(() => true).catch(() => false),
@@ -868,6 +872,7 @@ export class WorktreeManager {
 
       return mergeExists || applyExists;
     } catch {
+      options?.();
       return false;
     }
   }
@@ -876,11 +881,12 @@ export class WorktreeManager {
    * Check if a merge is in progress in the given worktree.
    * Detects by verifying MERGE_HEAD exists.
    */
-  private async isMergeInProgress(worktreePath: string): Promise<boolean> {
+  private async isMergeInProgress(worktreePath: string, options?: () => ExecGitOptions): Promise<boolean> {
     try {
-      await execGit(worktreePath, ['rev-parse', '--verify', 'MERGE_HEAD']);
+      await execGit(worktreePath, ['rev-parse', '--verify', 'MERGE_HEAD'], options?.());
       return true;
     } catch {
+      options?.();
       return false;
     }
   }

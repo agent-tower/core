@@ -48,7 +48,7 @@ export class CodexCliControl implements OutputParser {
   onTurnCompleted(listener: () => void) { this.completedListeners.add(listener); return () => this.completedListeners.delete(listener); }
   onTurnFailed(listener: () => void) { this.failedListeners.add(listener); return () => this.failedListeners.delete(listener); }
 
-  async start(initialInput: string, confirmed: () => void): Promise<void> {
+  async start(initialInput: string, confirmed: () => void, submission?: { before(): Promise<void>; after(): Promise<void> }): Promise<void> {
     const spec: CodexCliStart = JSON.parse(initialInput);
     if (!identity(spec.cwd) || !Array.isArray(spec.input)) throw error('control_start_failed', 'Invalid Codex startup input.');
     if (this.context.executionPermission !== 'ASK' && this.context.executionPermission !== 'AUTO_SANDBOX') throw error('control_start_failed', 'Codex app-server requires an authorized interactive permission mode.');
@@ -74,7 +74,7 @@ export class CodexCliControl implements OutputParser {
     this.ready = true;
     confirmed();
     this.turnStarting = true;
-    const started = await this.request('turn/start', { threadId: this.threadId, input: spec.input });
+    const started = await this.request('turn/start', { threadId: this.threadId, input: spec.input }, submission);
     if (!identity(started?.turn?.id) || (this.nativeTurnId && started.turn.id !== this.nativeTurnId)) throw error('control_protocol_invalid', 'Codex did not confirm the native turn identity.');
     this.nativeTurnId = started.turn.id;
     this.turnStarting = false;
@@ -153,7 +153,7 @@ export class CodexCliControl implements OutputParser {
         // Keep only the bounded action preview; raw diffs/arguments never enter pending DTOs.
         this.items.set(p.item.id, { type: p.item.type, command: p.item.command, cwd: p.item.cwd,
           paths: Array.isArray(p.item.changes) ? p.item.changes.slice(0, 40).map((c: ObjectValue) => c.path) : [] });
-        this.logs.item(p.item);
+        this.logs.item(p.item, m.method === 'item/completed');
       } else if (['item/agentMessage/delta', 'item/commandExecution/outputDelta', 'item/reasoning/summaryTextDelta', 'item/reasoning/textDelta', 'item/plan/delta'].includes(m.method)) {
         if (identity(p.itemId) && typeof p.delta === 'string') this.logs.delta(m.method, p.itemId, p.delta);
       } else if (m.method === 'thread/tokenUsage/updated') {
@@ -228,16 +228,19 @@ export class CodexCliControl implements OutputParser {
   }
   private invalidate(id: string) { if (this.pending.delete(id)) this.callbacks.invalidated(id); }
   private fail(failure: unknown) { if (this.closed) return; this.close(); this.callbacks.failed(failure); }
-  private request(method: string, params: ObjectValue): Promise<any> {
+  private request(method: string, params: ObjectValue, submission?: { before(): Promise<void>; after(): Promise<void> }): Promise<any> {
     if (this.closed) return Promise.reject(error('control_disconnected', 'Codex control channel ended.'));
     const id = `tower-${++this.seq}`;
-    return new Promise((resolve, reject) => {
+    let written: Promise<void> = Promise.resolve();
+    const response = new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.calls.delete(key(id)); reject(error('control_handshake_timeout', 'Codex initialization or turn startup timed out.')); }, 15_000);
       this.calls.set(key(id), { method, resolve, reject, timer });
-      void this.io.write(JSON.stringify({ id, method, params }) + '\n', () => !this.closed).catch(failure => {
+      written = (async () => { await submission?.before(); await this.io.write(JSON.stringify({ id, method, params }) + '\n', () => !this.closed); await submission?.after(); })();
+      void written.catch(failure => {
         const call = this.calls.get(key(id)); if (!call) return;
         this.calls.delete(key(id)); clearTimeout(call.timer); reject(failure);
       });
     });
+    return Promise.all([response, written]).then(([result]) => result);
   }
 }

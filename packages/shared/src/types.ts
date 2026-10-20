@@ -641,6 +641,20 @@ export interface UpdateWorkspaceBaseBranchInput {
   expectedBaseBranch: string | null
 }
 
+/** Read-only revalidation of a previously observed live Git conflict. */
+export interface RefreshConflictContextInput {
+  resolutionContextToken: string
+}
+
+export interface RefreshConflictContextResponse {
+  resolutionContextToken: string
+}
+
+/** Opaque current owner identity for local conflict evidence filtering; conveys no authority. */
+export interface ConflictRecoveryIdentityResponse {
+  actor: string
+}
+
 export type WorkspaceBackgroundServiceDesiredState = 'RUNNING' | 'STOPPED'
 
 export type WorkspaceBackgroundServiceRuntimeState =
@@ -944,6 +958,7 @@ export interface Conversation {
 }
 
 export interface ConversationCreateInput {
+  clientSubmissionId?: string;
   prompt: string
   providerId: string
   variant?: string
@@ -951,6 +966,7 @@ export interface ConversationCreateInput {
 }
 
 export interface ConversationMessageInput {
+  clientSubmissionId?: string;
   message: string
   providerId?: string
   attachmentIds?: string[]
@@ -1033,6 +1049,7 @@ export interface TeamMember {
 
 /** TeamRun 房间消息 */
 export interface RoomMessage {
+  userDelivery?: { operationId: string; clientSubmissionId: string; revision: number; sentMode: 'ORIGINAL' | 'TRANSLATED'; actualSentText: string | null; isTruncated: boolean };
   id: string
   teamRunId: string
   senderType: RoomMessageSenderType
@@ -1144,6 +1161,8 @@ export enum ConflictOp {
 
 /** Git 操作状态 */
 export interface GitOperationStatus {
+  /** Server-issued capability for rebuilding system conflict instructions; never translate it. */
+  resolutionContextToken?: string
   /** 当前操作类型 */
   operation: 'idle' | 'rebase' | 'merge'
   /** 冲突文件列表 */

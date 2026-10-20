@@ -1,3 +1,4 @@
+import { TeamInitialDeliveryStatus } from '@/components/team/TeamInitialDeliveryStatus'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -5,7 +6,7 @@ import { SessionStatus, WorkspaceStatus, type ConflictOp, type Session, type Tas
 import { LogStream, RuntimePermissionPrompt, TodoPanel, TokenUsageIndicator } from '@/components/agent'
 import { LogViewBoundary } from '@/components/errors'
 import {
-  ArrowLeft, ArrowUp, ArrowDown, Paperclip, Play, Square,
+  ArrowLeft, ArrowUp, Loader2, ArrowDown, Paperclip, Play, Square,
   MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History, Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -44,6 +45,9 @@ import {
 import { GitStatusBar } from '@/components/workspace/GitStatusBar'
 import { WorkspaceChangeSummaryBar } from '@/components/workspace/WorkspaceChangeSummaryBar'
 import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsDialog'
+import { ConflictRecoveryNotice } from '@/components/workspace/ConflictRecoveryNotice'
+import { useConflictRecovery } from '@/hooks/use-conflict-recovery'
+import { completeConflictDetails } from '@/lib/conflict-recovery-storage'
 import type { ConflictDetails } from '@/components/workspace/GitOperationsDialog'
 import { useGitStatus } from '@/hooks/use-workspaces'
 import { useGitChanges } from '@/hooks/use-git'
@@ -252,8 +256,9 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
     enabled: shouldLoadGitData,
   })
   const committedFileCount = gitChangesData?.committed?.length
-  const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
-  const [pendingConflictDetails, setPendingConflictDetails] = useState<ConflictDetails | null>(null)
+  const conflictRecovery = useConflictRecovery((workspaces ?? []).map(workspace => workspace.id), !teamRun)
+  const { pendingConflictDetails } = conflictRecovery
+  const isResolveDialogOpen = Boolean(pendingConflictDetails)
 
   useEffect(() => {
     const gitTab: VisibleGitTab | null = taskSupportsGit && (activeTab === 'changes' || (activeTab === 'chat' && shouldLoadGitData))
@@ -278,14 +283,20 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
   }, [activeTab, taskSupportsGit, selectedWorkspaceOperationId, setVisibleGitContext, shouldLoadGitData, workingDir])
 
   const conflictDetails = useMemo<ConflictDetails | null>(() => {
+    if (pendingConflictDetails) return pendingConflictDetails
     if (gitStatus?.conflictOp && gitStatus.conflictedFiles.length > 0) {
-      return {
+      return completeConflictDetails({
         conflictOp: gitStatus.conflictOp as ConflictOp,
         conflictedFiles: gitStatus.conflictedFiles,
-      }
+        resolutionContextToken: gitStatus.resolutionContextToken,
+        sourceWorkspaceId: selectedWorkspaceOperationId,
+        sourceWorktreePath: selectedWorkspace?.worktreePath,
+        sourceBranch: selectedWorkspaceBranch,
+        targetBranch: selectedWorkspaceMergeTargetBranch,
+      })
     }
     return pendingConflictDetails
-  }, [gitStatus?.conflictOp, gitStatus?.conflictedFiles, pendingConflictDetails])
+  }, [gitStatus, pendingConflictDetails, selectedWorkspaceOperationId, selectedWorkspace?.worktreePath, selectedWorkspaceBranch, selectedWorkspaceMergeTargetBranch])
 
   const resolveConflictWorkspaceId = conflictDetails?.targetWorkspaceId ?? selectedWorkspaceOperationId
   const resolveConflictWorktreePath = conflictDetails?.targetWorktreePath ?? selectedWorkspace?.worktreePath
@@ -294,9 +305,9 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
   const selectedWorkspaceSessions = selectedWorkspace?.sessions ?? []
 
   const handleOpenResolveConflicts = useCallback((details?: ConflictDetails) => {
-    setPendingConflictDetails(details ?? null)
-    setIsResolveDialogOpen(true)
-  }, [])
+    const original = details ?? conflictDetails
+    if (original) conflictRecovery.openDialog(original)
+  }, [conflictDetails, conflictRecovery])
 
   const refreshWorkspaces = useCallback(() => {
     if (!task?.id) return Promise.resolve()
@@ -485,7 +496,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
 
   const { todos } = useTodos(entries)
 
-  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, hasFiles: hasAttachments, isUploading } = useAttachments()
+  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, getDoneAttachments, hasFiles: hasAttachments, isUploading } = useAttachments()
 
   // Token usage — 取最新一条，回退到持久化值
   const initialTokenUsage = useMemo(() => {
@@ -528,22 +539,21 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
     ) return
     sendingRef.current = true
 
-    const attachmentLinks = buildMarkdownLinks()
-    const message = [input.trim(), attachmentLinks].filter(Boolean).join('\n\n')
+    const attachmentIds = getDoneAttachments().map(attachment => attachment.id)
+    const message = input.trim() || (attachmentIds.length ? ' ' : '')
 
     setInput('')
     clearAttachments()
     if (textareaRef.current) textareaRef.current.style.height = '40px'
 
     sendMessageMutation.mutate(
-      { id: sessionId, message, providerId: selectedProviderId ?? undefined },
+      { id: sessionId, message, attachmentIds, providerId: selectedProviderId ?? undefined },
       {
         onSuccess: () => attach(),
-        onError: () => setInput((current) => current || message),
         onSettled: () => { sendingRef.current = false },
       }
     )
-  }, [input, sessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId, selectedProviderIssue, stopSession.isPending, isSessionCancelling])
+  }, [input, sessionId, sendMessageMutation, attach, hasAttachments, isUploading, getDoneAttachments, clearAttachments, selectedProviderId, selectedProviderIssue, stopSession.isPending, isSessionCancelling])
 
   const handleStop = useCallback(() => {
     if (!sessionId || stopSession.isPending) return
@@ -706,6 +716,10 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
 
   return (
     <div ref={containerRef} className="fixed inset-x-0 top-0 flex flex-col h-dvh bg-background overflow-hidden overscroll-none">
+      {!teamRun && <ConflictRecoveryNotice recovery={conflictRecovery} onRecover={details => {
+        setExplicitWorkspaceId(details.sourceWorkspaceId)
+        handleOpenResolveConflicts(details)
+      }} />}
       {/* Header */}
       <header className="shrink-0 bg-background border-b border-border z-20">
         <div className="flex items-center h-11 px-2.5 gap-1.5">
@@ -829,9 +843,10 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                 <div className="relative flex-1 min-h-0">
                   <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-app-thin overscroll-y-contain px-3 pt-3 pb-2">
                     <div ref={contentRef}>
+              {!teamRun && task && <TeamInitialDeliveryStatus taskId={task.id} />}
                       {isLoadingSnapshot ? (
                         <LoadingSpinner label={t('Loading logs...')} />
-                      ) : logs.length === 0 ? (
+                      ) : logs.length === 0 && !sessionId ? (
                         <div className="text-muted-foreground text-center py-8 text-sm">
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
@@ -839,6 +854,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                         <LogViewBoundary>
                           <LogStream
                             logs={logs}
+                            sessionId={displayedSessionId}
                             downloadSessionId={displayedSessionId}
                             isOutputActive={isOutputActive}
                             lastExitAt={lastExitAt}
@@ -891,6 +907,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto overflow-x-hidden scrollbar-app-thin overscroll-y-contain px-3 pt-3 pb-2">
             <div ref={contentRef}>
+              {!teamRun && task && <TeamInitialDeliveryStatus taskId={task.id} />}
             {/* Task Description */}
             <div className="mb-3 pb-2 border-b border-border/60">
               {isLoadingTaskBody ? (
@@ -922,7 +939,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
             ) : sessionId ? (
               isLoadingSnapshot ? (
                 <LoadingSpinner label="Loading logs..." />
-              ) : logs.length === 0 ? (
+              ) : logs.length === 0 && !sessionId ? (
                 <div className="text-muted-foreground text-center py-8 text-sm">
                   {isSessionActive ? 'Waiting for agent output...' : 'No logs recorded.'}
                 </div>
@@ -930,6 +947,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                 <LogViewBoundary>
                   <LogStream
                     logs={logs}
+                    sessionId={displayedSessionId}
                     downloadSessionId={displayedSessionId}
                     isOutputActive={isOutputActive}
                     lastExitAt={lastExitAt}
@@ -1060,7 +1078,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                       />
                     )}
                     <TokenUsageIndicator usage={tokenUsage} />
-                    {isSessionActive && !input.trim() && !hasAttachments ? (
+                    {isSessionActive && !sendMessageMutation.isPending && !input.trim() && !hasAttachments ? (
                       <button
                         onClick={handleStop}
                         disabled={stopSession.isPending || isSessionCancelling}
@@ -1072,6 +1090,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                     ) : (
                       <button
                         onClick={handleSend}
+                        aria-label={t(sendMessageMutation.isPending ? '发送中...' : 'Send')}
+                        aria-busy={sendMessageMutation.isPending}
                         disabled={
                           (!input.trim() && !hasAttachments)
                           || isUploading
@@ -1091,7 +1111,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
                             : 'bg-transparent text-muted-foreground'
                         }`}
                       >
-                        <ArrowUp size={15} />
+                        {sendMessageMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <ArrowUp size={15} />}
                       </button>
                     )}
                   </div>
@@ -1233,12 +1253,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
         <ResolveConflictsDialog
           open={isResolveDialogOpen}
           onOpenChange={(open) => {
-            setIsResolveDialogOpen(open)
-            if (!open) setPendingConflictDetails(null)
+            if (!open) conflictRecovery.closeDialog()
           }}
           workspaceId={resolveConflictWorkspaceId}
           conflictOp={conflictDetails.conflictOp}
           conflictedFiles={conflictDetails.conflictedFiles}
+          resolutionContextToken={conflictDetails.resolutionContextToken}
           sourceBranch={resolveConflictSourceBranch}
           targetBranch={resolveConflictTargetBranch}
           operation={gitStatus?.operation}

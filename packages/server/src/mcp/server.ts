@@ -306,6 +306,7 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
         const teamRunId = resolveTeamRunId(params.team_run_id, context);
         await assertCurrentTeamMemberActiveIfPresent(client, context, teamRunId);
         const { invocationId, memberId } = resolveTeamRunAgentIdentity(context, teamRunId);
+        if (!invocationId || !memberId) throw new Error('Current TeamRun invocation identity is required.');
         const message = await client.createRoomMessage(teamRunId, {
           content: params.content,
           mentions: params.mentions,
@@ -324,6 +325,21 @@ function registerTeamRoomTools(server: McpServer, client: AgentTowerClient, cont
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
       }
+    }
+  );
+
+  server.tool(
+    'get_team_task_input',
+    'Read the effective Task input fixed for the current invocation. Preview and full use the same immutable snapshot. Legacy invocations without a snapshot return 409.',
+    { team_run_id: z.string().optional(), view: z.enum(['preview', 'full']).optional() },
+    async (params) => {
+      try {
+        const teamRunId = resolveTeamRunId(params.team_run_id, context);
+        const { invocationId, memberId } = resolveTeamRunAgentIdentity(context, teamRunId);
+        if (!invocationId || !memberId) throw new Error('Current TeamRun invocation identity is required.');
+        const result = await client.getTeamTaskInput(teamRunId, params.view ?? 'preview');
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (e: any) { return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }; }
     }
   );
 

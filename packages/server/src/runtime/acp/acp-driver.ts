@@ -81,6 +81,7 @@ class AcpDriverSession implements DriverSession {
   private processManager?: AcpProcessManager;
   private currentSink?: RuntimeDriverEventSink;
   private currentTurnId?: string;
+  private inputSubmission?: { turn: RuntimeRunTurnInput; resolve(): void; reject(error: unknown): void };
   private currentExternalSessionId?: string;
   private sessionReady = false;
   private sessionBootstrapUpdates?: SessionNotification[];
@@ -221,6 +222,8 @@ class AcpDriverSession implements DriverSession {
       this.clearTurn(turn.turnId);
       throw error;
     }
+    let submitted: Promise<void> | undefined;
+    if (turn.onSubmitted) submitted = new Promise<void>((resolve, reject) => { this.inputSubmission = { turn, resolve, reject }; });
     const request = connection.agent.request(acp.methods.agent.session.prompt, {
       sessionId: this.requireExternalSessionId(),
       prompt: [{
@@ -247,6 +250,11 @@ class AcpDriverSession implements DriverSession {
       this.invalidatePermissions(sink);
       this.clearTurn(turn.turnId);
     });
+    if (submitted) {
+      // The protocol response may arrive before the durable write acknowledgement.
+      void completion.catch(() => undefined);
+      await Promise.race([submitted, request.then(() => submitted!, error => { throw error; })]);
+    }
     return { completion };
   }
 
@@ -405,7 +413,25 @@ class AcpDriverSession implements DriverSession {
           }
           return this.handlePermission(params, signal);
         });
-      connection = app.connect(acp.ndJsonStream(streams.input, streams.output));
+      const stream = acp.ndJsonStream(streams.input, streams.output);
+      const writer = stream.writable.getWriter();
+      connection = app.connect({ readable: stream.readable, writable: new WritableStream({
+        write: async message => {
+          const pending = 'method' in message && message.method === acp.methods.agent.session.prompt ? this.inputSubmission : undefined;
+          if (!pending) { await writer.write(message); return; }
+          const evidence = { runtimeInstanceId, turnId: pending.turn.turnId, transport: 'ACP_PROMPT_WRITE' as const };
+          try {
+            this.assertTransportCurrent(generation, connection!, pending.turn.admissionSignal, 'prompt');
+            await pending.turn.onSubmitting?.(evidence);
+            this.assertTransportCurrent(generation, connection!, pending.turn.admissionSignal, 'prompt');
+            await writer.write(message);
+            await pending.turn.onSubmitted?.(evidence);
+            pending.resolve();
+          } catch (error) { pending.reject(error); throw error; }
+          finally { if (this.inputSubmission === pending) this.inputSubmission = undefined; }
+        },
+        close: () => writer.close(), abort: reason => writer.abort(reason),
+      }) });
       this.assertStartupCurrent(generation, admissionSignal, 'initialize', false);
       this.connection = connection;
       const clientCapabilities = mergeClientCapabilities(

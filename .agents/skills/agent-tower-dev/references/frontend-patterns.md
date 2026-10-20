@@ -17,7 +17,8 @@ TanStack Query 管理 REST 可重建状态；Zustand 管理客户端状态和高
 
 - 看板统一通过 `useTaskBoard` 请求 `/api/task-board`，All Projects 也是一次 board 请求，避免按 project 创建 `useQueries` fan-out。Task 正文用 `useTaskBody` 按需读取；RoomMessage 列表与全文详情分离。
 - Task mutation、`task:*` 和 TeamRun invalidation 要覆盖 board 与旧 task list cache。沿用 `hooks/use-tasks.ts` 的 query predicate、remove/rollback helper，处理过滤后的列表、总数和 detail/body cache；board item 只用 `projectId` 关联项目元数据。
-- TeamRun 消息提交成功后按稳定 message id upsert messages、run detail、task-run cache。`components/team/RoomTimeline.tsx` 的 pending 消息保留发送失败状态和草稿/附件恢复；不要把乐观消息的临时 id 当作后端身份。
+- TeamRun 用户提交202先缓存稳定operation，不能当RoomMessage upsert；实际发布后按稳定message id合并messages、run detail和task-run cache。`RoomTimeline` 乐观项与后续输入框草稿/附件隔离；未知受理在sessionStorage保存精确body/UUID，重试复用，损坏记录发送前拒绝，不能把旧附件恢复进新草稿或用新UUID盲发。
+- `TeamRoomDeliveryStatus` 用TEAM_TASK范围有界分页恢复待发操作，共享输入另按50条分页、按需全文，动作使用actionId/expectedRevision。202受理、输入ACCEPTED、房间SENT和成员运行是不同状态；owner主消息显示原文，actualSentText对照来自冻结发布事实。ID/revision通知只失效缓存，刷新/重连走REST。
 
 ## 实时同步与 Runtime UI
 
@@ -78,3 +79,25 @@ Provider 设置的入口是 `pnpm test:provider-settings`，它组合 happy-dom 
 ## Provider 执行权限
 
 CLI/ACP 共用 ExecutionPermissionSelector，固定三项并消费服务端 options，禁用原因有独立可聚焦说明；失效已选值保留且禁止保存/启动，不自动改档。编辑页使用 POST `/providers/capabilities` 提交当前 config 草稿（空对象明确替换已存 config），普通读取保留 GET；响应只含能力矩阵，不返回 Provider 的凭据或内部配置。Provider capability cache 区分 Agent、模型、Provider、Runtime 和草稿 config，router/cmd/args 改变隔离查询；账号/策略接入后也须失效该缓存。保存与启动仍由服务端复核。启动选择器消费 Provider 权限诊断与 options。RuntimePermissionPrompt 仅展示待处理的运行时审批请求，无请求时不占布局空间；权限修改只在新进程/transport 生效。
+
+## 用户输入翻译的最小 UI
+
+`hooks/user-submission.ts` 按提交快照保留 UUID，失败/响应丢失复用，成功后才释放；`task-start-submission.ts` 额外保留 workspace/session 创建身份和 workspaceKind。输入正文和 attachmentIds 分开，失败使用附件快照合并恢复，不能覆盖 await 期间的新草稿。创建首条 Conversation 失败必须向 CreateTaskInput 抛错。
+
+浏览器 start/send/create Conversation 返回 MessageDeliverySubmission（202），不是发送成功或 Conversation DTO。hooks 立即缓存 operation，Conversation 通过 destinationId 恢复真实实体；`delivery-cache.ts` 按 ID/revision 合并 action 与 REST，旧响应不能回退状态。`use-message-deliveries.ts` 依靠分页 REST、轮询和独立 Socket/reconnect invalidation 恢复。pending 默认独立过滤，不能被100条历史 SENT 遮住。
+
+`LogStream` 在消息列表合并 MessageDelivery 与正式日志，以 deliveryId 去重；没有日志的首发也必须挂载列表。`MessageDeliveryFeedback` 的状态/重试/实际发送对照属于对应用户气泡下方的外部区域；气泡仅承载正文和附件，身份/时间保留原有消息标题排版，不能挂在 composer。`outgoing-submissions.ts` 在 HTTP 前使用 userSubmission 的同一 UUID 显示不可变本地快照，受理后交权服务端记录；REST 认可 UUID 后清理本地未知记录与旧提交身份。失败不把旧正文/附件回填新草稿。
+
+翻译设置入口是 `TranslationSettingsPage`（SettingsDialog 桌面/移动共用 navigation，`/settings/translation` redirect）。`use-translation-settings.ts` 仅缓存公开字段；携带 apiKey 写入意图的保存和草稿测试使用普通可取消请求，禁止使用会缓存 variables 的 useMutation，也不写浏览器存储或日志。keep/replace/clear 与显式 replace 空字符串的免凭据选择不同；keyConfigured=false 无法区分未配置与免凭据。409 保留本地草稿；测试序列随草稿、样例和方向修改失效，卸载取消。
+
+`LogStream` 接收真实 `sessionId` 才启用独立 `use-session-translations` 读模型；任务两端传 displayedSessionId，独立对话由 AgentSessionPanel 传 sessionId。overlay 按 Session/turn/block、sourceRevision 和原文字节匹配，仅为 SEALED assistant 正文展示，不写原始日志或 Agent 状态。REST 每批不超过100个 blockId，空 items 仍跟随 nextCursor，完整快照缺项撤旧；Socket 通知只失效，引用计数共享 session room，重连补订阅并 REST 补读。成功历史不按当前启用状态或目标语言过滤；单块重试传 sourceRevision。`TranslationComparison` 提供右下图标触发的可交互长文浮层；正文显示译文时浮层只保留原文及其复制动作，不重复正文译文；不能以 pointer-events-none Tooltip 替代。`translation-reveals.ts` 在 session/room 视图内识别初始 transcript、新增/流式来源和已观察的未完成译文，独立于 Query key 与虚拟行保存并消费一次完成事件；历史异步恢复、缺项后恢复、回退原文和重挂不重播。`TranslationReveal` 仅对取得事件资格的展示版本做短动画，尊重 prefers-reduced-motion；RoomTimeline 仅保留外层动画容器。新建 Conversation 每次显式“新对话”推进视图代际，旧请求仅可导航原视图；输入实例按代际隔离。语言 Popover 使用 useScrollLock 纳入 SettingsDialog 浮层计数，并消费本层 Escape、恢复触发器焦点。语言目录由 IANA primary language subtags 与 CLDR 地区变体生成，搜索控件保留旧自定义值；更新入口为 scripts/update-translation-languages.mjs。
+
+`RoomTimeline` 桌面/移动共用 `use-team-run-translations`，仅查询已确认的 PUBLIC Agent ID，每批≤100，安装完整权威快照，独立 query keys/失效事件、共享引用计数订阅、重连补读。原消息240字 preview不能与overlay2000字 preview比较；两种全文按各自截断标记加载，展开不得落回原文 loader。全文共享请求独立于首个消费者，返回后各调用方再验 scope/身份代际/版本；候选失效或身份变化立即隐藏，最后合法消费者清理对应全文请求和缓存。单项detail/retry404同步推进共享单消息代际、撤所有消费者的该项及动作、取消清理该项全文，再取消旧summary并REST补读；summary快照/异步动作保留接受代际，旧操作在同版本重新授权后仍失效，其它项保持可读。房间401/403/summary404撤整个scope。原文与译文复制使用完整原始字符串（包含尾换行和资源指令），资源继续沿 producing invocation→workspace/session；重试传sourceRevision、仅显式单次POST。通知可以多余/乱序，只合并失效，REST为权威。
+
+系统冲突操作的提交 UUID 按 actor/operationId/原context及接收Session保持稳定，签名/期限不参与身份。`user-submission.ts` 用单个 sessionStorage JSON 保存 UUID、原body和目的地，结果未知先原请求核对，明确 accepted:false 后才同UUID换凭据；恢复中锁定原接收Session。普通git-status横幅同样从原token的白名单context补齐源/目标资料，并优先恢复同actor、同源workspace的未知原请求；即使展示资料已清理，也从原子pending body找回，不能凭新观察的operationId生成新UUID。提交层再次拒绝绕过同源未知请求的新operation或Session。token解析只用于本地索引/展示，不构成授权。保留旧 token 参与 key 的 pending 迁移，损坏/不可读的未知提交不能生成替代UUID。
+
+`api-client.ts` 在 MERGE_CONFLICT 409 抛给桌面/移动组件前，同步将原证明、操作资料和稳定意图保存到 `conflict-recovery-storage.ts`；独立于首次发送。`useConflictRecovery` 在桌面/移动父组件统一管理身份核验和弹窗资料，`ConflictRecoveryNotice` 仅展示该状态。owner-only/no-store `GET /conflict-recovery-identity` 必须本次查询成功且未在刷新时才可展示资料；旧data上的refetch错误、登录/退出中或actor变化均清空并卸载弹窗，异步换签在卸载后不得回填。登录/退出取消旧identity请求并reset缓存，queryFn消费AbortSignal，迟到的旧响应不能覆盖新身份。在 source git-status=idle 时仍有重开入口，恢复时选回源workspace。关闭/IDE只关闭弹窗；受理成功仅清理匹配operation的资料，或用户明确清理。过期资料保留供人工检查，不自动丢弃未知提交；同标签页刷新可恢复，关闭标签页/清理浏览器数据会删除，存储禁用/损坏需显式提示。登录/退出清除当前身份缓存，资料不跨browser凭据继承。
+
+ResolveConflictsDialog 有原 token 时通过 source workspace 的 `POST /conflict-context` 只读核验，原目标和接收范围由服务端证明决定；恢复、刷新及重开均不写Git、不自动发送。现场变化（包括部分stage）会保守拒绝，界面须展示实际目标目录并说明保留成果、手工继续，或明确abort/重做；项目目标无workspace映射时不把源IDE冒充实际目标。历史无证明且失效签名不能补回跨目录授权；不要承诺全部冲突均可AI恢复。
+
+TEAM_INITIAL 创建响应为201 TeamRun或202 MessageDeliverySubmission；202只缓存操作，plannedTeamRunId不能成为team query或导航ID。`team-initial-submission.ts`按task在sessionStorage保留精确body/UUID，未知响应重试不得重建意图、覆盖新草稿或附件。桌面/手机未建队详情以TEAM_TASK有界REST恢复pending；task room只供owner ID/revision失效，`lib/socket/task-subscription.ts`让TaskDetail与状态组件共用引用计数订阅，重连重订阅。SENT后REST失效真实task-team query。

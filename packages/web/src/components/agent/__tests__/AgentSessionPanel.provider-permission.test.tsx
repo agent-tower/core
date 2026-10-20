@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentType, RuntimeType } from '@agent-tower/shared'
 import type { ProviderWithAvailability } from '@/hooks/use-providers'
+import type { PendingAttachment } from '@/hooks/use-attachments'
 import { AgentSessionPanel } from '../AgentSessionPanel'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -25,13 +26,15 @@ vi.mock('@/hooks/use-sessions', () => ({
 }))
 vi.mock('@/hooks/use-todos', () => ({ useTodos: () => ({ todos: [] }) }))
 vi.mock('@/hooks/useTokenUsage', () => ({ useTokenUsage: () => null }))
+const attachmentState = vi.hoisted(() => ({ files: [] as PendingAttachment[], restoreFiles: vi.fn() }))
 vi.mock('@/hooks/use-attachments', () => ({
   useAttachments: () => ({
-    files: [], addFiles: vi.fn(), removeFile: vi.fn(), clear: vi.fn(),
-    buildMarkdownLinks: () => '', getDoneAttachments: () => [], hasFiles: false, isUploading: false,
+    files: attachmentState.files, addFiles: vi.fn(), removeFile: vi.fn(), clear: () => { attachmentState.files = [] }, restoreFiles: attachmentState.restoreFiles,
+    getDoneAttachments: () => attachmentState.files.flatMap(file => file.attachment ? [file.attachment] : []), hasFiles: attachmentState.files.length > 0, isUploading: false,
   }),
 }))
 vi.mock('@/components/agent', () => ({ AgentLogo: () => null }))
+vi.mock('../MessageDeliveryStatus', () => ({ MessageDeliveryStatus: () => null }))
 vi.mock('../TokenUsageBar', () => ({ TokenUsageIndicator: () => null }))
 vi.mock('../RuntimePermissionPrompt', () => ({ RuntimePermissionPrompt: () => null }))
 vi.mock('@/lib/i18n', () => ({
@@ -57,6 +60,8 @@ let root: Root | undefined
 let container: HTMLDivElement | undefined
 
 afterEach(() => {
+  attachmentState.files = []
+  attachmentState.restoreFiles.mockClear()
   if (root) act(() => root!.unmount())
   container?.remove()
   root = undefined
@@ -94,4 +99,25 @@ describe('AgentSessionPanel Provider permissions', () => {
     await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'codex', message: 'Continue this task' }))
   })
+  it('a lost send response restores the submitted attachments and preserves a newer draft', async () => {
+    const original: PendingAttachment = { tempId: 'old', file: new File(['x'], 'old.txt'), status: 'done', progress: 100,
+      attachment: { id: 'attachment', url: '/attachments/attachment/file', originalName: 'old.txt', mimeType: 'text/plain', sizeBytes: 1, storagePath: '/private/old.txt', createdAt: new Date().toISOString() } }
+    attachmentState.files = [original]
+    container = document.createElement('div'); document.body.append(container); root = createRoot(container)
+    let reject!: (error: Error) => void
+    const onSend = vi.fn(() => new Promise<void>((_resolve, fail) => { reject = fail }))
+    act(() => root!.render(<AgentSessionPanel sessionId="draft-session" agentType={AgentType.CODEX} runtimeType={RuntimeType.CLI} providers={[provider()]} providerId="codex" onSend={onSend} onStop={async () => {}} />))
+    const textarea = container.querySelector('textarea')!
+    const write = (text: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, text)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await act(async () => write('Original submission'))
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ message: 'Original submission', attachmentIds: ['attachment'] }))
+    await act(async () => write('New draft'))
+    await act(async () => { reject(new Error('response lost')); await Promise.resolve() })
+    expect(textarea.value).toBe('New draft'); expect(attachmentState.restoreFiles).toHaveBeenCalledWith([original])
+  })
+
 })

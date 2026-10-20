@@ -16,7 +16,11 @@ export const ClientEvents = {
   TERMINAL_RESIZE: 'terminal:resize',
 } as const;
 
+export type { TranslationInvalidatedPayload, MessageDeliveryInvalidatedPayload } from '../translation.js';
+
 export const ServerEvents = {
+  MESSAGE_DELIVERY_INVALIDATED: 'message-delivery:invalidated',
+  TRANSLATION_INVALIDATED: 'translation:invalidated',
   SESSION_SUBSCRIBED: 'session:subscribed',
   SESSION_UNSUBSCRIBED: 'session:unsubscribed',
   SESSION_STDOUT: 'session:stdout',
@@ -45,12 +49,12 @@ export const ServerEvents = {
 } as const;
 
 export interface SubscribePayload {
-  topic: 'session' | 'task' | 'agent' | 'terminal' | 'project';
+  topic: 'session' | 'team-run' | 'task' | 'agent' | 'terminal' | 'project';
   id?: string;
 }
 
 export interface UnsubscribePayload {
-  topic: 'session' | 'task' | 'agent' | 'terminal' | 'project';
+  topic: 'session' | 'team-run' | 'task' | 'agent' | 'terminal' | 'project';
   id?: string;
 }
 

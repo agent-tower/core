@@ -1,3 +1,5 @@
+import type { InputSubmissionObserver } from '../runtime/contracts.js';
+import type { MessageDeliveryService } from './message-delivery.service.js';
 import { prisma } from '../utils/index.js';
 import type { Prisma, Session as PrismaSession } from '@prisma/client';
 import { AgentType, SessionStatus, SessionPurpose, TaskStatus, SessionContext } from '../types/index.js';
@@ -17,7 +19,7 @@ import {
 import type { NormalizedConversation } from '../output/index.js';
 import { execGit } from '../git/git-cli.js';
 import type { EventBus } from '../core/event-bus.js';
-import { getCommitMessageService } from '../core/container.js';
+import { getCommitMessageService, getTranslationService } from '../core/container.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
 import { acquireTeamMemberAdmission } from './team-member-admission-barrier.js';
 import { NotFoundError, ServiceError, ValidationError } from '../errors.js';
@@ -152,6 +154,7 @@ function isAgentProgressPatch(patch: unknown): boolean {
     return false;
   }
   return patch.some((op) => {
+    if (op && typeof op === 'object' && 'path' in op && /\/metadata$/.test(String(op.path)) && 'value' in op && op.value && typeof op.value === 'object' && Object.keys(op.value).every(key => key === 'textBlock')) return false;
     const value = (op as { value?: unknown } | null)?.value;
     if (!value || typeof value !== 'object') {
       // 非整条 entry 写入（如对 /entries/N/content 的流式更新）视为 agent 进展。
@@ -185,12 +188,18 @@ type SessionExecutionRecord = Prisma.SessionGetPayload<{
   };
 }>;
 
-interface SendMessageOptions {
+export interface SendMessageOptions extends InputSubmissionObserver {
+  originalText?: string;
+  deliveryId?: string;
   /** User message was already appended while claiming a queued turn. */
   userEntryId?: string;
 }
 
 export class SessionManager {
+  private deliveryService?: MessageDeliveryService;
+  setMessageDeliveryService(service: MessageDeliveryService) { this.deliveryService = service; }
+  resumeConversationQueue(sessionId: string) { this.kickConversationQueue(sessionId); }
+  private translationBoundaryPending = new Set<string>();
   private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private snapshotFlushChains = new Map<string, Promise<void>>();
   private sessionPersistenceWriterChain: Promise<void> = Promise.resolve();
@@ -236,6 +245,7 @@ export class SessionManager {
   /** Durable conversation turns are consumed one at a time per Session. */
   private readonly conversationQueueWorkers = new Map<string, Promise<void>>();
   private conversationQueueStopping = false;
+  private readonly pendingConversationQueueKicks = new Set<string>();
   private readonly artifactService = new AgentArtifactService();
   private static readonly SNAPSHOT_CHECKPOINT_MS = 15_000;
   private static readonly HEARTBEAT_THROTTLE_MS = 30_000;
@@ -458,22 +468,25 @@ export class SessionManager {
 
   /** Recover turns left in RUNNING state by an interrupted server process. */
   async startConversationQueue(): Promise<void> {
-    this.conversationQueueStopping = false;
+    this.conversationQueueStopping = true;
     await prisma.conversationTurn.updateMany({
-      where: { status: CONVERSATION_TURN_RUNNING },
+      where: { status: CONVERSATION_TURN_RUNNING, deliveryId: null },
       data: {
         status: CONVERSATION_TURN_QUEUED,
         startedAt: null,
       },
     });
+    const interruptedDeliveries = await prisma.conversationTurn.findMany({ where: { status: CONVERSATION_TURN_RUNNING, deliveryId: { not: null } }, include: { delivery: true } });
+    for (const turn of interruptedDeliveries) await prisma.conversationTurn.update({ where: { id: turn.id }, data: { status: turn.delivery?.state === 'SENT' ? CONVERSATION_TURN_FAILED : turn.delivery?.state === 'ACCEPTED' ? CONVERSATION_TURN_QUEUED : 'PAUSED', lastError: 'INTERRUPTED_EXECUTION' } });
     const pending = await prisma.conversationTurn.findMany({
       where: { status: CONVERSATION_TURN_QUEUED },
       select: { sessionId: true },
       distinct: ['sessionId'],
     });
-    for (const turn of pending) {
-      this.kickConversationQueue(turn.sessionId);
-    }
+    const sessions = new Set([...pending.map(turn => turn.sessionId), ...this.pendingConversationQueueKicks]);
+    this.pendingConversationQueueKicks.clear();
+    this.conversationQueueStopping = false;
+    for (const sessionId of sessions) this.kickConversationQueue(sessionId);
   }
 
   /** Stop scheduling new work during the Fastify shutdown phase. */
@@ -624,7 +637,18 @@ export class SessionManager {
     await this.runtimeCoordinator.resolvePermission(sessionId, requestId, optionId, authorizeDelivery);
   }
 
-  async create(workspaceId: string, agentType: AgentType, prompt: string, variant: string = 'DEFAULT', providerId?: string) {
+  async create(workspaceId: string, agentType: AgentType, prompt: string, variant: string = 'DEFAULT', providerId?: string, input?: { clientSubmissionId?: string; attachmentIds?: string[]; retryTask?: boolean }): Promise<PrismaSession> {
+    const fingerprint = createHash('sha256').update(JSON.stringify([workspaceId, agentType, prompt, variant, providerId ?? null, input?.attachmentIds ?? [], !!input?.retryTask])).digest('hex');
+    if (input?.clientSubmissionId) {
+      const existing = await prisma.session.findUnique({ where: { creationSubmissionId: input.clientSubmissionId } });
+      if (existing) {
+        if (existing.workspaceId !== workspaceId || existing.creationFingerprint !== fingerprint) throw new ServiceError('Submission identity conflict', 'DELIVERY_CONFLICT', 409);
+        const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId }, include: { task: true } });
+        if (!workspace) throw new NotFoundError('Workspace', workspaceId);
+        ensureTaskNotDeleted(workspace.task);
+        return existing;
+      }
+    }
     const workspace = await prisma.workspace.findUnique({
       where: { id: workspaceId },
       include: { task: true },
@@ -651,6 +675,9 @@ export class SessionManager {
 
     return prisma.session.create({
       data: {
+        creationSubmissionId: input?.clientSubmissionId,
+        creationFingerprint: fingerprint,
+        inputIntent: JSON.stringify({ attachmentIds: input?.attachmentIds ?? [], retryTask: !!input?.retryTask }),
         workspaceId,
         context: SessionContext.WORKSPACE,
         agentType,
@@ -660,10 +687,13 @@ export class SessionManager {
         prompt,
         status: SessionStatus.PENDING,
       },
+    }).catch(async error => {
+      if ((error as { code?: string }).code === 'P2002' && input?.clientSubmissionId) return this.create(workspaceId, agentType, prompt, variant, providerId, input);
+      throw error;
     });
   }
 
-  async start(id: string) {
+  async start(id: string, input: SendMessageOptions & { prompt?: string } = {}) {
     console.log('[SessionManager] 🚀 Starting session:', id);
 
     const startOperation = this.reserveInitialStartOperation(id);
@@ -691,14 +721,18 @@ export class SessionManager {
       // publication inside startRuntimeTurn(). A later stop is then observed by
       // the runtime admission signal instead of being lost between the gates.
       startOperation.throwIfStopped();
+      if (input.deliveryId) this.appendUserMessageEntry(session, input.originalText ?? session.prompt, `user:${input.deliveryId}`, input.deliveryId);
       await this.startRuntimeTurn(
         session,
-        session.prompt,
+        input.prompt ?? session.prompt,
         session.externalSessionId,
         session.providerId,
         'load',
         undefined,
         true,
+        undefined,
+        false,
+        input,
       );
       return session;
     } finally {
@@ -873,7 +907,7 @@ export class SessionManager {
       }
       await this.waitForPendingAutoCommit(id);
 
-      const userEntryId = options.userEntryId ?? this.appendUserMessageEntry(session, message);
+      const userEntryId = this.appendUserMessageEntry(session, options.originalText ?? message, options.userEntryId, options.deliveryId);
 
       const agentSessionId = session.externalSessionId
         ?? this.resolveAgentSessionId(id, session.logSnapshot);
@@ -890,6 +924,7 @@ export class SessionManager {
         false,
         expectedTeamRunInvocationId,
         true,
+        options,
       );
       return session;
     } finally {
@@ -1105,9 +1140,8 @@ export class SessionManager {
   }
 
   private kickConversationQueue(sessionId: string): void {
-    if (this.conversationQueueStopping || this.conversationQueueWorkers.has(sessionId)) {
-      return;
-    }
+    if (this.conversationQueueStopping) { this.pendingConversationQueueKicks.add(sessionId); return; }
+    if (this.conversationQueueWorkers.has(sessionId)) return;
 
     const worker = new Promise<void>((resolve, reject) => {
       setImmediate(() => {
@@ -1156,6 +1190,7 @@ export class SessionManager {
       });
       if (claimed.count !== 1) continue;
 
+      let submission: Awaited<ReturnType<MessageDeliveryService['claim']>> | undefined;
       try {
         console.log(
           `[ConversationQueue] claimed session=${sessionId} turn=${queued.id} queueWaitMs=${Math.max(0, Date.now() - queued.queuedAt.getTime())} attempt=${queued.attempts + 1}`,
@@ -1176,8 +1211,13 @@ export class SessionManager {
         const session = await this.findSessionExecutionRecord(sessionId);
         if (!session) throw new NotFoundError('Session', sessionId);
         this.ensureExecutionRecordIsLive(session);
+        submission = queued.deliveryId ? await this.deliveryService?.claim(queued.deliveryId, queued.deliveryRevision ?? undefined) : undefined;
+        if (queued.deliveryId && !submission) {
+          await prisma.conversationTurn.updateMany({ where: { id: queued.id, status: CONVERSATION_TURN_RUNNING, deliveryRevision: queued.deliveryRevision }, data: { status: 'PAUSED' } });
+          return;
+        }
         const userEntryId = queued.userEntryId ?? `user:${queued.id}`;
-        this.appendUserMessageEntry(session, queued.message, userEntryId);
+        this.appendUserMessageEntry(session, queued.originalText ?? queued.message, userEntryId, queued.deliveryId ?? undefined);
         if (!queued.userEntryId) {
           await prisma.conversationTurn.updateMany({
             where: { id: queued.id, status: CONVERSATION_TURN_RUNNING },
@@ -1190,8 +1230,9 @@ export class SessionManager {
           queued.message,
           queued.providerId ?? undefined,
           undefined,
-          { userEntryId },
+          { userEntryId, originalText: queued.originalText ?? undefined, deliveryId: queued.deliveryId ?? undefined, ...submission },
         );
+        await submission?.settle();
         console.log(
           `[ConversationQueue] dispatched session=${sessionId} turn=${queued.id} dispatchMs=${Date.now() - dispatchStartedAt}`,
         );
@@ -1208,8 +1249,9 @@ export class SessionManager {
           `[ConversationQueue] completed session=${sessionId} turn=${queued.id} runtimeWaitMs=${Date.now() - turnWaitStartedAt}`,
         );
       } catch (error) {
+        await submission?.settle();
         if (this.conversationQueueStopping) {
-          await this.requeueConversationTurn(queued.id);
+          if (!queued.deliveryId) await this.requeueConversationTurn(queued.id);
           return;
         }
         const lastError = error instanceof Error ? error.message : String(error);
@@ -1271,6 +1313,7 @@ export class SessionManager {
     initialStart = false,
     expectedTeamRunInvocationId?: string,
     advanceGeneration = false,
+    submission: InputSubmissionObserver = {},
   ): Promise<void> {
     const workingDir = this.getExecutionWorkingDir(session);
     let launchClaimNumber: number | null = null;
@@ -1336,6 +1379,10 @@ export class SessionManager {
             }
           }
 
+          msgStore.textBlocks.admission = session.purpose === SessionPurpose.CHAT
+            ? () => getTranslationService().getAdmissionEpoch()
+            : () => undefined;
+
           // Every turn claim is durable before RuntimeCoordinator can call a driver.
           // The lease remains held until runTurn has either failed before spawn or
           // handed the child/transport to its DriverSession owner.
@@ -1366,6 +1413,8 @@ export class SessionManager {
             resumeExternalSessionId,
             resumeMode,
             historyBoundaryEntryId,
+            onSubmitting: submission.onSubmitting,
+            onSubmitted: submission.onSubmitted,
             launchClaimNumber,
             admission,
           });
@@ -1600,6 +1649,21 @@ export class SessionManager {
   private handleRuntimeTurnEvent(envelope: RuntimeTurnEventEnvelope): void {
     const sessionId = envelope.towerSessionId;
     const event = envelope.event;
+    if (event.type === 'text_block') {
+      const block = event.entry.metadata?.textBlock;
+      if (block?.translationEpoch !== undefined && (block.state !== 'OPEN' || block.sourceRevision > 1)) {
+        this.dirtySnapshots.add(sessionId);
+        // Coalesce same-tick boundaries through the existing single snapshot writer.
+        if (!this.translationBoundaryPending.has(sessionId)) {
+          this.translationBoundaryPending.add(sessionId);
+          queueMicrotask(() => {
+            this.translationBoundaryPending.delete(sessionId);
+            void this.flushSnapshotPersist(sessionId).catch(() => this.scheduleSnapshotPersist(sessionId));
+          });
+        }
+      }
+      return;
+    }
     if (event.type === 'stdout') {
       this.eventBus.emit('session:stdout', { sessionId, data: event.data });
       return;
@@ -2393,6 +2457,9 @@ export class SessionManager {
 
       if (snapshotChanged) {
         this.persistedSnapshotHashes.set(sessionId, snapshotHash);
+        if (serializedSnapshot.includes('"translationEpoch":')) {
+          try { getTranslationService().checkpointCommitted(sessionId); } catch { /* Original snapshot is durable for startup recovery. */ }
+        }
       }
       if (DEBUG_SNAPSHOT) {
         console.log(
@@ -2445,6 +2512,7 @@ export class SessionManager {
     session: SessionExecutionRecord,
     message: string,
     entryId?: string,
+    deliveryId?: string,
   ): string {
     const sessionId = session.id;
     const isNewStore = !sessionMsgStoreManager.has(sessionId);
@@ -2480,6 +2548,7 @@ export class SessionManager {
     }
 
     const userEntry = createUserMessage(message, entryId);
+    if (deliveryId) userEntry.metadata = { ...userEntry.metadata, deliveryId };
     const userIndex = msgStore.entryIndex.next();
     const userPatch = addNormalizedEntry(userIndex, userEntry);
     if (DEBUG_SNAPSHOT) {

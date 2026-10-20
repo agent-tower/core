@@ -8,6 +8,8 @@ import type {
 } from '@agent-tower/shared/socket';
 
 type EventMap = {
+  'message-delivery:invalidated': import('@agent-tower/shared').MessageDeliveryInvalidatedPayload;
+  'translation:invalidated': import('@agent-tower/shared').TranslationInvalidatedPayload;
   'session:stdout': { sessionId: string; data: string };
   'session:patch': { sessionId: string; patch: unknown[]; seq: number };
   'session:exit': { sessionId: string; exitCode?: number };

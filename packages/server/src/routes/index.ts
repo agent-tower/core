@@ -21,6 +21,7 @@ import { previewRoutes } from './previews.js';
 import { conversationRoutes } from './conversations.js';
 import { agentCliEnvironmentRoutes } from './agent-cli-environment.js';
 import { workspaceServiceRoutes } from './workspace-services.js';
+import { translationRoutes } from './translations.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // 系统路由
@@ -70,6 +71,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // 应用设置路由
   await app.register(appSettingsRoutes, { prefix: '/api' });
+  await app.register(translationRoutes, { prefix: '/api' });
 
   // 通知配置路由
   await app.register(notificationRoutes, { prefix: '/api' });

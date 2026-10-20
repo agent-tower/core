@@ -1,17 +1,36 @@
 // @vitest-environment happy-dom
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { apiClient } from '@/lib/api-client';
+import { usePostRoomMessage, useRoomMessages } from '@/hooks/use-team-run';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Attachment, RoomMessage, TeamRun } from '@agent-tower/shared';
+import type { Attachment, MessageDelivery, RoomMessage, TeamMessageDelivery, TeamRun, TeamRunTranslationOverlaySummary } from '@agent-tower/shared';
 import { I18nProvider } from '@/lib/i18n';
 import { RoomTimeline } from '../RoomTimeline';
+import type { PostRoomMessageInput } from '@/hooks/use-team-run';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { roomMessageDetailRefetchMock, scrollToBottomMock } = vi.hoisted(() => ({
+const { roomMessageDetailRefetchMock, scrollToBottomMock, translationFixture } = vi.hoisted(() => ({
+  translationFixture: { realDeliveries: false, overlays: [] as TeamRunTranslationOverlaySummary[], deliveries: [] as MessageDelivery[], enabled: false, loadFull: vi.fn(), isCurrent: vi.fn(() => true), retry: vi.fn() },
   roomMessageDetailRefetchMock: vi.fn(),
   scrollToBottomMock: vi.fn(() => true),
 }));
+
+vi.mock('@/hooks/use-message-deliveries', async original => {
+  const actual = await original<typeof import('@/hooks/use-message-deliveries')>();
+  return {
+    useMessageDeliveries: (...args: Parameters<typeof actual.useMessageDeliveries>) => translationFixture.realDeliveries ? actual.useMessageDeliveries(...args) : ({ data: { pages: [{ items: translationFixture.deliveries.filter(item => (item.state === 'SENT') === (args[1] === 'sent')) }] } }),
+    useDeliveryAction: (scope: string) => translationFixture.realDeliveries ? actual.useDeliveryAction(scope) : ({ mutate: vi.fn(), isPending: false }),
+  };
+});
+vi.mock('@/lib/api-client', async original => ({ ...await original<typeof import('@/lib/api-client')>(), apiClient: { get: vi.fn(), post: vi.fn() } }));
+vi.mock('@/lib/socket/manager', () => ({ socketManager: { connect: () => ({ on: vi.fn(), off: vi.fn(), emit: vi.fn(), connected: false }) } }));
+vi.mock('../TeamRoomDeliveryStatus', () => ({ TeamRoomDeliveryStatus: () => null }));
+
+vi.mock('@/hooks/use-team-run-translations', () => ({ useTeamRunTranslations: () => translationFixture }))
+vi.mock('@/hooks/use-translation-settings', () => ({ useTranslationSettings: () => ({ data: { enabled: translationFixture.enabled, sendTargetLanguage: 'English', displayTargetLanguage: 'Chinese' } }) }))
 
 vi.mock('use-stick-to-bottom', async () => {
   const ReactModule = await import('react');
@@ -278,6 +297,7 @@ describe('RoomTimeline optimistic sending', () => {
   let root: Root;
 
   beforeEach(() => {
+    translationFixture.realDeliveries = false; translationFixture.overlays = []; translationFixture.deliveries = []; translationFixture.enabled = false; translationFixture.loadFull.mockReset(); translationFixture.retry.mockReset(); translationFixture.isCurrent.mockReturnValue(true);
     roomMessageDetailRefetchMock.mockReset();
     roomMessageDetailRefetchMock.mockResolvedValue({ data: undefined, error: null });
     scrollToBottomMock.mockClear();
@@ -289,6 +309,163 @@ describe('RoomTimeline optimistic sending', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+  });
+
+  function translation(overrides = {}) {
+    const row: TeamRunTranslationOverlaySummary = { teamRunId: teamRun.id, messageId: 'message-1', sourceId: 'room-source', sourceRevision: 3, overlayRevision: 9, state: 'SUCCESS', originalTextPreview: 'Original overlay preview', translatedTextPreview: 'Translated preview', originalTextTruncated: true, translatedTextTruncated: true, targetLanguage: 'Chinese', errorCode: null, ...overrides };
+    translationFixture.overlays = [row];
+    return row;
+  }
+
+  it.each(['TEAM_USER', 'TEAM_INITIAL'] as const)('shows no translation indicator for %s original sends, including restored room history', async origin => {
+    let delivery: TeamMessageDelivery = {
+      origin: 'TEAM_USER', destination: { kind: 'TEAM_ROOM', taskId: teamRun.taskId, teamRunId: teamRun.id },
+      id: 'delivery', clientSubmissionId: 'submission', channelKey: 'team-channel', sequence: 1,
+      originalText: 'User original', attachmentIds: [], state: 'READY', sentMode: 'ORIGINAL', acceptedText: 'User original', actualSentText: null,
+      sentAt: null, acceptedDestinationId: null, lastError: null, revision: 1, createdAt: '2026-05-27T00:00:01.000Z',
+    };
+    if (origin === 'TEAM_INITIAL') delivery = { ...delivery, origin };
+    translationFixture.deliveries = [delivery];
+    const render = (messages: RoomMessage[] = []) => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={messages} onSendMessage={vi.fn()} /></I18nProvider>);
+    await act(async () => render());
+    expect(container.textContent).not.toContain('Waiting to send');
+    expect(container.textContent).not.toContain('Send original');
+    expect(container.querySelector('button:has(.lucide-languages)')).toBeNull();
+    delivery = { ...delivery, state: 'SENT', actualSentText: delivery.originalText, revision: 2 };
+    translationFixture.deliveries = [delivery];
+    const message: RoomMessage = { ...createRoomMessage(delivery.originalText), userDelivery: { operationId: delivery.id, clientSubmissionId: delivery.clientSubmissionId, revision: 2, sentMode: 'ORIGINAL', actualSentText: delivery.actualSentText, isTruncated: false } };
+    await act(async () => render([message]));
+    expect(container.querySelector('button:has(.lucide-languages)')).toBeNull();
+    // After reload only RoomMessage.userDelivery remains; it must use the same rule.
+    translationFixture.deliveries = [];
+    await act(async () => { root.render(<></>); });
+    await act(async () => render([message]));
+    expect(container.textContent).toContain('You');
+    expect(container.textContent).toContain(delivery.originalText);
+    expect(container.querySelector('button:has(.lucide-languages)')).toBeNull();
+    translationFixture.enabled = true;
+    await act(async () => render([message]));
+    expect(container.querySelector('button:has(.lucide-languages)')).toBeNull();
+    message.userDelivery = { ...message.userDelivery!, sentMode: 'TRANSLATED' };
+    await act(async () => render([message]));
+    expect(container.querySelector('button[aria-label="Actual sent text"]')).not.toBeNull();
+    translationFixture.enabled = false;
+    await act(async () => render([message]));
+    await act(async () => (container.querySelector('button[aria-label="Actual sent text"]') as HTMLButtonElement).click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(delivery.actualSentText);
+  });
+
+  it('expands the displayed translation with its own loader and compares only the complete original', async () => {
+    const row = translation();
+    const original = '  Full original\n::agent-download{file="output/proof.txt"}\n\n';
+    const translated = '  Full translation\n::agent-download{file="output/proof.txt"}\n\n';
+    translationFixture.loadFull.mockResolvedValue({ ...row, originalText: original, translatedText: translated });
+    const copy = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+    const message = { ...createRoomMessage('Different 240 character preview…'), senderType: 'agent' as const, isTruncated: true };
+    await act(async () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={[message]} onSendMessage={vi.fn()} /></I18nProvider>));
+    await act(async () => getExpandMessageButton(container).click());
+    expect(translationFixture.loadFull).toHaveBeenCalledTimes(1);
+    expect(roomMessageDetailRefetchMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Full translation');
+    expect(container.textContent).not.toContain('Full original');
+    await act(async () => (container.querySelector('[aria-haspopup="dialog"]') as HTMLButtonElement).click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain('Full translation');
+    expect(document.querySelector('[aria-label="Copy message"]')).toBeNull();
+    await act(async () => (document.querySelector('[aria-label="Copy original"]') as HTMLButtonElement).click());
+    expect(copy).toHaveBeenLastCalledWith(original);
+    expect(scrollToBottomMock).not.toHaveBeenCalled();
+  });
+
+  it('uses independent truncation flags: long original/short translation stays short until comparison is opened', async () => {
+    const row = translation({ translatedTextPreview: 'Short translated body', translatedTextTruncated: false });
+    translationFixture.loadFull.mockResolvedValue({ ...row, originalText: 'Full original\n\n', translatedText: 'Short translated body' });
+    const copy = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+    await act(async () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={[{ ...createRoomMessage('Original…'), isTruncated: true, senderType: 'agent' }]} onSendMessage={vi.fn()} /></I18nProvider>));
+    expect(container.textContent).not.toContain('Expand full message');
+    await act(async () => (container.querySelector('[aria-haspopup="dialog"]') as HTMLButtonElement).click());
+    await act(async () => (document.querySelector('[aria-label="Copy original"]') as HTMLButtonElement).click());
+    expect(copy).toHaveBeenCalledWith('Full original\n\n'); expect(translationFixture.loadFull).toHaveBeenCalledTimes(1);
+    await act(async () => (container.querySelector('[aria-haspopup="dialog"]') as HTMLButtonElement).click());
+    expect(translationFixture.loadFull).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain('Full original');
+  });
+
+  it('keeps readable previews after full-load failure and cannot copy a preview as complete text', async () => {
+    translation(); translationFixture.loadFull.mockRejectedValue(new Error('Controlled detail error'));
+    const copy = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+    await act(async () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={[{ ...createRoomMessage('Original…'), senderType: 'agent' }]} onSendMessage={vi.fn()} /></I18nProvider>));
+    await act(async () => (container.querySelector('[aria-haspopup="dialog"]') as HTMLButtonElement).click());
+    await act(async () => (document.querySelector('[aria-label="Copy original"]') as HTMLButtonElement).click());
+    expect(copy).not.toHaveBeenCalled(); expect(container.textContent).toContain('Translated preview');
+    await act(async () => getExpandMessageButton(container).click());
+    expect(container.textContent).toContain('Failed to load full message');
+    expect(translationFixture.loadFull).toHaveBeenCalledTimes(3);
+  });
+
+  it('retains SUCCESS when disabled, shows NOT_REQUIRED original, and locally prevents duplicate retry', async () => {
+    translation({ translatedTextTruncated: false });
+    const render = () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={[{ ...createRoomMessage('Original readable'), senderType: 'agent' }]} onSendMessage={vi.fn()} /></I18nProvider>);
+    await act(async () => render()); expect(container.textContent).toContain('Translated preview');
+    translation({ state: 'NOT_REQUIRED', translatedTextPreview: 'Do not show this as translated' });
+    await act(async () => render()); expect(container.textContent).toContain('Original readable'); expect(container.querySelector('[aria-haspopup="dialog"]')).toBeNull();
+    const waiting = deferred<void>(); translationFixture.retry.mockReturnValue(waiting.promise); translationFixture.enabled = true;
+    translation({ state: 'FAILED', translatedTextPreview: null }); await act(async () => render()); await act(async () => (container.querySelector('[aria-haspopup="dialog"]') as HTMLButtonElement).click());
+    const retry = Array.from(document.querySelectorAll('button')).find(button => button.textContent?.includes('Retry translation'))!;
+    await act(async () => { retry.click(); retry.click(); }); expect(translationFixture.retry).toHaveBeenCalledTimes(1);
+    await act(async () => waiting.resolve());
+  });
+
+  it.each([false, true])('submits TEAM_USER through the real hook and query refresh (compact=%s)', async compact => {
+    translationFixture.realDeliveries = true;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const pending = deferred<import('@agent-tower/shared').MessageDeliverySubmission>();
+    let delivery: Extract<TeamMessageDelivery, { origin: 'TEAM_USER' }> | undefined;
+    let messages: RoomMessage[] = [];
+    vi.mocked(apiClient.post).mockImplementation(() => pending.promise);
+    vi.mocked(apiClient.get).mockImplementation(async (url, options) => {
+      if (url === '/message-deliveries') return { items: delivery && (delivery.state === 'SENT') === (options?.params?.filter === 'sent') ? [delivery] : [], nextCursor: null };
+      if (url === '/message-deliveries/delivery') return delivery;
+      if (url === `/team-runs/${teamRun.id}/messages`) return messages;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    function ConnectedRoom() {
+      const send = usePostRoomMessage(teamRun.id);
+      const room = useRoomMessages(teamRun.id);
+      return <RoomTimeline teamRun={teamRun} compactComposer={compact} messages={room.data ?? []} onSendMessage={input => send.mutateAsync(input)} />;
+    }
+    const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); }); };
+    const quiet = () => {
+      for (const label of ['Waiting to send', 'Send original', 'Retry translation', 'Submitting...']) expect(container.textContent).not.toContain(label);
+      expect(container.querySelector('[data-delivery-state]')).toBeNull();
+    };
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><I18nProvider><ConnectedRoom /></I18nProvider></QueryClientProvider>));
+      await settle(); await typeMessage(container, 'Submitted original'); await submit(container); await settle();
+      expect(container.textContent).toContain('Submitted original');
+      expect(container.querySelector('button[aria-busy="true"] .animate-spin')).not.toBeNull();
+      quiet(); await settle(); quiet();
+      const body = vi.mocked(apiClient.post).mock.calls.at(-1)![1] as { clientSubmissionId: string };
+      delivery = { origin: 'TEAM_USER', destination: { kind: 'TEAM_ROOM', taskId: teamRun.taskId, teamRunId: teamRun.id },
+        id: 'delivery', clientSubmissionId: body.clientSubmissionId, channelKey: 'team-channel', sequence: 1,
+        originalText: 'Submitted original', attachmentIds: [], state: 'READY', sentMode: 'ORIGINAL', acceptedText: 'Submitted original', actualSentText: null,
+        sentAt: null, acceptedDestinationId: null, lastError: null, revision: 1, createdAt: '2026-05-27T00:00:01.000Z' };
+      await act(async () => pending.resolve({ operationId: delivery!.id, state: delivery!.state, delivery: delivery!, destination: delivery!.destination, destinationId: teamRun.id }));
+      await settle(); quiet();
+      expect(container.textContent).toContain('Submitted original');
+      for (const state of ['DISPATCHING', 'SENT'] as const) {
+        delivery = { ...delivery!, state, revision: delivery!.revision + 1 };
+        if (state === 'SENT') messages = [{ ...createRoomMessage(delivery.originalText), userDelivery: { operationId: delivery.id, clientSubmissionId: delivery.clientSubmissionId, revision: delivery.revision, sentMode: 'ORIGINAL', actualSentText: delivery.originalText, isTruncated: false } }];
+        await act(async () => { await Promise.all([client.invalidateQueries({ queryKey: ['message-deliveries'] }), client.invalidateQueries({ queryKey: ['team-runs'] })]); });
+        await settle(); quiet();
+        expect(container.textContent?.split('Submitted original')).toHaveLength(2);
+      }
+      expect(apiClient.post).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.render(<></>)); client.clear(); sessionStorage.clear(); vi.mocked(apiClient.post).mockClear(); vi.mocked(apiClient.get).mockClear();
+    }
   });
 
   it('clears the composer immediately and shows a pending message while sending', async () => {
@@ -307,7 +484,8 @@ describe('RoomTimeline optimistic sending', () => {
 
     expect(getTextarea(container).value).toBe('');
     expect(container.textContent).toContain('Hello team');
-    expect(container.textContent).toContain('Sending...');
+    expect(container.textContent).not.toContain('Submitting...');
+    expect(container.querySelector('button[aria-busy="true"] .animate-spin')).not.toBeNull();
     expect(onSendMessage).toHaveBeenCalledWith(expect.objectContaining({
       content: 'Hello team',
       senderType: 'user',
@@ -377,8 +555,8 @@ describe('RoomTimeline optimistic sending', () => {
     requestAnimationFrameSpy.mockRestore();
   });
 
-  it('marks failed sends and restores text plus uploaded attachments', async () => {
-    const onSendMessage = vi.fn(async () => {
+  it('keeps an unknown submission separate from the new draft and retries its exact body', async () => {
+    const onSendMessage = vi.fn<(input: PostRoomMessageInput) => Promise<void>>(async () => {
       throw new Error('Network unavailable');
     });
 
@@ -394,11 +572,20 @@ describe('RoomTimeline optimistic sending', () => {
     await submit(container);
     await flush();
 
-    expect(getTextarea(container).value).toBe('Please inspect');
-    expect(container.textContent).toContain('Send failed');
+    expect(getTextarea(container).value).toBe('');
+    expect(container.textContent).toContain('Acceptance unknown');
     expect(container.textContent).toContain('Network unavailable');
     expect(container.textContent).toContain('evidence.txt');
-    expect(getSendButton(container).disabled).toBe(false);
+    expect(getSendButton(container).disabled).toBe(true);
+    const original = structuredClone(onSendMessage.mock.calls[0]![0]);
+    await typeMessage(container, 'New draft');
+    const retry = Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Retry original submission')!;
+    await act(async () => { retry.click(); await Promise.resolve(); });
+    expect(onSendMessage.mock.calls[1]![0]).toEqual(original);
+    expect(getTextarea(container).value).toBe('New draft');
+    await submit(container);
+    expect(onSendMessage.mock.calls[2]![0].content).toBe('New draft');
+    expect(onSendMessage.mock.calls[2]![0].attachmentIds ?? []).toEqual([]);
   });
 
   it('keeps attachment-only failed sends retryable', async () => {
@@ -418,9 +605,10 @@ describe('RoomTimeline optimistic sending', () => {
     await flush();
 
     expect(getTextarea(container).value).toBe('');
-    expect(container.textContent).toContain('Send failed');
+    expect(container.textContent).toContain('Acceptance unknown');
     expect(container.textContent).toContain('evidence.txt');
-    expect(getSendButton(container).disabled).toBe(false);
+    expect(getSendButton(container).disabled).toBe(true);
+    expect(container.textContent).toContain('Retry original submission');
   });
 
   it('loads message details for truncated RoomMessages', async () => {

@@ -1,6 +1,6 @@
+import { taskStartSubmission } from '@/hooks/task-start-submission'
 import { useState, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { apiClient } from '@/lib/api-client'
 import { useCreateWorkspace } from '@/hooks/use-workspaces'
 import { useStartSession } from '@/hooks/use-sessions'
 import { getProviderStartIssue } from '@/components/provider/provider-draft'
@@ -111,22 +111,11 @@ export function StartAgentDialog({
     setError(null)
 
     try {
-      // Step 1: 创建 Workspace
-      setStep('creating-workspace')
-      const workspace = await createWorkspace.mutateAsync({
-        workspaceKind: projectSupportsWorktree ? workspaceMode : WorkspaceKind.MAIN_DIRECTORY,
+      await taskStartSubmission(taskId, { providerId: selectedProviderId, prompt: prompt.trim(), workspaceKind: projectSupportsWorktree ? workspaceMode : WorkspaceKind.MAIN_DIRECTORY }, {
+        createWorkspace: clientSubmissionId => createWorkspace.mutateAsync({ clientSubmissionId, workspaceKind: projectSupportsWorktree ? workspaceMode : WorkspaceKind.MAIN_DIRECTORY }),
+        startSession: id => startSession.mutateAsync(id),
+        onStep: setStep,
       })
-
-      // Step 2: 创建 Session (使用 providerId)
-      setStep('creating-session')
-      const session = await apiClient.post<{ id: string }>(
-        `/workspaces/${workspace.id}/sessions`,
-        { providerId: selectedProviderId, prompt: prompt.trim() },
-      )
-
-      // Step 3: 启动 Session
-      setStep('starting-session')
-      await startSession.mutateAsync(session.id)
 
       // 成功，invalidate workspaces 使 TaskDetail 发现新 session
       await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })

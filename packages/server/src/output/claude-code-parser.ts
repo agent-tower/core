@@ -166,6 +166,7 @@ export class ClaudeCodeParser {
   // message_id → StreamingMessageState，用于 assistant 消息的 replace 机制
   private streamingMessages: Map<string, StreamingMessageState> = new Map()
   private streamingMessageId: string | null = null
+  private latestAssistantMessageId: string | null = null
   // 最后一轮 assistant 消息的 per-turn usage（代表当前上下文窗口占用量）
   private lastTurnUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null = null
   // 是否解析到了有效的 JSON 消息
@@ -240,7 +241,15 @@ export class ClaudeCodeParser {
       this.hasValidMessages = true
       if (msg.type.startsWith('control_')) { this.control?.message(msg); return }
       this.control?.message(msg)
-      this.handleMessage(msg)
+      const streamId = msg.parent_tool_use_id ?? 'main'
+      this.msgStore.textBlocks.inStream(streamId, () => {
+        if (streamId === 'main') this.handleMessage(msg)
+        else {
+          let child = this.childParsers.get(streamId)
+          if (!child) { child = new ClaudeCodeParser(this.msgStore); this.childParsers.set(streamId, child) }
+          child.handleMessage(msg)
+        }
+      })
     } catch {
       if (this.control) { this.control.failed(new Error('Invalid Claude JSON output')); return }
       // 非 JSON 行 — 剥离 ANSI 转义序列后收集，用于进程异常退出时展示
@@ -258,6 +267,8 @@ export class ClaudeCodeParser {
   /**
    * 处理消息
    */
+  private childParsers = new Map<string, ClaudeCodeParser>()
+
   private handleMessage(msg: ClaudeCodeMessage): void {
     switch (msg.type) {
       case 'system':
@@ -342,6 +353,24 @@ export class ClaudeCodeParser {
    */
   private handleAssistantMessage(msg: ClaudeCodeMessage): void {
     if (!msg.message?.content) return
+    const messageId = msg.message.id || msg.message_id
+    const historical = !!messageId && this.streamingMessages.has(messageId) && !!this.latestAssistantMessageId && messageId !== this.latestAssistantMessageId
+    if (!historical) {
+      if (messageId) this.latestAssistantMessageId = messageId
+      this.applyAssistantMessage(msg)
+      return
+    }
+    const currentIndex = this.currentAssistantIndex
+    const currentContent = this.currentAssistantContent
+    try { this.msgStore.textBlocks.reconcile(() => this.applyAssistantMessage(msg)) }
+    finally {
+      this.currentAssistantIndex = currentIndex
+      this.currentAssistantContent = currentContent
+    }
+  }
+
+  private applyAssistantMessage(msg: ClaudeCodeMessage): void {
+    if (!msg.message?.content) return
 
     // 检测 --include-partial-messages 产生的 partial assistant 消息。
     // partial 消息的 stop_reason 为 null，且 content 数组仅包含最新完成的 block，
@@ -350,7 +379,12 @@ export class ClaudeCodeParser {
     const isPartialMessage = msg.message.stop_reason === null
 
     const messageId = msg.message.id || msg.message_id
-    const streamingState = messageId ? this.streamingMessages.get(messageId) : undefined
+    let streamingState = messageId ? this.streamingMessages.get(messageId) : undefined
+    if (messageId && !streamingState) {
+      if (this.streamingMessages.size >= 256) this.streamingMessages.delete(this.streamingMessages.keys().next().value!)
+      streamingState = { role: 'assistant', contents: new Map() }
+      this.streamingMessages.set(messageId, streamingState)
+    }
 
     for (let contentIndex = 0; contentIndex < msg.message.content.length; contentIndex++) {
       const block = msg.message.content[contentIndex]
@@ -375,11 +409,14 @@ export class ClaudeCodeParser {
           const entry = createAssistantMessage(block.text)
           const patch = replaceNormalizedEntry(existingIndex, entry)
           this.msgStore.pushPatch(patch)
-        } else if (!streamingState) {
+          this.msgStore.textBlocks.complete(existingIndex)
+        } else {
           const index = this.indexProvider.next()
           const entry = createAssistantMessage(block.text)
           const patch = addNormalizedEntry(index, entry)
           this.msgStore.pushPatch(patch)
+          this.msgStore.textBlocks.complete(index)
+          streamingState?.contents.set(contentIndex, { kind: 'text', entryIndex: index, buffer: block.text })
         }
       } else if (block.type === 'thinking' && block.thinking) {
         if (isPartialMessage) {
@@ -391,11 +428,12 @@ export class ClaudeCodeParser {
           const entry = createThinking(block.thinking)
           const patch = replaceNormalizedEntry(existingIndex, entry)
           this.msgStore.pushPatch(patch)
-        } else if (!streamingState) {
+        } else {
           const index = this.indexProvider.next()
           const entry = createThinking(block.thinking)
           const patch = addNormalizedEntry(index, entry)
           this.msgStore.pushPatch(patch)
+          streamingState?.contents.set(contentIndex, { kind: 'thinking', entryIndex: index, buffer: block.thinking })
         }
       }
     }
@@ -727,8 +765,9 @@ export class ClaudeCodeParser {
         const messageId = event.message?.id
         if (messageId && this.streamingRole === 'assistant') {
           this.streamingMessageId = messageId
+          this.latestAssistantMessageId = messageId
           // 清理前一条消息的 streaming state，新消息开始意味着前一条已完成
-          this.streamingMessages.clear()
+          if (this.streamingMessages.size >= 256) this.streamingMessages.delete(this.streamingMessages.keys().next().value!)
           this.streamingMessages.set(messageId, { role: 'assistant', contents: new Map() })
         } else {
           this.streamingMessageId = null
@@ -740,6 +779,7 @@ export class ClaudeCodeParser {
         const index = event.index
         const block = event.content_block
         if (index == null || !block) break
+        if (block.type !== 'text') { this.msgStore.textBlocks.boundary(); this.flushAssistantText() }
         if (block.type !== 'text' && block.type !== 'thinking') break
 
         const kind = block.type === 'thinking' ? 'thinking' : 'text'
@@ -817,8 +857,8 @@ export class ClaudeCodeParser {
         if (!block) break
 
         if (block.kind === 'text') {
-          // Keep currentAssistantIndex so next text block appends,
-          // but flush will be called by next thinking block or tool_use
+          this.msgStore.textBlocks.complete(block.entryIndex)
+          this.flushAssistantText()
         }
         this.streamingBlocks.delete(index)
         break

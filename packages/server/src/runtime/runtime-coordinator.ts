@@ -25,6 +25,9 @@ interface ActiveTurn {
   id: string;
   sequence: number;
   terminal: boolean;
+  lastCanonicalPatchSeq?: number;
+  cancelBlocks?: () => void;
+  finishBlocks?: () => void;
   completion: Promise<RuntimeTurnOutcome>;
   resolve: (outcome: RuntimeTurnOutcome) => void;
   reject: (error: unknown) => void;
@@ -113,6 +116,18 @@ export class RuntimeCoordinator {
     this.touch(input.towerSessionId, session);
 
     const sink = this.createSink(input.towerSessionId, session, active, input.executionPermission);
+    input.msgStore.textBlocks.begin(turnId);
+    const offBlock = input.msgStore.onTextBlock(entry => {
+      try { this.host.onTurnEvent({ towerSessionId: input.towerSessionId, turnId, sequence: active.sequence, timestamp: new Date().toISOString(), event: { type: 'text_block', entry } }); } catch { /* Display observers are isolated. */ }
+    });
+    const offPatch = input.msgStore.onPatch((patch, seq) => {
+      if (!this.isCurrentTurn(session, active) || active.terminal) return;
+      active.lastCanonicalPatchSeq = seq;
+      this.emitStream(input.towerSessionId, session, active, { type: 'conversation_patch', patch, seq, lifecycleOnly: input.msgStore.textBlocks.isLifecyclePatch });
+    });
+    const endBlocks = (cancelled: boolean) => { input.msgStore.textBlocks.end(cancelled, turnId); offBlock(); offPatch(); };
+    active.cancelBlocks = () => input.msgStore.textBlocks.cancel();
+    active.finishBlocks = () => endBlocks(true);
     const runtimeInstanceBeforeTurn = session.driverSession.runtimeInstanceId;
     try {
       this.assertStartAdmission(input.towerSessionId, input.admission);
@@ -121,6 +136,8 @@ export class RuntimeCoordinator {
         providerSnapshot: input.providerSnapshot,
         executionPermission: input.executionPermission,
         prompt: input.prompt,
+        onSubmitting: input.onSubmitting,
+        onSubmitted: input.onSubmitted,
         msgStore: input.msgStore,
         resumeExternalSessionId: input.resumeExternalSessionId,
         resumeMode: input.resumeMode,
@@ -141,17 +158,21 @@ export class RuntimeCoordinator {
       void driverTurn.completion.then(
         (outcome) => {
           if (!this.isCurrentTurn(session, active)) {
+            endBlocks(true);
             resolveCompletion(outcome);
             return;
           }
+          endBlocks(session.turnState === 'CANCELLING' || outcome.stopReason === 'cancelled');
           this.emitTerminal(input.towerSessionId, session, active, { type: 'completed', outcome });
           resolveCompletion(outcome);
         },
         (error) => {
           if (!this.isCurrentTurn(session, active)) {
+            endBlocks(true);
             rejectCompletion(error);
             return;
           }
+          endBlocks(session.turnState === 'CANCELLING');
           const normalized = toRuntimeError(error, 'prompt');
           session.error = normalized;
           this.emitTerminal(input.towerSessionId, session, active, { type: 'failed', error: normalized });
@@ -159,6 +180,7 @@ export class RuntimeCoordinator {
         },
       );
     } catch (error) {
+      endBlocks((session.turnState as RuntimeTurnState) === 'CANCELLING');
       if (
         session.driverSession.runtimeInstanceId !== runtimeInstanceBeforeTurn
         && input.launchClaimNumber != null
@@ -225,6 +247,7 @@ export class RuntimeCoordinator {
     const active = session?.activeTurn;
     if (!session || !active) return;
     session.turnState = 'CANCELLING';
+    active.cancelBlocks?.();
     this.invalidatePermissions(towerSessionId, session, active.id);
     this.touch(towerSessionId, session);
     await session.driverSession.cancelTurn(active.id);
@@ -239,6 +262,8 @@ export class RuntimeCoordinator {
     const session = this.sessions.get(towerSessionId);
     const active = session?.activeTurn;
     if (session && active) {
+      active.cancelBlocks?.();
+      active.finishBlocks?.();
       active.terminal = true;
       this.invalidatePermissions(towerSessionId, session, active.id);
       session.activeTurn = undefined;
@@ -264,6 +289,8 @@ export class RuntimeCoordinator {
     const session = this.sessions.get(towerSessionId);
     const active = session?.activeTurn;
     if (!session || !active) return true;
+    active.cancelBlocks?.();
+    active.finishBlocks?.();
     active.terminal = true;
     this.invalidatePermissions(towerSessionId, session, active.id);
     session.activeTurn = undefined;
@@ -417,6 +444,8 @@ export class RuntimeCoordinator {
         return;
       }
 
+      session.activeTurn?.cancelBlocks?.();
+      session.activeTurn?.finishBlocks?.();
       this.invalidatePermissions(towerSessionId, session);
       session.activeTurn = undefined;
       session.turnState = 'DISPOSED';
@@ -713,6 +742,7 @@ export class RuntimeCoordinator {
     return {
       stream: (event) => {
         if (!this.isCurrentTurn(session, active) || active.terminal) return;
+        if (event.type === 'conversation_patch' && active.lastCanonicalPatchSeq !== undefined && event.seq <= active.lastCanonicalPatchSeq) return;
         if (event.type === 'execution_permission_applied') {
           if (event.mode !== authorizedPermission) return;
           session.executionPermission = event.mode;
@@ -752,7 +782,7 @@ export class RuntimeCoordinator {
       event,
     };
     this.host.onTurnEvent(envelope);
-    this.touch(towerSessionId, session);
+    if (event.type !== 'conversation_patch' || !event.lifecycleOnly) this.touch(towerSessionId, session);
   }
 
   private emitTerminal(

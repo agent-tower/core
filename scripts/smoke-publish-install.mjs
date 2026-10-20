@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyCliStartup } from './verify-cli-startup.mjs';
+import { verifyCliStartup, verifyP3Startup } from './verify-cli-startup.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const publishDir = path.join(repoRoot, 'packages/server/publish');
@@ -45,6 +45,15 @@ const tempRoot = mkdtempSync(path.join(tmpdir(), 'agent-tower-publish-smoke-'));
 const packDir = path.join(tempRoot, 'pack');
 const installPrefix = path.join(tempRoot, 'prefix');
 const consumerDir = path.join(tempRoot, 'consumer-project');
+const isolatedHome = path.join(tempRoot, 'home');
+mkdirSync(isolatedHome, { recursive: true });
+Object.assign(process.env, {
+  HOME: isolatedHome, USERPROFILE: isolatedHome,
+  npm_config_cache: path.join(tempRoot, 'npm-cache'),
+  npm_config_userconfig: path.join(tempRoot, 'npmrc'),
+  NPM_CONFIG_CACHE: path.join(tempRoot, 'npm-cache'),
+  NPM_CONFIG_USERCONFIG: path.join(tempRoot, 'npmrc'),
+});
 
 try {
   mkdirSync(consumerDir, { recursive: true });
@@ -188,6 +197,7 @@ try {
   }
 
   const startupSummary = await verifyCliStartup(installedRoot, installedPackage.version, tempRoot);
+  const upgradeSummary = await verifyP3Startup(installedRoot, path.join(tempRoot, 'p3-upgrade'));
 
   console.log([
     '[publish-smoke] status=passed',
@@ -195,6 +205,7 @@ try {
     `pi=${actualPiVersion}`,
     `engines=${engineFiles.join(',')}`,
     startupSummary,
+    upgradeSummary,
   ].join(' '));
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });

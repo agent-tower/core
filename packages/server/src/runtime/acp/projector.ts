@@ -55,7 +55,9 @@ export class AcpProjector {
   private readonly tools = new Map<string, ProjectedTool>();
   private planIndex?: number;
   private usageIndex?: number;
-  private activeSyntheticMessage?: { role: 'assistant' | 'thought'; id: string };
+  private segments = new Map<string, { role: string; rawId: string | undefined; key: string; identity?: NonNullable<NormalizedEntry['metadata']>['acpTextIdentity'] }>();
+  private streamId = 'main';
+  private nativeSessionId = '';
 
   constructor(
     private readonly msgStore: MsgStore,
@@ -64,7 +66,23 @@ export class AcpProjector {
 
   project(notification: SessionNotification): void {
     const update = notification.update as SessionUpdate & Record<string, unknown>;
+    const parent = asRecord(asRecord(update._meta)?.claudeCode)?.parentToolUseId;
+    const stream = typeof parent === 'string' ? parent : 'main';
+    this.streamId = stream;
+    this.nativeSessionId = notification.sessionId;
+    this.msgStore.textBlocks.inStream(stream, () => this.projectUpdate(update));
+  }
+
+  private projectUpdate(update: SessionUpdate & Record<string, unknown>): void {
     switch (update.sessionUpdate) {
+      case 'user_message_chunk':
+        // A loaded user turn separates every stream, just as a fresh live
+        // Projector does. A child-local user update only separates that child.
+        if (this.streamId === 'main') {
+          for (const streamId of this.segments.keys()) this.endSegment(streamId);
+        } else this.endSegment();
+        this.sink.stream({ type: 'progress' });
+        break;
       case 'agent_message_chunk':
         this.projectContent(update, 'assistant');
         break;
@@ -73,13 +91,13 @@ export class AcpProjector {
         break;
       case 'tool_call':
       case 'tool_call_update':
-        this.activeSyntheticMessage = undefined;
+        this.endSegment();
         this.projectTool(update as ToolCallUpdate & Record<string, unknown>);
         break;
       case 'plan':
       case 'plan_update':
       case 'plan_removed':
-        this.activeSyntheticMessage = undefined;
+        this.endSegment();
         this.projectPlan(update);
         break;
       case 'usage_update':
@@ -99,9 +117,20 @@ export class AcpProjector {
 
   private projectContent(update: Record<string, unknown>, role: 'assistant' | 'thought'): void {
     const content = asRecord(update.content);
-    if (content?.type !== 'text' || typeof content.text !== 'string') return;
-    const rawId = this.resolveMessageId(update, role);
-    const key = `${role}:${rawId}`;
+    if (content?.type !== 'text' || typeof content.text !== 'string') { this.endSegment(); return; }
+    const nativeId = typeof update.messageId === 'string' ? update.messageId : undefined;
+    const rawId = nativeId;
+    const discrete = asRecord(update._meta)?.qwenDiscreteMessage === true;
+    let segment = this.segments.get(this.streamId);
+    if (!segment || segment.role !== role || segment.rawId !== rawId || discrete) {
+      this.endSegment();
+      // Native message identity survives load; repeated contiguous segments (and
+      // reused IDs across turns) are matched by ordered occurrence in the reconciler.
+      const identity = nativeId === undefined ? undefined : { sessionId: this.nativeSessionId, streamId: this.streamId, messageId: nativeId };
+      segment = { role, rawId, key: randomUUID(), identity };
+      this.segments.set(this.streamId, segment);
+    }
+    const key = segment.key;
     const text = sanitizeText(content.text);
     const existing = this.messages.get(key);
     if (existing) {
@@ -110,30 +139,18 @@ export class AcpProjector {
       return;
     }
     const entry = role === 'assistant'
-      ? createAssistantMessage(text, opaqueId('message', rawId))
-      : createThinking(text, opaqueId('thought', rawId));
+      ? createAssistantMessage(text)
+      : createThinking(text);
+    if (segment.identity) entry.metadata = { ...entry.metadata, acpTextIdentity: segment.identity };
     const index = this.msgStore.entryIndex.next();
     this.messages.set(key, { index, content: text });
     this.pushPatch(addNormalizedEntry(index, entry));
+    if (discrete && role === 'assistant') { this.msgStore.textBlocks.complete(index); this.segments.delete(this.streamId); }
   }
 
-  private resolveMessageId(
-    update: Record<string, unknown>,
-    role: 'assistant' | 'thought',
-  ): string {
-    if (typeof update.messageId === 'string') {
-      this.activeSyntheticMessage = undefined;
-      return update.messageId;
-    }
-    const meta = asRecord(update._meta);
-    if (meta?.qwenDiscreteMessage === true) {
-      this.activeSyntheticMessage = undefined;
-      return `${role}:${randomUUID()}`;
-    }
-    if (this.activeSyntheticMessage?.role === role) return this.activeSyntheticMessage.id;
-    const id = `${role}:${randomUUID()}`;
-    this.activeSyntheticMessage = { role, id };
-    return id;
+  private endSegment(streamId = this.streamId): void {
+    this.msgStore.textBlocks.boundary(streamId);
+    this.segments.delete(streamId);
   }
 
   private projectTool(update: ToolCallUpdate & Record<string, unknown>): void {

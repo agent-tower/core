@@ -1,3 +1,6 @@
+import { retainTaskSubscription } from '@/lib/socket/task-subscription'
+import { TeamInitialDeliveryStatus } from '@/components/team/TeamInitialDeliveryStatus'
+import { taskStartSubmission } from '@/hooks/task-start-submission'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -5,7 +8,6 @@ import { SessionStatus, WorkspaceKind, WorkspaceStatus, type Session, type TaskB
 import type { ConflictOp } from '@agent-tower/shared'
 import {
   ServerEvents,
-  ClientEvents,
   type SessionCompletedPayload,
   type TaskUpdatedPayload,
   type WorkspaceCommitMessageUpdatedPayload,
@@ -16,7 +18,7 @@ import { LogViewBoundary } from '@/components/errors'
 import { TodoPanel } from '@/components/agent'
 import { TokenUsageIndicator } from '@/components/agent'
 import { RuntimePermissionPrompt } from '@/components/agent'
-import { Paperclip, ArrowUp, ArrowDown, ArrowLeft, Play, Square, Code2, Trash2, MoreVertical, RotateCcw, Plus } from 'lucide-react'
+import { Paperclip, ArrowUp, Loader2, ArrowDown, ArrowLeft, Play, Square, Code2, Trash2, MoreVertical, RotateCcw, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
 import { TeamStatusPanel } from '@/components/team/TeamStatusPanel'
@@ -39,7 +41,7 @@ import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupP
 import { socketManager } from '@/lib/socket/manager'
 import { useGitVisibilityStore } from '@/stores/git-visibility-store'
 import { useSendMessage, useSessionActivity, useStopSession, useStartSession } from '@/hooks/use-sessions'
-import { useRetryTask, useTaskBody } from '@/hooks/use-tasks'
+import { useTaskBody } from '@/hooks/use-tasks'
 import { useProviders } from '@/hooks/use-providers'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
@@ -55,6 +57,9 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { ConflictBanner } from '@/components/workspace/ConflictBanner'
 import { ResolveConflictsDialog } from '@/components/workspace/ResolveConflictsDialog'
+import { ConflictRecoveryNotice } from '@/components/workspace/ConflictRecoveryNotice'
+import { useConflictRecovery } from '@/hooks/use-conflict-recovery'
+import { completeConflictDetails } from '@/lib/conflict-recovery-storage'
 import { WorkspaceChangeSummaryBar } from '@/components/workspace/WorkspaceChangeSummaryBar'
 import { type ConflictDetails } from '@/components/workspace/GitOperationsDialog'
 import { TaskStartProgress, type TaskStartProgressState } from './TaskStartProgress'
@@ -225,8 +230,6 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [isRetryConfirmOpen, setIsRetryConfirmOpen] = useState(false)
   const [isRetrying, setIsRetrying] = useState(false)
-  const [isResolveDialogOpen, setIsResolveDialogOpen] = useState(false)
-  const [pendingConflictDetails, setPendingConflictDetails] = useState<ConflictDetails | null>(null)
   const workspacePanelTabRef = useRef<WorkspacePanelHandle | null>(null)
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
   const [focusedInvocationSessionId, setFocusedInvocationSessionId] = useState<string | null>(null)
@@ -525,16 +528,25 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
     () => getWorkspaceMergeTargetBranch(selectedWorkspace, workspaces, task?.mainBranch ?? ''),
     [selectedWorkspace, task?.mainBranch, workspaces],
   )
+  const conflictRecovery = useConflictRecovery((workspaces ?? []).map(workspace => workspace.id), !isTeamRunMode)
+  const { pendingConflictDetails } = conflictRecovery
+  const isResolveDialogOpen = Boolean(pendingConflictDetails)
   const conflictDetails = useMemo<ConflictDetails | null>(() => {
+    if (pendingConflictDetails) return pendingConflictDetails
     if (gitStatus?.conflictOp && gitStatus.conflictedFiles.length > 0) {
-      return {
+      return completeConflictDetails({
         conflictOp: gitStatus.conflictOp as ConflictOp,
         conflictedFiles: gitStatus.conflictedFiles,
-      }
+        resolutionContextToken: gitStatus.resolutionContextToken,
+        sourceWorkspaceId: selectedWorkspaceOperationId,
+        sourceWorktreePath: selectedWorkspace?.worktreePath,
+        sourceBranch: selectedWorkspaceBranch,
+        targetBranch: selectedWorkspaceMergeTargetBranch,
+      })
     }
 
     return pendingConflictDetails
-  }, [gitStatus?.conflictOp, gitStatus?.conflictedFiles, pendingConflictDetails])
+  }, [gitStatus, pendingConflictDetails, selectedWorkspaceOperationId, selectedWorkspace?.worktreePath, selectedWorkspaceBranch, selectedWorkspaceMergeTargetBranch])
   const resolveConflictWorkspaceId = conflictDetails?.targetWorkspaceId ?? selectedWorkspaceOperationId
   const resolveConflictWorktreePath = conflictDetails?.targetWorktreePath ?? selectedWorkspace?.worktreePath
   const resolveConflictSourceBranch = conflictDetails?.sourceBranch ?? selectedWorkspaceBranch
@@ -569,7 +581,6 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
 
   const sendMessageMutation = useSendMessage()
   const openInEditorMutation = useOpenInEditor()
-  const retryTaskMutation = useRetryTask()
   const createWorkspaceMutation = useCreateWorkspace(task?.id ?? '')
   const startSessionMutation = useStartSession()
   const reactivateWorkspaceMutation = useReactivateWorkspace()
@@ -607,19 +618,12 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
     try {
       const body = await ensureTaskBody()
       const prompt = body?.prompt ?? task.title
-      await retryTaskMutation.mutateAsync(task.id)
       setIsJustRetried(true)
 
-      const workspace = await createWorkspaceMutation.mutateAsync({
-        workspaceKind: taskSupportsGit ? undefined : WorkspaceKind.MAIN_DIRECTORY,
+      await taskStartSubmission(task.id, { providerId: retryProviderId, prompt, retryTask: true, workspaceKind: taskSupportsGit ? WorkspaceKind.WORKTREE : WorkspaceKind.MAIN_DIRECTORY }, {
+        createWorkspace: clientSubmissionId => createWorkspaceMutation.mutateAsync({ clientSubmissionId, workspaceKind: taskSupportsGit ? undefined : WorkspaceKind.MAIN_DIRECTORY }),
+        startSession: id => startSessionMutation.mutateAsync(id),
       })
-
-      const session = await apiClient.post<{ id: string }>(
-        `/workspaces/${workspace.id}/sessions`,
-        { providerId: retryProviderId, prompt },
-      )
-
-      await startSessionMutation.mutateAsync(session.id)
 
       await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(task.id) })
     } catch (err) {
@@ -629,7 +633,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
       setIsRetrying(false)
     }
   }, [task?.id, task?.title, taskSupportsGit, activeSession?.providerId, providers, ensureTaskBody,
-      retryTaskMutation, createWorkspaceMutation, startSessionMutation, queryClient])
+      createWorkspaceMutation, startSessionMutation, queryClient])
 
   const handleOpenStartDialog = useCallback(async () => {
     if (!task?.id) return
@@ -660,9 +664,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   }, [])
 
   const handleOpenResolveConflicts = useCallback((details?: ConflictDetails) => {
-    setPendingConflictDetails(details ?? null)
-    setIsResolveDialogOpen(true)
-  }, [])
+    const original = details ?? conflictDetails
+    if (original) conflictRecovery.openDialog(original)
+  }, [conflictDetails, conflictRecovery])
 
   const handlePostRoomMessage = useCallback(
     (input: Parameters<typeof postRoomMessage.mutateAsync>[0]) => postRoomMessage.mutateAsync(input),
@@ -704,7 +708,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   useEffect(() => {
     if (!task?.id) return
     const socket = socketManager.connect()
-    socket.emit(ClientEvents.SUBSCRIBE, { topic: 'task', id: task.id })
+    const releaseTask = retainTaskSubscription(task.id)
 
     const handleTaskUpdated = (payload: TaskUpdatedPayload) => {
       if (payload.taskId !== task.id) return
@@ -729,7 +733,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
       socket.off(ServerEvents.TASK_UPDATED, handleTaskUpdated)
       socket.off(ServerEvents.WORKSPACE_COMMIT_MESSAGE_UPDATED, handleWorkspaceCommitMessageUpdated)
       socket.off(ServerEvents.WORKSPACE_HIBERNATED, handleWorkspaceHibernated)
-      socket.emit(ClientEvents.UNSUBSCRIBE, { topic: 'task', id: task.id })
+      releaseTask()
     }
   }, [task?.id, queryClient, invalidateTeamRunQueries])
 
@@ -754,7 +758,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
   const { todos } = useTodos(entries)
 
   // Attachments (file upload, paste, drag-drop)
-  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, hasFiles: hasAttachments, isUploading } = useAttachments()
+  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, getDoneAttachments, hasFiles: hasAttachments, isUploading } = useAttachments()
 
   // Token usage — 取最新一条，回退到持久化值
   const initialTokenUsage = useMemo(() => {
@@ -804,9 +808,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
     ) return
     sendingRef.current = true
 
-    // 拼接附件 markdown 链接到消息末尾
-    const attachmentLinks = buildMarkdownLinks()
-    const message = [input.trim(), attachmentLinks].filter(Boolean).join('\n\n')
+    // Keep attachment context separate from the user body until local delivery.
+    const attachmentIds = getDoneAttachments().map(attachment => attachment.id)
+    const message = input.trim() || (attachmentIds.length ? ' ' : '')
 
     setInput('')
     clearAttachments()
@@ -817,21 +821,18 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
       // 统一入口：无论 session 是 RUNNING 还是 COMPLETED/CANCELLED，
       // 都调同一个 sendMessage。后端自动处理 PTY 状态。
     sendMessageMutation.mutate(
-      { id: logSessionId, message, providerId: selectedProviderId ?? undefined },
+      { id: logSessionId, message, attachmentIds, providerId: selectedProviderId ?? undefined },
       {
         onSuccess: () => {
           // 确保 snapshot 已加载（全量广播下 patch 已实时到达，attach 通常为 no-op）
           attach()
-        },
-        onError: () => {
-          setInput((current) => current || message)
         },
         onSettled: () => {
           sendingRef.current = false
         },
       }
     )
-  }, [input, logSessionId, sendMessageMutation, attach, hasAttachments, isUploading, buildMarkdownLinks, clearAttachments, selectedProviderId, selectedProviderIssue, stopSession.isPending, isSessionCancelling])
+  }, [input, logSessionId, sendMessageMutation, attach, hasAttachments, isUploading, getDoneAttachments, clearAttachments, selectedProviderId, selectedProviderIssue, stopSession.isPending, isSessionCancelling])
 
   const handleStop = useCallback(() => {
     if (!logSessionId || stopSession.isPending) return
@@ -1091,6 +1092,10 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
       </div>
 
       {/* Conflict Banner */}
+      {!isTeamRunMode && <ConflictRecoveryNotice recovery={conflictRecovery} onRecover={details => {
+        setExplicitWorkspaceId(details.sourceWorkspaceId)
+        handleOpenResolveConflicts(details)
+      }} />}
       {canRunSelectedWorkspaceGitOperations && selectedWorkspaceOperationId && gitStatus && (
         <ConflictBanner
           workspaceId={selectedWorkspaceOperationId}
@@ -1139,6 +1144,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 <div className="relative flex-1 min-h-0">
                   <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
                     <div ref={contentRef} className="w-full max-w-4xl mx-auto">
+              {!teamRun && task && <TeamInitialDeliveryStatus taskId={task.id} />}
                       {isLoadingSnapshot ? (
                         <div className="flex items-center justify-center py-12 gap-3 text-muted-foreground">
                           <svg className="animate-spin motion-reduce:[animation-duration:2.4s] h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1147,7 +1153,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                           </svg>
                           <span className="text-sm">{t('Loading logs...')}</span>
                         </div>
-                      ) : logs.length === 0 ? (
+                      ) : logs.length === 0 && !logSessionId ? (
                         <div className="text-muted-foreground text-center py-8">
                           {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                         </div>
@@ -1155,6 +1161,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                         <LogViewBoundary>
                           <LogStream
                             logs={logs}
+                            sessionId={displayedSessionId}
                             downloadSessionId={displayedSessionId}
                             isOutputActive={isOutputActive}
                             lastExitAt={lastExitAt}
@@ -1211,6 +1218,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           <div className="relative flex-1 min-h-0">
             <div ref={scrollRef} className="h-full overflow-y-auto scrollbar-app-thin px-6 pt-6 pb-4">
             <div ref={contentRef} className="w-full min-w-0 max-w-4xl mx-auto">
+              {!teamRun && task && <TeamInitialDeliveryStatus taskId={task.id} />}
               {/* Task Description */}
               {(isLoadingTaskBody || taskBody?.body) && (
                 <div className="mb-4 pb-4 border-b border-border/60 min-w-0">
@@ -1253,7 +1261,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     </svg>
                     <span className="text-sm">{t('Loading logs...')}</span>
                   </div>
-                ) : logs.length === 0 ? (
+                ) : logs.length === 0 && !logSessionId ? (
                   <div className="text-muted-foreground text-center py-8">
                     {isSessionActive ? t('Waiting for agent output...') : t('No logs recorded for this session.')}
                   </div>
@@ -1261,6 +1269,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                   <LogViewBoundary>
                     <LogStream
                       logs={logs}
+                      sessionId={displayedSessionId}
                       downloadSessionId={displayedSessionId}
                       isOutputActive={isOutputActive}
                       lastExitAt={lastExitAt}
@@ -1420,7 +1429,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                     />
                   )}
                   <TokenUsageIndicator usage={tokenUsage} />
-                  {isSessionActive && !input.trim() && !hasAttachments ? (
+                  {isSessionActive && !sendMessageMutation.isPending && !input.trim() && !hasAttachments ? (
                     <button
                       onClick={handleStop}
                       disabled={stopSession.isPending || isSessionCancelling}
@@ -1433,6 +1442,8 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                   ) : (
                     <button
                       onClick={handleSend}
+                      aria-label={t(sendMessageMutation.isPending ? '发送中...' : 'Send')}
+                      aria-busy={sendMessageMutation.isPending}
                       disabled={
                         (!input.trim() && !hasAttachments)
                         || isUploading
@@ -1452,7 +1463,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                           : 'bg-transparent text-muted-foreground cursor-not-allowed'
                       }`}
                     >
-                      <ArrowUp size={18} />
+                      {sendMessageMutation.isPending ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
                     </button>
                   )}
                 </div>
@@ -1579,16 +1590,16 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
       {/* GitOperationsDialog removed — Git operations are now inline in Changes tab */}
 
       {/* Resolve Conflicts Dialog */}
-      {canRunSelectedWorkspaceGitOperations && resolveConflictWorkspaceId && conflictDetails && (
+      {isResolveDialogOpen && canRunSelectedWorkspaceGitOperations && resolveConflictWorkspaceId && conflictDetails && (
         <ResolveConflictsDialog
           open={isResolveDialogOpen}
           onOpenChange={(open) => {
-            setIsResolveDialogOpen(open)
-            if (!open) setPendingConflictDetails(null)
+            if (!open) conflictRecovery.closeDialog()
           }}
           workspaceId={resolveConflictWorkspaceId}
           conflictOp={conflictDetails.conflictOp}
           conflictedFiles={conflictDetails.conflictedFiles}
+          resolutionContextToken={conflictDetails.resolutionContextToken}
           sourceBranch={resolveConflictSourceBranch}
           targetBranch={resolveConflictTargetBranch}
           operation={gitStatus?.operation}

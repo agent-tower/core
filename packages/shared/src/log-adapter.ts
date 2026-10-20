@@ -1,3 +1,4 @@
+import type { TextBlockLifecycle } from './translation.js';
 /**
  * NormalizedEntry → LogEntry 类型映射
  * 将后端标准化日志转换为前端 UI 组件可用的格式
@@ -17,6 +18,8 @@ export enum LogType {
 }
 
 export interface LogEntry {
+  deliveryId?: string
+  textBlock?: TextBlockLifecycle
   id: string
   timestamp?: number
   type: LogType
@@ -100,6 +103,10 @@ export interface NormalizedEntry {
   entryType: NormalizedEntryType
   content: string
   metadata?: {
+    deliveryId?: string
+    textBlock?: TextBlockLifecycle
+    /** Recoverable ACP protocol identity, independent of canonical entry/block IDs. */
+    acpTextIdentity?: { sessionId: string; streamId: string; messageId: string }
     action?: ActionType
     toolName?: string
     toolId?: string
@@ -185,6 +192,7 @@ function convertNormalizedEntry(entry: NormalizedEntry): LogEntry | null {
         timestamp: entry.timestamp,
         type: LogType.User,
         content: entry.content,
+        ...(entry.metadata?.deliveryId ? { deliveryId: entry.metadata.deliveryId } : {}),
       }
 
     case 'assistant_message':
@@ -193,6 +201,7 @@ function convertNormalizedEntry(entry: NormalizedEntry): LogEntry | null {
         timestamp: entry.timestamp,
         type: LogType.Assistant,
         content: entry.content,
+        ...(entry.metadata?.textBlock ? { textBlock: entry.metadata.textBlock } : {}),
       }
 
     case 'next_action':

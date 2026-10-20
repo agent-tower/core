@@ -105,4 +105,17 @@ describe('Claude native control protocol', () => {
     expect(describeClaudeAction({ command: 'TOKEN=abc password="secret" Bearer xyz' })).not.toMatch(/abc|secret|xyz/);
     expect(describeClaudeAction({ command: 'x'.repeat(9000) }).length).toBeLessThan(4100);
   });
+  it('confirms only the user body write ACK, after ASK initialization and permission writes', async () => {
+    const h = setup(); let release!: () => void;
+    const before = vi.fn(async () => undefined); const after = vi.fn(async () => undefined);
+    h.write(async frame => {
+      if (frame.type === 'user') await new Promise<void>(resolve => { release = resolve; });
+      else queueMicrotask(() => h.control.handle({ type: 'control_response', response: { request_id: frame.request_id, subtype: 'success', response: frame.request.subtype === 'set_permission_mode' ? { mode: 'default' } : {} } }));
+    });
+    const start = h.control.start(user, vi.fn(), { before, after });
+    await vi.waitFor(() => expect(before).toHaveBeenCalledOnce());
+    expect(after).not.toHaveBeenCalled(); release(); await start;
+    expect(after).toHaveBeenCalledOnce(); expect(h.frames.filter(frame => frame.type === 'user')).toHaveLength(1); h.control.close();
+  });
+
 });

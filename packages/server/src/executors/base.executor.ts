@@ -282,6 +282,7 @@ export interface SpawnedChild {
   /** Optional native protocol transport; never exposed as terminal input. */
   duplex?: CliDuplexIO;
   initialInput?: string;
+  inputMode?: 'raw';
   /** PTY 实例 */
   pty: IPty;
   /** Executor -> Container: 执行器想要退出时发出信号 */
@@ -303,6 +304,7 @@ export interface SpawnedChild {
  * 执行器配置
  */
 export interface ExecutorSpawnConfig {
+  deliveryReceipt?: boolean;
   /** 工作目录 */
   workingDir: string;
   /** 用户提示 */
@@ -666,6 +668,12 @@ export abstract class BaseExecutor implements StandardCodingAgentExecutor {
     stdinData: string,
     duplex?: CliDuplexIO & { configFile: string },
   ): Promise<SpawnedChild> {
+    if (config.deliveryReceipt && !duplex) {
+      const child = await this.spawnWithDuplex({ ...config, deliveryReceipt: false }, commandParts);
+      child.initialInput = stdinData;
+      child.inputMode = 'raw';
+      return child;
+    }
     let resolved: Awaited<ReturnType<typeof resolveCommandParts>>;
     try {
       resolved = await resolveCommandParts(commandParts);

@@ -1,0 +1,628 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("AGENT_TOWER_DATABASE_URL")
+}
+
+// 项目
+model Project {
+  id            String    @id @default(uuid())
+  name          String
+  description   String?
+  repoPath      String
+  repoRemoteUrl String?
+  isGitRepo     Boolean?
+  worktreeReady Boolean?
+  gitCapabilityReason String?
+  gitCapabilityCheckedAt DateTime?
+  mainBranch    String    @default("main")
+  copyFiles     String? // 逗号分隔的 glob/路径列表，worktree 创建后自动复制
+  setupScript   String? // 多行命令文本，worktree 创建后自动执行
+  quickCommands String? // JSON: [{ name, command }]，终端快捷命令
+  archivedAt    DateTime?
+  repoDeletedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  tasks         Task[]
+
+  @@index([archivedAt])
+  @@index([repoDeletedAt])
+}
+
+// 任务
+// TaskStatus: TODO, IN_PROGRESS, IN_REVIEW, DONE, CANCELLED
+model Task {
+  id          String      @id @default(uuid())
+  title       String
+  description String?
+  status      String      @default("TODO")
+  priority    Int         @default(0)
+  position    Int         @default(0)
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspaces  Workspace[]
+  teamRun     TeamRun?
+  deletedAt   DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([projectId])
+  @@index([status])
+  @@index([deletedAt])
+  @@index([projectId, deletedAt, status, position])
+  @@index([deletedAt, updatedAt])
+}
+
+// 后台任务删除资源清理
+// TaskCleanupJobStatus: PENDING, RUNNING, COMPLETED, FAILED
+model TaskCleanupJob {
+  id          String    @id @default(uuid())
+  taskId      String
+  projectId   String
+  payload     String // JSON cleanup snapshot: project/workspaces/sessions
+  status      String    @default("PENDING")
+  attempts    Int       @default(0)
+  lastError   String?
+  nextRetryAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([taskId])
+  @@index([status, nextRetryAt])
+  @@index([projectId])
+}
+
+model MemberPreset {
+  id                    String   @id @default(uuid())
+  name                  String
+  aliases               String // JSON string: string[]
+  providerId            String
+  rolePrompt            String
+  capabilities          String // JSON TeamMemberCapabilities
+  workspacePolicy       String
+  triggerPolicy         String
+  sessionPolicy         String   @default("new_per_request")
+  queueManagementPolicy String   @default("own_only")
+  avatar                String? // JSON or string ref
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model TeamTemplate {
+  id                      String               @id @default(uuid())
+  name                    String
+  heartbeatTimeoutMinutes Int                  @default(10)
+  members                 TeamTemplateMember[]
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+}
+
+model TeamTemplateMember {
+  id             String       @id @default(uuid())
+  teamTemplateId String
+  teamTemplate   TeamTemplate @relation(fields: [teamTemplateId], references: [id], onDelete: Cascade)
+  memberPresetId String
+  position       Int          @default(0)
+
+  @@index([teamTemplateId])
+  @@index([memberPresetId])
+}
+
+model TeamRun {
+  id                      String             @id @default(uuid())
+  taskId                  String             @unique
+  task                    Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  mainWorkspaceId         String?
+  mainWorkspace           Workspace?         @relation("TeamRunMainWorkspace", fields: [mainWorkspaceId], references: [id], onDelete: SetNull)
+  mode                    String
+  heartbeatTimeoutMinutes Int                @default(10)
+  reviewReason            String?
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+  members                 TeamMember[]
+  messages                RoomMessage[]
+  workRequests            WorkRequest[]
+  invocations             AgentInvocation[]
+  verdicts                WorkspaceVerdict[]
+
+  @@index([mainWorkspaceId])
+}
+
+model TeamMember {
+  id                      String                   @id @default(uuid())
+  teamRunId               String
+  teamRun                 TeamRun                  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  presetId                String?
+  name                    String
+  aliases                 String // JSON string: string[]
+  providerId              String
+  rolePrompt              String
+  capabilities            String // JSON TeamMemberCapabilities
+  workspacePolicy         String
+  triggerPolicy           String
+  sessionPolicy           String                   @default("new_per_request")
+  queueManagementPolicy   String                   @default("own_only")
+  membershipStatus        String                   @default("ACTIVE")
+  avatar                  String?
+  status                  String                   @default("IDLE")
+  ownedWorkspaces         Workspace[]              @relation("WorkspaceOwner")
+  roomMessageParticipants RoomMessageParticipant[]
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+
+  @@index([teamRunId])
+  @@index([teamRunId, membershipStatus])
+}
+
+model RoomMessage {
+  id                 String                   @id @default(uuid())
+  teamRunId          String
+  teamRun            TeamRun                  @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  senderType         String
+  senderId           String?
+  senderInvocationId String?
+  kind               String
+  visibility         String                   @default("PUBLIC")
+  content            String
+  mentions           String // JSON StructuredMention[]
+  workRequestIds     String? // JSON string[]
+  artifactRefs       String? // JSON string[]
+  attachmentIds      String? // JSON string[]
+  participants       RoomMessageParticipant[]
+  createdAt          DateTime                 @default(now())
+
+  @@index([teamRunId])
+  @@index([teamRunId, visibility])
+  @@index([senderInvocationId])
+}
+
+model RoomMessageParticipant {
+  id            String      @id @default(uuid())
+  teamRunId     String
+  roomMessageId String
+  roomMessage   RoomMessage @relation(fields: [roomMessageId], references: [id], onDelete: Cascade)
+  memberId      String
+  member        TeamMember  @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  role          String
+  createdAt     DateTime    @default(now())
+
+  @@unique([roomMessageId, memberId])
+  @@index([teamRunId, memberId])
+  @@index([roomMessageId])
+  @@index([memberId])
+}
+
+model WorkRequest {
+  id                      String    @id @default(uuid())
+  teamRunId               String
+  teamRun                 TeamRun   @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  requesterMemberId       String?
+  requesterType           String
+  targetMemberId          String
+  targetKind              String?
+  targetPurpose           String?
+  targetSourceWorkspaceId String?
+  targetSourceMemberId    String?
+  targetHeadSha           String?
+  targetBranchName        String?
+  targetPlanItemId        String?
+  triggerMessageId        String
+  instruction             String
+  ifBusy                  String    @default("queue")
+  cancelQueued            Boolean   @default(false)
+  status                  String    @default("QUEUED")
+  startAttemptCount       Int       @default(0)
+  lastStartError          String?
+  nextStartRetryAt        DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([teamRunId])
+  @@index([targetMemberId])
+  @@index([targetSourceWorkspaceId])
+  @@index([targetHeadSha])
+  @@index([status])
+  @@index([status, nextStartRetryAt])
+}
+
+model AgentInvocation {
+  id                      String    @id @default(uuid())
+  teamRunId               String
+  teamRun                 TeamRun   @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  workRequestId           String
+  memberId                String
+  workspaceId             String?
+  sessionId               String?
+  targetKind              String?
+  targetPurpose           String?
+  targetSourceWorkspaceId String?
+  targetSourceMemberId    String?
+  targetHeadSha           String?
+  targetBranchName        String?
+  targetPlanItemId        String?
+  targetSyncStatus        String?
+  targetSyncError         String?
+  targetExecutionBranch   String?
+  targetPort              Int?
+  targetVitePort          Int?
+  targetE2EPort           Int?
+  status                  String    @default("QUEUED")
+  roomReplyReminderCount  Int       @default(0)
+  nextRoomReplyReminderAt DateTime?
+  lastHeartbeatAt         DateTime? // 最近一次真实进展（session:patch / room message）时间，心跳 watchdog 比对用
+  firstNudgeAt            DateTime? // 首次心跳唤醒时间，作为绝对兜底起点（收到 room message 或终态时清空）
+  dispatchRevokedAt       DateTime? // stop admission gate；一旦设置，该 invocation 不得再派生 WorkRequest
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([teamRunId])
+  @@index([memberId])
+  @@index([sessionId])
+  @@index([targetSourceWorkspaceId])
+  @@index([targetHeadSha])
+  @@index([targetSyncStatus])
+  @@index([status])
+}
+
+// 工作空间
+// WorkspaceStatus: ACTIVE, MERGED, ABANDONED, HIBERNATED
+// WorkspaceKind: WORKTREE, MAIN_DIRECTORY
+model Workspace {
+  id                String             @id @default(uuid())
+  taskId            String
+  task              Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  parentWorkspaceId String?
+  parentWorkspace   Workspace?         @relation("WorkspaceChildren", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
+  childWorkspaces   Workspace[]        @relation("WorkspaceChildren")
+  ownerMemberId     String?
+  ownerMember       TeamMember?        @relation("WorkspaceOwner", fields: [ownerMemberId], references: [id], onDelete: SetNull)
+  mainForTeamRuns   TeamRun[]          @relation("TeamRunMainWorkspace")
+  branchName        String
+  baseBranch        String?
+  worktreePath      String
+  workspaceKind     String             @default("WORKTREE")
+  workingDir        String             @default("")
+  status            String             @default("ACTIVE")
+  commitMessage     String? // AI 生成的 commit message（合并时使用）
+  previewTarget     String? // Preview 代理目标（仅允许 loopback 地址）
+  hibernatedAt      DateTime? // 自动休眠时间
+  sessions          Session[]
+  backgroundServices WorkspaceBackgroundService[]
+  verdicts          WorkspaceVerdict[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@unique([parentWorkspaceId, ownerMemberId])
+  @@index([taskId])
+  @@index([parentWorkspaceId])
+  @@index([ownerMemberId])
+  @@index([taskId, parentWorkspaceId])
+  @@index([workspaceKind])
+  @@index([workingDir])
+}
+
+// Workspace-owned long-running process definition and runtime snapshot.
+// WorkspaceBackgroundServiceDesiredState: RUNNING, STOPPED
+// WorkspaceBackgroundServiceRuntimeState: STOPPED, STARTING, RUNNING, STOPPING, EXITED, FAILED
+model WorkspaceBackgroundService {
+  id                String    @id @default(uuid())
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name              String
+  command           String
+  argsJson          String    @default("[]")
+  relativeCwd       String    @default(".")
+  desiredState      String    @default("STOPPED")
+  runtimeState      String    @default("STOPPED")
+  runtimeInstanceId String?
+  pid               Int?
+  exitCode          Int?
+  lastError         String?
+  startedAt         DateTime?
+  stoppedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, desiredState])
+  @@index([desiredState, runtimeState])
+}
+
+// 工作区审查/测试记录
+// WorkspaceVerdictKind: REVIEW, TEST
+// REVIEW verdict: APPROVED, CHANGES_REQUESTED
+// TEST verdict: PASSED, FAILED
+model WorkspaceVerdict {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  teamRunId        String
+  teamRun          TeamRun   @relation(fields: [teamRunId], references: [id], onDelete: Cascade)
+  kind             String
+  verdict          String
+  reviewedSha      String
+  reviewerMemberId String?
+  reason           String?
+  sequence         Int       @default(0)
+  createdAt        DateTime  @default(now())
+
+  @@index([workspaceId, kind, createdAt])
+  @@index([workspaceId, kind, sequence])
+  @@index([teamRunId])
+  @@index([reviewerMemberId])
+}
+
+// 独立对话：不绑定 Project/Task/Workspace，仅复用 Session 执行链路
+model Conversation {
+  id            String    @id @default(uuid())
+  title         String
+  directoryName String    @unique
+  workingDir    String
+  session       Session?
+  deletedAt     DateTime?
+  lastActiveAt  DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([deletedAt])
+  @@index([lastActiveAt])
+}
+
+// 会话 (一次 AI 代理执行)
+// AgentType: CLAUDE_CODE, GEMINI_CLI, CURSOR_AGENT
+// SessionStatus: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
+// SessionPurpose: CHAT, COMMIT_MSG
+model Session {
+  id             String             @id @default(uuid())
+  workspaceId    String?
+  workspace      Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversationId String?            @unique
+  conversation   Conversation?      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  context        String             @default("WORKSPACE") // WORKSPACE: 项目工作区, CONVERSATION: 独立对话
+  agentType      String
+  runtimeType    String             @default("CLI")
+  externalSessionId String?
+  variant        String             @default("DEFAULT")
+  providerId     String?
+  prompt         String
+  status         String             @default("PENDING")
+  runtimeLaunchState String          @default("NOT_STARTED")
+  runtimeLaunchClaimCount Int        @default(0)
+  runtimeLaunchResolvedCount Int     @default(0)
+  runtimeLaunchProcessCount Int      @default(0)
+  runtimeLaunchDiagnostic String?
+  runtimeLaunchDiagnosticCount Int   @default(0)
+  runtimeLaunchNextDiagnosticAt DateTime?
+  purpose        String             @default("CHAT") // CHAT: 正常会话, COMMIT_MSG: 生成提交消息
+  logSnapshot    String? // 序列化的 NormalizedConversation JSON，session 结束时持久化
+  tokenUsage     String? // JSON: { totalTokens, modelContextWindow? }
+  processes      ExecutionProcess[]
+  artifacts      AgentArtifact[]
+  conversationTurns ConversationTurn[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([workspaceId])
+  @@index([context])
+  @@index([workspaceId, purpose, createdAt])
+}
+
+// 用户对话消息的可靠发送队列。消息先落库，再由 SessionManager 按 Session 串行执行。
+model ConversationTurn {
+  id          String    @id @default(uuid())
+  sessionId   String
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  message     String
+  userEntryId String?
+  providerId  String?
+  status      String    @default("QUEUED")
+  attempts    Int       @default(0)
+  lastError   String?
+  queuedAt    DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([sessionId, status, queuedAt])
+  @@index([status, queuedAt])
+}
+
+// Agent 输出并由 Agent Tower 持久化的可下载产物
+model AgentArtifact {
+  id           String   @id @default(uuid())
+  sessionId    String
+  session      Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sourcePath   String
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  storagePath  String
+  hash         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([sessionId, sourcePath])
+  @@index([sessionId])
+  @@index([hash])
+}
+
+// 执行进程
+model ExecutionProcess {
+  id              String   @id @default(uuid())
+  sessionId       String
+  session         Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  launchClaimNumber Int?
+  runtimeInstanceId String?
+  processGroupId  String?
+  birthMarker     String?
+  ownershipToken  String?
+  cleanupState    String   @default("PENDING")
+  cleanupError    String?
+  cleanupAttemptCount Int  @default(0)
+  nextCleanupRetryAt DateTime?
+  pid             Int?
+  exitCode        Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([sessionId])
+  @@unique([sessionId, launchClaimNumber])
+  @@index([runtimeInstanceId])
+  @@index([cleanupState])
+  @@index([cleanupState, nextCleanupRetryAt])
+}
+
+// 执行日志
+model ExecutionLog {
+  id        String   @id @default(uuid())
+  processId String
+  content   String
+  timestamp DateTime @default(now())
+
+  @@index([processId])
+}
+
+// 附件
+model Attachment {
+  id           String   @id @default(uuid())
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  storagePath  String
+  hash         String
+  createdAt    DateTime @default(now())
+
+  @@index([hash])
+}
+
+// 应用设置 (单例，只有一行)
+model AppSettings {
+  id                      String  @id @default("singleton")
+  locale                  String?
+  commitMessageProviderId String?
+  commitMessagePrompt     String?
+  dataMigrationVersion    Int     @default(0)
+}
+
+// Independent, default-off instance translation configuration. apiKey is server-only.
+// null means unset; the empty string means an explicitly credential-free service.
+model TranslationSettings {
+  id                    String   @id @default("singleton")
+  enabled               Boolean  @default(false)
+  revision              Int      @default(0)
+  enableEpoch           Int      @default(0)
+  apiBaseUrl            String   @default("")
+  model                 String   @default("")
+  apiKey                String?
+  credentialRevision    Int      @default(0)
+  sendTargetLanguage    String   @default("English")
+  displayTargetLanguage String   @default("简体中文")
+  promptTemplate        String   @default("请将以下内容翻译为 {{target_language}}，保持原意，只返回译文：\n\n{{text}}")
+  maxConcurrency        Int      @default(4)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+// Polymorphic ownership is checked by TranslationService, never by caller-supplied keys.
+model TranslationSource {
+  id                    String   @id @default(uuid())
+  scopeType             String
+  scopeId               String
+  sourceKind            String
+  sourceKey             String
+  laneKey               String
+  sessionId             String?
+  turnId                String?
+  blockId               String?
+  messageId             String?
+  deliveryId            String?
+  direction             String
+  originalText          String
+  sourceRevision        Int      @default(1)
+  sourceHash            String
+  blockState            String   @default("OPEN")
+  jobState              String   @default("OPEN")
+  currentAttemptVersion Int      @default(0)
+  effectiveAttemptId    String?
+  generation            Int      @default(0)
+  enableEpoch           Int      @default(0)
+  retryChainId          String?
+  retryCount            Int      @default(0)
+  budgetStartedAt       DateTime?
+  nextRetryAt           DateTime?
+  deletedAt             DateTime?
+  overlayRevision       Int      @default(0)
+  errorCode             String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  attempts              TranslationAttempt[]
+
+  @@unique([sourceKind, sourceKey, direction])
+  @@index([scopeType, scopeId, deletedAt])
+  @@index([jobState, nextRetryAt])
+  @@index([sessionId])
+  @@index([messageId])
+}
+
+model TranslationAttempt {
+  id                      String   @id @default(uuid())
+  sourceId                String
+  source                  TranslationSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceRevision          Int
+  sourceHash              String
+  attemptVersion          Int
+  configRevision          Int
+  credentialRevision      Int
+  targetLanguage          String
+  sanitizedConfigSnapshot String // JSON; never contains a credential.
+  protectionVersion       String
+  status                  String   @default("RUNNING")
+  resultText              String?
+  errorCode               String?
+  generation              Int
+  enableEpoch             Int
+  retryIndex              Int      @default(0)
+  nextRetryAt             DateTime?
+  leaseOwner              String?
+  leaseExpiresAt          DateTime?
+  startedAt               DateTime @default(now())
+  completedAt             DateTime?
+
+  @@unique([sourceId, attemptVersion])
+  @@index([status, nextRetryAt])
+  @@index([sourceId, sourceRevision])
+}
+
+// 访问密码配置 (单例，只有一行)
+model AccessAuthSettings {
+  id                String    @id @default("singleton")
+  enabled           Boolean   @default(false)
+  passwordHash      String?
+  sessionSecret     String
+  passwordUpdatedAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+// 通知配置 (单例，只有一行)
+// thirdPartyChannel: none, feishu
+model NotificationSettings {
+  id                    String  @id @default("singleton")
+  osNotificationEnabled Boolean @default(true)
+  thirdPartyChannel     String  @default("none")
+  feishuWebhookUrl      String?
+
+  // 第三方通知跳转地址
+  thirdPartyBaseUrl String?
+
+  // 通知模板
+  taskInReviewTitleTemplate String @default("Agent Tower")
+  taskInReviewBodyTemplate  String @default("✅ \"{taskTitle}\" 已完成，等待审查")
+}

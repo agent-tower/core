@@ -411,6 +411,15 @@ export const AccessAuthService = {
     return { valid, generation };
   },
 
+  // Load settings once, then let the caller validate at its synchronous commit
+  // point. A boolean produced before an await cannot cover natural expiration
+  // during that await (including the wait for this validator itself).
+  async prepareSessionTokenValidation(cookieToken: string | null): Promise<() => boolean> {
+    const generation = sessionSecretGeneration;
+    const settings = await ensureSettings();
+    return () => generation === sessionSecretGeneration && validateSessionToken(cookieToken, settings);
+  },
+
   getSessionSecretGeneration(): number {
     return sessionSecretGeneration;
   },

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -11,19 +11,23 @@ import { queryKeys } from '@/hooks/query-keys'
 import { ConversationPage } from '../ConversationPage'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-const { get, post, socket } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), socket: { on: vi.fn(), off: vi.fn() } }))
+const { get, post, socket, navigate } = vi.hoisted(() => ({ navigate: vi.fn(), get: vi.fn(), post: vi.fn(), socket: { on: vi.fn(), off: vi.fn() } }))
 const providerRows = vi.hoisted(() => ({ data: [] as ProviderWithAvailability[] }))
 vi.mock('@/lib/api-client', () => ({ apiClient: { get, post } }))
 vi.mock('@/lib/socket/manager', () => ({ socketManager: { connect: () => socket } }))
 vi.mock('@/hooks/use-providers', () => ({ useProviders: () => ({ data: providerRows.data }) }))
-vi.mock('@/lib/desktop-titlebar', () => ({ useDesktopTitlebar: () => ({}), useDesktopNavigate: () => vi.fn() }))
+vi.mock('@/lib/desktop-titlebar', () => ({ useDesktopTitlebar: () => ({}), useDesktopNavigate: () => navigate }))
 vi.mock('@/lib/i18n', () => ({ translate: (s: string) => s, useI18n: () => ({ t: (s: string) => s }) }))
-vi.mock('@/components/task/CreateTaskInput', () => ({ CreateTaskInput: ({ providers, defaultProviderId }: {
+vi.mock('@/components/task/CreateTaskInput', () => ({ CreateTaskInput: ({ providers, defaultProviderId, onSubmit, createStep }: {
   providers: Array<{ id: string; available: boolean; reason?: string; permissionMode?: string }>
   defaultProviderId: string
-}) => <div data-start-providers data-default-provider={defaultProviderId}>
+  createStep: string
+  onSubmit(input: { title: string; providerId: string }): Promise<void>
+}) => { const [draft, setDraft] = useState(''); return <div data-start-providers data-default-provider={defaultProviderId}>
+  <textarea data-draft value={draft} onChange={event => setDraft(event.target.value)} />
+  <button data-start disabled={createStep !== 'idle'} onClick={() => void onSubmit({ title: draft, providerId: defaultProviderId })}>Submit</button>
   {providers.map(provider => <span key={provider.id} data-provider-id={provider.id} data-available={provider.available} data-mode={provider.permissionMode}>{provider.reason}</span>)}
-</div> }))
+</div> } }))
 // Keep the panel's authoritative activity rule; omit unrelated logs/editor UI.
 vi.mock('@/components/agent', () => ({ AgentSessionPanel: ({ sessionId, sessionStatus, onStop, isStopping }: { sessionId: string; sessionStatus: SessionStatus; onStop(): Promise<void>; isStopping: boolean }) => {
   const { isActive, runtimeState } = useSessionActivity(sessionId, sessionStatus)
@@ -81,4 +85,29 @@ it.each([SessionStatus.COMPLETED, SessionStatus.CANCELLED])('sends stop without 
   expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions.runtime('session-1') })
   await act(async () => { await vi.waitFor(() => expect(container.textContent).not.toContain('pending approval')) })
   expect(container.querySelector('[data-stop]')).toBeNull()
+})
+
+
+it('keeps a repeated new-conversation intent and draft when the previous create response arrives', async () => {
+  get.mockResolvedValue([])
+  let finish!: (value: Conversation) => void
+  post.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+  // Use a ready provider through the normal settings read model.
+  providerRows.data = [{ provider: { id: 'controlled', name: 'controlled', agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI, executionPermission: 'FULL_ACCESS', env: {}, config: {}, isDefault: true }, availability: { type: 'INSTALLATION_FOUND' } } as ProviderWithAvailability]
+  client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const container = document.createElement('div'); document.body.append(container); root = createRoot(container)
+  await act(async () => { root!.render(<QueryClientProvider client={client!}><MemoryRouter initialEntries={['/conversations']}><Routes><Route path="/conversations" element={<ConversationPage />} /></Routes></MemoryRouter></QueryClientProvider>) })
+  const draft = () => container.querySelector<HTMLTextAreaElement>('[data-draft]')!
+  const setDraft = (value: string) => { const input = draft(); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })) }
+  await act(async () => { setDraft('old request') })
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-start]')!.click() })
+  expect(post).toHaveBeenCalledTimes(1)
+  await act(async () => { [...container.querySelectorAll('button')].find(button => button.title === 'New Conversation')!.click() })
+  await act(async () => { setDraft('new view draft') })
+  const currentInput = draft()
+  await act(async () => { finish({ id: 'old-created', sessionId: 'old-session' } as Conversation) })
+  expect(navigate.mock.calls).toEqual([['/conversations']])
+  expect(draft()).toBe(currentInput)
+  expect(draft().value).toBe('new view draft')
+  expect(client.getQueryData(queryKeys.conversations.detail('old-created'))).toMatchObject({ id: 'old-created' })
 })

@@ -11,6 +11,7 @@ import type { BaseExecutor, ExecutorSpawnConfig } from '../../executors/index.js
 import { withWorkspaceBackgroundServicePolicy } from '../../prompts/workspace-background-service-policy.js';
 import { appendAgentOutputIntentInstructions } from '../../prompts/agent-output-intents.js';
 import { TeamLockService } from '../team-lock.service.js';
+import { taskInputHash } from '../team-task-input.js';
 import {
   AGENT_SUBPROCESS_BLOCKED_ENV_KEYS,
   AGENT_TOWER_MCP_IDENTITY_ENV_KEYS,
@@ -223,6 +224,7 @@ async function createWorkspace() {
 
 describe('SessionManager TeamRun env injection', () => {
   let manager: InstanceType<typeof SessionManager>;
+  let eventBus: EventBus;
 
   beforeAll(async () => {
     execFileSync(
@@ -257,7 +259,8 @@ describe('SessionManager TeamRun env injection', () => {
     vi.clearAllMocks();
     spawnMock.mockImplementation(async () => spawnResult(12345));
     spawnFollowUpMock.mockImplementation(async () => spawnResult(12346));
-    manager = new SessionManager(new EventBus());
+    eventBus = new EventBus();
+    manager = new SessionManager(eventBus);
     await prisma.executionProcess.deleteMany();
     await prisma.agentInvocation.deleteMany();
     await prisma.workRequest.deleteMany();
@@ -1228,7 +1231,7 @@ describe('SessionManager TeamRun env injection', () => {
     });
   });
 
-  it('does not record a TeamRun heartbeat from the local user_message patch created by sendMessage', async () => {
+  it('keeps the invocation input after a Task edit and does not record a heartbeat from a nudge or overlay', async () => {
     const { task, workspace } = await createWorkspace();
     const teamRun = await prisma.teamRun.create({
       data: {
@@ -1250,6 +1253,11 @@ describe('SessionManager TeamRun env injection', () => {
         avatar: null,
       },
     });
+    const snapshot = await prisma.teamTaskInputSnapshot.create({ data: {
+      teamRunId: teamRun.id, taskId: task.id, taskSourceHash: taskInputHash(task.title, task.description),
+      originalTitle: task.title, originalDescription: task.description,
+      state: 'ACCEPTED', sentMode: 'ORIGINAL', effectiveUserText: task.title, acceptedAt: new Date(),
+    } });
     const request = await prisma.workRequest.create({
       data: {
         teamRunId: teamRun.id,
@@ -1258,6 +1266,7 @@ describe('SessionManager TeamRun env injection', () => {
         targetMemberId: member.id,
         triggerMessageId: 'message-heartbeat',
         instruction: 'Do the work',
+        taskInputSnapshotId: snapshot.id,
         status: 'STARTED',
       },
     });
@@ -1280,20 +1289,30 @@ describe('SessionManager TeamRun env injection', () => {
         workspaceId: workspace.id,
         sessionId: session.id,
         status: 'RUNNING',
+        taskInputSnapshotId: snapshot.id,
         lastHeartbeatAt,
         roomReplyReminderCount: 3,
         nextRoomReplyReminderAt,
       },
     });
 
+    await prisma.task.update({ where: { id: task.id }, data: { title: 'Edited after invocation started' } });
     await manager.sendMessage(session.id, 'heartbeat nudge', undefined, invocation.id);
+    eventBus.emit('session:patch', { sessionId: session.id, seq: 99, patch: [{ op: 'add', path: '/entries/0/metadata', value: { textBlock: { state: 'SEALED' } } }] });
+    eventBus.emit('translation:invalidated', { sessionId: session.id, sourceId: 'display-source', sourceRevision: 1, overlayRevision: 2 });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const reloaded = await prisma.agentInvocation.findUniqueOrThrow({ where: { id: invocation.id } });
     expect(reloaded.lastHeartbeatAt?.toISOString()).toBe(lastHeartbeatAt.toISOString());
     expect(reloaded.roomReplyReminderCount).toBe(3);
     expect(reloaded.nextRoomReplyReminderAt?.toISOString()).toBe(nextRoomReplyReminderAt.toISOString());
+    expect(reloaded.taskInputSnapshotId).toBe(snapshot.id);
+    expect(await prisma.teamTaskInputSnapshot.findUniqueOrThrow({ where: { id: snapshot.id } })).toEqual(snapshot);
+    expect(await prisma.teamTaskInputSnapshot.count()).toBe(1);
     expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect((spawnMock.mock.calls[0]![0] as ExecutorSpawnConfig).prompt).toBe(
+      appendAgentOutputIntentInstructions(withWorkspaceBackgroundServicePolicy('heartbeat nudge')),
+    );
     await manager.destroyAll();
   });
 });

@@ -4,6 +4,20 @@
  */
 
 export const queryKeys = {
+  roomTranslations: {
+    all: ['room-translations'] as const,
+    scope: (id: string) => ['room-translations', id] as const,
+    summaries: (id: string) => ['room-translations', id, 'summaries'] as const,
+    details: (id: string) => ['room-translations', id, 'full'] as const,
+    full: (id: string, messageId: string, sourceId: string, sourceRevision: number, revision: number) => ['room-translations', id, 'full', messageId, sourceId, sourceRevision, revision] as const,
+  },
+  translationSettings: {
+    detail: ['translation-settings'] as const,
+  },
+  sessionTranslations: {
+    session: (id: string) => ['session-translations', id] as const,
+    blocks: (id: string, blockIds: string[]) => ['session-translations', id, blockIds] as const,
+  },
   projects: {
     all: ['projects'] as const,
     list: (params?: Record<string, unknown>) =>
@@ -107,6 +121,8 @@ export const queryKeys = {
   },
 
   accessAuth: {
+    identityChange: ['access-auth', 'identity-change'] as const,
+    conflictRecoveryIdentity: ['conflict-recovery-identity'] as const,
     status: ['access-auth', 'status'] as const,
     settings: ['access-auth', 'settings'] as const,
   },

@@ -26,8 +26,8 @@ export function registerSessionTools(server: McpServer, client: AgentTowerClient
     SendMessageInput.shape,
     async (params) => {
       try {
-        await client.sendMessage(params.session_id, params.message);
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true }, null, 2) }] };
+        const result = await client.sendMessage(params.session_id, params.message);
+        return { content: [{ type: 'text', text: JSON.stringify(result ?? { success: true }, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
       }

@@ -1,4 +1,6 @@
 import { getApiBaseUrl } from './api-base-url'
+import { saveConflictRecovery } from './conflict-recovery-storage'
+import type { ConflictDetails } from '@/components/workspace/GitOperationsDialog'
 
 const API_BASE_URL = getApiBaseUrl()
 
@@ -37,6 +39,10 @@ class ApiClient {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({})) as ApiErrorPayload
+      if (response.status === 409 && error.code === 'MERGE_CONFLICT'
+        && (error.conflictOp === 'MERGE' || error.conflictOp === 'REBASE') && Array.isArray(error.conflictedFiles)) {
+        saveConflictRecovery(error as unknown as ConflictDetails)
+      }
       throw new ApiError(
         response.status,
         typeof error.message === 'string'

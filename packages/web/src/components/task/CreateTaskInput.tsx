@@ -134,7 +134,7 @@ export function CreateTaskInput({
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const { files: attachmentFiles, addFiles, removeFile, clear: clearAttachments, buildMarkdownLinks, getDoneAttachments, isUploading } = useAttachments()
+  const { files: attachmentFiles, addFiles, removeFile, buildMarkdownLinks, getDoneAttachments, isUploading } = useAttachments()
   const refreshProjectGitCapability = useRefreshProjectGitCapability()
   const isConversationMode = variant === 'conversation'
   const supportsAttachments = variant === 'task' || variant === 'conversation'
@@ -248,7 +248,7 @@ export function CreateTaskInput({
     const attachmentLinks = supportsAttachments ? buildMarkdownLinks() : ''
     const attachmentIds = supportsAttachments ? getDoneAttachments().map((attachment) => attachment.id) : []
     try {
-      await onSubmit({
+      const submission = onSubmit({
         title: title.trim(),
         description: '',
         projectId: isConversationMode ? '' : projectId,
@@ -262,13 +262,19 @@ export function CreateTaskInput({
         attachmentIds,
         priority,
       })
-      setTitle('')
-      setPriority(TaskPriority.NORMAL)
-      if (supportsAttachments) clearAttachments()
+      const clearSubmittedDraft = () => {
+        setTitle(current => current === title ? '' : current)
+        setPriority(current => current === priority ? TaskPriority.NORMAL : current)
+        if (supportsAttachments) for (const file of attachmentFiles) removeFile(file.tempId)
+      }
+      // Conversation submissions own an immutable recoverable list item before HTTP.
+      if (isConversationMode) clearSubmittedDraft()
+      await submission
+      if (!isConversationMode) clearSubmittedDraft()
     } catch {
-      // Complete failure — preserve input for retry
+      // Conversation failures are recovered from the submitted message bubble.
     }
-  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, clearAttachments, priority])
+  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, attachmentFiles, removeFile, priority])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashCommandMenu.handleKeyDown(e)) return

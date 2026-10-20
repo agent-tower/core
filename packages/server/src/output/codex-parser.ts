@@ -228,6 +228,7 @@ export class CodexParser {
       console.log('[CodexParser] Event:', event.type, event);
     }
 
+    if (event.item && ['item.started', 'item.completed'].includes(event.type) && event.item.type !== 'agent_message') this.msgStore.textBlocks.boundary();
     switch (event.type) {
       case 'thread.started':
         if (event.thread_id) {
@@ -326,12 +327,8 @@ export class CodexParser {
     if (!item) return;
 
     if (item.type === 'agent_message' && item.text) {
-      // Agent 消息
-      const cleanText = stripAnsiSequences(item.text);
-      const message = createAssistantMessage(cleanText);
-      const index = this.indexProvider.next();
-      const patch = addNormalizedEntry(index, message);
-      this.msgStore.pushPatch(patch);
+      this.upsertItemEntry(item.id, createAssistantMessage(stripAnsiSequences(item.text), item.id));
+      this.msgStore.textBlocks.complete(this.itemEntryMap.get(item.id)!);
     } else if (item.type === 'mcp_tool_call') {
       this.upsertMcpToolEntry(item, this.getMcpToolStatus(item));
     } else if (item.type === 'file_change') {

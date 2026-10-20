@@ -166,3 +166,7 @@ packages/server/src/data/
 packages/server/publish/
 packages/desktop/runtime/
 packages/desktop/release/
+
+# Generated acceptance results
+/output/conflict-admission/
+/output/translation-comparison-focus/

@@ -77,7 +77,7 @@ export function registerWorkspaceTools(
           params.provider_id
         );
         // 3. 启动会话
-        await client.startSession(session.id);
+        const started = await client.startSession(session.id);
         return {
           content: [{
             type: 'text',
@@ -85,6 +85,7 @@ export function registerWorkspaceTools(
               task_id: params.task_id,
               workspace_id: workspace.id,
               session_id: session.id,
+              ...(started && 'operationId' in started ? { delivery: started } : {}),
               mode: params.mode ?? 'worktree',
             }, null, 2),
           }],
