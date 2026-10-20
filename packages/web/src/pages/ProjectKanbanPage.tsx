@@ -27,6 +27,7 @@ import { getProviderStartIssue } from '@/components/provider/provider-draft'
 import { cn } from '@/lib/utils'
 import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
 import { sortProjectsByActivity } from '@/lib/project-activity'
+import { persistProviderLastUsedAt, readProviderLastUsedAt } from '@/lib/provider-usage'
 
 // Keep detail renderers (Markdown, terminals and workspace tools) out of the
 // initial board load, especially on memory-constrained mobile browsers.
@@ -190,6 +191,7 @@ export function ProjectKanbanPage() {
 
   const queryClient = useQueryClient()
   const { data: providersData, isLoading: isProvidersLoading } = useProviders()
+  const [providerLastUsedAt, setProviderLastUsedAt] = useState(readProviderLastUsedAt)
 
   // === API 数据 ===
   const { data: projectsData, isLoading: isProjectsLoading } = useProjects({ limit: PROJECT_LIST_LIMIT })
@@ -244,30 +246,22 @@ export function ProjectKanbanPage() {
     [sortedProjects],
   )
 
-  // 按使用频率排序 providers：根据 localStorage 中记录的使用次数
+  // 最近使用的 Provider 优先；响应式历史保证创建任务后立即更新排序。
   const sortedProviders = useMemo(() => {
     if (!providersData) return []
 
-    // 从 localStorage 读取使用次数
-    const usageCountStr = localStorage.getItem('providerUsageCount')
-    const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
-
-    // 排序：可用的 provider 按使用次数降序，不可用的排在最后
+    // 不可用的 Provider 排在最后；无历史或时间相同时保留 API 顺序。
     return [...providersData].sort((a, b) => {
-      const aAvailable = a.availability.type !== 'NOT_FOUND'
-      const bAvailable = b.availability.type !== 'NOT_FOUND'
+      const aAvailable = !getProviderStartIssue(a)
+      const bAvailable = !getProviderStartIssue(b)
 
-      // 不可用的排在最后
       if (aAvailable !== bAvailable) {
         return aAvailable ? -1 : 1
       }
 
-      // 都可用或都不可用时，按使用次数降序
-      const aCount = usageCount[a.provider.id] ?? 0
-      const bCount = usageCount[b.provider.id] ?? 0
-      return bCount - aCount
+      return (providerLastUsedAt[b.provider.id] ?? 0) - (providerLastUsedAt[a.provider.id] ?? 0)
     })
-  }, [providersData])
+  }, [providersData, providerLastUsedAt])
 
   const uiTasks = useMemo(() => rawTasks.map(task => (
     adaptTaskBoardItemForList(task, projects.find(project => project.id === task.projectId))
@@ -519,10 +513,9 @@ export function ProjectKanbanPage() {
       localStorage.setItem('lastSelectedProjectId', projectId)
       if (mode === 'SOLO' && providerId) {
         localStorage.setItem('lastSelectedProviderId', providerId)
-        const usageCountStr = localStorage.getItem('providerUsageCount')
-        const usageCount: Record<string, number> = usageCountStr ? JSON.parse(usageCountStr) : {}
-        usageCount[providerId] = (usageCount[providerId] ?? 0) + 1
-        localStorage.setItem('providerUsageCount', JSON.stringify(usageCount))
+        const lastUsedAt = { ...providerLastUsedAt, [providerId]: Date.now() }
+        persistProviderLastUsedAt(lastUsedAt)
+        setProviderLastUsedAt(lastUsedAt)
       }
 
       if (mode === 'TEAM') {
@@ -564,7 +557,7 @@ export function ProjectKanbanPage() {
         throw error
       }
     }
-  }, [activeProjects, createTaskTeamRun, startTaskInBackground, deleteTask, queryClient, t, effectiveFilterProjectId, revealCreatedTask])
+  }, [activeProjects, createTaskTeamRun, startTaskInBackground, deleteTask, queryClient, t, effectiveFilterProjectId, revealCreatedTask, providerLastUsedAt])
 
 
   const isLoading = isProjectsLoading || isTaskBoardLoading

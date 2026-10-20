@@ -147,7 +147,10 @@ describe('CreateTaskInput Provider availability', () => {
     const blocked = [...container!.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.includes('Blocked Codex'))!
     expect(blocked.disabled).toBe(true)
-    expect(blocked.textContent).toContain('Auto approve (sandbox)')
+    expect(blocked.textContent).not.toContain('Required permission:')
+    const permissionIcon = blocked.querySelector('[role="img"]')!
+    expect(permissionIcon.getAttribute('aria-label')).toBe('Required permission: Auto approve (sandbox)')
+    expect(permissionIcon.getAttribute('title')).toBe('Required permission: Auto approve (sandbox)')
     expect(blocked.textContent).toContain(reason)
     const help = blocked.parentElement!
     expect(help.tabIndex).toBe(0)

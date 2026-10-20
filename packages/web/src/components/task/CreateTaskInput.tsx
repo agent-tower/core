@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users, Info } from 'lucide-react'
+import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users, Info, ShieldQuestionMark, ShieldCheck, ShieldOff } from 'lucide-react'
 import { TaskPriority, WorkspaceKind, type AgentType, type ExecutionPermissionMode, type ProjectGitCapability, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
@@ -74,6 +74,24 @@ const CREATE_STEP_LABEL: Record<CreateStep, string> = {
   'creating-workspace': 'Creating Workspace...',
   'creating-session': 'Creating Session...',
   'starting-session': 'Starting Agent...',
+}
+
+const PERMISSION_ICONS = {
+  ASK: ShieldQuestionMark,
+  AUTO_SANDBOX: ShieldCheck,
+  FULL_ACCESS: ShieldOff,
+} satisfies Record<ExecutionPermissionMode, typeof ShieldCheck>
+
+function ProviderPermissionIcon({ mode }: { mode: ExecutionPermissionMode }) {
+  const { t } = useI18n()
+  const Icon = PERMISSION_ICONS[mode]
+  const label = t('Required permission: {mode}', { mode: t(EXECUTION_PERMISSION_LABELS[mode]) })
+
+  return (
+    <span role="img" aria-label={label} title={label} className="ml-2 mt-0.5 inline-flex shrink-0 text-muted-foreground">
+      <Icon size={14} aria-hidden="true" />
+    </span>
+  )
 }
 
 export function CreateTaskInput({
@@ -439,7 +457,7 @@ export function CreateTaskInput({
       />
 
       {/* Control row — chips aligned to card edges */}
-      <div className="flex items-center flex-wrap gap-1.5 mt-2.5 px-0.5">
+      <div className="relative flex items-center flex-wrap gap-1.5 mt-2.5 px-0.5">
         {/* Project selector */}
         {!isConversationMode && (
           <div className="relative" ref={projectMenuRef}>
@@ -488,7 +506,7 @@ export function CreateTaskInput({
 
         {/* Provider selector (Solo mode only) */}
         {(isConversationMode || effectiveCreateMode === 'SOLO') && (
-          <div className="relative" ref={providerMenuRef}>
+          <div className="sm:relative" ref={providerMenuRef}>
             <button
               type="button"
               onClick={() => { if (!isSubmitting) setShowProviderMenu(v => !v) }}
@@ -525,9 +543,9 @@ export function CreateTaskInput({
                         <span className={cn('block break-words', p.id === providerId ? 'font-medium text-foreground' : 'text-muted-foreground')}>
                           {p.name}{!p.available ? t(' (unavailable)') : ''}
                         </span>
-                        {p.permissionMode ? <span className="mt-0.5 block text-xs text-muted-foreground">{t('Required permission: {mode}', { mode: t(EXECUTION_PERMISSION_LABELS[p.permissionMode]) })}</span> : null}
                         {p.reason ? <span className="mt-0.5 block break-words text-xs leading-snug text-destructive-ink">{t(p.reason)}</span> : null}
                       </span>
+                      {p.permissionMode ? <ProviderPermissionIcon mode={p.permissionMode} /> : null}
                     </button>
                   </div>
                 ))}
