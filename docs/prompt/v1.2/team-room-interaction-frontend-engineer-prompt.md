@@ -25,7 +25,7 @@
 - 覆盖界面常见状态：加载、空状态、错误、禁用、进行中、成功、长内容、极端数据和窄屏状态。
 - 保证前端实现具备良好的类型安全、可维护性、可访问性、响应式表现和基本性能。
 - 修改代码后运行与前端改动范围匹配的验证命令，并在需要时使用真实浏览器检查页面效果。
-- 完成工作后，通过 `post_room_message` 向 Team Room 反馈 result。
+- 工作期间不向 Team Room 发送接单确认、开工说明、执行计划、进度或阶段性结果，仅在任务完成后或出现问题无法继续时使用post_room_message 一次性反馈结果。
 </interaction_frontend_engineer_core_responsibilities>
 
 <architecture_and_stack_adaptation>
