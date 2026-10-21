@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentType, RuntimeType } from '@agent-tower/shared'
 import type { ProviderWithAvailability } from '@/hooks/use-providers'
 import type { PendingAttachment } from '@/hooks/use-attachments'
@@ -26,6 +27,12 @@ vi.mock('@/hooks/use-sessions', () => ({
 }))
 vi.mock('@/hooks/use-todos', () => ({ useTodos: () => ({ todos: [] }) }))
 vi.mock('@/hooks/useTokenUsage', () => ({ useTokenUsage: () => null }))
+vi.mock('@/hooks/use-translation-settings', () => ({ useTranslationSettings: () => ({ data: { enabled: false }, isError: false }) }))
+vi.mock('@/lib/api-client', async original => ({ ...await original<typeof import('@/lib/api-client')>(), apiClient: { get: vi.fn(async () => ({ items: [], nextCursor: null })) } }))
+vi.mock('@/lib/socket/manager', () => {
+  const socket = { connected: false, emit: vi.fn(), on: vi.fn(), off: vi.fn() }
+  return { socketManager: { connect: () => socket, getSocket: () => socket } }
+})
 const attachmentState = vi.hoisted(() => ({ files: [] as PendingAttachment[], restoreFiles: vi.fn() }))
 vi.mock('@/hooks/use-attachments', () => ({
   useAttachments: () => ({
@@ -58,11 +65,17 @@ function provider(issue?: string): ProviderWithAvailability {
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined
+let client: QueryClient
+
+beforeEach(() => {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+})
 
 afterEach(() => {
   attachmentState.files = []
   attachmentState.restoreFiles.mockClear()
   if (root) act(() => root!.unmount())
+  client.clear()
   container?.remove()
   root = undefined
   container = undefined
@@ -79,7 +92,7 @@ describe('AgentSessionPanel Provider permissions', () => {
       providerId: 'codex', onSend, onStop: vi.fn(async () => undefined),
     }
     const rerender = (providers: ProviderWithAvailability[]) =>
-      act(() => root!.render(<AgentSessionPanel {...props} providers={providers} />))
+      act(() => root!.render(<QueryClientProvider client={client}><AgentSessionPanel {...props} providers={providers} /></QueryClientProvider>))
 
     rerender([provider('Native mode was revoked')])
     const textarea = container.querySelector('textarea')!
@@ -99,14 +112,14 @@ describe('AgentSessionPanel Provider permissions', () => {
     await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'codex', message: 'Continue this task' }))
   })
-  it('a lost send response restores the submitted attachments and preserves a newer draft', async () => {
+  it('preserves a newer draft without restoring submitted attachments after a lost send response', async () => {
     const original: PendingAttachment = { tempId: 'old', file: new File(['x'], 'old.txt'), status: 'done', progress: 100,
       attachment: { id: 'attachment', url: '/attachments/attachment/file', originalName: 'old.txt', mimeType: 'text/plain', sizeBytes: 1, storagePath: '/private/old.txt', createdAt: new Date().toISOString() } }
     attachmentState.files = [original]
     container = document.createElement('div'); document.body.append(container); root = createRoot(container)
     let reject!: (error: Error) => void
     const onSend = vi.fn(() => new Promise<void>((_resolve, fail) => { reject = fail }))
-    act(() => root!.render(<AgentSessionPanel sessionId="draft-session" agentType={AgentType.CODEX} runtimeType={RuntimeType.CLI} providers={[provider()]} providerId="codex" onSend={onSend} onStop={async () => {}} />))
+    act(() => root!.render(<QueryClientProvider client={client}><AgentSessionPanel sessionId="draft-session" agentType={AgentType.CODEX} runtimeType={RuntimeType.CLI} providers={[provider()]} providerId="codex" onSend={onSend} onStop={async () => {}} /></QueryClientProvider>))
     const textarea = container.querySelector('textarea')!
     const write = (text: string) => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, text)
@@ -114,10 +127,12 @@ describe('AgentSessionPanel Provider permissions', () => {
     }
     await act(async () => write('Original submission'))
     await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ message: 'Original submission', attachmentIds: ['attachment'] }))
+    expect(onSend).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'Original submission', attachmentIds: ['attachment'] }))
     await act(async () => write('New draft'))
     await act(async () => { reject(new Error('response lost')); await Promise.resolve() })
-    expect(textarea.value).toBe('New draft'); expect(attachmentState.restoreFiles).toHaveBeenCalledWith([original])
+    expect(textarea.value).toBe('New draft')
+    expect(attachmentState.restoreFiles).not.toHaveBeenCalled()
+    expect(attachmentState.files).toEqual([])
   })
 
 })
