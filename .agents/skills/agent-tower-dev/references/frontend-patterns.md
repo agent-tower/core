@@ -63,12 +63,15 @@ App 管理单例 `lib/socket/manager.ts` 的连接生命周期；hook 可调用 
 
 DOM 测试按邻近文件使用 happy-dom；测试配置和构建顺序见 [SKILL.md](../SKILL.md)。按改动选择最窄测试：
 
+团队房间的 `RoomTimeline` 将历史消息和翻译查询放在 memo 化的 `RoomMessageList` 内；输入、提及和附件草稿更新不得跨过此边界。`VirtualRoomMessageList` 独立处理滚动及测量，只挂载视口和 overscan 行，首屏不能先全量挂载；不可测量的隐藏面板只保留有界尾部，恢复可见后重新测量。消息及审批使用稳定实体 key，原文展开状态保留在房间层；虚拟行用 `top` 定位，避免 `transform` 限制 Mermaid 全屏浮层。跳到底部和尺寸修正使用即时滚动，新消息跟随仍尊重阅读位置。浏览器 fixture 为 `components/team/__tests__/room-timeline.fixture.html`（`count` / `compact` 参数），它使用真实房间与 Markdown、隔离 transport；DOM 测试不能代替真实浏览器的动态高度、滚动锚点和输入延迟验证。
+
 ```bash
 pnpm exec vitest run packages/web/src/hooks/__tests__/use-tasks-cache.test.ts
 pnpm exec vitest run packages/web/src/pages/__tests__/ProjectKanbanPage.lazy-detail.test.tsx
 pnpm exec vitest run packages/web/src/components/task/__tests__/task-text-visibility.test.ts packages/web/src/components/task/__tests__/task-text-fit.test.ts
 pnpm exec vitest run packages/web/src/hooks/__tests__/use-runtime-state.test.tsx
 pnpm exec vitest run packages/web/src/components/agent/__tests__/LogStream.test.tsx
+pnpm exec vitest run packages/web/src/components/team/__tests__ packages/web/src/hooks/__tests__/use-team-run-translations.test.tsx
 pnpm exec vitest run packages/web/src/lib/socket/__tests__/useNormalizedLogs.reconnect.test.tsx
 pnpm exec vitest run packages/web/src/hooks/__tests__/use-workspace-services.test.tsx
 pnpm --filter web build

@@ -8,11 +8,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Attachment, MessageDelivery, RoomMessage, TeamMessageDelivery, TeamRun, TeamRunTranslationOverlaySummary } from '@agent-tower/shared';
 import { I18nProvider } from '@/lib/i18n';
 import { RoomTimeline } from '../RoomTimeline';
+import type { PendingAttachment } from '@/hooks/use-attachments';
 import type { PostRoomMessageInput } from '@/hooks/use-team-run';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { roomMessageDetailRefetchMock, scrollToBottomMock, translationFixture } = vi.hoisted(() => ({
+const { roomMessageDetailRefetchMock, scrollToBottomMock, translationFixture, markdownRenderMock, translationReadMock } = vi.hoisted(() => ({
+  markdownRenderMock: vi.fn(),
+  translationReadMock: vi.fn(),
   translationFixture: { realDeliveries: false, overlays: [] as TeamRunTranslationOverlaySummary[], deliveries: [] as MessageDelivery[], enabled: false, loadFull: vi.fn(), isCurrent: vi.fn(() => true), retry: vi.fn() },
   roomMessageDetailRefetchMock: vi.fn(),
   scrollToBottomMock: vi.fn(() => true),
@@ -20,8 +23,22 @@ const { roomMessageDetailRefetchMock, scrollToBottomMock, translationFixture } =
 
 vi.mock('@/hooks/use-message-deliveries', async original => {
   const actual = await original<typeof import('@/hooks/use-message-deliveries')>();
+  type Data = { pages: { items: MessageDelivery[] }[] };
+  const snapshots = new WeakMap<MessageDelivery[], { pending: Data; sent: Data }>();
+  const fixtureQuery = (sent: boolean) => {
+    const deliveries = translationFixture.deliveries;
+    let snapshot = snapshots.get(deliveries);
+    if (!snapshot) {
+      snapshot = {
+        pending: { pages: [{ items: deliveries.filter(item => item.state !== 'SENT') }] },
+        sent: { pages: [{ items: deliveries.filter(item => item.state === 'SENT') }] },
+      };
+      snapshots.set(deliveries, snapshot);
+    }
+    return { data: sent ? snapshot.sent : snapshot.pending };
+  };
   return {
-    useMessageDeliveries: (...args: Parameters<typeof actual.useMessageDeliveries>) => translationFixture.realDeliveries ? actual.useMessageDeliveries(...args) : ({ data: { pages: [{ items: translationFixture.deliveries.filter(item => (item.state === 'SENT') === (args[1] === 'sent')) }] } }),
+    useMessageDeliveries: (...args: Parameters<typeof actual.useMessageDeliveries>) => translationFixture.realDeliveries ? actual.useMessageDeliveries(...args) : fixtureQuery(args[1] === 'sent'),
     useDeliveryAction: (scope: string) => translationFixture.realDeliveries ? actual.useDeliveryAction(scope) : ({ mutate: vi.fn(), isPending: false }),
   };
 });
@@ -29,8 +46,17 @@ vi.mock('@/lib/api-client', async original => ({ ...await original<typeof import
 vi.mock('@/lib/socket/manager', () => ({ socketManager: { connect: () => ({ on: vi.fn(), off: vi.fn(), emit: vi.fn(), connected: false }) } }));
 vi.mock('../TeamRoomDeliveryStatus', () => ({ TeamRoomDeliveryStatus: () => null }));
 
-vi.mock('@/hooks/use-team-run-translations', () => ({ useTeamRunTranslations: () => translationFixture }))
+vi.mock('@/hooks/use-team-run-translations', () => ({ useTeamRunTranslations: () => { translationReadMock(); return translationFixture } }))
 vi.mock('@/hooks/use-translation-settings', () => ({ useTranslationSettings: () => ({ data: { enabled: translationFixture.enabled, sendTargetLanguage: 'English', displayTargetLanguage: 'Chinese' } }) }))
+
+vi.mock('streamdown', async original => {
+  const actual = await original<typeof import('streamdown')>();
+  const { createElement } = await import('react');
+  return { ...actual, Streamdown: (props: React.ComponentProps<typeof actual.Streamdown>) => {
+    markdownRenderMock();
+    return createElement(actual.Streamdown, props);
+  } };
+});
 
 vi.mock('use-stick-to-bottom', async () => {
   const ReactModule = await import('react');
@@ -96,7 +122,7 @@ vi.mock('@/hooks/use-attachments', async () => {
       isLoading: false,
     }),
     useAttachments: () => {
-      const [files, setFiles] = ReactModule.useState<any[]>([]);
+      const [files, setFiles] = ReactModule.useState<PendingAttachment[]>([]);
       const filesRef = ReactModule.useRef(files);
       filesRef.current = files;
 
@@ -107,7 +133,7 @@ vi.mock('@/hooks/use-attachments', async () => {
             tempId: `tmp-${file.name}`,
             file,
             progress: 100,
-            status: 'done',
+            status: 'done' as const,
             attachment: attachments[0],
           })),
         ]);
@@ -119,7 +145,7 @@ vi.mock('@/hooks/use-attachments', async () => {
 
       const clear = ReactModule.useCallback(() => setFiles([]), []);
 
-      const restoreFiles = ReactModule.useCallback((filesToRestore: any[]) => {
+      const restoreFiles = ReactModule.useCallback((filesToRestore: PendingAttachment[]) => {
         setFiles((current) => {
           const existing = new Set(current.map((file) => file.attachment?.id ?? file.tempId));
           const restored = filesToRestore.filter((file) => {
@@ -136,6 +162,7 @@ vi.mock('@/hooks/use-attachments', async () => {
         filesRef.current
           .filter((file) => file.status === 'done' && file.attachment)
           .map((file) => file.attachment)
+          .filter((attachment): attachment is Attachment => Boolean(attachment))
       ), []);
 
       const buildMarkdownLinks = ReactModule.useCallback(() => getDoneAttachments()
@@ -316,6 +343,35 @@ describe('RoomTimeline optimistic sending', () => {
     translationFixture.overlays = [row];
     return row;
   }
+
+  it.each([false, true])('does not render history or revisit translations while editing the composer (compact=%s)', async compactComposer => {
+    const messages = Array.from({ length: 30 }, (_, index) => ({
+      ...createRoomMessage(`Historical message ${index}`), id: `message-${index}`,
+    }));
+    await act(async () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={messages} compactComposer={compactComposer} onSendMessage={vi.fn()} /></I18nProvider>));
+    expect(container.textContent).toContain('Historical message 29');
+    expect(markdownRenderMock).toHaveBeenCalled();
+    markdownRenderMock.mockClear();
+    translationReadMock.mockClear();
+
+    for (const value of ['h', 'he', 'hello', '@']) await typeMessage(container, value);
+    await uploadFile(container);
+    expect(getTextarea(container).value).toBe('@');
+    expect(container.textContent).toContain('evidence.txt');
+    expect(markdownRenderMock).not.toHaveBeenCalled();
+    expect(translationReadMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a large room bounded even before a hidden viewport can be measured', async () => {
+    const messages = Array.from({ length: 1000 }, (_, index) => ({
+      ...createRoomMessage(`Historical message ${index}`), id: `message-${index}`,
+      createdAt: new Date(Date.UTC(2026, 9, 21, 0, 0, index)).toISOString(),
+    }));
+    await act(async () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={messages} onSendMessage={vi.fn()} /></I18nProvider>));
+    expect(container.textContent).toContain('Historical message 999');
+    expect(container.querySelectorAll('[data-room-row]').length).toBeLessThanOrEqual(20);
+    expect(container.textContent).not.toContain('Historical message 100');
+  });
 
   it.each(['TEAM_USER', 'TEAM_INITIAL'] as const)('shows no translation indicator for %s original sends, including restored room history', async origin => {
     let delivery: TeamMessageDelivery = {
@@ -551,7 +607,7 @@ describe('RoomTimeline optimistic sending', () => {
       );
     });
 
-    expect(scrollToBottomMock).toHaveBeenCalledWith({ animation: 'smooth', ignoreEscapes: true });
+    expect(scrollToBottomMock).toHaveBeenCalledWith({ animation: 'instant', preserveScrollPosition: true });
     requestAnimationFrameSpy.mockRestore();
   });
 

@@ -3,8 +3,10 @@ import { MessageDeliveryFeedback } from '@/components/agent/MessageDeliveryStatu
 import { TeamRoomDeliveryStatus } from './TeamRoomDeliveryStatus'
 import { pendingTeamRoomSubmissions, forgetTeamRoomSubmission } from '@/hooks/team-room-submission'
 import { useMessageDeliveries } from '@/hooks/use-message-deliveries'
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useState, useRef } from 'react'
-import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useState, useRef } from 'react'
+import type { ChangeEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
+import { buildRoomMessageSubmitInput, filterGeneratedAttachmentMarkdown } from './room-message-content'
+import { VirtualRoomMessageList } from './VirtualRoomMessageList'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import {
   ArrowDown,
@@ -39,7 +41,7 @@ import { useProviders } from '@/hooks/use-providers'
 import { useTeamRunTranslations, type RoomTranslations } from '@/hooks/use-team-run-translations'
 import { useTranslationSettings } from '@/hooks/use-translation-settings'
 import { TranslationComparison, TranslationReveal, TranslationState } from '@/components/agent/TranslationComparison'
-import { AgentLogo } from '@/components/agent'
+import { AgentLogo } from '@/components/agent/AgentLogo'
 import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
@@ -54,7 +56,7 @@ import {
   buildStructuredMentionsFromSelectedMembers,
   removeSelectedMemberId,
 } from './room-mentions'
-import { ACTIVE_ROOM_INVOCATION_STATUSES, buildRoomTimelineItems } from './room-timeline-items'
+import { ACTIVE_ROOM_INVOCATION_STATUSES, buildRoomTimelineItems, type RoomTimelineItem } from './room-timeline-items'
 import { ActiveWorkList } from './ActiveWorkList'
 import {
   createMessageStreamdownComponents,
@@ -121,34 +123,6 @@ function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
-}
-
-function formatGeneratedAttachmentMarkdown(attachment: Pick<Attachment, 'originalName' | 'mimeType' | 'storagePath'>): string {
-  const prefix = attachment.mimeType.startsWith('image/') ? '!' : ''
-  return `${prefix}[${attachment.originalName}](${attachment.storagePath})`
-}
-
-export function filterGeneratedAttachmentMarkdown(content: string, attachments: Array<Pick<Attachment, 'originalName' | 'mimeType' | 'storagePath'>>): string {
-  if (attachments.length === 0) return content
-
-  const generatedLines = new Set(attachments.map(formatGeneratedAttachmentMarkdown))
-  return content
-    .split('\n')
-    .map((line) => {
-      const leadingWhitespace = line.match(/^\s*/)?.[0] ?? ''
-      const normalizedLine = line.trimStart()
-      for (const generatedLine of generatedLines) {
-        if (normalizedLine === generatedLine) return null
-        if (normalizedLine.startsWith(`${generatedLine} `) || normalizedLine.startsWith(`${generatedLine}\t`)) {
-          return `${leadingWhitespace}${normalizedLine.slice(generatedLine.length).trimStart()}`
-        }
-      }
-      return line
-    })
-    .filter((line): line is string => line != null)
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
 }
 
 function formatTime(value?: string) {
@@ -492,28 +466,8 @@ function AttachmentLightbox({
   )
 }
 
-export function buildRoomMessageSubmitInput({
-  draft,
-  attachmentMarkdown,
-  attachmentIds,
-  mentions,
-}: {
-  draft: string
-  attachmentMarkdown: string
-  attachmentIds: string[]
-  mentions: StructuredMention[]
-}): PostRoomMessageInput | null {
-  const content = draft.trim()
-  const messageContent = [content, attachmentMarkdown].filter(Boolean).join('\n\n')
-  if (!messageContent) return null
-
-  return {
-    content: messageContent,
-    mentions,
-    senderType: 'user',
-    ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
-  }
-}
+type ExpandedMessageState = { messageId: string; content: string; expanded: boolean }
+const ExpandedMessagesContext = createContext<Map<string, ExpandedMessageState> | null>(null)
 
 type RoomMessageTone = 'agent' | 'user' | 'system'
 type RoomTextVersion = { kind: 'translated'; truncated: boolean; full?: string; loading: boolean; load: () => Promise<string> }
@@ -546,7 +500,13 @@ function CollapsibleRoomMessageContent({
   const { t } = useI18n()
   const contentId = useId()
   const contentRef = useRef<HTMLDivElement>(null)
-  const [expandedState, setExpandedState] = useState<{ messageId: string; content: string; expanded: boolean } | null>(null)
+  const expandedMessages = useContext(ExpandedMessagesContext)
+  const [expandedState, setLocalExpandedState] = useState(() => expandedMessages?.get(message.id) ?? null)
+  const setExpandedState = useCallback((state: ExpandedMessageState) => {
+    if (state.expanded) expandedMessages?.set(message.id, state)
+    else expandedMessages?.delete(message.id)
+    setLocalExpandedState(state)
+  }, [expandedMessages, message.id])
   const [isCollapsible, setIsCollapsible] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const detailQuery = useRoomMessageDetail(message.teamRunId, message.id, false)
@@ -615,7 +575,7 @@ function CollapsibleRoomMessageContent({
     }
 
     setExpandedState({ messageId: message.id, content: renderContent, expanded: true })
-  }, [attachments, canLoadFullContent, detailContent, detailQuery, isExpanded, message.id, renderContent, t, textVersion])
+  }, [attachments, canLoadFullContent, detailContent, detailQuery, isExpanded, message.id, renderContent, setExpandedState, t, textVersion])
 
   const isCollapsed = (isCollapsible || canLoadFullContent) && !isExpanded
   const showToggle = isCollapsible || canLoadFullContent
@@ -1026,6 +986,139 @@ function PendingApprovalBubble({
   )
 }
 
+interface RoomMessageListProps extends Pick<RoomTimelineProps, 'teamRun' | 'messages' | 'workingDir' | 'onOpenWorkspaceFile' | 'onOpenPreviewUrl' | 'onOpenVisualization'> {
+  timelineItems: RoomTimelineItem[]
+  recovered: Map<string, MessageDelivery>
+  scrollElementRef: RefObject<HTMLElement | null>
+  compact?: boolean
+  onRetrySubmission: (message: PendingRoomMessage) => void
+  onOpenImage: (images: Attachment[], index: number) => void
+}
+
+// Draft/mention/attachment updates must not visit the history or rebuild its
+// translation query key. Keep the queries and Markdown below this memo boundary.
+const RoomMessageList = memo(function RoomMessageList({
+  teamRun, messages, timelineItems, recovered, scrollElementRef, compact,
+  onRetrySubmission, onOpenImage, workingDir, onOpenWorkspaceFile,
+  onOpenPreviewUrl, onOpenVisualization,
+}: RoomMessageListProps) {
+  const { t } = useI18n()
+  const approveWorkRequest = useApproveWorkRequest(teamRun.id)
+  const translations = useTeamRunTranslations(teamRun.id, messages)
+  const { data: translationSettings } = useTranslationSettings()
+  const translationByMessage = new Map(translations.overlays.map(row => [row.messageId, row]))
+  const rejectWorkRequest = useRejectWorkRequest(teamRun.id)
+  const { data: providersList } = useProviders()
+
+  const providerById = useMemo(() => {
+    const map = new Map<string, Provider>()
+    for (const item of providersList ?? []) {
+      map.set(item.provider.id, item.provider)
+    }
+    return map
+  }, [providersList])
+
+  const memberById = useMemo(() => new Map((teamRun.members ?? []).map(member => [member.id, member])), [teamRun.members])
+  const invocationById = useMemo(() => {
+    return new Map((teamRun.invocations ?? []).map((invocation) => [invocation.id, invocation]))
+  }, [teamRun.invocations])
+
+  const pendingApprovalError =
+    approveWorkRequest.isError
+      ? approveWorkRequest.error
+      : rejectWorkRequest.isError
+        ? rejectWorkRequest.error
+        : null
+
+  const isPendingApprovalActionPending =
+    approveWorkRequest.isPending
+    || rejectWorkRequest.isPending
+
+  const [expandedMessages] = useState(() => new Map<string, ExpandedMessageState>())
+  useEffect(() => {
+    const ids = new Set(messages.map(message => message.id))
+    for (const id of expandedMessages.keys()) if (!ids.has(id)) expandedMessages.delete(id)
+  }, [expandedMessages, messages])
+
+  const renderItem = (item: RoomTimelineItem) => {
+    if (item.kind === 'pendingApproval') {
+      const request = item.request
+      const member = memberById.get(request.targetMemberId)
+      const isApprovePending = approveWorkRequest.isPending && approveWorkRequest.variables === request.id
+      const isRejectPending = rejectWorkRequest.isPending && rejectWorkRequest.variables === request.id
+
+      return (
+        <PendingApprovalBubble
+          key={item.key}
+          request={request}
+          member={member}
+          onApprove={() => approveWorkRequest.mutate(request.id)}
+          onReject={() => rejectWorkRequest.mutate(request.id)}
+          isActionPending={isPendingApprovalActionPending}
+          isApprovePending={isApprovePending}
+          isRejectPending={isRejectPending}
+        />
+      )
+    }
+
+    const message = item.message
+    const senderMember = resolveSenderMember(message, memberById, invocationById)
+    const senderName =
+      message.senderType === 'user'
+        ? t('你')
+        : message.senderType === 'system'
+          ? t('System')
+          : senderMember?.name ?? t('Agent')
+    const displayContent = getDisplayContent(message, memberById)
+    const senderProvider = senderMember?.providerId
+      ? providerById.get(senderMember.providerId) ?? null
+      : null
+    const senderInvocation = message.senderInvocationId
+      ? invocationById.get(message.senderInvocationId)
+      : undefined
+    const senderWorkspaceId = senderInvocation?.workspaceId ?? undefined
+    const senderSessionId = senderInvocation?.sessionId ?? undefined
+
+    return (
+      <RoomChatMessage
+        key={item.key}
+        message={message}
+        senderName={senderName}
+        senderMember={senderMember}
+        senderProvider={senderProvider}
+        memberById={memberById}
+        displayContent={displayContent}
+        overlay={translationByMessage.get(message.id)}
+        translations={translations}
+        translationEnabled={translationSettings?.enabled === true}
+        delivery={recovered.get(message.userDelivery?.clientSubmissionId ?? message.id)}
+        onRetrySubmission={isPendingRoomMessage(message) ? () => onRetrySubmission(message) : undefined}
+        onOpenImage={onOpenImage}
+        workingDir={workingDir}
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
+        onOpenPreviewUrl={onOpenPreviewUrl}
+        onOpenVisualization={onOpenVisualization}
+        previewWorkspaceId={senderWorkspaceId}
+        previewSessionId={senderSessionId}
+      />
+    )
+  }
+
+  return <ExpandedMessagesContext.Provider value={expandedMessages}>
+    {timelineItems.length === 0 ? (
+      <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-background text-muted-foreground">
+        <Users size={24} className="text-muted-foreground/70" />
+        <span className="text-sm">{t('No room messages yet')}</span>
+      </div>
+    ) : (
+      <VirtualRoomMessageList items={timelineItems} renderItem={renderItem} scrollElementRef={scrollElementRef} compact={compact} />
+    )}
+    {pendingApprovalError && <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive-ink">
+      {getErrorMessage(pendingApprovalError, t('Failed to update work request'))}
+    </div>}
+  </ExpandedMessagesContext.Provider>
+})
+
 export function RoomTimeline({
   teamRun,
   messages,
@@ -1042,11 +1135,6 @@ export function RoomTimeline({
   onOpenVisualization,
 }: RoomTimelineProps) {
   const { t } = useI18n()
-  const approveWorkRequest = useApproveWorkRequest(teamRun.id)
-  const translations = useTeamRunTranslations(teamRun.id, messages)
-  const { data: translationSettings } = useTranslationSettings()
-  const translationByMessage = new Map(translations.overlays.map(row => [row.messageId, row]))
-  const rejectWorkRequest = useRejectWorkRequest(teamRun.id)
   const stopMemberWork = useStopMemberWork(teamRun.id)
   const [draft, setDraft] = useState('')
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false)
@@ -1074,11 +1162,26 @@ export function RoomTimeline({
   const [lightboxState, setLightboxState] = useState<{ images: Attachment[]; index: number } | null>(null)
 
   const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
-    resize: 'smooth',
+    resize: 'instant',
     initial: 'instant',
   })
   const userScrolledAwayRef = useRef(false)
   const previousLatestItemKeyRef = useRef<string | null>(null)
+  const previousRoomIdRef = useRef(teamRun.id)
+  const jumpToBottom = useCallback(() => {
+    userScrolledAwayRef.current = false
+    // A smooth trip through thousands of virtual rows repeatedly mounts and
+    // measures intermediate messages. Jump directly, then let the stick hook
+    // follow the final rows as their estimated heights are measured.
+    return scrollToBottom({ animation: 'instant', ignoreEscapes: true })
+  }, [scrollToBottom])
+
+  useEffect(() => {
+    if (previousRoomIdRef.current === teamRun.id) return
+    previousRoomIdRef.current = teamRun.id
+    const frame = requestAnimationFrame(() => { void jumpToBottom() })
+    return () => cancelAnimationFrame(frame)
+  }, [jumpToBottom, teamRun.id])
 
   useEffect(() => {
     const element = scrollRef.current
@@ -1099,16 +1202,6 @@ export function RoomTimeline({
     return () => element.removeEventListener('wheel', handleWheel)
   }, [scrollRef])
 
-  const { data: providersList } = useProviders()
-
-  const providerById = useMemo(() => {
-    const map = new Map<string, Provider>()
-    for (const item of providersList ?? []) {
-      map.set(item.provider.id, item.provider)
-    }
-    return map
-  }, [providersList])
-
   const memberById = useMemo(() => {
     return new Map((teamRun.members ?? []).map((member) => [member.id, member]))
   }, [teamRun.members])
@@ -1117,10 +1210,6 @@ export function RoomTimeline({
     () => (teamRun.members ?? []).filter(isActiveTeamMember),
     [teamRun.members],
   )
-
-  const invocationById = useMemo(() => {
-    return new Map((teamRun.invocations ?? []).map((invocation) => [invocation.id, invocation]))
-  }, [teamRun.invocations])
 
   const acceptedSubmissionIds = useMemo(() => new Set([
     ...messages.flatMap(message => message.userDelivery ? [message.userDelivery.clientSubmissionId] : []),
@@ -1166,9 +1255,10 @@ export function RoomTimeline({
       return
     }
 
-    requestAnimationFrame(() => {
-      void scrollToBottom({ animation: 'smooth', ignoreEscapes: true })
+    const frame = requestAnimationFrame(() => {
+      void scrollToBottom({ animation: 'instant', preserveScrollPosition: true })
     })
+    return () => cancelAnimationFrame(frame)
   }, [scrollToBottom, timelineItems])
 
   const activeInvocations = useMemo(
@@ -1295,25 +1385,25 @@ export function RoomTimeline({
     if (textareaRef.current) {
       textareaRef.current.style.height = compactComposer ? '40px' : '72px'
     }
-    requestAnimationFrame(() => scrollToBottom())
+    requestAnimationFrame(() => jumpToBottom())
 
     setIsSubmitting(true)
     try {
       const savedMessage = await onSendMessage(input)
       setPendingMessages((current) => current.filter((message) => message.id !== pendingMessage.id))
       if (savedMessage && typeof savedMessage === 'object' && 'id' in savedMessage) {
-        requestAnimationFrame(() => scrollToBottom())
+        requestAnimationFrame(() => jumpToBottom())
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send room message'
       setPendingMessages((current) => current.map((item) => item.id === pendingMessage.id
         ? { ...item, pendingStatus: 'failed', error: message }
         : item))
-      requestAnimationFrame(() => scrollToBottom())
+      requestAnimationFrame(() => jumpToBottom())
     } finally {
       setIsSubmitting(false)
     }
-  }, [activeMembers, buildMarkdownLinks, clearAttachments, compactComposer, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, onSendMessage, readOnly, scrollToBottom, selectedMemberIds, teamRun.id])
+  }, [activeMembers, buildMarkdownLinks, clearAttachments, compactComposer, draft, getDoneAttachments, hasSendableAttachments, isSubmitting, isUploading, jumpToBottom, onSendMessage, readOnly, selectedMemberIds, teamRun.id])
 
   const handleDraftKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     const isComposing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
@@ -1364,16 +1454,18 @@ export function RoomTimeline({
     }
   }, [clearAttachments, compactComposer, teamRun.id])
 
-  const pendingApprovalError =
-    approveWorkRequest.isError
-      ? approveWorkRequest.error
-      : rejectWorkRequest.isError
-        ? rejectWorkRequest.error
-        : null
+  const handleOpenImage = useCallback((images: Attachment[], index: number) => {
+    setLightboxState({ images, index })
+  }, [])
 
-  const isPendingApprovalActionPending =
-    approveWorkRequest.isPending
-    || rejectWorkRequest.isPending
+  const handleRetrySubmission = useCallback((message: PendingRoomMessage) => {
+    if (isSubmitting) return
+    setIsSubmitting(true)
+    void onSendMessage(message.submissionInput)
+      .then(() => setPendingMessages(current => current.filter(item => item.id !== message.id)))
+      .finally(() => setIsSubmitting(false))
+      .catch(() => undefined)
+  }, [isSubmitting, onSendMessage])
 
   const handleStopMember = useCallback((memberId: string, cancelQueued: boolean) => {
     stopMemberWork.mutate(
@@ -1395,93 +1487,30 @@ export function RoomTimeline({
       <div className="relative flex-1 min-h-0">
         <div
           ref={scrollRef}
+          data-room-scroll
           className={cn(
             'h-full overflow-y-auto scrollbar-app-thin bg-background',
             compactComposer ? 'px-3 py-3' : 'px-4 py-4',
           )}
         >
           <div ref={contentRef} className={cn(compactComposer ? 'space-y-2.5' : 'space-y-3', centered && 'max-w-4xl mx-auto')}>
-            {timelineItems.length === 0 ? (
-              <div className="flex min-h-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-background text-muted-foreground">
-                <Users size={24} className="text-muted-foreground/70" />
-                <span className="text-sm">{t('No room messages yet')}</span>
-              </div>
-            ) : (
-              timelineItems.map((item) => {
-                if (item.kind === 'pendingApproval') {
-                  const request = item.request
-                  const member = memberById.get(request.targetMemberId)
-                  const isApprovePending = approveWorkRequest.isPending && approveWorkRequest.variables === request.id
-                  const isRejectPending = rejectWorkRequest.isPending && rejectWorkRequest.variables === request.id
-
-                  return (
-                    <PendingApprovalBubble
-                      key={item.key}
-                      request={request}
-                      member={member}
-                      onApprove={() => approveWorkRequest.mutate(request.id)}
-                      onReject={() => rejectWorkRequest.mutate(request.id)}
-                      isActionPending={isPendingApprovalActionPending}
-                      isApprovePending={isApprovePending}
-                      isRejectPending={isRejectPending}
-                    />
-                  )
-                }
-
-                const message = item.message
-                const senderMember = resolveSenderMember(message, memberById, invocationById)
-                const senderName =
-                  message.senderType === 'user'
-                    ? t('你')
-                    : message.senderType === 'system'
-                      ? t('System')
-                      : senderMember?.name ?? t('Agent')
-                const displayContent = getDisplayContent(message, memberById)
-                const senderProvider = senderMember?.providerId
-                  ? providerById.get(senderMember.providerId) ?? null
-                  : null
-                const senderInvocation = message.senderInvocationId
-                  ? invocationById.get(message.senderInvocationId)
-                  : undefined
-                const senderWorkspaceId = senderInvocation?.workspaceId ?? undefined
-                const senderSessionId = senderInvocation?.sessionId ?? undefined
-
-                return (
-                  <RoomChatMessage
-                    key={item.key}
-                    message={message}
-                    senderName={senderName}
-                    senderMember={senderMember}
-                    senderProvider={senderProvider}
-                    memberById={memberById}
-                    displayContent={displayContent}
-                    overlay={translationByMessage.get(message.id)}
-                    translations={translations}
-                    translationEnabled={translationSettings?.enabled === true}
-                    delivery={recovered.get(message.userDelivery?.clientSubmissionId ?? message.id)}
-                    onRetrySubmission={isPendingRoomMessage(message) ? () => {
-                      if (isSubmitting) return
-                      setIsSubmitting(true)
-                      void onSendMessage(message.submissionInput).then(() => setPendingMessages(current => current.filter(item => item.id !== message.id))).finally(() => setIsSubmitting(false)).catch(() => undefined)
-                    } : undefined}
-                    onOpenImage={(images, index) => setLightboxState({ images, index })}
-                    workingDir={workingDir}
-                    onOpenWorkspaceFile={onOpenWorkspaceFile}
-                    onOpenPreviewUrl={onOpenPreviewUrl}
-                    onOpenVisualization={onOpenVisualization}
-                    previewWorkspaceId={senderWorkspaceId}
-                    previewSessionId={senderSessionId}
-                  />
-                )
-              })
-            )}
+            <RoomMessageList
+              key={teamRun.id}
+              teamRun={teamRun}
+              messages={messages}
+              timelineItems={timelineItems}
+              recovered={recovered}
+              scrollElementRef={scrollRef}
+              compact={compactComposer}
+              onRetrySubmission={handleRetrySubmission}
+              onOpenImage={handleOpenImage}
+              workingDir={workingDir}
+              onOpenWorkspaceFile={onOpenWorkspaceFile}
+              onOpenPreviewUrl={onOpenPreviewUrl}
+              onOpenVisualization={onOpenVisualization}
+            />
 
             <TeamRoomDeliveryStatus taskId={teamRun.taskId} teamRunId={teamRun.id} enabled={!readOnly} showDeliveries={false} />
-            {pendingApprovalError && (
-              <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive-ink">
-                {getErrorMessage(pendingApprovalError, t('Failed to update work request'))}
-              </div>
-            )}
             {stopMemberWork.isError && (
               <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive-ink">
                 {getErrorMessage(stopMemberWork.error, t('Failed to stop member work'))}
@@ -1493,7 +1522,7 @@ export function RoomTimeline({
         {!isAtBottom && (
           <button
             type="button"
-            onClick={() => scrollToBottom()}
+            onClick={() => jumpToBottom()}
             className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background/90 px-3 py-1.5 text-xs text-foreground/70 shadow-raised backdrop-blur-sm hover:bg-background hover:text-foreground transition-colors"
           >
             <ArrowDown size={14} />

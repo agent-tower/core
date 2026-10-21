@@ -10,7 +10,7 @@ import {
 import {
   buildRoomMessageSubmitInput,
   filterGeneratedAttachmentMarkdown,
-} from '../RoomTimeline';
+} from '../room-message-content';
 
 describe('RoomTimeline mention contract', () => {
   const sameNameMembers = [
