@@ -1,3 +1,4 @@
+import { createUuid } from '@/lib/uuid'
 import type { CreateTaskTeamRunInput } from './use-team-run'
 const prefix = 'tower:team-initial-submission:'
 export type InitialCreationBody = CreateTaskTeamRunInput & { clientSubmissionId: string }
@@ -18,7 +19,7 @@ export function rememberTeamInitialSubmission(taskId: string, input: CreateTaskT
     if (JSON.stringify(intent) !== JSON.stringify(incoming) || clientSubmissionId && clientSubmissionId !== savedId) throw new Error('Check the original team creation before changing its configuration.')
     return saved
   }
-  const body = { ...input, clientSubmissionId: input.clientSubmissionId ?? crypto.randomUUID() }
+  const body = { ...input, clientSubmissionId: input.clientSubmissionId ?? createUuid() }
   sessionStorage.setItem(`${prefix}${taskId}`, JSON.stringify({ version: 1, taskId, body }))
   return body
 }

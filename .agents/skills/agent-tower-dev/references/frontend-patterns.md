@@ -6,6 +6,7 @@
 
 - `App.tsx` 先挂载 Query provider 和 `components/access/AccessGate.tsx`，访问认证通过后才挂载 Socket、全局同步和路由。新入口不要绕过此顺序。
 - `lib/api-client.ts` 统一处理 API base URL、same-origin credentials、204 和携带后端 details 的 `ApiError`。`lib/api-base-url.ts` 在开发环境把 loopback API/Socket 配置转回同源代理；`packages/web/vite.config.ts` 代理 `/api`、`/socket.io`、`/view` 并重写 HTTP/WS Origin。开发端口来自 shared `getDevPort(repoRoot)`，不能假设后端恒为 12580。
+- 浏览器生成提交及乐观消息 UUID 使用 `lib/uuid.ts:createUuid()`，兼容 HTTP 远程访问下缺少 `crypto.randomUUID` 的环境；回退仍使用 `crypto.getRandomValues`。请求重试复用已保存的 UUID 和正文，不重新分配提交身份。
 - 活跃路由表在 `routes/app-routes.tsx`：首页是 `ProjectKanbanPage`，另有 conversations 和演示页。`routes/index.tsx` 只负责 `createBrowserRouter(appRoutes)` 并导出 `AppRouter`；路由表单独成模块，测试才能用 `createMemoryRouter(appRoutes, ...)` 挂载生产层级。Settings 是 `SettingsDialog` 加 `ui-store`，旧 `/settings/:tab` 由 `routes/SettingsRedirect.tsx` 打开 dialog 后跳回首页；新增 tab 同步类型、dialog 与 redirect mapping。不要仅因存在 `HomePage`/`SettingsLayout` 文件就将其视为当前入口。
 - `ProjectKanbanPage` 在选中任务后才动态导入当前布局的 `TaskDetail` 或 `MobileTaskDetail`；详情区自己的 Suspense 保留桌面任务列表。首页的 `TaskList`、`CreateTaskInput` 所用 `AgentLogo` 从具体文件导入，避免聚合出口把 Markdown、终端和 workspace 依赖带回首屏。验证时同时检查生产构建的实际加载资源；仅不挂载组件不能证明其模块未加载。
 - 渲染兜底按层级分工，改动时不要破坏依赖方向：路由 `errorElement` 用 `components/errors/RouteErrorPage.tsx`（pathless 分组保留 `RootLayout` 外壳，根路由兜 `RootLayout` 自身）；`AppRootBoundary` 兜路由外渲染错误（回退 UI 用 `useI18n`，必须在 `I18nProvider` 之内）；`AppShellBoundary` 高于全部 provider，回退 UI 只能用 `translate()` 等模块级能力，不能依赖 i18n/query/auth context。`ErrorBoundary` 只覆盖渲染阶段错误，事件处理器、异步回调与 observer 错误不会进入任何兜底。

@@ -1,3 +1,4 @@
+import { createUuid } from '@/lib/uuid'
 import type { PostRoomMessageInput } from './use-team-run'
 const prefix = 'tower:team-room-submission:'
 function submissionIntent(input: PostRoomMessageInput) {
@@ -33,7 +34,7 @@ export function rememberTeamRoomSubmission(teamRunId: string, input: PostRoomMes
     }
     if (!input.clientSubmissionId && submissionIntent(input) === submissionIntent(saved)) return saved as PostRoomMessageInput & { clientSubmissionId: string }
   }
-  const body = { ...input, clientSubmissionId: input.clientSubmissionId ?? crypto.randomUUID() }
+  const body = { ...input, clientSubmissionId: input.clientSubmissionId ?? createUuid() }
   // Persist exact body + ID before HTTP; a failed write cannot create an unrecoverable send.
   sessionStorage.setItem(`${prefix}${teamRunId}:${body.clientSubmissionId}`, JSON.stringify(body))
   return body

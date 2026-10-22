@@ -45,6 +45,7 @@ import { AgentLogo } from '@/components/agent/AgentLogo'
 import { Button } from '@/components/ui/button'
 import { MemberAvatar } from './MemberAvatar'
 import { cn } from '@/lib/utils'
+import { createUuid } from '@/lib/uuid'
 import { useI18n } from '@/lib/i18n'
 import { getApiBaseUrl } from '@/lib/api-base-url'
 import {
@@ -97,7 +98,7 @@ type PendingRoomMessage = RoomMessage & {
 
 function createPendingRoomMessage(teamRunId: string, input: PostRoomMessageInput): PendingRoomMessage {
   return {
-    id: input.clientSubmissionId ?? crypto.randomUUID(),
+    id: input.clientSubmissionId ?? createUuid(),
     submissionInput: input,
     teamRunId,
     senderType: input.senderType ?? 'user',
@@ -1373,7 +1374,7 @@ export function RoomTimeline({
     })
     if (!input || (!draft.trim() && !hasSendableAttachments)) return
 
-    input.clientSubmissionId = crypto.randomUUID()
+    input.clientSubmissionId = createUuid()
     const pendingMessage = createPendingRoomMessage(teamRun.id, input)
 
     setPendingMessages((current) => [...current, pendingMessage])

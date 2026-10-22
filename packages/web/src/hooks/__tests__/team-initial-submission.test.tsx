@@ -8,8 +8,9 @@ import { pendingTeamInitialSubmission, rememberTeamInitialSubmission } from '../
 const api = vi.hoisted(() => ({ post: vi.fn() }))
 vi.mock('@/lib/api-client', () => ({ apiClient: api, ApiError: class extends Error {} }))
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-afterEach(() => { sessionStorage.clear(); vi.resetAllMocks() })
-it('replays exact creation body after lost response and caches 202 only as a pending operation', async () => {
+afterEach(() => { sessionStorage.clear(); vi.resetAllMocks(); vi.unstubAllGlobals() })
+it.each([true, false])('replays exact creation body after lost response and caches 202 as pending (native UUID=%s)', async nativeUuid => {
+  if (!nativeUuid) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } })
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
   let mutation!: ReturnType<typeof useCreateTaskTeamRun>

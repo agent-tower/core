@@ -1,4 +1,5 @@
 import { conflictSubmissionIdentity, conflictTokenHint } from '@/lib/conflict-recovery-storage'
+import { createUuid } from '@/lib/uuid'
 
 interface Pending { id: string; key: string; identity: unknown; body?: object }
 const pending = new Map<string, Pending>()
@@ -94,7 +95,7 @@ export async function userSubmission<T>(key: string, input: object, send: (body:
     // Unreadable/invalid persistence may hide an accepted UUID; never silently replace it.
     if (system) throw new Error('Pending submission storage is unavailable or damaged. Preserve the operation details and check the original submission before sending again.')
   }
-  record ??= { id: crypto.randomUUID(), key, identity }
+  record ??= { id: createUuid(), key, identity }
   if (system) record.body ??= input
   pending.set(storageKey, record)
   try {

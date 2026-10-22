@@ -16,7 +16,7 @@ vi.mock('@/lib/api-client', () => ({ apiClient: api }))
 vi.mock('@/lib/socket/manager', () => ({ socketManager: { connect: () => ({ on: vi.fn(), off: vi.fn() }) } }))
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-afterEach(() => { sessionStorage.clear(); vi.resetAllMocks() })
+afterEach(() => { sessionStorage.clear(); vi.resetAllMocks(); vi.unstubAllGlobals() })
 const operation = (state: MessageDelivery['state'] = 'WAITING_TRANSLATION', revision = 1): Extract<SessionMessageDelivery, { origin: 'CONVERSATION' }> => ({
   id: 'delivery', clientSubmissionId: 'client', sessionId: 'session', conversationId: 'conversation', channelKey: 'conversation:conversation', sequence: 1,
   origin: 'CONVERSATION', destination: { kind: 'CONVERSATION', sessionId: 'session', conversationId: 'conversation' }, originalText: 'User original', attachmentIds: ['attachment'], state, sentMode: null, acceptedText: null, actualSentText: null, sentAt: null,
@@ -50,10 +50,12 @@ describe('user delivery identities and cache', () => {
     client.clear()
   })
 
-  it('retains the exact submission UUID and attachment snapshot after response loss, then allows an intentional new identical message', async () => {
+  it.each([true, false])('retains the exact submission UUID after response loss, then allows a new identical message (native UUID=%s)', async nativeUuid => {
     const key = crypto.randomUUID(); const input = { message: 'original', attachmentIds: ['attachment'] }
+    if (!nativeUuid) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
     const send = vi.fn().mockRejectedValueOnce(new Error('lost response')).mockResolvedValue({ ok: true })
     await expect(userSubmission(key, input, send)).rejects.toThrow('lost response')
+    expect(send.mock.calls[0][0].clientSubmissionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     await userSubmission(key, input, send)
     expect(send.mock.calls[1][0]).toEqual(send.mock.calls[0][0])
     await userSubmission(key, input, send)
@@ -138,12 +140,14 @@ describe('user delivery identities and cache', () => {
     expect(send).not.toHaveBeenCalled(); expect(sessionStorage.getItem(`tower:user-submission:${key}:${JSON.stringify(old)}`)).toBe(id)
   })
 
-  it('retries a lost workspace/session response with stable creation IDs and resumes the same destination', async () => {
+  it.each([true, false])('retries a lost workspace/session response with stable creation IDs (native UUID=%s)', async nativeUuid => {
     const task = crypto.randomUUID(); const input = { providerId: 'provider', prompt: 'original', workspaceKind: 'MAIN_DIRECTORY' }
+    if (!nativeUuid) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
     const createWorkspace = vi.fn().mockRejectedValueOnce(new Error('lost workspace response')).mockResolvedValue({ id: 'workspace' })
     const startSession = vi.fn().mockRejectedValueOnce(new Error('lost start response')).mockResolvedValue({})
     const steps = { createWorkspace, startSession }
     await expect(taskStartSubmission(task, input, steps)).rejects.toThrow('lost workspace')
+    expect(createWorkspace.mock.calls[0][0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     api.post.mockRejectedValueOnce(new Error('lost session response')).mockResolvedValue({ id: 'session' })
     await expect(taskStartSubmission(task, input, steps)).rejects.toThrow('lost session')
     expect(createWorkspace.mock.calls[0][0]).toBe(createWorkspace.mock.calls[1][0])

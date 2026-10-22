@@ -336,6 +336,7 @@ describe('RoomTimeline optimistic sending', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.unstubAllGlobals();
   });
 
   function translation(overrides = {}) {
@@ -652,7 +653,8 @@ describe('RoomTimeline optimistic sending', () => {
     requestAnimationFrameSpy.mockRestore();
   });
 
-  it('keeps an unknown submission separate from the new draft and retries its exact body', async () => {
+  it.each([true, false])('keeps an unknown submission separate from the new draft and retries its exact body (native UUID=%s)', async nativeUuid => {
+    if (!nativeUuid) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const onSendMessage = vi.fn<(input: PostRoomMessageInput) => Promise<void>>(async () => {
       throw new Error('Network unavailable');
     });

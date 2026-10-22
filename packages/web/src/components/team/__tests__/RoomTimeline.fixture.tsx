@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { RoomMessage, TeamRun } from '@agent-tower/shared'
 import { socketManager } from '@/lib/socket/manager'
 import { I18nProvider } from '@/lib/i18n'
+import { createUuid } from '@/lib/uuid'
 import { RoomTimeline } from '../RoomTimeline'
 import '@/index.css'
 
@@ -54,7 +55,7 @@ export function Fixture() {
       <Profiler id="room" onRender={(_id, _phase, duration) => metrics.commits.push(duration)}>
         <RoomTimeline key={id} teamRun={teamRun} messages={messages[selected]} compactComposer={compact} onSendMessage={async input => {
           setMessages(current => current.map((room, index) => index === selected ? [...room, {
-            ...room[0], id: crypto.randomUUID(), content: input.content, senderType: 'user', createdAt: new Date().toISOString(),
+            ...room[0], id: createUuid(), content: input.content, senderType: 'user', createdAt: new Date().toISOString(),
           }] : room))
         }} />
       </Profiler>

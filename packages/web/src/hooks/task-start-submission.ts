@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api-client'
+import { createUuid } from '@/lib/uuid'
 
 type PendingStart = { creationId: string; workspace?: { id: string }; session?: { id: string } }
 const pending = new Map<string, PendingStart>()
@@ -15,7 +16,7 @@ export async function taskStartSubmission(
   const key = `tower:task-start:${taskId}:${JSON.stringify(input)}`
   let state = pending.get(key)
   if (!state) { try { const saved = sessionStorage.getItem(key); if (saved) state = JSON.parse(saved) } catch { /* Fall back to the current page. */ } }
-  state ??= { creationId: crypto.randomUUID() }
+  state ??= { creationId: createUuid() }
   pending.set(key, state)
   const save = () => { try { sessionStorage.setItem(key, JSON.stringify(state)) } catch { /* Identity remains in memory. */ } }
   save()
