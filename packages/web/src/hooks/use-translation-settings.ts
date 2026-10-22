@@ -37,9 +37,19 @@ const safeErrors: Record<string, string> = {
   INVALID_RESPONSE: 'The translation service returned no usable text.',
   TRUNCATED_RESPONSE: 'The translation service returned incomplete text.',
   RESPONSE_TOO_LARGE: 'The translation response is too large.',
+  UPSTREAM_ERROR: 'The translation service returned an error. Try again later.',
+  INTERNAL_ERROR: 'An internal translation error occurred. Try again.',
+  RETRY_BUDGET_EXHAUSTED: 'Translation retry limit reached. Try again manually.',
+  CONFIG_CIRCUIT_OPEN: 'Translation is paused after a configuration error. Check the API key, base URL and model.',
+  DISABLED: 'Translation is disabled. Enable it to retry.',
+  INTERRUPTED: 'Translation was interrupted. Try again.',
+  LEASE_EXPIRED: 'The translation attempt expired. Try again.',
+  SOURCE_CHANGED: 'The original text changed. Retry the current text.',
+  SOURCE_DELETED: 'The original message is no longer available.',
+  SOURCE_OR_LEASE_REVOKED: 'The original message or translation attempt is no longer valid. Try again.',
 }
 
 export function translationErrorMessage(error: unknown): string {
-  const code = error instanceof ApiError ? error.details.code : undefined
-  return typeof code === 'string' && safeErrors[code] ? safeErrors[code] : 'Translation request failed. Check the service and try again.'
+  const code = typeof error === 'string' ? error : error instanceof ApiError ? error.details.code : undefined
+  return typeof code === 'string' && Object.hasOwn(safeErrors, code) ? safeErrors[code] : 'Translation request failed. Check the service and try again.'
 }

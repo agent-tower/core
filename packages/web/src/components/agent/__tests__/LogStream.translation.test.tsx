@@ -164,6 +164,45 @@ describe('Assistant translation display', () => {
     outside.remove()
   })
 
+  it.each([
+    ['FAILED', 'AUTH_FAILED', 'Translation credential was rejected. Check the API key.'],
+    ['RETRY_WAIT', 'TIMEOUT', 'The translation request timed out. Try again.'],
+    ['INTERRUPTED', 'PROTECTION_FAILED', 'The translation changed protected content. The original is preserved.'],
+    ['FAILED', 'UNKNOWN_ERROR', 'Translation request failed. Check the service and try again.'],
+    ['FAILED', null, 'Translation request failed. Check the service and try again.'],
+  ] as const)('shows the returned %s failure reason for %s in the original comparison', async (status, errorCode, reason) => {
+    state.overlays = [{ ...overlay, state: status, errorCode, translatedText: null }]
+    await render()
+    expect(container.textContent).toContain(original)
+    act(() => button('Original').click()); await flush()
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain(reason)
+    if (errorCode) expect(dialog.textContent).toContain(errorCode)
+  })
+
+  it('retains failure details when disabled and removes them when the overlay resumes or succeeds', async () => {
+    const errorCode = 'AUTH_FAILED'
+    const reason = 'Translation credential was rejected. Check the API key.'
+    state.overlays = [{ ...overlay, state: 'FAILED', errorCode, translatedText: null }]
+    await render()
+    act(() => button('Original').click()); await flush()
+    state.enabled = false; await render()
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(reason)
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(errorCode)
+    expect([...document.querySelectorAll('button')].some(item => item.textContent === 'Retry translation')).toBe(false)
+
+    for (const status of ['RUNNING', 'SUCCESS'] as const) {
+      state.overlays = [{ ...overlay, state: status, errorCode }]
+      await render()
+      act(() => button('Original').click()); await flush()
+      const dialog = document.querySelector('[role="dialog"]')!
+      expect(dialog.textContent).not.toContain(reason)
+      expect(dialog.textContent).not.toContain(errorCode)
+      if (status === 'RUNNING') expect(dialog.textContent).toContain('Translating…')
+      else expect(container.textContent).toContain(translated)
+    }
+  })
+
   it('retries only the failed sealed source using sourceRevision; 409 refreshes without replay', async () => {
     state.overlays = [{ ...overlay, state: 'FAILED', translatedText: null }]
     vi.mocked(apiClient.post).mockRejectedValue(new ApiError(409, 'changed'))

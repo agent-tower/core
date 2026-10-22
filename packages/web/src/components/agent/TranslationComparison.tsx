@@ -135,13 +135,13 @@ const stateLabels: Record<string, string> = {
 
 export function TranslationStatus({ overlay, enabled }: { overlay: SessionTranslationOverlay; enabled: boolean }) {
   const client = useQueryClient()
-  return <TranslationState state={overlay.state} enabled={enabled} onRetry={async () => {
+  return <TranslationState state={overlay.state} errorCode={overlay.errorCode} enabled={enabled} onRetry={async () => {
     try { await apiClient.post(`/sessions/${encodeURIComponent(overlay.sessionId)}/translations/${encodeURIComponent(overlay.sourceId)}/retry`, { expectedRevision: overlay.sourceRevision }) }
     finally { void client.invalidateQueries({ queryKey: queryKeys.sessionTranslations.session(overlay.sessionId) }) }
   }} />
 }
 
-export function TranslationState({ state, enabled, onRetry }: { state: string; enabled: boolean; onRetry: () => Promise<unknown> }) {
+export function TranslationState({ state, errorCode, enabled, onRetry }: { state: string; errorCode?: string | null; enabled: boolean; onRetry: () => Promise<unknown> }) {
   const { t } = useI18n()
   const [pending, setPending] = useState(false)
   const busy = useRef(false)
@@ -150,6 +150,7 @@ export function TranslationState({ state, enabled, onRetry }: { state: string; e
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   const label = stateLabels[state]
   if (!label) return null
+  const showReason = state === 'FAILED' || errorCode && (retryable.has(state) || state === 'RETRY_WAIT')
   return <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
     <span>{t(label)}</span>
     {enabled && retryable.has(state) && <button type="button" disabled={pending} className="rounded px-1.5 py-1 underline hover:bg-muted disabled:opacity-50" onClick={async () => {
@@ -164,6 +165,9 @@ export function TranslationState({ state, enabled, onRetry }: { state: string; e
         if (alive.current) setPending(false)
       }
     }}>{t(pending ? 'Retrying…' : 'Retry translation')}</button>}
+    {showReason && <p role="alert" className="w-full break-words text-destructive">
+      {t(translationErrorMessage(errorCode))}{errorCode && <> <span className="font-mono">({errorCode})</span></>}
+    </p>}
     {error && <span role="alert">{t(error)}</span>}
   </div>
 }

@@ -47,7 +47,7 @@ vi.mock('@/lib/socket/manager', () => ({ socketManager: { connect: () => ({ on: 
 vi.mock('../TeamRoomDeliveryStatus', () => ({ TeamRoomDeliveryStatus: () => null }));
 
 vi.mock('@/hooks/use-team-run-translations', () => ({ useTeamRunTranslations: () => { translationReadMock(); return translationFixture } }))
-vi.mock('@/hooks/use-translation-settings', () => ({ useTranslationSettings: () => ({ data: { enabled: translationFixture.enabled, sendTargetLanguage: 'English', displayTargetLanguage: 'Chinese' } }) }))
+vi.mock('@/hooks/use-translation-settings', async original => ({ ...await original<typeof import('@/hooks/use-translation-settings')>(), useTranslationSettings: () => ({ data: { enabled: translationFixture.enabled, sendTargetLanguage: 'English', displayTargetLanguage: 'Chinese' } }) }))
 
 vi.mock('streamdown', async original => {
   const actual = await original<typeof import('streamdown')>();
@@ -472,6 +472,47 @@ describe('RoomTimeline optimistic sending', () => {
     const retry = Array.from(document.querySelectorAll('button')).find(button => button.textContent?.includes('Retry translation'))!;
     await act(async () => { retry.click(); retry.click(); }); expect(translationFixture.retry).toHaveBeenCalledTimes(1);
     await act(async () => waiting.resolve());
+  });
+
+  it.each([
+    ['FAILED', 'PROTECTION_FAILED', 'The translation changed protected content. The original is preserved.'],
+    ['RETRY_WAIT', 'TIMEOUT', 'The translation request timed out. Try again.'],
+    ['FAILED', 'UNKNOWN_ERROR', 'Translation request failed. Check the service and try again.'],
+    ['FAILED', null, 'Translation request failed. Check the service and try again.'],
+  ] as const)('shows the room overlay %s reason for %s even when translation is disabled', async (state, errorCode, reason) => {
+    translation({ state, errorCode, translatedTextPreview: null, originalTextTruncated: false });
+    await act(async () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={[{ ...createRoomMessage('Original readable'), senderType: 'agent' }]} onSendMessage={vi.fn()} /></I18nProvider>));
+    await act(async () => (container.querySelector('[aria-haspopup="dialog"]') as HTMLButtonElement).click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain(reason);
+    if (errorCode) expect(dialog.textContent).toContain(errorCode);
+    expect(dialog.textContent).not.toContain('Retry translation');
+    expect(container.textContent).toContain('Original readable');
+    expect(translationFixture.loadFull).not.toHaveBeenCalled();
+  });
+
+  it('updates room failure details as the overlay resumes and succeeds', async () => {
+    const errorCode = 'AUTH_FAILED';
+    const reason = 'Translation credential was rejected. Check the API key.';
+    translationFixture.enabled = true;
+    const message: RoomMessage = { ...createRoomMessage('Original readable'), senderType: 'agent' };
+    const render = () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={[message]} onSendMessage={vi.fn()} /></I18nProvider>);
+    translation({ state: 'FAILED', errorCode, translatedTextPreview: null, originalTextTruncated: false });
+    await act(async () => render());
+    await act(async () => (container.querySelector('[aria-haspopup="dialog"]') as HTMLButtonElement).click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(reason);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(errorCode);
+
+    for (const state of ['RUNNING', 'SUCCESS'] as const) {
+      translation({ state, errorCode, originalTextTruncated: false, translatedTextTruncated: false });
+      await act(async () => render());
+      await act(async () => (container.querySelector('[aria-haspopup="dialog"]') as HTMLButtonElement).click());
+      const dialog = document.querySelector('[role="dialog"]')!;
+      expect(dialog.textContent).not.toContain(reason);
+      expect(dialog.textContent).not.toContain(errorCode);
+      if (state === 'RUNNING') expect(dialog.textContent).toContain('Translating…');
+      else expect(container.textContent).toContain('Translated preview');
+    }
   });
 
   it.each([false, true])('submits TEAM_USER through the real hook and query refresh (compact=%s)', async compact => {

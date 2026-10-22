@@ -788,7 +788,7 @@ function RoomTranslationBody({ overlay, translations, enabled, body }: {
         onOpen={() => { if (overlay.originalTextTruncated) void load().catch(() => undefined) }} loading={loading} error={error}>
         <RoomMessageMarkdown content={original} workingDir={body.workingDir} onOpenWorkspaceFile={body.onOpenWorkspaceFile}
           onOpenPreviewUrl={body.onOpenPreviewUrl} onOpenVisualization={body.onOpenVisualization} downloadSessionId={body.downloadSessionId} />
-        <TranslationState state={overlay.state} enabled={enabled} onRetry={() => translations.retry(overlay)} />
+        <TranslationState state={overlay.state} errorCode={overlay.errorCode} enabled={enabled} onRetry={() => translations.retry(overlay)} />
       </TranslationComparison>
     </div>}
   </div>
