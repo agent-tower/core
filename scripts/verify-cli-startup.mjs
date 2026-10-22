@@ -39,8 +39,16 @@ function waitForExit(child, timeoutMs = 5000) {
 
 async function stopChild(child) {
   if (!child) return;
-  child.kill();
-  try { await waitForExit(child, 15_000); }
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    if (child.connected) {
+      // Windows SIGTERM forcibly terminates Node without running its cleanup.
+      await new Promise((resolve, reject) => {
+        child.send({ type: 'agent-tower:shutdown' }, error => error ? reject(error) : resolve());
+      });
+    } else child.kill();
+    await waitForExit(child, 15_000);
+  }
   catch (error) {
     child.kill('SIGKILL');
     await waitForExit(child);
@@ -83,7 +91,7 @@ export async function verifyCliStartup(installedRoot, expectedVersion, scratchDi
       '--data-dir', dataDir,
       '--disable-access-password',
     ],
-    { cwd: scratchDir, env, stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd: scratchDir, env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] },
   );
   let serverLog = '';
   server.stdout.on('data', chunk => { serverLog += chunk.toString(); });
