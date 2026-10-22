@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyCliStartup, verifyP3Startup } from './verify-cli-startup.mjs';
+import { verifyCliStartup } from './verify-cli-startup.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const publishDir = path.join(repoRoot, 'packages/server/publish');
@@ -197,7 +197,13 @@ try {
   }
 
   const startupSummary = await verifyCliStartup(installedRoot, installedPackage.version, tempRoot);
-  const upgradeSummary = await verifyP3Startup(installedRoot, path.join(tempRoot, 'p3-upgrade'));
+  // Prisma's native engine remains loaded after $disconnect(). Run the legacy
+  // checks in a child so Windows can remove its DLL when the smoke test cleans up.
+  const upgradeSummary = execFileSync(process.execPath, [
+    path.join(repoRoot, 'scripts/verify-p3-startup-worker.mjs'),
+    installedRoot,
+    path.join(tempRoot, 'p3-upgrade'),
+  ], { cwd: consumerDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
 
   console.log([
     '[publish-smoke] status=passed',
