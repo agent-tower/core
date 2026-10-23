@@ -13,6 +13,13 @@ vi.mock('@/lib/i18n', () => ({
   useI18n: () => ({ t: (source: string, params?: Record<string, string>) => source.replace(/\{(\w+)\}/g, (match, key: string) => params?.[key] ?? match) }),
 }))
 
+vi.mock('@/hooks/use-workspaces', () => ({
+  useProjectWorkspaceBranches: () => ({
+    data: { mainBranch: 'main', branches: ['main', 'develop'], workspaces: [] },
+    isPending: false, isFetching: false, isError: false, refetch: vi.fn(),
+  }),
+}))
+
 vi.mock('@/hooks/use-attachments', () => ({
   useAttachments: () => ({
     files: [],
@@ -156,7 +163,7 @@ describe('CreateTaskInput Provider availability', () => {
       .find(button => button.textContent?.includes('Ready Codex'))!
     act(() => providerTrigger.click())
 
-    const blocked = [...container!.querySelectorAll<HTMLButtonElement>('button')]
+    const blocked = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.includes('Blocked Codex'))!
     expect(blocked.disabled).toBe(true)
     expect(blocked.textContent).not.toContain('Required permission:')
@@ -187,7 +194,7 @@ describe('CreateTaskInput Provider availability', () => {
     expect(onSubmit).not.toHaveBeenCalled()
     expect(providerTrigger.textContent).toContain('Ready Codex')
 
-    const nowReady = [...container!.querySelectorAll<HTMLButtonElement>('button')]
+    const nowReady = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.includes('Blocked Codex'))!
     act(() => nowReady.click())
     expect(submit.disabled).toBe(false)

@@ -349,7 +349,8 @@ export function ProjectKanbanPage() {
         await queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
 
         setBackgroundStarts(current => {
-          const { [taskId]: _done, ...rest } = current
+          const rest = { ...current }
+          delete rest[taskId]
           return rest
         })
       } catch (error) {
@@ -367,7 +368,8 @@ export function ProjectKanbanPage() {
 
   const handleAutoStartRecovered = useCallback((taskId: string) => {
     setBackgroundStarts(current => {
-      const { [taskId]: _recovered, ...rest } = current
+      const rest = { ...current }
+      delete rest[taskId]
       return rest
     })
     queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(taskId) })
@@ -382,7 +384,8 @@ export function ProjectKanbanPage() {
           setSelectedTaskId(null)
         }
         setBackgroundStarts(current => {
-          const { [taskId]: _removed, ...rest } = current
+          const rest = { ...current }
+          delete rest[taskId]
           return rest
         })
         setOptimisticCreatedTasks(current => current.filter(task => task.id !== taskId))
@@ -484,8 +487,9 @@ export function ProjectKanbanPage() {
     attachmentLinks: string
     attachmentIds: string[]
     priority: number
+    baseBranch?: string | null
   }) => {
-    const { title, description, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks, priority } = data
+    const { title, description, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks, priority, baseBranch } = data
     const fullDescription = [description, attachmentLinks].filter(Boolean).join('\n\n')
     let createdTask: Task | null = null
 
@@ -495,6 +499,7 @@ export function ProjectKanbanPage() {
         title,
         description: fullDescription || undefined,
         priority,
+        baseBranch,
       })
       createdTask = created
 
@@ -556,6 +561,7 @@ export function ProjectKanbanPage() {
       name: p.name,
       color: uiProjects.find(u => u.id === p.id)?.color,
       repoPath: p.repoPath,
+      mainBranch: p.mainBranch,
       isGitRepo: p.isGitRepo,
       worktreeReady: p.worktreeReady,
       reason: p.reason,

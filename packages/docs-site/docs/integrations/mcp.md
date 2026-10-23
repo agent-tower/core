@@ -94,10 +94,18 @@ pnpm --filter @agent-tower/server dev
 | Tool | 说明 |
 | --- | --- |
 | `list_tasks` | 列出某个项目下的任务，可按状态过滤 |
-| `create_task` | 在项目下创建任务 |
+| `create_task` | 在项目下创建任务，可通过 `base_branch` 指定本地基础分支 |
 | `get_task` | 获取任务详情 |
 | `update_task` | 更新任务标题、描述或状态 |
 | `delete_task` | 删除任务 |
+
+`create_task` 的可选参数 `base_branch` 使用本地分支名称，例如 `develop`。省略时保存项目当前默认基础分支；`null` 表示本地目录任务不选择分支。非 Git 或尚无提交的项目省略时保存为空。远程引用、标签和提交表达式不可用。
+
+```json
+{ "project_id": "项目 ID", "title": "开发功能", "base_branch": "develop" }
+```
+
+任务详情返回 `baseBranch`。稍后调用 `create_workspace` 或启动 TeamRun 时，新建根工作区使用保存的分支，并将它用于差异比较、rebase 和合并；团队成员工作区仍从团队主工作区分支创建。省略参数的旧调用方式仍然可用。
 
 ### Providers
 

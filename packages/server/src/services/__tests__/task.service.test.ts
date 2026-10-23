@@ -151,6 +151,53 @@ describe('TaskService', () => {
     expect(task.title).toBe('Ship TeamRun startup');
   });
 
+  it('saves explicit and default local bases before a later project default change', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'base-branch-'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repoPath, stdio: 'pipe' });
+    git('init', '-b', 'main');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'initial');
+    git('branch', 'develop');
+    const project = await prisma.project.create({ data: { name: 'Bases', repoPath, mainBranch: 'main' } });
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const overridden = await service.create(project.id, { title: 'Override', baseBranch: ' develop ' });
+    const inherited = await service.create(project.id, { title: 'Default' });
+    const local = await service.create(project.id, { title: 'Main directory', baseBranch: null });
+
+    expect(overridden.baseBranch).toBe('develop');
+    expect(inherited.baseBranch).toBe('main');
+    expect(local.baseBranch).toBeNull();
+    expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).mainBranch).toBe('main');
+    await prisma.project.update({ where: { id: project.id }, data: { mainBranch: 'develop' } });
+    expect((await service.findById(inherited.id)).baseBranch).toBe('main');
+    expect((await service.findById(overridden.id)).baseBranch).toBe('develop');
+    expect((await service.create(project.id, { title: 'New default' })).baseBranch).toBe('develop');
+  });
+
+  it('rejects missing, remote, tag and revision bases without creating a task', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'invalid-base-'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repoPath, stdio: 'pipe' });
+    git('init', '-b', 'main');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'initial');
+    git('tag', 'v1');
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+    const project = await prisma.project.create({ data: { name: 'Invalid bases', repoPath } });
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    for (const baseBranch of ['', 'missing', 'origin/main', 'v1', 'main~1', '../escape']) {
+      await expect(service.create(project.id, { title: 'Invalid base', baseBranch })).rejects.toMatchObject({ code: 'INVALID_BASE_BRANCH' });
+    }
+    expect(await prisma.task.count({ where: { projectId: project.id } })).toBe(0);
+  });
+
+  it('allows local and uncommitted projects without a base branch', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'no-base-'));
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const project = await prisma.project.create({ data: { name: 'Local', repoPath } });
+    expect((await service.create(project.id, { title: 'No Git' })).baseBranch).toBeNull();
+    await expect(service.create(project.id, { title: 'Invalid', baseBranch: 'main' })).rejects.toMatchObject({ code: 'INVALID_BASE_BRANCH' });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repoPath, stdio: 'pipe' });
+    expect((await service.create(project.id, { title: 'Unborn Git' })).baseBranch).toBeNull();
+  });
+
   it('returns project Git metadata when creating a task', async () => {
     const service = new TaskService(new EventBus(), {} as SessionManager);
     const projectPath = fs.mkdtempSync(path.join(testDir, 'local-task-create-project-'));

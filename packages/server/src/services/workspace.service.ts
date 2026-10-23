@@ -1405,16 +1405,18 @@ export class WorkspaceService {
       // 生成分支名：用户指定 or 自动生成 at/{shortId}
       const branch = branchFromOptions(workspace.id, options);
 
-      // Root workspaces snapshot the project default; member workspaces supply
-      // their parent branch explicitly. Never derive the default from HEAD.
-      const baseBranch = options.startPoint || task.project.mainBranch;
+      // New root workspaces inherit the task's saved choice. Legacy tasks fall
+      // back to the project; members keep their explicit parent start point.
+      const baseBranch = options.startPoint || task.baseBranch || task.project.mainBranch;
       if (!options.startPoint) {
         try {
           await execGit(task.project.repoPath, ['check-ref-format', `refs/heads/${baseBranch}`]);
           await execGit(task.project.repoPath, ['show-ref', '--verify', '--quiet', `refs/heads/${baseBranch}`]);
         } catch {
           throw new ServiceError(
-            'The default base branch is unavailable. Choose an existing local branch in project settings.',
+            task.baseBranch
+              ? 'The task base branch is unavailable. Restore that local branch or create a new task with an existing local branch.'
+              : 'The default base branch is unavailable. Choose an existing local branch in project settings.',
             'INVALID_BASE_BRANCH',
             400,
           );

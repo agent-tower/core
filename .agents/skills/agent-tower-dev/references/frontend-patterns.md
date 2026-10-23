@@ -53,6 +53,8 @@ App 管理单例 `lib/socket/manager.ts` 的连接生命周期；hook 可调用 
 
 ## 组件与验证
 
+创建任务的配置由 `TaskCreationOptions` 和 `TaskOptionsToolbar` 组合。左侧根据实际容器和触发器宽度将溢出项放入 Popover；测量区必须 inert/隐藏且只渲染无查询的触发器，不复制完整控件或菜单。单人/团队 Segmented 固定在右侧，不参与收纳。基础分支由表单草稿持有，切换项目或创建成功重置，失败保留；本地模式提交 null，Git 工作树/Team 提交所选分支。浏览器验收 fixture 是 `components/task/__tests__/create-task-options.fixture.html`，使用真实组件和内存 API；需检查窄容器下不横向溢出、固定模式控件、嵌套分支菜单及草稿提交。
+
 沿用 `@/` alias、邻近无分号格式、lucide-react 和领域组件。新增业务控件优先从 `@/design-system` 统一出口组合，遵循 `design-system/README.md` 的令牌与浮层规则；现有 `components/ui` 仍有调用，不能将原生控件或旧封装误认为设计系统组件。用户文案使用 `useI18n().t()`/`translate` 并维护 `lib/i18n/messages.ts`。桌面和移动端 detail 目前分别实现；共享交互优先复用现有组件（如 `EditableTaskTitle`），并检查两端调用。终端、Monaco、日志视图复用 virtualize/auto-fit/scroll helper，保持稳定容器尺寸。
 
 任务行渐变由 `components/task/TaskGradientText.tsx` 保留 DOM 文字并绘制可见 Canvas；`task-text-visibility.ts` 共用 IntersectionObserver，离屏或页面隐藏时卸载画布并清理动画。不要重新加入整列表的 `background-clip:text` 渐变；绘制失败时保留普通文字，减少动态效果、选中和阅读状态停止扫光。`TaskList` 的移动 ghost 通过 HTML 快照复制，必须清除画布就绪标记并回退到 DOM 文字，不能依赖 HTML 复制 Canvas 像素。浏览器验证 fixture 为 `components/task/__tests__/task-gradient.fixture.html`。

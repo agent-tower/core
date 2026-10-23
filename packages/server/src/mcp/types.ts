@@ -21,6 +21,8 @@ export const CreateTaskInput = z.object({
   project_id: z.string().describe('The ID of the project to create the task in'),
   title: z.string().min(1).describe('The title of the task'),
   description: z.string().optional().describe('Optional description of the task'),
+  base_branch: z.string().trim().min(1).nullable().optional()
+    .describe('Existing local base branch for new task worktrees, including the TeamRun main workspace. Also sets the diff/rebase/merge base. Omit to save the current project default; null skips selection for main-directory tasks. Remote refs are not supported.'),
   priority: z.number().int().min(-1).max(2).optional()
     .describe('Task priority: -1 low, 0 normal, 1 high, 2 urgent'),
 });

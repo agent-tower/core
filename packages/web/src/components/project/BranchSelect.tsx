@@ -11,12 +11,15 @@ interface BranchSelectProps {
   branches: string[]
   disabled?: boolean
   isRefreshing?: boolean
+  isLoading?: boolean
+  loadError?: string
+  compact?: boolean
   onChange: (branch: string) => void
   onOpen: () => void
 }
 
 /** A searchable branch list composed from the design system's field and popover controls. */
-export function BranchSelect({ id, label, value, branches, disabled, isRefreshing, onChange, onOpen }: BranchSelectProps) {
+export function BranchSelect({ id, label, value, branches, disabled, isRefreshing, isLoading, loadError, compact, onChange, onOpen }: BranchSelectProps) {
   const { t } = useI18n()
   const listId = useId()
   const listRef = useRef<HTMLDivElement>(null)
@@ -67,9 +70,12 @@ export function BranchSelect({ id, label, value, branches, disabled, isRefreshin
           aria-label={label}
           aria-haspopup="listbox"
           disabled={disabled}
-          size="lg"
+          variant={compact ? 'ghost' : undefined}
+          size={compact ? 'sm' : 'lg'}
           title={value}
-          className="w-full min-w-0 justify-between border border-input px-3 font-normal shadow-none ring-0 hover:border-ring/50 hover:bg-background focus-visible:border-ring focus-visible:ring-0 data-[state=open]:border-ring"
+          className={compact
+            ? 'h-7 min-w-0 max-w-[180px] gap-1.5 px-2 text-xs font-medium text-foreground/80 pointer-coarse:min-h-11'
+            : 'w-full min-w-0 justify-between border border-input px-3 font-normal shadow-none ring-0 hover:border-ring/50 hover:bg-background focus-visible:border-ring focus-visible:ring-0 data-[state=open]:border-ring'}
           onKeyDown={(event) => {
             if (!open && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
               event.preventDefault()
@@ -78,13 +84,13 @@ export function BranchSelect({ id, label, value, branches, disabled, isRefreshin
           }}
         >
           <GitBranch className="size-3.5 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate text-left">{value}{!available && ` (${t('Unavailable')})`}</span>
-          <ChevronDown className={cn('size-3.5 text-muted-foreground transition-transform', open && 'rotate-180')} />
+          <span className={cn('min-w-0 flex-1 truncate text-left', compact && 'max-w-[120px]')}>{value}{!compact && !available && !isLoading && ` (${t('Unavailable')})`}</span>
+          <ChevronDown className={cn('shrink-0 text-muted-foreground transition-transform', compact ? 'size-3' : 'size-3.5', open && 'rotate-180')} />
         </Button>
       </PopoverTrigger>
       <PopoverContent
         aria-label={label}
-        className="z-[70] flex max-h-[min(24rem,var(--radix-popover-content-available-height))] w-(--radix-popover-trigger-width) max-w-[calc(100vw-1rem)] flex-col overflow-hidden p-1"
+        className={cn('z-[70] flex max-h-[min(24rem,var(--radix-popover-content-available-height))] max-w-[calc(100vw-1rem)] flex-col overflow-hidden p-1', compact ? 'w-80' : 'w-(--radix-popover-trigger-width)')}
         onKeyDown={(event) => { if (event.key === 'Escape') event.stopPropagation() }}
         onEscapeKeyDown={(event) => {
           event.stopPropagation()
@@ -95,6 +101,8 @@ export function BranchSelect({ id, label, value, branches, disabled, isRefreshin
           }
         }}
       >
+        {compact && <p className="break-all px-2 py-1.5 text-xs text-muted-foreground">{label}: {value}</p>}
+        {loadError && <p role="alert" className="px-2 py-1.5 text-xs text-destructive-ink">{loadError}</p>}
         <div className="shrink-0 p-1">
           <SearchField
             aria-label={t('Search branches')}
@@ -124,11 +132,11 @@ export function BranchSelect({ id, label, value, branches, disabled, isRefreshin
               onClick={() => choose(branch)}
               className={cn(MENU_ITEM, MENU_ITEM_CHECKABLE, branch === value && 'font-medium text-foreground')}
             >
-              <span className="min-w-0 flex-1 truncate">{branch}</span>
+              <span className={cn('min-w-0 flex-1', compact ? 'break-all' : 'truncate')}>{branch}</span>
               {branch === value && <span className={MENU_INDICATOR}><Check className="size-3.5" /></span>}
             </button>
           ))}
-          {filteredBranches.length === 0 && <p className="px-2 py-3 text-xs text-muted-foreground">{t('No matching branches')}</p>}
+          {filteredBranches.length === 0 && !loadError && <p className="px-2 py-3 text-xs text-muted-foreground">{t(isLoading ? 'Loading...' : 'No matching branches')}</p>}
         </div>
         <div role="status" className="flex shrink-0 items-center gap-1.5 border-t border-border/60 px-2 pt-2 pb-1 text-xs tabular-nums text-muted-foreground">
           {isRefreshing && <Loader2 className="size-3 animate-spin motion-reduce:[animation-duration:2.4s]" aria-label={t('Refreshing branches')} />}

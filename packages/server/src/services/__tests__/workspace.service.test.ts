@@ -433,6 +433,43 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(ensureWorktreeExistsMock).not.toHaveBeenCalled();
   });
 
+  it('uses the saved task base for delayed root creation and keeps the legacy fallback', async () => {
+    const { project, task } = await createTask('saved task base');
+    await prisma.task.update({ where: { id: task.id }, data: { baseBranch: 'develop' } });
+    await prisma.project.update({ where: { id: project.id }, data: { mainBranch: 'release' } });
+    const workspace = await service.create(task.id);
+    expect(workspace.baseBranch).toBe('develop');
+    expect(createWorktreeMock).toHaveBeenCalledWith(workspace.branchName, 'refs/heads/develop');
+
+    const legacyTask = await prisma.task.create({ data: { title: 'Legacy', projectId: project.id } });
+    const legacy = await service.create(legacyTask.id);
+    expect(legacy.baseBranch).toBe('release');
+    expect(createWorktreeMock).toHaveBeenCalledWith(legacy.branchName, 'refs/heads/release');
+  });
+
+  it('applies the task base to the team main workspace while children branch from the main workspace', async () => {
+    const { task, teamRun, member } = await createTeamRunWithMember();
+    await prisma.task.update({ where: { id: task.id }, data: { baseBranch: 'develop' } });
+    const main = await service.getOrCreateMainWorkspace(teamRun.id);
+    const child = await service.getOrCreateDedicatedWorkspace(teamRun.id, member.id);
+    expect(main.baseBranch).toBe('develop');
+    expect(createWorktreeMock).toHaveBeenCalledWith(main.branchName, 'refs/heads/develop');
+    expect(child.baseBranch).toBe(main.branchName);
+    expect(createWorktreeMock).toHaveBeenCalledWith(child.branchName, main.branchName);
+  });
+
+  it('rejects a task base deleted before workspace creation and removes the placeholder', async () => {
+    const { task } = await createTask('deleted task base');
+    await prisma.task.update({ where: { id: task.id }, data: { baseBranch: 'deleted' } });
+    execGitMock.mockImplementation(async (_path: string, args: string[]) => {
+      if (args[0] === 'show-ref' && args.includes('refs/heads/deleted')) throw new Error('missing');
+      return '';
+    });
+    await expect(service.create(task.id)).rejects.toMatchObject({ code: 'INVALID_BASE_BRANCH' });
+    expect(createWorktreeMock).not.toHaveBeenCalled();
+    expect(await prisma.workspace.count({ where: { taskId: task.id } })).toBe(0);
+  });
+
   it('omits session prompt and logSnapshot from workspace task lists', async () => {
     const { task } = await createTask('workspace session summary task');
     const workspace = await prisma.workspace.create({

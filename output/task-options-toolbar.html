@@ -1,0 +1,265 @@
+<div id="at-options-preview" aria-label="任务配置栏的整体溢出处理">
+  <div class="viz-dotted-background at-preview-stage">
+    <div class="at-app" aria-label="自适应任务配置栏">
+      <div class="at-composer">
+        <div class="at-prompt">描述这个任务…</div>
+        <div class="at-actions"><i data-lucide="paperclip" aria-hidden="true"></i><span>↵ 创建</span><span class="at-send"><i data-lucide="arrow-up" aria-hidden="true"></i></span></div>
+      </div>
+      <div class="at-toolbar" aria-label="任务选项">
+        <div class="at-options" aria-label="可收纳的任务配置">
+        <button type="button" class="at-chip cursor-interaction" data-option="project"><i data-lucide="folder" aria-hidden="true"></i><span class="at-value">agent-tower</span><i class="at-chevron" data-lucide="chevron-down" aria-hidden="true"></i></button>
+        <button type="button" class="at-chip cursor-interaction" data-option="provider"><i data-lucide="bot" aria-hidden="true"></i><span class="at-value">Codex 自建 GPT-6</span><i class="at-chevron" data-lucide="chevron-down" aria-hidden="true"></i></button>
+        <button type="button" class="at-chip cursor-interaction" data-option="mode"><i data-lucide="git-fork" aria-hidden="true"></i><span class="at-value">工作树模式</span><i class="at-chevron" data-lucide="chevron-down" aria-hidden="true"></i></button>
+        <button type="button" class="at-chip at-priority cursor-interaction" data-option="priority"><i data-lucide="minus" aria-hidden="true"></i><span class="at-value">普通</span><i class="at-chevron" data-lucide="chevron-down" aria-hidden="true"></i></button>
+        <button type="button" class="at-chip at-branch cursor-interaction" data-option="branch"><i data-lucide="git-branch" aria-hidden="true"></i><span class="at-value">main</span><i class="at-chevron" data-lucide="chevron-down" aria-hidden="true"></i></button>
+        <button type="button" class="at-more cursor-interaction" aria-haspopup="dialog" aria-expanded="false" hidden><i data-lucide="ellipsis" aria-hidden="true"></i><span>更多</span><span class="at-changed" aria-hidden="true"></span></button>
+        </div>
+        <div class="at-team-toggle" role="group" aria-label="协作模式" data-team="false">
+          <span class="at-team-indicator" aria-hidden="true"></span>
+          <button type="button" class="at-team-button cursor-interaction" data-team-choice="false" aria-label="单人模式" aria-pressed="true" data-tooltip="单人模式"><i data-lucide="user-round" aria-hidden="true"></i></button>
+          <button type="button" class="at-team-button cursor-interaction" data-team-choice="true" aria-label="多人模式" aria-pressed="false" data-tooltip="多人模式"><i data-lucide="users-round" aria-hidden="true"></i></button>
+        </div>
+      </div>
+      <div class="at-panel" role="dialog" aria-label="任务配置" hidden>
+        <div class="at-panel-heading"><span>更多设置</span><button type="button" class="at-close cursor-interaction" aria-label="关闭配置"><i data-lucide="x" aria-hidden="true"></i></button></div>
+        <div class="at-fields"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<style>
+  #at-options-preview { --at-preview-width:720px; }
+  #at-options-preview .at-preview-stage { padding:18px 10px; min-height:240px; display:flex; align-items:flex-start; justify-content:center; }
+  #at-options-preview .at-app { --at-bg:light-dark(#fff,#1b1d20); --at-fg:light-dark(#474a52,#e6e7eb); --at-secondary:light-dark(#737a86,#adb2bd); --at-border:light-dark(#e3e5e9,#373b44); --at-hover:light-dark(#f3f4f7,#2a2e35); --at-solid:light-dark(#1c1f26,#eceef2); --at-solid-fg:light-dark(#fff,#191c22); width:min(100%,var(--at-preview-width)); min-width:0; padding:12px; box-sizing:border-box; position:relative; background:var(--at-bg); color:var(--at-fg); border:1px solid var(--at-border); border-radius:16px; font:400 12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  #at-options-preview .at-app * { box-sizing:border-box; }
+  #at-options-preview .at-app [hidden] { display:none !important; }
+  #at-options-preview .at-app button, #at-options-preview .at-app select { font:inherit; }
+  #at-options-preview .at-app svg { width:14px; height:14px; flex-shrink:0; color:var(--at-secondary); }
+  #at-options-preview .at-composer { padding:14px; border:1px solid var(--at-border); border-radius:12px; box-shadow:0 1px 2px light-dark(#0000000c,#00000030); }
+  #at-options-preview .at-prompt { margin-bottom:26px; font-size:14px; color:var(--at-secondary); }
+  #at-options-preview .at-actions { display:flex; align-items:center; gap:10px; }
+  #at-options-preview .at-actions > svg { width:18px; height:18px; }
+  #at-options-preview .at-actions > span:first-of-type { margin-left:auto; color:var(--at-secondary); }
+  #at-options-preview .at-send { display:grid; place-items:center; width:32px; height:32px; border-radius:10px; background:var(--at-solid); }
+  #at-options-preview .at-send svg { width:20px; height:20px; color:var(--at-solid-fg); }
+  #at-options-preview .at-toolbar { display:flex; align-items:center; gap:12px; margin-top:12px; min-width:0; }
+  #at-options-preview .at-options { display:flex; flex:1 1 0; align-items:center; gap:6px; min-width:0; }
+  #at-options-preview .at-chip, #at-options-preview .at-more { display:inline-flex; flex:0 0 auto; align-items:center; gap:5px; height:30px; padding:0 6px; border:0; border-radius:7px; background:transparent; color:var(--at-fg); white-space:nowrap; }
+  #at-options-preview .at-chip:hover, #at-options-preview .at-more:hover, #at-options-preview .at-chip[aria-expanded="true"], #at-options-preview .at-more[aria-expanded="true"] { background:var(--at-hover); }
+  #at-options-preview .at-value { min-width:0; max-width:128px; overflow:hidden; text-overflow:ellipsis; }
+  #at-options-preview .at-branch .at-value { max-width:120px; }
+  #at-options-preview .at-chip .at-chevron { width:10px; height:10px; }
+  #at-options-preview .at-priority { background:var(--at-hover); color:var(--at-secondary); }
+  #at-options-preview .at-chip[data-option="project"] { min-width:0; }
+  #at-options-preview .at-changed { width:5px; height:5px; background:var(--at-fg); border-radius:50%; visibility:hidden; }
+  #at-options-preview .at-more[data-changed="true"] .at-changed { visibility:visible; }
+  #at-options-preview .at-team-toggle { position:relative; display:inline-grid; grid-template-columns:repeat(2,auto); flex:0 0 auto; gap:2px; padding:3px; border-radius:9px; background:var(--at-hover); }
+  #at-options-preview .at-team-indicator { position:absolute; left:3px; top:3px; bottom:3px; width:calc((100% - 8px)/2); border-radius:6px; background:var(--at-bg); box-shadow:0 1px 3px light-dark(#17192326,#00000060); transition:transform 150ms ease; pointer-events:none; }
+  #at-options-preview .at-team-toggle[data-team="true"] .at-team-indicator { transform:translateX(calc(100% + 2px)); }
+  #at-options-preview .at-team-button { position:relative; z-index:1; display:grid; place-items:center; width:30px; height:26px; padding:0; border:0; border-radius:6px; background:transparent; }
+  #at-options-preview .at-team-button svg { width:16px; height:16px; }
+  #at-options-preview .at-team-button[aria-pressed="true"] svg { color:var(--at-fg); }
+  #at-options-preview .at-team-button:hover svg { color:var(--at-fg); }
+  #at-options-preview .at-panel { position:absolute; top:calc(100% - 2px); right:12px; z-index:3; width:min(340px,calc(100% - 24px)); padding:12px; border:1px solid var(--at-border); border-radius:12px; background:var(--at-bg); box-shadow:0 8px 28px light-dark(#17192318,#00000070); }
+  #at-options-preview .at-panel-heading { display:flex; align-items:center; justify-content:space-between; font-weight:500; margin-bottom:6px; }
+  #at-options-preview .at-close { display:grid; place-items:center; width:28px; height:28px; background:transparent; border:0; border-radius:6px; }
+  #at-options-preview .at-close:hover { background:var(--at-hover); }
+  #at-options-preview .at-field { display:flex; align-items:center; gap:10px; padding:10px 0; }
+  #at-options-preview .at-field + .at-field { border-top:1px solid var(--at-border); }
+  #at-options-preview .at-field-name { flex:0 0 62px; color:var(--at-secondary); }
+  #at-options-preview .at-field select { width:100%; min-width:0; height:34px; padding:0 7px; color:var(--at-fg); background:var(--at-bg); border:1px solid var(--at-border); border-radius:7px; }
+  @media (max-width:450px) { #at-options-preview .at-preview-stage { padding:12px 4px; } }
+  @media (pointer:coarse) {
+    #at-options-preview .at-chip, #at-options-preview .at-more, #at-options-preview .at-close { min-height:44px; }
+    #at-options-preview .at-close { min-width:44px; }
+    #at-options-preview .at-field { min-height:54px; }
+    #at-options-preview .at-field select { height:44px; font-size:16px; }
+    #at-options-preview .at-team-button { width:44px; height:44px; }
+    #at-options-preview .at-preview-stage { min-height:270px; }
+  }
+  @media (prefers-reduced-motion:reduce) { #at-options-preview .at-team-indicator { transition:none; } }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('at-options-preview');
+  const app = root.querySelector('.at-app');
+  const stage = root.querySelector('.at-preview-stage');
+  const bar = root.querySelector('.at-options');
+  const teamToggle = root.querySelector('.at-team-toggle');
+  const teamButtons = Array.from(root.querySelectorAll('[data-team-choice]'));
+  const chips = Array.from(root.querySelectorAll('[data-option]'));
+  const more = root.querySelector('.at-more');
+  const panel = root.querySelector('.at-panel');
+  const fields = root.querySelector('.at-fields');
+  const definitions = {
+    project:{ label:'项目', values:['agent-tower','docs-site'] },
+    provider:{ label:'Agent', values:['Codex 自建 GPT-6','Gemini CLI','Cursor Agent'] },
+    mode:{ label:'工作模式', values:['工作树模式','本地模式'] },
+    priority:{ label:'优先级', values:['低','普通','高','紧急'] },
+    branch:{ label:'基础分支', values:['main','develop','feature/task-base-branch-selection','release/2026-q4/desktop-workspace'] },
+  };
+  const defaults = { project:'agent-tower',provider:'Codex 自建 GPT-6',mode:'工作树模式',priority:'普通',branch:'main',team:false };
+  const state = { ...defaults, width:720 };
+  let hiddenKeys = [];
+  let openedKey = null;
+  let previousFocus = null;
+  let scheduled = 0;
+  function fitStage() {
+    stage.style.minHeight = Math.max(240,app.offsetHeight + (panel.hidden ? 0 : panel.offsetHeight) + 36) + 'px';
+  }
+  function save() {
+    const values = Object.fromEntries(Object.keys(definitions).map(key => [key,state[key]]));
+    values.team = state.team;
+    const result = window.openai?.setWidgetState?.({ modelContent:values,privateContent:{ width:state.width } });
+    result?.catch(() => {});
+  }
+  function closePanel(restoreFocus = false) {
+    panel.hidden = true;
+    openedKey = null;
+    more.setAttribute('aria-expanded','false');
+    chips.forEach(chip => chip.setAttribute('aria-expanded','false'));
+    fitStage();
+    if (restoreFocus) {
+      const target = previousFocus && !previousFocus.hidden ? previousFocus : !more.hidden ? more : chips[0];
+      target.focus();
+    }
+  }
+  function renderFields() {
+    if (!openedKey) return;
+    const keys = openedKey === 'more' ? hiddenKeys : [openedKey];
+    if (!keys.length) { closePanel(); return; }
+    const signature = keys.join(',');
+    panel.querySelector('.at-panel-heading > span').textContent = openedKey === 'more' ? '更多设置' : definitions[openedKey].label;
+    if (fields.dataset.signature !== signature) {
+      fields.dataset.signature = signature;
+      fields.replaceChildren();
+      for (const key of keys) {
+        const label = document.createElement('label');
+        label.className = 'at-field';
+        const name = document.createElement('span');
+        name.className = 'at-field-name';
+        name.textContent = definitions[key].label;
+        label.append(name);
+        const input = document.createElement('select');
+        for (const value of definitions[key].values) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = value === 'main' && key === 'branch' ? 'main · 项目默认' : value;
+          input.append(option);
+        }
+        input.dataset.field = key;
+        input.setAttribute('aria-label',definitions[key].label);
+        input.classList.add('cursor-interaction');
+        input.addEventListener('change',() => {
+          state[key] = input.value;
+          if (key === 'mode' && input.value === '本地模式') state.team = false;
+          render();
+          save();
+        });
+        label.append(input);
+        fields.append(label);
+      }
+    }
+    for (const input of fields.querySelectorAll('[data-field]')) {
+      const key = input.dataset.field;
+      input.value = state[key];
+      input.dataset.tooltip = state[key];
+    }
+  }
+  function layout() {
+    scheduled = 0;
+    const activeChips = chips.filter(chip => state.mode === '工作树模式' || chip.dataset.option !== 'branch');
+    chips[0].style.maxWidth = '';
+    chips.forEach(chip => { chip.hidden = !activeChips.includes(chip); });
+    more.hidden = true;
+    const gap = parseFloat(getComputedStyle(bar).columnGap) || 0;
+    const widths = activeChips.map(chip => chip.getBoundingClientRect().width);
+    let total = widths.reduce((sum,width) => sum + width,0) + gap * Math.max(0,activeChips.length - 1);
+    const available = bar.clientWidth;
+    hiddenKeys = [];
+    if (total > available) {
+      more.hidden = false;
+      total += more.getBoundingClientRect().width + gap;
+      for (let i = activeChips.length - 1; i > 0 && total > available; i--) {
+        total -= widths[i] + gap;
+        activeChips[i].hidden = true;
+        hiddenKeys.unshift(activeChips[i].dataset.option);
+      }
+      if (total > available) {
+        chips[0].style.maxWidth = Math.max(36,available - more.getBoundingClientRect().width - gap) + 'px';
+      }
+    }
+    const hasChanges = hiddenKeys.some(key => state[key] !== defaults[key]);
+    more.dataset.changed = String(hasChanges);
+    more.setAttribute('aria-label','更多设置，包含' + hiddenKeys.map(key => definitions[key].label).join('、') + (hasChanges ? '，有已修改配置' : ''));
+    if (openedKey === 'more') renderFields();
+    if (openedKey && openedKey !== 'more' && !activeChips.some(chip => chip.dataset.option === openedKey)) closePanel();
+    fitStage();
+  }
+  function render() {
+    root.style.setProperty('--at-preview-width',state.width + 'px');
+    teamToggle.dataset.team = String(state.team);
+    teamButtons.forEach(button => button.setAttribute('aria-pressed',String(button.dataset.teamChoice === String(state.team))));
+    for (const chip of chips) {
+      const key = chip.dataset.option;
+      chip.querySelector('.at-value').textContent = state[key];
+      const value = state[key];
+      chip.setAttribute('aria-label',definitions[key].label + '：' + value);
+      chip.setAttribute('aria-haspopup','dialog');
+      chip.dataset.tooltip = definitions[key].label + '：' + value;
+    }
+    layout();
+    renderFields();
+  }
+  function openPanel(key,trigger) {
+    if (openedKey === key) { closePanel(true); return; }
+    closePanel();
+    openedKey = key;
+    previousFocus = trigger;
+    panel.hidden = false;
+    trigger.setAttribute('aria-expanded','true');
+    renderFields();
+    fitStage();
+    fields.querySelector('select,input')?.focus();
+  }
+  chips.forEach(chip => chip.addEventListener('click',() => openPanel(chip.dataset.option,chip)));
+  teamButtons.forEach(button => button.addEventListener('click',() => {
+    state.team = button.dataset.teamChoice === 'true';
+    if (state.team) state.mode = '工作树模式';
+    closePanel();
+    render();
+    save();
+  }));
+  more.addEventListener('click',() => openPanel('more',more));
+  panel.querySelector('.at-close').addEventListener('click',() => closePanel(true));
+  root.addEventListener('keydown',event => {
+    if (event.key === 'Escape' && !panel.hidden) { event.preventDefault(); closePanel(true); }
+  });
+  document.addEventListener('pointerdown',event => {
+    if (!panel.contains(event.target) && !bar.contains(event.target)) closePanel();
+  });
+  function restore(snapshot) {
+    for (const [key,definition] of Object.entries(definitions)) {
+      const value = snapshot?.modelContent?.[key];
+      if (definition.values.includes(value)) state[key] = value;
+    }
+    if (typeof snapshot?.modelContent?.team === 'boolean') state.team = snapshot.modelContent.team;
+    if (state.team) state.mode = '工作树模式';
+    if (typeof snapshot?.privateContent?.width === 'number') state.width = Math.min(1000,Math.max(300,snapshot.privateContent.width));
+    render();
+  }
+  globalThis.lucide?.createIcons({ attrs:{width:14,height:14} });
+  restore(window.openai?.widgetState);
+  window.addEventListener('openai:set_globals',event => {
+    if (event.detail?.globals?.widgetState) restore(event.detail.globals.widgetState);
+  });
+  new ResizeObserver(() => {
+    if (!scheduled) scheduled = requestAnimationFrame(layout);
+  }).observe(bar);
+  if (globalThis.Tweak) {
+    const tweak = new Tweak({ container:app,onChange:() => { render(); save(); } });
+    tweak.addSlider(state,'width',{ label:'整条输入栏宽度',min:300,max:1000,step:10,unit:'px' });
+    tweak.addSelect(state,'branch',{ label:'分支名称',options:definitions.branch.values });
+  }
+})();
+</script>

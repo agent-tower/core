@@ -14,6 +14,7 @@ import {
 const createTaskSchema = z.object({
   title: z.string().min(1, 'title is required').refine((value) => value.trim().length > 0, 'title is required'),
   description: z.string().optional(),
+  baseBranch: z.string().trim().min(1).nullable().optional(),
   priority: z.nativeEnum(TaskPriority).default(TaskPriority.NORMAL),
 });
 

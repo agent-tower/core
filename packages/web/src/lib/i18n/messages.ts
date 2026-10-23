@@ -2,6 +2,14 @@ import type { AppLocale } from '@agent-tower/shared'
 
 export const messages: Record<AppLocale, Record<string, string>> = {
   'zh-CN': {
+    'More task options': '更多任务选项',
+    'More options': '更多',
+    'More task options (modified)': '更多任务选项（有修改）',
+    'Project default': '项目默认',
+    'Workspace mode': '工作模式',
+    'Task mode': '任务模式',
+    'Solo mode': '单人模式',
+    'Choose solo or team mode': '选择单人或团队模式',
     'Search languages': '搜索语言',
     'Search language or code…': '搜索语言名称或代码…',
     'Saved custom language': '已保存的自定义语言',
@@ -14,7 +22,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '{count} local branches': '共 {count} 个本地分支',
     '{shown} of {total} local branches': '{shown} / {total} 个本地分支',
     'Default base branch': '默认基础分支',
-    'New task and TeamRun main workspaces start from this branch. Existing workspaces keep their base branch.': '新建任务工作区和 TeamRun 主工作区将从此分支创建，已有工作区保留各自的基础分支。',
+    'New tasks default to this branch. Saved task and workspace bases remain unchanged.': '新任务默认使用此分支，任务和工作区已保存的基础分支保持不变。',
     'Could not load branches. Refresh to try again.': '无法加载分支，请刷新重试。',
     'Default base branch saved': '默认基础分支已保存',
     'Save default base branch': '保存默认基础分支',

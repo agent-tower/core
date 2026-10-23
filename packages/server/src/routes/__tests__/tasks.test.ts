@@ -125,6 +125,29 @@ describe('task routes', () => {
     }
   });
 
+  it('accepts and returns the task base branch through creation and detail endpoints', async () => {
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'task-base-'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repoPath, stdio: 'pipe' });
+    git('init', '-b', 'main');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'initial');
+    git('branch', 'develop');
+    const project = await prisma.project.create({ data: { name: 'Task base route', repoPath } });
+    const app = await buildTestApp();
+    try {
+      const created = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks`, payload: { title: 'From develop', baseBranch: 'develop' } });
+      expect(created.statusCode).toBe(201);
+      expect(created.json().baseBranch).toBe('develop');
+      const detail = await app.inject({ method: 'GET', url: `/api/tasks/${created.json().id}` });
+      expect(detail.json().baseBranch).toBe('develop');
+      const missing = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks`, payload: { title: 'Missing', baseBranch: 'missing' } });
+      expect(missing.statusCode).toBe(400);
+      expect(missing.json().code).toBe('INVALID_BASE_BRANCH');
+      expect(await prisma.task.count({ where: { projectId: project.id } })).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('returns one compact board response across active projects', async () => {
     const firstProject = await prisma.project.create({
       data: { name: 'Board project one', repoPath: testDir },

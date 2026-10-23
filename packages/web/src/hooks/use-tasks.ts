@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
-import type { Task, TaskBoardResponse, TaskBody, TaskStatus } from '@agent-tower/shared'
+import type { CreateTaskInput, Task, TaskBoardResponse, TaskBody, TaskStatus } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
 
@@ -33,12 +33,6 @@ interface ListTasksParams {
 
 interface TaskBoardParams extends ListTasksParams {
   projectId?: string
-}
-
-interface CreateTaskInput {
-  title: string
-  description?: string
-  priority?: number
 }
 
 interface UpdateTaskInput {

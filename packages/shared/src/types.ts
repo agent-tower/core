@@ -496,7 +496,7 @@ export interface Project {
   reason?: ProjectGitCapabilityReason
   /** Last time Git capability was verified with the Git CLI. */
   gitCapabilityCheckedAt?: string | null
-  /** 新建根 worktree 的默认基础分支；已有 workspace 保留自己的 baseBranch。 */
+  /** 新任务的默认基础分支，旧任务未记录时也用此值；任务和工作区保存的选择不随它变化。 */
   mainBranch: string
   /** 逗号分隔的 glob/路径列表，worktree 创建后自动复制 */
   copyFiles?: string | null
@@ -524,11 +524,21 @@ export interface ProjectGitCapability {
   reason: ProjectGitCapabilityReason
 }
 
+/** 创建任务；省略基础分支时快照项目默认值，null 用于本地模式。 */
+export interface CreateTaskInput {
+  title: string
+  description?: string
+  priority?: number
+  baseBranch?: string | null
+}
+
 /** 任务 */
 export interface Task {
   id: string
   projectId: string
   title: string
+  /** 创建时选定的本地基础分支，供新建根工作区使用；历史任务可为空。 */
+  baseBranch?: string | null
   /** Short, display-safe title for list/header hot paths. */
   titlePreview?: string
   description?: string

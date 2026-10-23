@@ -39,6 +39,7 @@ model Task {
   id          String      @id @default(uuid())
   title       String
   description String?
+  baseBranch  String?
   status      String      @default("TODO")
   priority    Int         @default(0)
   position    Int         @default(0)

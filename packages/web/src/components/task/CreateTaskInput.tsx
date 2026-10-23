@@ -1,42 +1,20 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { ArrowUp, Paperclip, Loader2, ChevronDown, Check, GitBranch, Folder, Users, Info, ShieldQuestionMark, ShieldCheck, ShieldOff } from 'lucide-react'
-import { TaskPriority, WorkspaceKind, type AgentType, type ExecutionPermissionMode, type ProjectGitCapability, type TeamRunMode } from '@agent-tower/shared'
+import { ArrowUp, Paperclip, Loader2 } from 'lucide-react'
+import { TaskPriority, WorkspaceKind, type ProjectGitCapability, type TeamRunMode } from '@agent-tower/shared'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useAttachments } from '@/hooks/use-attachments'
 import { useRefreshProjectGitCapability } from '@/hooks/use-projects'
 import { AttachmentPreview } from '@/components/ui/AttachmentPreview'
 import { TeamRunCreateForm } from '@/components/team/TeamRunCreateForm'
-import { AgentLogo } from '@/components/agent/AgentLogo'
-import { EXECUTION_PERMISSION_LABELS } from '@/components/provider/ExecutionPermissionSelector'
-import { Tooltip } from '@/components/ui/tooltip'
 import { SlashCommandPopover } from './SlashCommandPopover'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
-import { TaskPrioritySelect } from './TaskPrioritySelect'
+import { TaskCreationOptions, type TaskProjectOption as ProjectOption, type TaskProviderOption as ProviderOption } from './TaskCreationOptions'
 
 type CreateStep = 'idle' | 'creating-task' | 'creating-teamrun' | 'creating-workspace' | 'creating-session' | 'starting-session'
 type CreateTaskMode = 'SOLO' | 'TEAM'
 type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 type CreateInputVariant = 'task' | 'conversation'
-
-interface ProjectOption {
-  id: string
-  name: string
-  color?: string
-  repoPath?: string
-  isGitRepo?: boolean
-  worktreeReady?: boolean
-  reason?: string
-}
-
-interface ProviderOption {
-  id: string
-  name: string
-  agentType?: AgentType | string | null
-  available: boolean
-  permissionMode?: ExecutionPermissionMode
-  reason?: string
-}
 
 export interface CreateTaskInputProps {
   variant?: CreateInputVariant
@@ -56,6 +34,7 @@ export interface CreateTaskInputProps {
     attachmentLinks: string
     attachmentIds: string[]
     priority: TaskPriority
+    baseBranch?: string | null
   }) => Promise<void>
   defaultProjectId?: string
   defaultProviderId?: string
@@ -74,24 +53,6 @@ const CREATE_STEP_LABEL: Record<CreateStep, string> = {
   'creating-workspace': 'Creating Workspace...',
   'creating-session': 'Creating Session...',
   'starting-session': 'Starting Agent...',
-}
-
-const PERMISSION_ICONS = {
-  ASK: ShieldQuestionMark,
-  AUTO_SANDBOX: ShieldCheck,
-  FULL_ACCESS: ShieldOff,
-} satisfies Record<ExecutionPermissionMode, typeof ShieldCheck>
-
-function ProviderPermissionIcon({ mode }: { mode: ExecutionPermissionMode }) {
-  const { t } = useI18n()
-  const Icon = PERMISSION_ICONS[mode]
-  const label = t('Required permission: {mode}', { mode: t(EXECUTION_PERMISSION_LABELS[mode]) })
-
-  return (
-    <span role="img" aria-label={label} title={label} className="ml-2 mt-0.5 inline-flex shrink-0 text-muted-foreground">
-      <Icon size={14} aria-hidden="true" />
-    </span>
-  )
 }
 
 export function CreateTaskInput({
@@ -119,19 +80,13 @@ export function CreateTaskInput({
   const [mode, setMode] = useState<CreateTaskMode>('SOLO')
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(WorkspaceKind.WORKTREE)
   const [priority, setPriority] = useState<TaskPriority>(TaskPriority.NORMAL)
+  const [baseBranchChoice, setBaseBranchChoice] = useState<{ projectId: string; value: string } | null>(null)
   const [detectedCapabilityByProjectId, setDetectedCapabilityByProjectId] = useState<Record<string, ProjectGitCapability>>({})
   const [teamRunMode, setTeamRunMode] = useState<TeamRunMode>('AUTO')
   const [teamTemplateId, setTeamTemplateId] = useState<string | null>(null)
   const [memberPresetIds, setMemberPresetIds] = useState<string[]>([])
   const [showTeamConfig, setShowTeamConfig] = useState(false)
 
-  const [showProjectMenu, setShowProjectMenu] = useState(false)
-  const [showProviderMenu, setShowProviderMenu] = useState(false)
-  const [showWorkspaceModeMenu, setShowWorkspaceModeMenu] = useState(false)
-
-  const projectMenuRef = useRef<HTMLDivElement>(null)
-  const providerMenuRef = useRef<HTMLDivElement>(null)
-  const workspaceModeMenuRef = useRef<HTMLDivElement>(null)
   const inputContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -146,43 +101,12 @@ export function CreateTaskInput({
     // Existing project selection follows the parent default when it changes.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setProjectId(defaultProjectId)
+    setBaseBranchChoice(null)
     onProjectChange?.(defaultProjectId)
   }, [defaultProjectId, onProjectChange])
-  useEffect(() => {
-    if (!showProjectMenu) return
-    const handler = (e: MouseEvent) => {
-      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
-        setShowProjectMenu(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showProjectMenu])
-
-  useEffect(() => {
-    if (!showProviderMenu) return
-    const handler = (e: MouseEvent) => {
-      if (providerMenuRef.current && !providerMenuRef.current.contains(e.target as Node)) {
-        setShowProviderMenu(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showProviderMenu])
-
-  useEffect(() => {
-    if (!showWorkspaceModeMenu) return
-    const handler = (e: MouseEvent) => {
-      if (workspaceModeMenuRef.current && !workspaceModeMenuRef.current.contains(e.target as Node)) {
-        setShowWorkspaceModeMenu(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showWorkspaceModeMenu])
-
   const selectedProject = useMemo(() => projects.find(p => p.id === projectId), [projects, projectId])
   const selectedProvider = useMemo(() => providers.find(p => p.id === providerId), [providers, providerId])
+  const baseBranch = baseBranchChoice?.projectId === projectId ? baseBranchChoice.value : selectedProject?.mainBranch
   const detectedCapability = projectId ? detectedCapabilityByProjectId[projectId] : undefined
   const selectedProjectIsGitRepo = (detectedCapability?.isGitRepo ?? selectedProject?.isGitRepo) !== false
   const selectedProjectWorktreeReady = (detectedCapability?.worktreeReady ?? selectedProject?.worktreeReady) !== false
@@ -190,13 +114,7 @@ export function CreateTaskInput({
   const localProjectOnly = !isConversationMode && !selectedProjectSupportsWorktree
   const effectiveCreateMode: CreateTaskMode = localProjectOnly ? 'SOLO' : mode
   const effectiveWorkspaceMode: WorkspaceMode = localProjectOnly ? WorkspaceKind.MAIN_DIRECTORY : workspaceMode
-  const selectedWorkspaceModeLabel = effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? t('本地模式') : t('工作树模式')
-  const worktreeModeHint = t('工作树隔离改动，支持 TeamRun、Merge、Rebase 和冲突解决。')
-  const mainDirectoryModeHint = t('本地模式会直接修改项目主目录，不会自动提交，也不能使用 Merge、Rebase 或冲突解决。')
   const selectedProjectGitReason = detectedCapability?.reason ?? selectedProject?.reason
-  const disabledWorktreeModeHint = selectedProjectGitReason === 'NO_HEAD'
-    ? t('已检测到 Git，但需要先提交一次才能使用工作树模式。')
-    : t('初始化 Git 后可使用工作树模式。')
   const slashCommandAgentType = isConversationMode || effectiveCreateMode === 'SOLO'
     ? selectedProvider?.agentType
     : null
@@ -225,7 +143,6 @@ export function CreateTaskInput({
     setMode('SOLO')
     setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY)
     setShowTeamConfig(false)
-    setShowWorkspaceModeMenu(false)
   }, [localProjectOnly])
 
   useEffect(() => {
@@ -241,7 +158,6 @@ export function CreateTaskInput({
     if (capability.worktreeReady) {
       setMode('SOLO')
       setWorkspaceMode(WorkspaceKind.WORKTREE)
-      setShowWorkspaceModeMenu(false)
     }
   }, [refreshProjectGitCapability, selectedProject])
 
@@ -263,10 +179,12 @@ export function CreateTaskInput({
         attachmentLinks,
         attachmentIds,
         priority,
+        baseBranch: isConversationMode ? undefined : effectiveCreateMode === 'TEAM' || effectiveWorkspaceMode === WorkspaceKind.WORKTREE ? baseBranch : null,
       })
       const clearSubmittedDraft = () => {
         setTitle(current => current === title ? '' : current)
         setPriority(current => current === priority ? TaskPriority.NORMAL : current)
+        setBaseBranchChoice(current => current === baseBranchChoice ? null : current)
         if (supportsAttachments) for (const file of attachmentFiles) removeFile(file.tempId)
       }
       // Conversation submissions own an immutable recoverable list item before HTTP.
@@ -276,7 +194,7 @@ export function CreateTaskInput({
     } catch {
       // Conversation failures are recovered from the submitted message bubble.
     }
-  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, attachmentFiles, removeFile, priority])
+  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, attachmentFiles, removeFile, priority, baseBranch, baseBranchChoice])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashCommandMenu.handleKeyDown(e)) return
@@ -296,8 +214,8 @@ export function CreateTaskInput({
 
   const handleProjectSelect = useCallback((nextProjectId: string) => {
     setProjectId(nextProjectId)
+    setBaseBranchChoice(null)
     onProjectChange?.(nextProjectId)
-    setShowProjectMenu(false)
   }, [onProjectChange])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
@@ -464,264 +382,35 @@ export function CreateTaskInput({
         onSelect={slashCommandMenu.applyCommand}
       />
 
-      {/* Control row — chips aligned to card edges */}
-      <div className="relative flex items-center flex-wrap gap-1.5 mt-2.5 px-0.5">
-        {/* Project selector */}
-        {!isConversationMode && (
-          <div className="relative" ref={projectMenuRef}>
-            <button
-              type="button"
-              onClick={() => { if (!isSubmitting) setShowProjectMenu(v => !v) }}
-              disabled={isSubmitting}
-              className={cn(
-                'flex items-center gap-1.5 px-2 h-7 rounded-md text-xs font-medium transition-colors',
-                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
-                selectedProject ? 'text-foreground/80' : 'text-muted-foreground',
-              )}
-            >
-              <Folder
-                size={14}
-                className="shrink-0"
-                style={{ color: selectedProject?.color ?? 'var(--muted-foreground)' }}
-              />
-              <span className="max-w-[120px] truncate">{selectedProject?.name ?? t('Project')}</span>
-              <ChevronDown size={12} className={cn('text-muted-foreground transition-transform', showProjectMenu && 'rotate-180')} />
-            </button>
-
-            {showProjectMenu && (
-              <div className="absolute top-full left-0 mt-1.5 w-56 bg-popover border border-border rounded-lg shadow-popover py-1 max-h-[240px] overflow-y-auto z-50">
-                {projects.map(p => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => handleProjectSelect(p.id)}
-                    className="flex items-center w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors"
-                  >
-                    <span
-                      className="size-2 rounded-full shrink-0 mr-2"
-                      style={{ backgroundColor: p.color ?? 'var(--muted-foreground)' }}
-                    />
-                    <span className={cn('truncate flex-1', p.id === projectId ? 'text-foreground font-medium' : 'text-muted-foreground')}>
-                      {p.name}
-                    </span>
-                    <Check size={14} className={cn('ml-2 shrink-0 text-foreground', p.id === projectId ? 'opacity-100' : 'opacity-0')} />
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Provider selector (Solo mode only) */}
-        {(isConversationMode || effectiveCreateMode === 'SOLO') && (
-          <div className="sm:relative" ref={providerMenuRef}>
-            <button
-              type="button"
-              onClick={() => { if (!isSubmitting) setShowProviderMenu(v => !v) }}
-              disabled={isSubmitting}
-              className={cn(
-                'flex items-center gap-1.5 px-2 h-7 rounded-md text-xs font-medium transition-colors',
-                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
-                selectedProvider ? 'text-foreground/80' : 'text-muted-foreground',
-              )}
-            >
-              <AgentLogo agentType={selectedProvider?.agentType} className="size-3.5" />
-              <span className="max-w-[120px] truncate">{selectedProvider?.name ?? (isProvidersLoading ? t('Loading...') : t('Agent'))}</span>
-              <ChevronDown size={12} className={cn('text-muted-foreground transition-transform', showProviderMenu && 'rotate-180')} />
-            </button>
-
-            {showProviderMenu && (
-              <div className="absolute top-full left-0 z-50 mt-1.5 max-h-[min(60vh,320px)] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-border bg-popover py-1 shadow-popover sm:w-80">
-                {providers.map(p => (
-                  <div key={p.id} tabIndex={!p.available ? 0 : undefined} role={!p.available ? 'group' : undefined}
-                    aria-label={!p.available ? `${p.name}: ${t(p.reason || 'Agent executable is unavailable.')}` : undefined}
-                    className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-                    <button
-                      type="button"
-                      disabled={!p.available}
-                      onClick={() => { setProviderId(p.id); setShowProviderMenu(false) }}
-                      className={cn(
-                        'flex w-full items-start px-3 py-2 text-left text-xs transition-colors hover:bg-accent',
-                        !p.available && 'cursor-not-allowed',
-                      )}
-                    >
-                      <Check size={14} className={cn('mr-2 mt-0.5 shrink-0 text-foreground', p.id === providerId ? 'opacity-100' : 'opacity-0')} />
-                      <AgentLogo agentType={p.agentType} className="mr-2 mt-0.5 size-3.5 shrink-0" />
-                      <span className="min-w-0 flex-1">
-                        <span className={cn('block break-words', p.id === providerId ? 'font-medium text-foreground' : 'text-muted-foreground')}>
-                          {p.name}{!p.available ? t(' (unavailable)') : ''}
-                        </span>
-                        {p.reason ? <span className="mt-0.5 block break-words text-xs leading-snug text-destructive-ink">{t(p.reason)}</span> : null}
-                      </span>
-                      {p.permissionMode ? <ProviderPermissionIcon mode={p.permissionMode} /> : null}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Workspace mode selector (Solo mode only) */}
-        {!isConversationMode && effectiveCreateMode === 'SOLO' && (
-          <div className="relative" ref={workspaceModeMenuRef}>
-            <button
-              type="button"
-              onClick={() => { if (!isSubmitting) setShowWorkspaceModeMenu(v => !v) }}
-              disabled={isSubmitting}
-              className={cn(
-                'flex items-center gap-1.5 px-2 h-7 rounded-md text-xs font-medium transition-colors',
-                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed text-foreground/80',
-              )}
-            >
-              <GitBranch size={14} className="text-muted-foreground" />
-              <span className="max-w-[96px] truncate">{selectedWorkspaceModeLabel}</span>
-              <ChevronDown size={12} className={cn('text-muted-foreground transition-transform', showWorkspaceModeMenu && 'rotate-180')} />
-            </button>
-
-            {showWorkspaceModeMenu && (
-              <div className="absolute top-full left-0 mt-1.5 w-72 max-w-[calc(100vw-2rem)] bg-popover border border-border rounded-lg shadow-popover py-1 z-50">
-                {localProjectOnly ? (
-                  <Tooltip side="bottom" className="block w-full" content={disabledWorktreeModeHint}>
-                    <div
-                      tabIndex={0}
-                      aria-label={disabledWorktreeModeHint}
-                      className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-                    >
-                      <button
-                        type="button"
-                        disabled
-                        className="flex w-full cursor-not-allowed items-center px-3 py-2 text-left text-xs opacity-40 transition-colors"
-                      >
-                        <Check size={14} className="mr-2 mt-0.5 shrink-0 text-foreground opacity-0" />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-muted-foreground">
-                            {t('工作树模式')}
-                          </span>
-                          <span className="mt-0.5 block whitespace-normal text-xs leading-snug text-muted-foreground">
-                            {worktreeModeHint}
-                          </span>
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleRefreshGitCapability}
-                        disabled={refreshProjectGitCapability.isPending}
-                        className="flex w-full items-center px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {refreshProjectGitCapability.isPending
-                          ? t('检测中...')
-                          : t('重新检测 Git 状态')}
-                      </button>
-                    </div>
-                  </Tooltip>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => { setWorkspaceMode(WorkspaceKind.WORKTREE); setShowWorkspaceModeMenu(false) }}
-                    className="flex w-full items-center px-3 py-2 text-left text-xs transition-colors hover:bg-accent"
-                  >
-                    <Check size={14} className={cn('mr-2 mt-0.5 shrink-0 text-foreground', effectiveWorkspaceMode === WorkspaceKind.WORKTREE ? 'opacity-100' : 'opacity-0')} />
-                    <span className="min-w-0 flex-1">
-                      <span className={cn('block truncate', effectiveWorkspaceMode === WorkspaceKind.WORKTREE ? 'text-foreground font-medium' : 'text-muted-foreground')}>
-                        {t('工作树模式')}
-                      </span>
-                      <span className="mt-0.5 block whitespace-normal text-xs leading-snug text-muted-foreground">
-                        {worktreeModeHint}
-                      </span>
-                    </span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => { setWorkspaceMode(WorkspaceKind.MAIN_DIRECTORY); setShowWorkspaceModeMenu(false) }}
-                  className="flex items-start w-full px-3 py-2 text-xs text-left hover:bg-accent transition-colors"
-                >
-                  <Check size={14} className={cn('mr-2 mt-0.5 shrink-0 text-foreground', effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'opacity-100' : 'opacity-0')} />
-                  <span className="min-w-0 flex-1">
-                    <span className={cn('block truncate', effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY ? 'text-foreground font-medium' : 'text-muted-foreground')}>
-                      {t('本地模式')}
-                    </span>
-                    <span className="mt-0.5 block whitespace-normal text-xs leading-snug text-muted-foreground">
-                      {mainDirectoryModeHint}
-                    </span>
-                  </span>
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!isConversationMode && (
-          <TaskPrioritySelect
-            value={priority}
-            compact
-            disabled={isSubmitting}
-            onChange={setPriority}
-          />
-        )}
-
-        {/* Team mode toggle */}
-        {!isConversationMode && (
-          <Tooltip
-            side="bottom"
-            className="ml-auto"
-            content={
-              localProjectOnly
-                ? t('Local projects only support local Solo tasks. Initialize Git to use worktrees and TeamRun.')
-                : effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY
-                ? t('TeamRun 需要工作树模式。开启团队模式时会自动切换为工作树模式。')
-                : t('启用 TeamRun 后可选择团队模板或成员。')
-            }
-          >
-            <button
-              type="button"
-              role="switch"
-              aria-checked={effectiveCreateMode === 'TEAM'}
-              onClick={() => {
-                if (isSubmitting) return
-                if (localProjectOnly) return
-                if (mode === 'TEAM') {
-                  setMode('SOLO')
-                  setShowTeamConfig(false)
-                } else {
-                  setMode('TEAM')
-                  setShowWorkspaceModeMenu(false)
-                  setWorkspaceMode(WorkspaceKind.WORKTREE)
-                  setShowTeamConfig(true)
-                }
-              }}
-              disabled={isSubmitting || localProjectOnly}
-              className={cn(
-                'flex items-center gap-2 h-7 pl-2 pr-2 rounded-md text-xs font-medium transition-colors',
-                'hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                effectiveCreateMode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground',
-              )}
-              aria-label={t('启用团队模式')}
-            >
-              <Users size={14} className={effectiveCreateMode === 'TEAM' ? 'text-foreground/80' : 'text-muted-foreground'} />
-              <span>{t('团队模式')}</span>
-              {(localProjectOnly || effectiveWorkspaceMode === WorkspaceKind.MAIN_DIRECTORY) && effectiveCreateMode !== 'TEAM' ? (
-                <Info size={12} className="text-muted-foreground/70" aria-hidden="true" />
-              ) : null}
-              <span
-                className={cn(
-                  'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors',
-                  effectiveCreateMode === 'TEAM' ? 'bg-primary' : 'bg-border',
-                )}
-              >
-                <span
-                  className={cn(
-                    'inline-block size-3 rounded-full bg-background shadow-raised transition-transform',
-                    effectiveCreateMode === 'TEAM' ? 'translate-x-3.5' : 'translate-x-0.5',
-                  )}
-                />
-              </span>
-            </button>
-          </Tooltip>
-        )}
-      </div>
+      <TaskCreationOptions
+        projects={projects}
+        providers={providers}
+        projectId={projectId}
+        providerId={providerId}
+        providerChanged={providerId !== defaultProviderId}
+        isProvidersLoading={isProvidersLoading}
+        mode={effectiveCreateMode}
+        workspaceMode={effectiveWorkspaceMode}
+        priority={priority}
+        baseBranch={baseBranch}
+        isConversation={isConversationMode}
+        localProjectOnly={localProjectOnly}
+        gitReason={selectedProjectGitReason}
+        disabled={isSubmitting}
+        refreshingGit={refreshProjectGitCapability.isPending}
+        onProjectChange={handleProjectSelect}
+        onProviderChange={setProviderId}
+        onWorkspaceModeChange={setWorkspaceMode}
+        onPriorityChange={setPriority}
+        onBaseBranchChange={value => setBaseBranchChoice({ projectId, value })}
+        onRefreshGit={handleRefreshGitCapability}
+        onModeChange={nextMode => {
+          if (isSubmitting || (nextMode === 'TEAM' && localProjectOnly)) return
+          setMode(nextMode)
+          setShowTeamConfig(nextMode === 'TEAM')
+          if (nextMode === 'TEAM') setWorkspaceMode(WorkspaceKind.WORKTREE)
+        }}
+      />
 
       {selectedProvider && !selectedProvider.available ? (
         <p role="alert" className="mt-2 break-words px-2 text-xs leading-snug text-destructive-ink">

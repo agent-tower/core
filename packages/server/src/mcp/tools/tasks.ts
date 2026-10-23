@@ -39,6 +39,7 @@ export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
           title: params.title,
           description: params.description,
           priority: params.priority,
+          baseBranch: params.base_branch,
         });
         return { content: [{ type: 'text', text: JSON.stringify(task, null, 2) }] };
       } catch (e: any) {

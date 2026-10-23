@@ -3,6 +3,7 @@
  * MCP 服务器通过此客户端代理调用后端 REST API
  */
 import type {
+  CreateTaskInput,
   WorkspaceBackgroundServiceDto,
   WorkspaceBackgroundServiceInputResponse,
   WorkspaceBackgroundServiceLogsResponse,
@@ -125,7 +126,7 @@ export class AgentTowerClient {
     return this.request<any>('GET', `/api/projects/${projectId}/tasks`, undefined, query);
   }
 
-  async createTask(projectId: string, input: { title: string; description?: string; priority?: number }) {
+  async createTask(projectId: string, input: CreateTaskInput) {
     return this.request<any>('POST', `/api/projects/${projectId}/tasks`, input);
   }
 

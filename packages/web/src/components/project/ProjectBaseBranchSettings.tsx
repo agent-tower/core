@@ -17,7 +17,7 @@ export function ProjectBaseBranchSettings({ projectId }: { projectId: string }) 
         <div>
           <h3 className="text-[13px] font-medium text-foreground">{t('Default base branch')}</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {t('New task and TeamRun main workspaces start from this branch. Existing workspaces keep their base branch.')}
+            {t('New tasks default to this branch. Saved task and workspace bases remain unchanged.')}
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching} aria-label={t('Refresh')}>

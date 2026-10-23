@@ -1,0 +1,208 @@
+<div id="at-branch-preview">
+  <div class="viz-carousel viz-dotted-background" aria-label="任务分支选择器方案" data-previous-label="上一方案" data-next-label="下一方案">
+    <section data-variant="分支常显" aria-label="分支常显方案">
+      <div class="at-stage">
+        <div class="at-product" data-layout="visible" aria-label="任务创建栏">
+          <div class="at-composer">
+            <label class="at-prompt-label">描述这个任务…</label>
+            <div class="at-composer-actions"><span class="at-attachment"><i data-lucide="paperclip" aria-hidden="true"></i></span><span class="at-create-label">↵ 创建</span><span class="at-submit"><i data-lucide="arrow-up" aria-hidden="true"></i></span></div>
+          </div>
+          <div class="at-toolbar">
+            <span class="at-static"><i data-lucide="folder" aria-hidden="true"></i><span class="at-project-name">agent-tower</span><i data-lucide="chevron-down" aria-hidden="true"></i></span>
+            <span class="at-static at-provider"><i data-lucide="bot" aria-hidden="true"></i><span class="at-provider-name">Codex 自建 GPT-6</span><i data-lucide="chevron-down" aria-hidden="true"></i></span>
+            <span class="at-static"><i data-lucide="git-fork" aria-hidden="true"></i><span>工作树模式</span><i data-lucide="chevron-down" aria-hidden="true"></i></span>
+            <span class="at-static at-priority"><i data-lucide="minus" aria-hidden="true"></i><span>普通</span><i data-lucide="chevron-down" aria-hidden="true"></i></span>
+            <button type="button" class="at-branch cursor-interaction" aria-label="选择基础分支" aria-haspopup="dialog" aria-expanded="false"><i data-lucide="git-branch" aria-hidden="true"></i><span class="at-branch-name">feature/task-base-branch-selection</span><i class="at-branch-chevron" data-lucide="chevron-down" aria-hidden="true"></i></button>
+            <span class="at-static at-team"><i data-lucide="users" aria-hidden="true"></i><span>团队模式</span><span class="at-toggle"></span></span>
+          </div>
+          <div class="at-menu" role="dialog" aria-label="基础分支" hidden>
+            <div class="at-menu-heading">基础分支<button type="button" class="at-close cursor-interaction" aria-label="关闭分支选择"><i data-lucide="x" aria-hidden="true"></i></button></div>
+            <div class="at-selected" aria-live="polite"></div>
+            <input class="at-search" type="search" aria-label="搜索本地分支" placeholder="搜索本地分支…" autocomplete="off">
+            <div class="at-options"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section data-variant="空间不足时收成图标" aria-label="自适应收纳方案" hidden>
+      <div class="at-stage"><div class="at-product" data-layout="compact" aria-label="自适应任务创建栏"></div></div>
+    </section>
+  </div>
+</div>
+<style>
+  #at-branch-preview { --at-preview-width:720px; --at-branch-width:150px; }
+  #at-branch-preview .at-stage { display:flex; justify-content:center; align-items:flex-start; min-height:430px; padding:18px 10px 12px; }
+  #at-branch-preview .at-product { --at-bg:light-dark(#fff,#1b1d20); --at-text:light-dark(#41444b,#e6e7eb); --at-secondary:light-dark(#777d88,#a6aab4); --at-line:light-dark(#e4e5e9,#373a41); --at-hover:light-dark(#f3f4f7,#2a2d33); --at-solid:light-dark(#1b1e24,#eceef2); --at-on-solid:light-dark(#fff,#1b1d20); container-type:inline-size; width:min(100%,var(--at-preview-width)); min-width:0; padding:12px; position:relative; background:var(--at-bg); color:var(--at-text); border:1px solid var(--at-line); border-radius:18px; font:400 12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; box-sizing:border-box; }
+  #at-branch-preview .at-product * { box-sizing:border-box; }
+  #at-branch-preview .at-product [hidden] { display:none !important; }
+  #at-branch-preview .at-product button, #at-branch-preview .at-product input { font:inherit; }
+  #at-branch-preview .at-product svg { width:14px; height:14px; flex-shrink:0; }
+  #at-branch-preview .at-composer { border:1px solid var(--at-line); border-radius:12px; padding:14px; box-shadow:0 1px 2px light-dark(#0000000c,#00000030); }
+  #at-branch-preview .at-prompt-label { display:block; color:var(--at-secondary); margin:0 0 22px; font-size:14px; }
+  #at-branch-preview .at-composer-actions { display:flex; align-items:center; gap:10px; }
+  #at-branch-preview .at-attachment { color:var(--at-secondary); display:flex; }
+  #at-branch-preview .at-attachment svg { width:18px; height:18px; }
+  #at-branch-preview .at-create-label { margin-left:auto; color:var(--at-secondary); }
+  #at-branch-preview .at-submit { display:grid; place-items:center; width:32px; height:32px; border-radius:10px; background:var(--at-solid); color:var(--at-on-solid); }
+  #at-branch-preview .at-submit svg { width:20px; height:20px; }
+  #at-branch-preview .at-toolbar { display:flex; align-items:center; gap:4px; margin-top:12px; }
+  #at-branch-preview .at-static, #at-branch-preview .at-branch { display:inline-flex; align-items:center; gap:5px; flex-shrink:0; height:30px; padding:0 5px; border-radius:7px; white-space:nowrap; }
+  #at-branch-preview .at-static > svg { color:var(--at-secondary); }
+  #at-branch-preview .at-static > svg:last-child { width:11px; }
+  #at-branch-preview .at-provider-name { max-width:105px; overflow:hidden; text-overflow:ellipsis; }
+  #at-branch-preview .at-provider { min-width:0; }
+  #at-branch-preview .at-priority { background:var(--at-hover); color:var(--at-secondary); }
+  #at-branch-preview .at-branch { border:0; color:var(--at-text); background:transparent; flex-shrink:1; min-width:70px; max-width:var(--at-branch-width); }
+  #at-branch-preview .at-branch:hover, #at-branch-preview .at-branch[aria-expanded="true"] { background:var(--at-hover); }
+  #at-branch-preview .at-branch > svg { color:var(--at-secondary); }
+  #at-branch-preview .at-branch-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #at-branch-preview .at-branch-chevron { width:11px !important; }
+  #at-branch-preview .at-team { gap:6px; margin-left:auto; color:var(--at-secondary); }
+  #at-branch-preview .at-toggle { width:27px; height:16px; border-radius:20px; background:var(--at-line); padding:2px; }
+  #at-branch-preview .at-toggle::after { content:""; display:block; width:12px; height:12px; border-radius:50%; background:var(--at-bg); }
+  #at-branch-preview .at-menu { position:absolute; top:calc(100% - 2px); right:12px; z-index:5; width:min(330px,calc(100% - 24px)); padding:10px; color:var(--at-text); background:var(--at-bg); border:1px solid var(--at-line); border-radius:12px; box-shadow:0 8px 28px light-dark(#17192318,#00000070); }
+  #at-branch-preview .at-menu-heading { display:flex; justify-content:space-between; align-items:center; font-weight:500; padding:0 2px 6px; }
+  #at-branch-preview .at-close { display:grid; place-items:center; width:26px; height:26px; border:0; border-radius:6px; color:var(--at-secondary); background:transparent; }
+  #at-branch-preview .at-close:hover { background:var(--at-hover); }
+  #at-branch-preview .at-selected { overflow-wrap:anywhere; color:var(--at-secondary); padding:0 2px 10px; }
+  #at-branch-preview .at-search { width:100%; height:32px; padding:0 9px; border:1px solid var(--at-line); border-radius:7px; background:var(--at-bg); color:var(--at-text); }
+  #at-branch-preview .at-options { display:grid; gap:2px; padding-top:6px; }
+  #at-branch-preview .at-option { display:flex; align-items:center; gap:8px; text-align:left; width:100%; border:0; border-radius:6px; background:transparent; color:var(--at-text); padding:7px 8px; overflow-wrap:anywhere; }
+  #at-branch-preview .at-option:hover { background:var(--at-hover); }
+  #at-branch-preview .at-option[data-current="true"] { font-weight:500; background:var(--at-hover); }
+  #at-branch-preview .at-option-label { min-width:0; flex:1; }
+  #at-branch-preview .at-default { flex-shrink:0; font-size:11px; color:var(--at-secondary); }
+  #at-branch-preview .at-empty { padding:10px 8px; color:var(--at-secondary); }
+  @container (max-width:650px) {
+    #at-branch-preview .at-product[data-layout="visible"] .at-branch { max-width:114px; }
+    #at-branch-preview .at-product[data-layout="compact"] .at-branch { width:30px; min-width:30px; flex-shrink:0; justify-content:center; }
+    #at-branch-preview .at-product[data-layout="compact"] .at-branch-name, #at-branch-preview .at-product[data-layout="compact"] .at-branch-chevron { display:none; }
+  }
+  @container (max-width:510px) {
+    #at-branch-preview .at-toolbar { flex-wrap:wrap; }
+    #at-branch-preview .at-provider-name { max-width:80px; }
+    #at-branch-preview .at-team > span:first-of-type { display:none; }
+  }
+  @media (max-width:550px) { #at-branch-preview .at-stage { min-height:510px; padding:12px 4px; } }
+  @media (pointer:coarse) {
+    #at-branch-preview .at-branch, #at-branch-preview .at-close, #at-branch-preview .at-option { min-height:44px; }
+    #at-branch-preview .at-branch, #at-branch-preview .at-close { min-width:44px; }
+    #at-branch-preview .at-search { height:44px; font-size:16px; }
+    #at-branch-preview .at-stage { min-height:610px; }
+  }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('at-branch-preview');
+  const first = root.querySelector('[data-layout="visible"]');
+  const compact = root.querySelector('[data-layout="compact"]');
+  compact.innerHTML = first.innerHTML;
+  const branches = ['main', 'develop', 'feature/task-base-branch-selection', 'release/2026-q4/desktop-workspace'];
+  const defaults = { branch:branches[2], width:720, compactWidth:640, branchWidth:150 };
+  const state = { ...defaults };
+  const products = Array.from(root.querySelectorAll('.at-product'));
+  const save = () => {
+    const result = window.openai?.setWidgetState?.({ modelContent:{ branch:state.branch }, privateContent:{ width:state.width, compactWidth:state.compactWidth, branchWidth:state.branchWidth } });
+    result?.catch(() => {});
+  };
+  const renderOptions = product => {
+    const options = product.querySelector('.at-options');
+    const query = product.querySelector('.at-search').value.trim().toLowerCase();
+    options.replaceChildren();
+    const matches = branches.filter(branch => branch.toLowerCase().includes(query));
+    for (const branch of matches) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'at-option cursor-interaction';
+      button.dataset.current = String(branch === state.branch);
+      button.setAttribute('aria-label', branch === state.branch ? branch + '，当前已选' : branch);
+      const label = document.createElement('span');
+      label.className = 'at-option-label';
+      label.textContent = branch;
+      button.append(label);
+      if (branch === 'main') {
+        const badge = document.createElement('span');
+        badge.className = 'at-default';
+        badge.textContent = '项目默认';
+        button.append(badge);
+      }
+      button.addEventListener('click', () => {
+        state.branch = branch;
+        close(product, true);
+        render();
+        save();
+      });
+      options.append(button);
+    }
+    if (!matches.length) {
+      const empty = document.createElement('div');
+      empty.className = 'at-empty';
+      empty.textContent = '没有匹配的本地分支';
+      options.append(empty);
+    }
+  };
+  const close = (product, restoreFocus = false) => {
+    product.querySelector('.at-menu').hidden = true;
+    const trigger = product.querySelector('.at-branch');
+    trigger.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) trigger.focus();
+  };
+  function render() {
+    root.style.setProperty('--at-preview-width', state.width + 'px');
+    compact.style.width = 'min(100%, ' + state.compactWidth + 'px)';
+    root.style.setProperty('--at-branch-width', state.branchWidth + 'px');
+    for (const product of products) {
+      const trigger = product.querySelector('.at-branch');
+      trigger.querySelector('.at-branch-name').textContent = state.branch;
+      trigger.setAttribute('aria-label', '基础分支：' + state.branch + '，点击切换');
+      trigger.dataset.tooltip = '基础分支：' + state.branch;
+      product.querySelector('.at-selected').textContent = '当前：' + state.branch;
+      renderOptions(product);
+    }
+  }
+  function restore(snapshot) {
+    if (branches.includes(snapshot?.modelContent?.branch)) state.branch = snapshot.modelContent.branch;
+    if (typeof snapshot?.privateContent?.width === 'number') state.width = Math.max(300, Math.min(720, snapshot.privateContent.width));
+    if (typeof snapshot?.privateContent?.compactWidth === 'number') state.compactWidth = Math.max(300, Math.min(720, snapshot.privateContent.compactWidth));
+    if (typeof snapshot?.privateContent?.branchWidth === 'number') state.branchWidth = Math.max(100, Math.min(200, snapshot.privateContent.branchWidth));
+    render();
+  }
+  for (const product of products) {
+    const trigger = product.querySelector('.at-branch');
+    const menu = product.querySelector('.at-menu');
+    const search = product.querySelector('.at-search');
+    trigger.addEventListener('click', () => {
+      if (!menu.hidden) { close(product, true); return; }
+      for (const other of products) close(other);
+      menu.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+      search.value = '';
+      renderOptions(product);
+      search.focus();
+    });
+    search.addEventListener('input', () => renderOptions(product));
+    product.querySelector('.at-close').addEventListener('click', () => close(product, true));
+    product.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !menu.hidden) { event.preventDefault(); close(product, true); }
+    });
+  }
+  document.addEventListener('pointerdown', event => {
+    for (const product of products) {
+      if (!product.querySelector('.at-menu').contains(event.target) && !product.querySelector('.at-branch').contains(event.target)) close(product);
+    }
+  });
+  restore(window.openai?.widgetState);
+  window.addEventListener('openai:set_globals', event => {
+    if (event.detail?.globals?.widgetState) restore(event.detail.globals.widgetState);
+  });
+  if (globalThis.Tweak) {
+    for (const product of products) {
+      const tweak = new Tweak({ container:product, onChange:() => { render(); save(); } });
+      tweak.addSlider(state, product === first ? 'width' : 'compactWidth', { label:'创建栏宽度', min:300, max:720, step:10, unit:'px' });
+      tweak.addSlider(state, 'branchWidth', { label:'分支显示宽度上限', min:100, max:200, step:10, unit:'px' });
+      tweak.addSelect(state, 'branch', { label:'当前分支', options:branches });
+    }
+  }
+  globalThis.lucide?.createIcons({ attrs:{ width:14, height:14 } });
+})();
+</script>

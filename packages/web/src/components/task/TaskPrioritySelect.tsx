@@ -5,7 +5,7 @@ import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { TASK_PRIORITY_OPTIONS, getTaskPriorityOption } from './task-priority'
 
-function PriorityIcon({ iconName, className }: { iconName: string; className?: string }) {
+export function PriorityIcon({ iconName, className }: { iconName: string; className?: string }) {
   switch (iconName) {
     case 'chevrons-up': return <ChevronsUp className={className} aria-hidden="true" />
     case 'signal-high': return <SignalHigh className={className} aria-hidden="true" />

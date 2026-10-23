@@ -13,19 +13,14 @@ import type { SessionManager } from './session-manager.js';
 import type { TaskCleanupService, TaskCleanupSnapshot } from './task-cleanup.service.js';
 import type { WorkspaceBackgroundService } from './workspace-background-service.service.js';
 import { defaultWorkspaceLifecycleBarrier } from './workspace-lifecycle-barrier.js';
-import { ensureProjectIsMutable, getStoredProjectGitCapability } from './project-guards.js';
+import { ensureProjectIsMutable, getStoredProjectGitCapability, detectProjectGitCapability } from './project-guards.js';
+import { requireLocalBaseBranch } from '../git/base-branch.js';
 import { defaultTeamLockService } from './team-lock.service.js';
-import type { TaskBoardItem, TaskBoardResponse } from '@agent-tower/shared';
+import type { CreateTaskInput, TaskBoardItem, TaskBoardResponse } from '@agent-tower/shared';
 import { TaskPriority } from '@agent-tower/shared';
 import prismaPkg from '@prisma/client';
 
 const { Prisma } = prismaPkg;
-
-interface CreateTaskInput {
-  title: string;
-  description?: string;
-  priority?: number;
-}
 
 interface UpdateTaskInput {
   title?: string;
@@ -576,6 +571,7 @@ export class TaskService {
           id: true,
           projectId: true,
           title: true,
+          baseBranch: true,
           status: true,
           priority: true,
           position: true,
@@ -626,6 +622,7 @@ export class TaskService {
         projectId: true,
         project: true,
         title: true,
+        baseBranch: true,
         status: true,
         priority: true,
         position: true,
@@ -700,6 +697,18 @@ export class TaskService {
     }
     ensureProjectIsMutable(project, 'create tasks');
 
+    // Resolve at task creation so delayed starts and TeamRun main workspaces
+    // cannot silently follow a later project default change. Local tasks opt out.
+    let baseBranch: string | null = null;
+    if (input.baseBranch !== null) {
+      const requestedBranch = input.baseBranch ?? (
+        (await detectProjectGitCapability(project.repoPath)).worktreeReady ? project.mainBranch : null
+      );
+      if (requestedBranch !== null) {
+        baseBranch = await requireLocalBaseBranch(project.repoPath, requestedBranch);
+      }
+    }
+
     // 自动计算 position
     const maxPosition = await prisma.task.aggregate({
       where: { projectId, status: TaskStatus.TODO, deletedAt: null },
@@ -711,6 +720,7 @@ export class TaskService {
         title: normalizedInput.title,
         description: normalizedInput.description,
         priority: normalizedInput.priority ?? TaskPriority.NORMAL,
+        baseBranch,
         position: (maxPosition._max.position ?? 0) + 1,
         projectId,
       },

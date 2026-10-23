@@ -13,6 +13,13 @@ vi.mock('@/lib/i18n', () => ({
   useI18n: () => ({ t: (source: string) => source }),
 }))
 
+vi.mock('@/hooks/use-workspaces', () => ({
+  useProjectWorkspaceBranches: () => ({
+    data: { mainBranch: 'main', branches: ['main', 'develop'], workspaces: [] },
+    isPending: false, isFetching: false, isError: false, refetch: vi.fn(),
+  }),
+}))
+
 vi.mock('@/hooks/use-attachments', () => ({
   useAttachments: () => ({
     files: [],
@@ -114,7 +121,7 @@ describe('CreateTaskInput Git capability refresh', () => {
       modeButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const refreshButton = Array.from(container!.querySelectorAll('button'))
+    const refreshButton = Array.from(document.body.querySelectorAll('button'))
       .find((button) => button.textContent?.includes('重新检测 Git 状态'))
     expect(refreshButton).toBeTruthy()
 
