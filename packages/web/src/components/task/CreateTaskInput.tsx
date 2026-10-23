@@ -113,7 +113,9 @@ export function CreateTaskInput({
   const [title, setTitle] = useState('')
   const [projectId, setProjectId] = useState(defaultProjectId)
   const [providerChoiceId, setProviderId] = useState(defaultProviderId)
-  const providerId = providerChoiceId || defaultProviderId
+  const providerId = providers.some(provider => provider.id === providerChoiceId)
+    ? providerChoiceId
+    : providers.some(provider => provider.id === defaultProviderId) ? defaultProviderId : ''
   const [mode, setMode] = useState<CreateTaskMode>('SOLO')
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(WorkspaceKind.WORKTREE)
   const [priority, setPriority] = useState<TaskPriority>(TaskPriority.NORMAL)

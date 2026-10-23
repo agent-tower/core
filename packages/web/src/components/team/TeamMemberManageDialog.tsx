@@ -35,6 +35,7 @@ import {
   type TeamRunMemberSnapshotInput,
 } from '@/hooks/use-team-run'
 import { useProviders } from '@/hooks/use-providers'
+import { isProviderEnabled } from '@/lib/provider-selection'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { MemberAvatar } from './MemberAvatar'
@@ -268,13 +269,13 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
   const workingCount = activeMembers.filter(isMemberWorking).length
 
   const providerOptions = useMemo(() => {
-    const options: SelectOption[] = providers.map(({ provider, availability }) => ({
+    const options: SelectOption[] = providers.filter(isProviderEnabled).map(({ provider, availability }) => ({
       value: provider.id,
       label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''),
       icon: <AgentLogo agentType={provider.agentType} className="size-4" />,
       disabled: availability.type === 'NOT_FOUND',
     }))
-    if (form.providerId && !options.some((option) => option.value === form.providerId)) {
+    if (form.providerId && !providers.some(item => item.provider.id === form.providerId) && !options.some((option) => option.value === form.providerId)) {
       options.unshift({ value: form.providerId, label: `${form.providerId}${t(' (不可用)')}`, disabled: true })
     }
     return options
@@ -579,7 +580,7 @@ export function TeamMemberManageDialog({ isOpen, onClose, teamRun }: TeamMemberM
               </label>
               <div className="space-y-1.5">
                 <FieldLabel>{t('Provider')}</FieldLabel>
-                <Select value={form.providerId} onChange={(value) => updateForm('providerId', value)} options={providerOptions} />
+                <Select value={form.providerId} onChange={(value) => updateForm('providerId', value)} options={providerOptions} placeholder={providers.find(item => item.provider.id === form.providerId)?.provider.name} />
               </div>
               <label className="space-y-1.5">
                 <FieldLabel>{t('Avatar')}</FieldLabel>

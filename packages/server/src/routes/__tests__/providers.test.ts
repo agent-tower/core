@@ -1508,6 +1508,72 @@ describe('provider routes', () => {
     await app.close();
   });
 
+  it('keeps disabled configurations in management reads and preserves their status across edits and backup imports', async () => {
+    const app = await createApp();
+    try {
+      const created = await app.inject({ method: 'POST', url: '/api/providers', payload: {
+        name: 'Disabled Codex', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP,
+        executionPermission: 'ASK', enabled: false,
+        env: { OPENAI_API_KEY: { action: 'replace', value: 'disabled-provider-key' } },
+      } });
+      expect(created.statusCode, created.body).toBe(201);
+      const id = created.json().id as string;
+      expect(created.json().enabled).toBe(false);
+      expect(created.body).not.toContain('disabled-provider-key');
+
+      const edited = await app.inject({ method: 'PUT', url: `/api/providers/${id}`, payload: { name: 'Renamed disabled Codex' } });
+      expect(edited.statusCode, edited.body).toBe(200);
+      expect(edited.json().enabled).toBe(false);
+      const list = await app.inject({ method: 'GET', url: '/api/providers' });
+      expect(list.json()).toContainEqual(expect.objectContaining({ provider: expect.objectContaining({ id, enabled: false }) }));
+      const reloaded = await app.inject({ method: 'POST', url: '/api/providers/reload' });
+      expect(reloaded.json().providers).toContainEqual(expect.objectContaining({ id, enabled: false }));
+      expect(reloaded.body).not.toContain('disabled-provider-key');
+
+      const backup = (await app.inject({ method: 'GET', url: '/api/providers/backup' })).json();
+      expect(backup.providers).toContainEqual(expect.objectContaining({ id, enabled: false, env: { OPENAI_API_KEY: 'disabled-provider-key' } }));
+      expect((await app.inject({ method: 'PUT', url: `/api/providers/${id}`, payload: { enabled: true } })).json().enabled).toBe(true);
+      const preview = await app.inject({ method: 'POST', url: '/api/providers/import/preview', payload: backup });
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(preview.json().items).toContainEqual(expect.objectContaining({
+        action: 'OVERWRITE', incoming: expect.objectContaining({ id, enabled: false }), existing: expect.objectContaining({ enabled: true }),
+      }));
+      const imported = await app.inject({ method: 'POST', url: '/api/providers/import', payload: backup });
+      expect(imported.statusCode, imported.body).toBe(200);
+      expect(imported.json().providers).toContainEqual(expect.objectContaining({ id, enabled: false }));
+      expect(imported.body).not.toContain('disabled-provider-key');
+      reloadProviders();
+      expect(getProviderById(id)).toMatchObject({ enabled: false, env: { OPENAI_API_KEY: 'disabled-provider-key' } });
+
+      const invalid = await app.inject({ method: 'PUT', url: `/api/providers/${id}`, payload: { enabled: 'false' } });
+      expect(invalid.statusCode).toBe(400);
+    } finally { await app.close(); }
+  });
+
+  it('toggles visibility without validating or changing configurations that need repair', async () => {
+    const id = 'legacy-invalid-provider';
+    const settings = '{ malformed native settings';
+    fs.writeFileSync(path.join(dataDir, 'providers.json'), JSON.stringify({ providers: [{
+      id, name: 'Needs repair', agentType: AgentType.CLAUDE_CODE, runtimeType: RuntimeType.CLI,
+      env: { ANTHROPIC_API_KEY: 'legacy-disabled-key' }, config: { dangerouslySkipPermissions: false }, settings, isDefault: false,
+    }] }));
+    reloadProviders();
+    const before = structuredClone(getProviderById(id));
+    const app = await createApp();
+    try {
+      const normalEdit = await app.inject({ method: 'PUT', url: `/api/providers/${id}`, payload: { name: 'Still needs repair' } });
+      expect(normalEdit.statusCode).toBe(400);
+      for (const enabled of [false, true]) {
+        const updated = await app.inject({ method: 'PUT', url: `/api/providers/${id}`, payload: { enabled } });
+        expect(updated.statusCode, updated.body).toBe(200);
+        expect(updated.json().enabled).toBe(enabled);
+        expect(updated.body).not.toContain('legacy-disabled-key');
+        reloadProviders();
+        expect(getProviderById(id)).toEqual({ ...before, enabled });
+      }
+    } finally { await app.close(); }
+  });
+
   it('redacts structured secrets from every non-backup provider response', async () => {
     const app = await createApp();
     const secrets = [

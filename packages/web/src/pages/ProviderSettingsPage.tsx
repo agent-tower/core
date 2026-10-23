@@ -365,22 +365,23 @@ function getImportActionMeta(action: ProviderImportAction) {
   }
 }
 
-function AvailabilityDot({ issue }: { issue?: string }) {
+function AvailabilityDot({ issue, disabled = false }: { issue?: string; disabled?: boolean }) {
   const { t } = useI18n()
-  const available = !issue
+  const available = !disabled && !issue
+  const label = disabled ? t('已禁用') : available ? t('可用') : t('不可用')
   return (
     <span
       className={cn('inline-block h-2 w-2 rounded-full shrink-0', available ? 'bg-success' : 'bg-border')}
-      title={issue ? `${t('不可用')}: ${t(issue)}` : t('可用')}
+      title={disabled ? label : issue ? `${label}: ${t(issue)}` : label}
     >
-      <span className="sr-only">{available ? t('可用') : t('不可用')}</span>
+      <span className="sr-only">{label}</span>
     </span>
   )
 }
 
-function AvailabilityBadge({ issue }: { issue?: string }) {
+function AvailabilityBadge({ issue, disabled = false }: { issue?: string; disabled?: boolean }) {
   const { t } = useI18n()
-  if (!issue) {
+  if (!disabled && !issue) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success-ink">
         <CheckCircle2 size={11} aria-hidden="true" />
@@ -391,7 +392,7 @@ function AvailabilityBadge({ issue }: { issue?: string }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
       <XCircle size={11} aria-hidden="true" />
-      {t('不可用')}
+      {disabled ? t('已禁用') : t('不可用')}
     </span>
   )
 }
@@ -1367,10 +1368,14 @@ function ProviderDetailPanel({
   item,
   onEdit,
   onDelete,
+  onEnabledChange,
+  isUpdating,
 }: {
   item: ProviderWithAvailability
   onEdit: () => void
   onDelete: () => void
+  onEnabledChange: (enabled: boolean) => void
+  isUpdating: boolean
 }) {
   const { t } = useI18n()
   const provider = item.provider
@@ -1389,7 +1394,7 @@ function ProviderDetailPanel({
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2.5">
             <h3 className="min-w-0 truncate text-base font-semibold text-foreground">{provider.name}</h3>
-            <AvailabilityBadge issue={startIssue} />
+            <AvailabilityBadge issue={startIssue} disabled={provider.enabled === false} />
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1423,6 +1428,22 @@ function ProviderDetailPanel({
             {provider.builtIn ? t('恢复默认') : t('删除')}
           </Button>
         </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <label htmlFor="provider-enabled" className="text-sm font-medium text-foreground">{t('启用配置')}</label>
+          <p id="provider-enabled-description" className="mt-1 text-xs text-muted-foreground">
+            {t('禁用后不在 Agent 可选列表中显示，配置仍会保留，可随时重新启用。')}
+          </p>
+        </div>
+        <Switch
+          id="provider-enabled"
+          checked={provider.enabled !== false}
+          disabled={isUpdating}
+          onCheckedChange={onEnabledChange}
+          aria-describedby="provider-enabled-description"
+        />
       </div>
 
       <div className="space-y-2">
@@ -1525,6 +1546,13 @@ export function ProviderSettingsPage() {
         onSuccess: () => setEditModal(null),
         onError: error => toast.error(getErrorMessage(error, t('更新 Provider 失败'))),
       },
+    )
+  }
+
+  const handleEnabledChange = (id: string, enabled: boolean) => {
+    updateProvider.mutate(
+      { id, data: { enabled } },
+      { onError: error => toast.error(getErrorMessage(error, t('更新 Provider 失败'))) },
     )
   }
 
@@ -1699,9 +1727,9 @@ export function ProviderSettingsPage() {
             const issue = getProviderStartIssue(item)
             return (
               <>
-                <AvailabilityDot issue={issue} />
+                <AvailabilityDot issue={issue} disabled={p.enabled === false} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px] font-medium">{p.name}</div>
+                  <div className={cn('truncate text-[13px] font-medium', p.enabled === false && 'text-muted-foreground')}>{p.name}</div>
                   <div className={cn('flex min-w-0 items-center gap-1.5 text-[11px]', 'text-muted-foreground')}>
                     <AgentLogo
                       agentType={p.agentType}
@@ -1709,6 +1737,7 @@ export function ProviderSettingsPage() {
                       fallbackClassName="text-muted-foreground"
                     />
                     <span className="min-w-0 truncate">{getProviderAgentLabel(p.agentType, p.runtimeType)}</span>
+                    {p.enabled === false && <span className="shrink-0">{t('已禁用')}</span>}
                   </div>
                   {issue ? <div className={cn('mt-0.5 break-words text-xs leading-snug text-destructive-ink')}>{t(issue)}</div> : null}
                 </div>
@@ -1730,6 +1759,8 @@ export function ProviderSettingsPage() {
                   item={item}
                   onEdit={() => openEdit(item)}
                   onDelete={() => handleDelete(item.provider)}
+                  onEnabledChange={enabled => handleEnabledChange(item.provider.id, enabled)}
+                  isUpdating={updateProvider.isPending}
                 />
               </div>
             ) : (

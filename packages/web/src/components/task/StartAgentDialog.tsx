@@ -1,11 +1,12 @@
 import { taskStartSubmission } from '@/hooks/task-start-submission'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCreateWorkspace } from '@/hooks/use-workspaces'
 import { useStartSession } from '@/hooks/use-sessions'
 import { getProviderStartIssue } from '@/components/provider/provider-draft'
 import { EXECUTION_PERMISSION_LABELS } from '@/components/provider/ExecutionPermissionSelector'
 import { useProviders } from '@/hooks/use-providers'
+import { isProviderEnabled } from '@/lib/provider-selection'
 import { useRefreshProjectGitCapability } from '@/hooks/use-projects'
 import { queryKeys } from '@/hooks/query-keys'
 import { Modal } from '@/components/ui/modal'
@@ -58,7 +59,8 @@ export function StartAgentDialog({
   const createWorkspace = useCreateWorkspace(taskId)
   const startSession = useStartSession()
   const refreshProjectGitCapability = useRefreshProjectGitCapability()
-  const { data: providersData, isLoading } = useProviders()
+  const { data: allProviders, isLoading } = useProviders()
+  const providersData = useMemo(() => allProviders?.filter(isProviderEnabled), [allProviders])
   const effectiveIsGitRepo = detectedCapability?.isGitRepo ?? projectIsGitRepo
   const effectiveWorktreeReady = detectedCapability?.worktreeReady ?? projectWorktreeReady
   const effectiveGitReason = detectedCapability?.reason ?? projectGitReason

@@ -151,6 +151,65 @@ describe('providers backup/import', () => {
     expect(backup.providers.every(provider => provider.builtIn === undefined)).toBe(true);
   });
 
+  it('persists disabled built-in and custom providers through reload and backup import', () => {
+    const custom = createProvider({
+      name: 'Disabled custom', agentType: AgentType.CODEX, enabled: false,
+      env: { OPENAI_API_KEY: 'preserved-key' }, config: {}, isDefault: false,
+    });
+    updateProvider('codex-default', { enabled: false });
+    reloadProviders();
+
+    expect(getAllProviders().find(provider => provider.id === 'codex-default')).toMatchObject({ enabled: false, builtIn: true });
+    expect(getAllProviders().find(provider => provider.id === custom.id)).toMatchObject({ enabled: false, env: custom.env });
+    const backup = createProviderBackup();
+    expect(backup.providers.find(provider => provider.id === 'codex-default')).toMatchObject({ enabled: false });
+    expect(backup.providers.find(provider => provider.id === custom.id)).toMatchObject({ enabled: false, env: custom.env });
+    expect(previewProviderImport(backup).summary).toEqual({ create: 0, overwrite: 0, skip: 2 });
+
+    writeUserProviders([]);
+    reloadProviders();
+    expect(importProvidersFromBackup(backup).summary).toEqual({ create: 1, overwrite: 1, skip: 0 });
+    reloadProviders();
+    expect(getAllProviders().find(provider => provider.id === custom.id)?.enabled).toBe(false);
+    expect(getAllProviders().find(provider => provider.id === 'codex-default')?.enabled).toBe(false);
+
+    updateProvider('codex-default', { enabled: true });
+    expect(createProviderBackup().providers.some(provider => provider.id === 'codex-default')).toBe(false);
+  });
+
+  it('treats missing enabled flags as enabled when loading and importing older backups', () => {
+    const legacy = {
+      id: 'legacy-enabled', name: 'Legacy', agentType: AgentType.CODEX,
+      env: {}, config: {}, isDefault: false,
+    };
+    writeUserProviders([legacy]);
+    reloadProviders();
+    expect(getAllProviders().find(provider => provider.id === legacy.id)?.enabled).toBe(true);
+    const backup: ProviderBackupFile = {
+      version: 1, kind: 'provider-backup', exportedAt: new Date().toISOString(), mode: 'full', providers: [legacy],
+    };
+    expect(previewProviderImport(backup).summary.skip).toBe(1);
+    updateProvider(legacy.id, { enabled: false });
+    expect(previewProviderImport(backup).summary.overwrite).toBe(1);
+    importProvidersFromBackup(backup);
+    reloadProviders();
+    expect(getAllProviders().find(provider => provider.id === legacy.id)?.enabled).toBe(true);
+  });
+
+  it('skips disabled defaults and fallbacks while keeping runtime defaults independent', () => {
+    const fallback = createProvider({
+      name: 'Enabled fallback', agentType: AgentType.CODEX,
+      env: {}, config: {}, isDefault: false,
+    });
+    updateProvider('codex-default', { enabled: false });
+    expect(getDefaultProvider(AgentType.CODEX)?.id).toBe(fallback.id);
+    expect(getDefaultProvider(AgentType.CODEX, RuntimeType.ACP)?.id).toBe('codex-acp-default');
+    updateProvider(fallback.id, { enabled: false, isDefault: true });
+    expect(getDefaultProvider(AgentType.CODEX)).toBeNull();
+    updateProvider(fallback.id, { enabled: true });
+    expect(getDefaultProvider(AgentType.CODEX)?.id).toBe(fallback.id);
+  });
+
   it('previews and imports create/overwrite/skip actions correctly', () => {
     writeUserProviders([
       {

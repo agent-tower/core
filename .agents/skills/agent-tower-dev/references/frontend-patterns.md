@@ -37,6 +37,7 @@ App 管理单例 `lib/socket/manager.ts` 的连接生命周期；hook 可调用 
 ## Provider 与 Agent 环境
 
 - `hooks/use-providers.ts` 读取 `RedactedProvider` 与 capability matrix；编辑使用 `ProviderDraftInput` 和 `components/provider/provider-draft.ts`。密钥使用 `keep`/`replace`/`clear` 写入意图，不要把脱敏占位符当成真实密钥回写。
+- Provider 的 `enabled` 仅在显式 `false` 时禁用；管理查询保留全部配置，任务/对话启动、follow-up 切换、团队成员与提交信息等选择入口过滤禁用项，默认与历史选择回退也使用同一过滤规则。已有 Session 的名称和配置元数据显示仍从完整列表解析，不要在 `useProviders()` 查询层全局丢弃禁用项。
 - 简化字段与高级 config/settings 共享同一草稿；冲突处理、TOML 保留编辑和草稿测试序列使用现有 helper。测试结果只对当前草稿有效，测试请求不应隐式保存 Provider。
 - Agent 环境安装沿用 `hooks/use-agent-cli-environment.ts` 的 manifest/status -> install preview -> preview id 创建 task -> task/logs 查询流程。UI 消费后端返回的安装计划和能力，不在前端拼任意 shell 命令或从界面文字推断是否可安装。
 

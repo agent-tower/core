@@ -921,6 +921,7 @@ export function normalizeProviderDraft(
     name: input.name.trim(),
     agentType: input.agentType,
     runtimeType: existing?.runtimeType ?? input.runtimeType ?? RuntimeType.CLI,
+    enabled: input.enabled ?? base.enabled ?? true,
     env: applySecretWrites(base.env, input.env),
     config: incomingConfig,
     settings: restoredSettings,

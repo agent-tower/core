@@ -89,6 +89,27 @@ afterEach(() => {
 })
 
 describe('StartAgentDialog Provider permissions', () => {
+  it('hides disabled configurations and replaces a selection disabled while the dialog is open', async () => {
+    const disabled = provider('disabled')
+    disabled.provider.enabled = false
+    mocks.providers = [disabled, provider('ready'), provider('alternate')]
+    const rerender = render()
+    expect(button('ready')).toBeDefined()
+
+    act(() => button('ready').click())
+    expect(option('disabled')).toBeUndefined()
+    act(() => option('alternate').click())
+
+    mocks.providers = mocks.providers.map(item => item.provider.id === 'alternate'
+      ? { ...item, provider: { ...item.provider, enabled: false } }
+      : item)
+    rerender()
+    expect(button('ready')).toBeDefined()
+    expect(container!.textContent).not.toContain('alternate')
+    await act(async () => button('启动').click())
+    expect(mocks.createSession).toHaveBeenCalledWith('/workspaces/workspace-1/sessions', expect.objectContaining({ providerId: 'ready' }))
+  })
+
   it('explains the empty Provider list beside the selector', () => {
     mocks.providers = []
     render()

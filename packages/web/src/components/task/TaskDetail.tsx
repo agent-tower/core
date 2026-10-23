@@ -43,6 +43,7 @@ import { useGitVisibilityStore } from '@/stores/git-visibility-store'
 import { useSendMessage, useSessionActivity, useStopSession, useStartSession } from '@/hooks/use-sessions'
 import { useTaskBody } from '@/hooks/use-tasks'
 import { useProviders } from '@/hooks/use-providers'
+import { isProviderEnabled } from '@/lib/provider-selection'
 import { useTodos } from '@/hooks/use-todos'
 import { useTokenUsage } from '@/hooks/useTokenUsage'
 import { useAttachments } from '@/hooks/use-attachments'
@@ -610,7 +611,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
     if (!task?.id) return
 
     const retryProviderId = activeSession?.providerId
-      ?? providers?.find(p => p.availability.type !== 'NOT_FOUND')?.provider.id
+      ?? providers?.find(p => isProviderEnabled(p) && p.availability.type !== 'NOT_FOUND')?.provider.id
     if (!retryProviderId) return
 
     setIsRetryConfirmOpen(false)

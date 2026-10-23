@@ -8,6 +8,7 @@ import { getProviderStartIssue, getSelectedProviderStartIssue } from '@/componen
 import { EXECUTION_PERMISSION_LABELS } from '@/components/provider/ExecutionPermissionSelector'
 import { useI18n } from '@/lib/i18n'
 import { RuntimeType } from '@agent-tower/shared'
+import { isProviderEnabled } from '@/lib/provider-selection'
 
 interface ProviderSelectorProps {
   providers: ProviderWithAvailability[]
@@ -30,7 +31,7 @@ export function ProviderSelector({
   const effectiveRuntimeType = runtimeType === RuntimeType.ACP ? RuntimeType.ACP : RuntimeType.CLI
   // Session follow-up cannot switch Agent identity or Runtime.
   const filteredProviders = providers.filter(
-    (p) => String(p.provider.agentType) === agentType
+    (p) => isProviderEnabled(p) && String(p.provider.agentType) === agentType
       && (p.provider.runtimeType === RuntimeType.ACP ? RuntimeType.ACP : RuntimeType.CLI) === effectiveRuntimeType
   )
 

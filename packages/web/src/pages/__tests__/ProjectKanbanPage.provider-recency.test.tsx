@@ -127,6 +127,16 @@ afterEach(() => {
 })
 
 describe('task creation Provider recency', () => {
+  it('excludes disabled configurations even when they are the default and last selection', async () => {
+    fixtures.providers[0].provider.enabled = false
+    fixtures.providers[0].provider.isDefault = true
+    localStorage.setItem('lastSelectedProviderId', 'frequent')
+    await render()
+    expect(order()).toEqual(['recent', 'unused', 'missing', 'permission-denied'])
+    expect(fixtures.createInput!.defaultProviderId).toBe('recent')
+    expect(fixtures.providers[0].provider.id).toBe('frequent')
+  })
+
   it('reorders immediately after creation without fetching Providers again and preserves the order after reload', async () => {
     localStorage.setItem('providerUsageCount', JSON.stringify({ frequent: 100, unused: 1 }))
     localStorage.setItem('providerLastUsedAt', JSON.stringify({

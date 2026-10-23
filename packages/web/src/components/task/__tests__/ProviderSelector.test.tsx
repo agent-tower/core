@@ -45,6 +45,25 @@ function option(label: string) {
 }
 
 describe('ProviderSelector', () => {
+  it('keeps the current disabled configuration name without offering it as a choice', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const disabled = provider('disabled-current', RuntimeType.CLI)
+    disabled.provider.enabled = false
+    act(() => root.render(
+      <ProviderSelector providers={[disabled, provider('ready', RuntimeType.CLI)]}
+        currentProviderId="disabled-current" agentType={AgentType.CODEX} onSelect={vi.fn()} />,
+    ))
+    expect(container.querySelector('button')?.title).toContain('disabled-current')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    act(() => openMenu(container.querySelector('button')!))
+    expect(options()).toHaveLength(1)
+    expect(option('ready')).toBeDefined()
+    expect(option('disabled-current')).toBeUndefined()
+    act(() => root.unmount())
+  })
+
   it('shows only the server reason when the only Provider is blocked', () => {
     const container = document.createElement('div')
     document.body.appendChild(container)

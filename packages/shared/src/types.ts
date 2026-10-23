@@ -324,6 +324,8 @@ export interface Provider {
   agentType: AgentType | string;
   /** 缺失时按 CLI 解释，用于兼容旧 Provider backup。 */
   runtimeType?: RuntimeType;
+  /** 缺失时视为启用；禁用后保留配置，但从新建会话的可选列表隐藏。 */
+  enabled?: boolean;
   executionPermission?: ExecutionPermissionMode;
   /** Retained across reload/backup until an explicit mode selection resolves old semantics. */
   executionPermissionReviewRequired?: boolean;
@@ -372,6 +374,7 @@ export interface ProviderDraftInput {
   name: string
   agentType: AgentType
   runtimeType?: RuntimeType
+  enabled?: boolean
   executionPermission?: ExecutionPermissionMode
   env?: Record<string, ProviderSecretWriteState>
   config?: Record<string, unknown>

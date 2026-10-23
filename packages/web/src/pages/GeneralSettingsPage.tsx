@@ -13,6 +13,7 @@ import {
   useUpdateAccessAuthSettings,
 } from '@/hooks/use-access-auth'
 import { useProviders } from '@/hooks/use-providers'
+import { isProviderEnabled } from '@/lib/provider-selection'
 import {
   SettingsPageContainer,
   SettingsPageHeader,
@@ -74,6 +75,7 @@ export function GeneralSettingsPage() {
   const providerOptions = [
     { value: FOLLOW_TASK_VALUE, label: t('跟随任务') },
     ...(providers ?? [])
+      .filter(isProviderEnabled)
       .filter(p => p.availability.type !== 'NOT_FOUND')
       .map(p => ({ value: p.provider.id, label: p.provider.name })),
   ]
@@ -388,7 +390,8 @@ export function GeneralSettingsPage() {
           description={t('"跟随任务"表示使用当前任务所用的 Agent 渠道。选择具体渠道可使用更经济的模型。')}
         >
           <Select
-            value={selectedProviderId}
+            value={providerOptions.some(option => option.value === selectedProviderId) ? selectedProviderId : ''}
+            placeholder={providers?.find(item => item.provider.id === selectedProviderId)?.provider.name}
             onChange={handleProviderChange}
             options={providerOptions}
           />

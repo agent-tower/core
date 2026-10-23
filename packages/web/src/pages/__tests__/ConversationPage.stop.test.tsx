@@ -65,6 +65,26 @@ it('keeps a blocked Provider visible in the new conversation start options', asy
   expect(container.querySelector('[data-provider-id="blocked"]')?.textContent).toBe(reason)
 })
 
+it('hides disabled configurations and replaces the default when it becomes disabled', async () => {
+  const provider = (id: string, enabled?: boolean): ProviderWithAvailability => ({
+    provider: { id, name: id, agentType: AgentType.CODEX, runtimeType: RuntimeType.CLI, enabled, env: {}, config: {}, isDefault: true },
+    availability: { type: 'INSTALLATION_FOUND' },
+  })
+  providerRows.data = [provider('disabled', false), provider('ready'), provider('alternate')]
+  get.mockResolvedValue([])
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const container = document.createElement('div'); document.body.append(container); root = createRoot(container)
+  const render = () => root!.render(<QueryClientProvider client={client!}><MemoryRouter initialEntries={['/conversations']}><Routes><Route path="/conversations" element={<ConversationPage />} /></Routes></MemoryRouter></QueryClientProvider>)
+  await act(async () => render())
+  expect(container.querySelector('[data-default-provider]')?.getAttribute('data-default-provider')).toBe('ready')
+  expect(container.querySelector('[data-provider-id="disabled"]')).toBeNull()
+
+  providerRows.data = [provider('disabled', false), provider('ready', false), provider('alternate')]
+  await act(async () => render())
+  expect(container.querySelector('[data-default-provider]')?.getAttribute('data-default-provider')).toBe('alternate')
+  expect(container.querySelector('[data-provider-id="ready"]')).toBeNull()
+})
+
 it.each([SessionStatus.COMPLETED, SessionStatus.CANCELLED])('sends stop without refresh when cached Conversation is %s but runtime awaits approval', async status => {
   const conversation = { id: 'conversation-1', sessionId: 'session-1', title: 'ASK', status, agentType: AgentType.CLAUDE_CODE, runtimeType: RuntimeType.CLI, providerId: 'provider', createdAt: new Date().toISOString() } as Conversation
   let stopped = false

@@ -207,6 +207,61 @@ beforeEach(() => {
 })
 
 describe('ProviderSettingsPage deterministic behavior fixture', () => {
+  it('disables and re-enables a configuration while keeping it in the management list', () => {
+    renderPage()
+    const toggle = () => document.querySelector<HTMLButtonElement>('#provider-enabled')!
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+    const original = persistedProvider()
+
+    act(() => toggle().click())
+    expect(hookMocks.update).toHaveBeenLastCalledWith(
+      { id: original.id, data: { enabled: false } },
+      expect.any(Object),
+    )
+    act(() => root!.render(<ProviderSettingsPage />))
+    expect(toggle().getAttribute('aria-checked')).toBe('false')
+    const selected = document.querySelector<HTMLButtonElement>('button[aria-current="true"]')!
+    expect(selected.textContent).toContain(original.name)
+    expect(selected.textContent).toContain('已禁用')
+    expect(selected.querySelector('[title]')?.getAttribute('title')).toBe('已禁用')
+    expect(persistedProvider()).toMatchObject({
+      enabled: false,
+      config: original.config,
+      settings: original.settings,
+      redactedEnv: original.redactedEnv,
+    })
+
+    act(() => toggle().click())
+    expect(hookMocks.update).toHaveBeenLastCalledWith(
+      { id: original.id, data: { enabled: true } },
+      expect.any(Object),
+    )
+    act(() => root!.render(<ProviderSettingsPage />))
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+    expect(selected.textContent).not.toContain('已禁用')
+  })
+
+  it('keeps a disabled configuration disabled when its other settings are edited', () => {
+    hookMocks.providers = [providerFixture({ enabled: false })]
+    renderPage()
+    openEditor()
+    changeTextInput(document.querySelector('#provider-name') as HTMLInputElement, 'Renamed disabled provider')
+    act(() => findButton('保存 Provider').click())
+    expect(persistedProvider()).toMatchObject({ name: 'Renamed disabled provider', enabled: false })
+    expect(hookMocks.update.mock.calls[0]![0].data).not.toHaveProperty('enabled')
+    expect(document.querySelector('#provider-enabled')?.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('keeps the enabled state when its update fails', () => {
+    hookMocks.update.mockImplementation((_payload: unknown, callbacks?: MutationCallbacks) => {
+      callbacks?.onError?.(new Error('Could not save'))
+    })
+    renderPage()
+    act(() => document.querySelector<HTMLButtonElement>('#provider-enabled')!.click())
+    expect(document.querySelector('#provider-enabled')?.getAttribute('aria-checked')).toBe('true')
+    expect(persistedProvider().enabled).not.toBe(false)
+  })
+
   it('keeps list and detail availability aligned with refreshed permission capability', () => {
     const reason = 'Remove sandbox_workspace_write from Codex advanced settings before using automatic sandbox approval.'
     const base = providerFixture({ executionPermission: 'AUTO_SANDBOX' })

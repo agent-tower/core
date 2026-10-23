@@ -194,6 +194,20 @@ describe('CreateTaskInput Provider availability', () => {
     await pressEnter(textarea)
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'blocked' }))
   })
+
+  it('uses the new default after a previously chosen configuration is removed from the choices', async () => {
+    const { onSubmit, rerender } = render({
+      defaultProviderId: 'former',
+      providers: [{ id: 'former', name: 'Former', available: true }],
+    })
+    const textarea = await setTextareaValue('Review this change')
+    rerender({
+      defaultProviderId: 'ready',
+      providers: [{ id: 'ready', name: 'Ready', available: true }],
+    })
+    await pressEnter(textarea)
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'ready' }))
+  })
 })
 
 describe('CreateTaskInput slash commands', () => {

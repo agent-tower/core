@@ -8,12 +8,13 @@ import { ListProvidersInput } from '../types.js';
 export function registerProviderTools(server: McpServer, client: AgentTowerClient) {
   server.tool(
     'list_providers',
-    'List all configured AI agent providers with their availability status.',
+    'List enabled AI agent providers available for selection with their availability status.',
     ListProvidersInput.shape,
     async () => {
       try {
         const result = await client.listProviders();
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        const selectableProviders = result.filter(item => item.provider.enabled !== false);
+        return { content: [{ type: 'text', text: JSON.stringify(selectableProviders, null, 2) }] };
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
       }

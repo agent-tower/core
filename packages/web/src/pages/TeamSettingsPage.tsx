@@ -19,6 +19,7 @@ import { AgentLogo } from '@/components/agent'
 import { AVATAR_PRESETS } from '@/components/team/avatar-presets'
 import { MemberAvatar } from '@/components/team/MemberAvatar'
 import { useProviders } from '@/hooks/use-providers'
+import { isProviderEnabled } from '@/lib/provider-selection'
 import {
   useCreateMemberPreset,
   useCreateTeamTemplate,
@@ -201,13 +202,13 @@ export function TeamSettingsPage() {
   const templateById = useMemo(() => new Map(templates.map(t => [t.id, t] as const)), [templates])
 
   const providerOptions = useMemo(() => {
-    const options: SelectOption[] = providerRows.map(({ provider, availability }) => ({
+    const options: SelectOption[] = providerRows.filter(isProviderEnabled).map(({ provider, availability }) => ({
       value: provider.id,
       label: provider.name + (availability.type === 'NOT_FOUND' ? t(' (不可用)') : ''),
       icon: <AgentLogo agentType={provider.agentType} className="size-4" />,
       disabled: availability.type === 'NOT_FOUND',
     }))
-    if (presetForm.providerId && !options.some(o => o.value === presetForm.providerId)) {
+    if (presetForm.providerId && !providerRows.some(item => item.provider.id === presetForm.providerId) && !options.some(o => o.value === presetForm.providerId)) {
       options.unshift({ value: presetForm.providerId, label: `${presetForm.providerId}${t(' (不可用)')}`, disabled: true })
     }
     return options
@@ -434,7 +435,7 @@ export function TeamSettingsPage() {
 
               <div>
                 <label className="block text-[12px] font-medium text-muted-foreground mb-1">{t('Provider')}</label>
-                <Select value={presetForm.providerId} onChange={v => updatePresetField('providerId', v)} options={providerOptions} disabled={providersIsError} />
+                <Select value={presetForm.providerId} onChange={v => updatePresetField('providerId', v)} options={providerOptions} placeholder={providerRows.find(item => item.provider.id === presetForm.providerId)?.provider.name} disabled={providersIsError} />
                 {providersIsError && <p className="mt-1 text-xs text-destructive-ink">{t('Provider 列表加载失败。')}</p>}
               </div>
 

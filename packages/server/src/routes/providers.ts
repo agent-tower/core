@@ -76,6 +76,7 @@ const createProviderSchema = z.object({
   name: z.string(),
   agentType: z.nativeEnum(AgentType).refine(isUserVisibleAgentType, 'Agent type is not available'),
   runtimeType: z.nativeEnum(RuntimeType).default(RuntimeType.CLI),
+  enabled: z.boolean().optional(),
   executionPermission: z.enum(['ASK', 'AUTO_SANDBOX', 'FULL_ACCESS']).optional(),
   env: z.record(secretWriteSchema).default({}),
   config: z.record(z.unknown()).default({}),
@@ -86,6 +87,7 @@ const createProviderSchema = z.object({
 });
 
 const updateProviderSchema = z.object({
+  enabled: z.boolean().optional(),
   executionPermission: z.enum(['ASK', 'AUTO_SANDBOX', 'FULL_ACCESS']).optional(),
   name: z.string().optional(),
   env: z.record(secretWriteSchema).optional(),
@@ -118,6 +120,7 @@ const backupProviderSchema = z.object({
   name: z.string().min(1),
   agentType: z.nativeEnum(AgentType),
   runtimeType: z.nativeEnum(RuntimeType).optional().default(RuntimeType.CLI),
+  enabled: z.boolean().optional(),
   executionPermission: z.enum(['ASK', 'AUTO_SANDBOX', 'FULL_ACCESS']).optional(),
   executionPermissionReviewRequired: z.boolean().optional(),
   env: z.record(z.string()).default({}),
@@ -382,6 +385,11 @@ export async function providerRoutes(app: FastifyInstance, options: ProviderRout
     if (!existing) {
       reply.code(404);
       return { error: `Provider not found: ${request.params.id}` };
+    }
+    // Visibility changes preserve configurations that need repair or permission review.
+    if (parsed.data.enabled !== undefined && Object.keys(parsed.data).length === 1) {
+      const provider = updateProvider(existing.id, { enabled: parsed.data.enabled });
+      return provider ? readProvider(provider, canDeleteProvider(provider)) : null;
     }
     const input: ProviderDraftInput = {
       ...parsed.data,

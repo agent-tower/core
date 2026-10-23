@@ -173,6 +173,7 @@ Claude Code 仍可以通过 `CLAUDE_PATH`/`CLAUDE_CODE_EXECUTABLE` 显式覆盖�
 - Agent 运行配置
 - settings
 - 是否默认
+- 是否启用
 
 创建 Session 后，`agentType` 和 `runtimeType` 会固化到 Session。后续消息只能切换到相同 Agent 和相同 Runtime 的 Provider；CLI 与 ACP 之间切换需要创建新 Session。
 
@@ -183,10 +184,15 @@ Provider 页面支持：
 - 列出所有 provider
 - 创建 provider
 - 更新 provider
+- 启用或禁用 provider
 - 删除 provider
 - 导出备份
 - 从备份导入
 - 重新加载配置
+
+在 Provider 配置列表中可以禁用暂时不用的配置。禁用后，配置仍保留在管理列表中，可以继续编辑或重新启用，但不会出现在任务启动、新建对话、渠道切换等 Provider 选择列表中，也不会被自动选为默认配置。已有 Session 的配置名称和运行中的执行不受影响。
+
+启用状态会随配置保存，并在备份、导入和重新加载后保留。旧配置或旧备份没有启用状态时，默认视为启用。
 
 Agent 环境页面支持检测和引导安装部分本机 Agent CLI。安装前会展示官方来源、下载摘要、风险提示和校验信息。Claude Code 与 Codex 的安装入口面向本机 CLI；它们的 ACP Runtime 已内置，其中 Codex ACP 会优先使用检测到的系统安装。Qwen Code、Kiro CLI、OpenCode、Grok Build 和 DeepSeek Harness 当前不在安装清单中，需要用户自行安装对应 CLI；Pi Coding Agent 已内置，Provider 可用性会直接检测随 Agent Tower 发布的 Runtime。
 

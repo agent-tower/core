@@ -31,6 +31,8 @@ export interface Provider {
   name: string;
   agentType: AgentType | string;
   runtimeType?: RuntimeType;
+  /** 缺失时视为启用；禁用不影响已有会话或显式 Provider 引用。 */
+  enabled?: boolean;
   executionPermission?: ExecutionPermissionMode;
   executionPermissionReviewRequired?: boolean;
   /** 环境变量，启动进程时注入（API URL、API Key 等） */
@@ -69,7 +71,7 @@ function normalizeProvider(provider: Omit<Provider, 'runtimeType'> & { runtimeTy
   const resolved = resolveProviderExecutionPermission({ ...provider, runtimeType });
   const review = resolved.diagnostics.some(item => item.code === 'LEGACY_PERMISSION_REVIEW_REQUIRED');
   return {
-    ...provider, runtimeType,
+    ...provider, runtimeType, enabled: provider.enabled !== false,
     executionPermission: provider.executionPermission !== undefined ? provider.executionPermission : resolved.mode,
     ...(review ? { executionPermissionReviewRequired: true } : {}),
     config: resolved.diagnostics.some(item => item.code !== 'LEGACY_PERMISSION_REVIEW_REQUIRED')
@@ -152,6 +154,7 @@ function toPersistedProvider(provider: Provider): PersistedProvider {
     name: provider.name,
     agentType: provider.agentType,
     runtimeType: getProviderRuntimeType(provider),
+    enabled: provider.enabled !== false,
     executionPermission: provider.executionPermission,
     ...(provider.executionPermissionReviewRequired ? { executionPermissionReviewRequired: true } : {}),
     env: { ...(provider.env ?? {}) },
@@ -296,7 +299,7 @@ export function getProvidersByAgentType(agentType: AgentType | string): Provider
  */
 export function getDefaultProvider(agentType: AgentType | string, runtimeType: RuntimeType = RuntimeType.CLI): Provider | null {
   const providers = getProvidersByAgentType(agentType)
-    .filter(provider => getProviderRuntimeType(provider) === runtimeType);
+    .filter(provider => provider.enabled !== false && getProviderRuntimeType(provider) === runtimeType);
   return providers.find(p => p.isDefault) ?? providers[0] ?? null;
 }
 

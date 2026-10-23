@@ -1170,6 +1170,10 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     '系统内置 Provider 不可删除': 'Built-in providers cannot be deleted.',
     '已恢复默认 Provider 配置': 'Default provider configuration restored.',
     'Provider 已删除': 'Provider deleted.',
+    '已禁用': 'Disabled',
+    '启用配置': 'Enable configuration',
+    '禁用后不在 Agent 可选列表中显示，配置仍会保留，可随时重新启用。':
+      'Disabled configurations are hidden from Agent selectors. They are kept here and can be enabled again at any time.',
     '删除 Provider 失败': 'Failed to delete provider.',
     'Provider 备份已导出': 'Provider backup exported.',
     '导出 Provider 备份失败': 'Failed to export provider backup.',

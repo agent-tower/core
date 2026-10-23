@@ -12,6 +12,7 @@ import type { AgentSessionSendInput } from '@/components/agent'
 import { BrandLockup } from '@/components/BrandLogo'
 import { CreateTaskInput } from '@/components/task/CreateTaskInput'
 import { useProviders } from '@/hooks/use-providers'
+import { isProviderEnabled } from '@/lib/provider-selection'
 import {
   useConversation,
   useConversations,
@@ -365,7 +366,7 @@ export function ConversationPage() {
     ?? conversations.find((conversation) => conversation.id === conversationId)
     ?? null
 
-  const startProviderOptions = useMemo(() => providersData.map(item => {
+  const startProviderOptions = useMemo(() => providersData.filter(isProviderEnabled).map(item => {
     const reason = getProviderStartIssue(item)
     return {
       id: item.provider.id,
@@ -452,7 +453,7 @@ export function ConversationPage() {
   }, [conversationReadTimes, unreadConversationIds])
 
   useEffect(() => {
-    if (activeConversation || selectedProviderId) return
+    if (activeConversation || startProviderOptions.some(option => option.id === selectedProviderId)) return
     setSelectedProviderId(startProviderOptions.find(option => option.available)?.id ?? '')
   }, [activeConversation, selectedProviderId, startProviderOptions])
 

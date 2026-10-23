@@ -84,6 +84,8 @@ CLI spawn 与 Pipeline attach 之间保留 `collectEarlyPtyEvents()` / `takeEarl
 
 Provider 是主要配置入口，profiles 保留兼容。`providers.ts` 合并内置默认与用户配置；`provider-config.service.ts` 负责 draft 归一化、简单/高级映射、冲突诊断和 secret 遮蔽；`provider-effective-connection.service.ts` 统一连接来源及认证解析。编辑、测试和运行配置应复用这些入口，避免各自解释 env/settings 优先级。其返回的 `secret` 只用于服务端，不能直接序列化或打印。
 
+Provider 顶层 `enabled?: boolean` 表示是否在选择入口展示，缺省为启用；禁用配置仍保留于管理读取、持久化、备份、导入与 reload，默认解析跳过禁用项。禁用不等于删除或即时撤销运行授权，不改变已有 Session 的身份、配置展示或活动执行快照。
+
 CLI Executor factory 为每次启动生成配置，ACP Definition 将 Provider 投影为 profile/launch spec。显式连接配置应覆盖或移除继承环境中会抢优先级的旧认证变量；已运行 child 保持启动快照，切换配置需要新的启动边界。动态 credential `env_key` 不能占用 `ExecutionEnv` 保护的 Agent Tower、TeamRun 或 MCP 环境变量。
 
 Agent 专属配置使用结构化解析：Codex TOML、Claude JSON 及现有标准工具。保留用户未覆盖的字段；协议 header、认证方式、model/effort/fast-mode 和原生权限配置放在对应 Executor/Definition。比如 Codex 官方 API key 与兼容网关的 ACP authentication hook 不应变成通用 Driver 的 AgentType 分支。

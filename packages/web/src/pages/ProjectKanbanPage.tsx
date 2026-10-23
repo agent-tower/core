@@ -18,6 +18,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { useUIStore } from '@/stores/ui-store'
 import { TunnelButton } from '@/components/TunnelButton'
 import { useProviders } from '@/hooks/use-providers'
+import { isProviderEnabled } from '@/lib/provider-selection'
 import { useI18n } from '@/lib/i18n'
 import type { TeamRunMode } from '@agent-tower/shared'
 import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
@@ -252,7 +253,7 @@ export function ProjectKanbanPage() {
     if (!providersData) return []
 
     // 不可用的 Provider 排在最后；无历史或时间相同时保留 API 顺序。
-    return [...providersData].sort((a, b) => {
+    return providersData.filter(isProviderEnabled).sort((a, b) => {
       const aAvailable = !getProviderStartIssue(a)
       const bAvailable = !getProviderStartIssue(b)
 
