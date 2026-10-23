@@ -22,7 +22,7 @@
 ## 数据库与迁移
 
 - schema 位于 `packages/server/prisma/schema.prisma`。UUID string 主键、String 业务状态和 JSON string 字段沿用现有模型；共享状态类型在 `packages/shared/src/types.ts`。JSON 在 Service mapper 中序列化并兼容旧值，DTO 不直接扩散 Prisma row。
-- `utils/index.ts:initializeDatabaseRuntime()` 在接收请求前启用 WAL 和 busy timeout。队列扫描、软删除及关系查询需要相应 index；跨实体状态变更放事务，事务后的进程/文件动作保留失败、重试或补偿路径。
+- `utils/index.ts:initializeDatabaseRuntime()` 在接收请求前先设置 busy timeout 再启用 WAL；并发 CLI 的 WAL 切换只对 SQLite 锁错误做有界重试，永久错误原样失败。队列扫描、软删除及关系查询需要相应 index；跨实体状态变更放事务，事务后的进程/文件动作保留失败、重试或补偿路径。
 - 修改 schema 后生成 Prisma Client，并提供仓库约定的 migration SQL。但发布 CLI 和开发 `index.ts` 实际使用 `prisma db push --skip-generate` 同步结构，不会执行 migration SQL 中的数据转换。
 - 两入口在导入应用前共用 `utils/database-schema.ts:synchronizeDatabaseSchema()`：显式 dbPath 的短生命周期 Prisma client 在短事务中检查并补 P3 创建幂等列与 RoomMessage.deliveryId 的 nullable TEXT/BINARY UNIQUE 列/索引，断开后运行原 bundled Prisma + `preparePrismaCliEnv`，最后核对 P3 结构、关联及全库 FK/integrity。缺表交 db push，异构索引/列、重复非空值及孤儿均阻止维护和 worker 恢复；只对 BUSY/已知同步竞争做最多三次重读重试，不接受数据丢失。完整 integrity 扫描在短事务外，不能把整份 P3 SQL 放入事务（其中 foreign_keys=OFF 无效，DROP Source 可级联删除 Attempt）。Team 用户投递基础增加 nullable Session / Task / Team / snapshot 引用；prepare 接受旧 sessionId NOT NULL，push 重建后 verify 要求 nullable，预检新列/索引与跨实体事实，旧引用不回填。房间 receipt 为数据库发布事实，启动核对完整 RoomMessage/全部 WR/snapshot/SENT 后才允许恢复。异常不盲补造；这不是通用历史 schema 修复框架。
 - 需要回填历史数据时，另更新 `services/database-maintenance.service.ts:runStartupDataMigrations()`：通过 `AppSettings.dataMigrationVersion` 幂等执行，在同一事务最后推进版本。不能仅靠 migration SQL，也不要在启动迁移中强行重写所有历史记录。

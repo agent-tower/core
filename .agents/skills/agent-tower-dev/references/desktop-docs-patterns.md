@@ -8,6 +8,7 @@
 - Pi 先通过隔离 npm nested install 物化完整依赖树，再作为 bundled dependency 打包。不能直接复制 pnpm symlink，也不能指望最终安装重新还原 Pi shrinkwrap；变更 Pi/ACP 依赖同时检查 server package、lockfile、组装与 smoke。
 - node-pty 携带多平台 prebuilds，避免最终安装重新 node-gyp；cloudflared 只 bundle JS wrapper，不携带发布机 binary，其目标平台 binary 由服务首次启动 tunnel 时获取。保持两者安装脚本裁剪与可执行权限处理。
 - `scripts/smoke-publish-install.mjs --tarball <path>` 复用已有本地 tarball 在临时 prefix 执行全局安装，不要求构建目录且保留输入包；无参数时仍会从 publish 目录临时打包。consumer 必须是独立且有 `package.json` 的目录。验证 client 语法/模块加载/query engine、无 consumer `.prisma` 泄漏，以及实际执行 bundled `pi --version`。
+- npm 安装 smoke 的旧库升级检查通过 `verify-p3-startup-worker.mjs` 在独立 Node 子进程执行；等待子进程退出后再由父进程删除临时安装。Prisma `$disconnect()` 不会卸载原生 DLL，在 Windows 的清理进程中加载引擎会导致删除失败。CLI 启动验收通过 IPC 正常关闭服务。
 
 相关验证是 `pnpm build:publish`、`pnpm publish:smoke --tarball <path>`；脚本回归使用 `pnpm exec vitest run packages/server/scripts/smoke-publish-install.test.ts`，不联网安装。真实发布只 pack 一次，验证、发布和交付复用同一个 tarball，快速 beta / 完整验证按 publish skill 分级；依赖或安装链路变化不能跳过完整安装。仅改此指导不需要构建或安装。真正的 npm/GitHub 发布按用户授权使用仓库对应发布 skill，构建本身不发布。
 

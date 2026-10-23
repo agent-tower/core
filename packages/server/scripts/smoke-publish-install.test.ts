@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   statSync: vi.fn(),
   writeFileSync: vi.fn(),
   verifyCliStartup: vi.fn(),
-  verifyP3Startup: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -24,7 +23,6 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('../../../scripts/verify-cli-startup.mjs', () => ({
   verifyCliStartup: mocks.verifyCliStartup,
-  verifyP3Startup: mocks.verifyP3Startup,
 }));
 
 vi.mock('node:fs', () => ({
@@ -111,7 +109,6 @@ beforeEach(() => {
     [path.join(installedRoot, 'node_modules/@prisma/client/package.json'), { version: '5.22.0' }],
   ]);
   mocks.verifyCliStartup.mockResolvedValue('cli=1.2.3-beta.4 health=ok web=ok mcp=agent-tower');
-  mocks.verifyP3Startup.mockResolvedValue('legacy=preserved');
   mocks.existsSync.mockImplementation(filePath => existingFiles.has(filePath));
   mocks.statSync.mockReturnValue({ isFile: () => true });
   mocks.mkdtempSync.mockReturnValue(tempRoot);
@@ -121,7 +118,9 @@ beforeEach(() => {
   });
   mocks.readdirSync.mockReturnValue(['index.js', 'libquery_engine-test.node']);
   mocks.execFileSync.mockImplementation((command, args) => {
-    if (command === process.execPath) return '';
+    if (command === process.execPath) {
+      return args[0] === path.join(repoRoot, 'scripts/verify-p3-startup-worker.mjs') ? 'legacy=preserved\n' : '';
+    }
     if (command !== npmCommand) throw new Error(`Unexpected executable: ${command}`);
     if (args[0] === 'pack') return `${tarballName}\n`;
     if (args[0] === 'install') return '';
@@ -248,8 +247,27 @@ describe('publish install smoke tarball reuse', () => {
     await runSmoke(['--tarball', externalTarball]);
 
     expect(mocks.verifyCliStartup).toHaveBeenCalledWith(installedRoot, '1.2.3-beta.4', tempRoot);
-    expect(mocks.verifyP3Startup).toHaveBeenCalledWith(installedRoot, path.join(tempRoot, 'p3-upgrade'));
+    expect(mocks.execFileSync).toHaveBeenCalledWith(process.execPath, [
+      path.join(repoRoot, 'scripts/verify-p3-startup-worker.mjs'),
+      installedRoot,
+      path.join(tempRoot, 'p3-upgrade'),
+    ], { cwd: consumerDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('health=ok'));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('legacy=preserved'));
+  });
+
+  it('fails the smoke and cleans up when legacy startup verification fails', async () => {
+    const originalImplementation = mocks.execFileSync.getMockImplementation()!;
+    mocks.execFileSync.mockImplementation((command, args, options) => {
+      if (command === process.execPath && args[0] === path.join(repoRoot, 'scripts/verify-p3-startup-worker.mjs')) {
+        throw new Error('Legacy startup failed');
+      }
+      return originalImplementation(command, args, options);
+    });
+
+    await expect(runSmoke(['--tarball', externalTarball])).rejects.toThrow('Legacy startup failed');
+    expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('status=passed'));
+    expect(mocks.rmSync).toHaveBeenCalledExactlyOnceWith(tempRoot, { recursive: true, force: true });
   });
 
   it('rejects a published package that declares Pi in its dependency graph', async () => {
