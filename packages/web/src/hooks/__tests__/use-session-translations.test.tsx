@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from 'react'
+import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -25,7 +25,7 @@ function event(name: string, data?: unknown) { for (const handler of socket.hand
 async function flush() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 15)) }) }
 function Consumer({ sessionId, logs, name }: { sessionId: string; logs: LogEntry[]; name: string }) {
   const query = useSessionTranslations(sessionId, logs)
-  snapshots[name] = query.overlays
+  useEffect(() => { snapshots[name] = query.overlays }, [name, query.overlays])
   return <div data-consumer={name}>{logs.map(item => matchingTranslation(sessionId, item, query.overlays)?.translatedText ?? item.content).join('|')}</div>
 }
 async function render(children: React.ReactNode) { act(() => root.render(<QueryClientProvider client={client}>{children}</QueryClientProvider>)); await flush() }
@@ -66,6 +66,65 @@ describe('Session translation read model', () => {
   it('rejects lower overlay revisions, but authoritative omissions remove previous success', () => {
     expect(mergeTranslationSnapshot([overlay], [{ ...overlay, overlayRevision: 7, state: 'PENDING' }])).toEqual([overlay])
     expect(mergeTranslationSnapshot([overlay], [])).toEqual([])
+    const cached = [overlay]
+    expect(mergeTranslationSnapshot(cached, [{ ...overlay }])).toBe(cached)
+  })
+
+  it('restores translations on the first render after switching tasks, even with a truncated log cache', async () => {
+    const second = { ...log, id: 'log-b', content: 'second', textBlock: { ...log.textBlock!, blockId: 'b2' } }
+    await render(<Consumer name="a" sessionId="s1" logs={[log, second]} />)
+    expect(get).toHaveBeenCalledTimes(1) // Joining the room and its ACK must not duplicate the initial read.
+    await render(<Consumer name="b" sessionId="s2" logs={[log]} />)
+    let finish!: (value: Page) => void
+    type Page = { items: SessionTranslationOverlay[]; nextCursor: null }
+    get.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }) as never)
+    act(() => root.render(<QueryClientProvider client={client}><Consumer name="a" sessionId="s1" logs={[log]} /></QueryClientProvider>))
+    expect(container.textContent).toBe('translation')
+    expect(client.getQueryCache().getAll().map(query => query.queryKey)).toEqual([
+      ['session-translations', 's1'], ['session-translations', 's2'],
+    ])
+    await act(async () => finish({ items: [overlay], nextCursor: null })); await flush()
+    expect(container.textContent).toBe('translation')
+  })
+
+  it('keeps validated translations during transient refresh errors and removes them on revoked access', async () => {
+    await render(<Consumer name="a" sessionId="s1" logs={[log]} />)
+    get.mockRejectedValue(new ApiError(503, 'temporarily unavailable'))
+    act(() => event(ServerEvents.TRANSLATION_INVALIDATED, { sessionId: 's1' })); await flush()
+    expect(container.textContent).toBe('translation')
+    get.mockRejectedValue(new ApiError(403, 'forbidden'))
+    act(() => event(ServerEvents.TRANSLATION_INVALIDATED, { sessionId: 's1' })); await flush()
+    expect(container.textContent).toBe('original')
+    get.mockRejectedValue(new ApiError(503, 'temporarily unavailable'))
+    act(() => event(ServerEvents.TRANSLATION_INVALIDATED, { sessionId: 's1' })); await flush()
+    expect(container.textContent).toBe('original')
+  })
+
+  it('does not refetch or create cache entries on every streaming delta', async () => {
+    const open = { ...log, textBlock: { ...log.textBlock!, state: 'OPEN' as const } }
+    await render(<Consumer name="a" sessionId="s1" logs={[open]} />)
+    const count = get.mock.calls.length
+    for (let i = 1; i <= 5; i++) await render(<Consumer name="a" sessionId="s1" logs={[{ ...open, content: 'long '.repeat(i * 1000) }]} />)
+    expect(get).toHaveBeenCalledTimes(count)
+    expect(client.getQueryCache().getAll()).toHaveLength(1)
+  })
+
+  it('revokes a pending refresh without restoring its previous cache on cancellation or remount', async () => {
+    await render(<Consumer name="a" sessionId="s1" logs={[log]} />)
+    const releases: Array<(value: { items: SessionTranslationOverlay[]; nextCursor: null }) => void> = []
+    get.mockImplementation(() => new Promise(resolve => { releases.push(resolve) }) as never)
+    act(() => event(ServerEvents.TRANSLATION_INVALIDATED, { sessionId: 's1' }))
+    socket.emit.mockImplementation((_name, _payload, ack) => { if (typeof ack === 'function') queueMicrotask(() => ack({ success: false })) })
+    act(() => event('connect')); await flush()
+    expect(snapshots.a).toEqual([])
+    await render(null)
+    // The next subscription ACK and REST response are still pending.
+    socket.emit.mockImplementation(() => {})
+    await render(<Consumer name="a" sessionId="s1" logs={[log]} />)
+    expect(container.textContent).toBe('original')
+    await act(async () => { for (const finish of releases.slice(0, -1)) finish({ items: [overlay], nextCursor: null }) }); await flush()
+    expect(container.textContent).toBe('original')
+    await act(async () => releases.at(-1)!({ items: [], nextCursor: null })); await flush()
   })
 
   it('shares subscriptions, keeps them until the last consumer, and restores them on reconnect', async () => {
@@ -80,6 +139,19 @@ describe('Session translation read model', () => {
     expect(get.mock.calls.length).toBeGreaterThan(before)
     await render(null)
     expect(socket.emit.mock.calls.filter(call => call[0] === ClientEvents.UNSUBSCRIBE)).toHaveLength(1)
+  })
+
+  it('coalesces paragraph completion events and multiple viewers into the same in-flight refresh', async () => {
+    await render(<><Consumer name="a" sessionId="s1" logs={[log]} /><Consumer name="b" sessionId="s1" logs={[log]} /></>)
+    const before = get.mock.calls.length
+    let finish!: (value: { items: SessionTranslationOverlay[]; nextCursor: null }) => void
+    get.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }) as never)
+    act(() => { for (let i = 0; i < 10; i++) event(ServerEvents.TRANSLATION_INVALIDATED, { sessionId: 's1', overlayRevision: i }) })
+    expect(get).toHaveBeenCalledTimes(before + 1)
+    expect(container.textContent).toBe('translationtranslation')
+    await act(async () => finish({ items: [], nextCursor: null })); await flush()
+    expect(get).toHaveBeenCalledTimes(before + 2)
+    expect(container.textContent).toBe('translationtranslation')
   })
 
   it('re-reads when invalidated during the very first REST request and never installs its stale result', async () => {

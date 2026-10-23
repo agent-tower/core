@@ -442,8 +442,8 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       }
 
       const hasStaleData = cached && cached.entries.length > 0
-      if (!hasStaleData && isCurrentSession()) {
-        setIsLoadingSnapshot(true)
+      if (isCurrentSession()) {
+        setIsLoadingSnapshot(!hasStaleData)
       }
 
       for (let attempt = 0; attempt <= SNAPSHOT_RETRY_DELAYS_MS.length; attempt += 1) {
@@ -692,7 +692,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   return {
     isConnected,
     isAttached,
-    isLoadingSnapshot,
+    isLoadingSnapshot: isLoadingSnapshot && conversation.entries.length === 0,
     isOutputActive,
     lastExitAt,
     logs,

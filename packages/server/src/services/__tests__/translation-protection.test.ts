@@ -5,9 +5,30 @@ import {
   parseTranslationTemplate,
   prepareTranslation,
   renderTranslationTemplate,
+  findTranslationParagraphEnds,
 } from '../translation-protection.js';
 
 const TOKENS = /⟦AT_[a-f0-9]{24}_\d+⟧/g;
+
+describe('streaming translation paragraph boundaries', () => {
+  it('seals complete paragraphs and groups short headings with prose, preserving CRLF', () => {
+    const first = '# Heading\r\n\r\n' + 'Complete sentence. '.repeat(20) + '\r\n\r\n';
+    const second = 'Another paragraph. '.repeat(20) + '\n\n';
+    expect(findTranslationParagraphEnds(first + second + 'unfinished tail')).toEqual([first.length, first.length + second.length]);
+    expect(findTranslationParagraphEnds('Unfinished paragraph. '.repeat(50))).toEqual([]);
+  });
+
+  it.each([
+    ['```ts\n', '\n```'], ['~~~\n', '\n~~~'], ['<div>\n', '\n</div>'],
+    ['<!--\n', '\n-->'], ['`', '`'], ['[label](https://example.test/', ')'],
+    ['{"secret": "', '"}'],
+  ])('does not seal inside a multiline protected construct beginning with %s', (open, close) => {
+    const protectedText = open + 'secret '.repeat(50) + '\n\nprivate\n\n' + close;
+    expect(findTranslationParagraphEnds(protectedText)).toEqual([]);
+    expect(findTranslationParagraphEnds(protectedText + '\n\nnext')).toEqual([protectedText.length + 2]);
+    expect(findTranslationParagraphEnds(open + 'secret '.repeat(50) + '\n\n')).toEqual([]);
+  });
+});
 
 describe('translation templates', () => {
   it('parses only the two variables and substitutes source text exactly once', () => {

@@ -305,7 +305,7 @@ Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspac
 
 这些入口要求应用 owner 或受信任 internal 身份，拒绝托管 Agent credential；密码关闭时沿用正常本地 owner 入口，写操作保留同源校验。来源读取还要求会话属于可读的未删除对话或未删除任务/未归档项目，内部自动提交会话不提供翻译 overlay。
 
-只翻译新增或继续更新的 `assistant_message` 正文。原文即时输出，遇工具/思考或显式块完成时提交已结束的正文；尾块在轮结束时提交。思考、工具参数、工具结果和静态历史不进入翻译。会话停止不会删除已完成且仍可读的展示翻译。
+只翻译新增或继续更新的 `assistant_message` 正文。原文即时输出，完整长段落在父正文仍输出时即可提交翻译，遇工具/思考或显式块完成时提交剩余正文；尾块在轮结束时提交。日志 textBlock.paragraphs 记录已封口段落的 UTF-16 end 和 translationEpoch；段落 overlay 的 blockId 为父 blockId 加 :p序号，sourceRevision 沿用父版本。客户端可用共享 getTranslationTextBlocks 投影并按原文字节匹配译文。思考、工具参数、工具结果和静态历史不进入翻译。会话停止不会删除已完成且仍可读的展示翻译。
 
 `translation:invalidated` 是独立 Socket 通知，仅携带 `sessionId/sourceId/sourceRevision/overlayRevision`，发给订阅该 Session 且认证有效的 owner 浏览器。通知只用于失效缓存；重连和刷新使用 REST 补读，按 revision 丢弃旧响应。译文不写入原文 patch 流，也不表示 Agent 活跃或触发派活。
 

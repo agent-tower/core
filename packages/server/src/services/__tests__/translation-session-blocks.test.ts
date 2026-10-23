@@ -54,7 +54,9 @@ describe('durable Session block overlays', () => {
       payloads.push(text);
       if (failOnce.delete(text)) return new Response('', { status: 503 });
       await new Promise<void>(resolve => release.push(resolve));
-      return response(`Translated ${text}`);
+      // Preserve protection boundary tokens, as a conforming translator does.
+      const start = text.match(/^⟦AT_[a-f0-9]{24}_\d+⟧/)?.[0] ?? '';
+      return response(start + 'Translated ' + text.slice(start.length));
     }, timeoutMs: 1000 }), limits: { tickMs: 10, retryDelays } });
   }
   afterEach(async () => { for (const resolve of release) resolve(); await persist; await service.shutdown(); sessionMsgStoreManager.delete(sessionId); });
@@ -64,7 +66,7 @@ describe('durable Session block overlays', () => {
     store.textBlocks.admission = service.getAdmissionEpoch;
     store.textBlocks.begin('turn');
     store.onTextBlock(entry => {
-      if (entry.metadata?.textBlock?.state === 'OPEN' && entry.metadata.textBlock.sourceRevision === 1) return;
+      if (entry.metadata?.textBlock?.state === 'OPEN' && entry.metadata.textBlock.sourceRevision === 1 && !entry.metadata.textBlock.paragraphs?.length) return;
       // Same boundary contract used by SessionManager: one durable original checkpoint,
       // then independent observer admission. Nothing on the raw output path awaits it.
       persist = persist.then(async () => {
@@ -75,6 +77,60 @@ describe('durable Session block overlays', () => {
     return store;
   }
   async function overlays() { return (await service.listSessionOverlays(sessionId)).items; }
+
+  it('publishes each paragraph while the final answer is still streaming and recovers without duplicate requests', async () => {
+    const msgStore = store();
+    const first = 'The first complete paragraph. '.repeat(12) + '\n\n';
+    msgStore.pushPatch(addNormalizedEntry(0, createAssistantMessage(first + 'Unfinished tail')));
+    await until(async () => payloads.length === 1);
+    expect(payloads[0]).toContain('The first complete paragraph');
+    expect(payloads[0]).not.toContain('Unfinished');
+    release[0]();
+    await until(async () => (await overlays()).some(row => row.originalText === first && row.state === 'SUCCESS'));
+    const completed = (await overlays()).find(row => row.originalText === first)!;
+    expect(completed.translatedText).toBe('Translated ' + first);
+    expect(msgStore.getSnapshot().entries[0].metadata!.textBlock!.state).toBe('OPEN');
+    msgStore.pushPatch(updateEntryContent(0, first + 'The final tail'));
+    msgStore.textBlocks.end();
+    await until(async () => payloads.length === 2);
+    expect(payloads[1]).toBe('The final tail'); release[1]();
+    await until(async () => (await overlays()).filter(row => row.state === 'SUCCESS').length === 2);
+    expect((await overlays()).find(row => row.sourceId === completed.sourceId)).toEqual(completed);
+    await persist; await service.shutdown(); sessionMsgStoreManager.delete(sessionId);
+    service = make(); await service.start(); await service.syncSessionCheckpoint(sessionId);
+    expect(payloads).toHaveLength(2); expect(await db.translationAttempt.count()).toBe(2);
+    expect((await overlays()).map(row => row.originalText).sort()).toEqual([first, 'The final tail'].sort());
+  });
+
+  it('rejects a paragraph result after a prefix rewrite and lets the revised paragraph reuse its source', async () => {
+    const msgStore = store();
+    const first = 'Original paragraph. '.repeat(20) + '\n\n';
+    msgStore.pushPatch(addNormalizedEntry(0, createAssistantMessage(first + 'tail')));
+    await until(async () => payloads.length === 1);
+    const source = (await overlays()).find(row => row.originalText === first)!;
+    msgStore.pushPatch(updateEntryContent(0, 'Revised prefix'));
+    release[0]();
+    await persist; await service.syncSessionCheckpoint(sessionId);
+    expect((await overlays()).some(row => row.translatedText)).toBe(false);
+    const revised = 'Revised paragraph. '.repeat(20) + '\n\n';
+    msgStore.pushPatch(updateEntryContent(0, revised + 'tail'));
+    await until(async () => payloads.length === 2); release[1]();
+    await until(async () => (await overlays()).some(row => row.originalText === revised && row.state === 'SUCCESS'));
+    expect((await overlays()).find(row => row.originalText === revised)).toMatchObject({ sourceId: source.sourceId, sourceRevision: 2 });
+    expect((await db.translationSource.findUniqueOrThrow({ where: { id: source.sourceId } })).deletedAt).toBeNull();
+  });
+
+  it('retains completed paragraph translations when a streaming reply is cancelled and never sends its tail', async () => {
+    const msgStore = store();
+    const first = 'Complete paragraph before cancellation. '.repeat(10) + '\n\n';
+    msgStore.pushPatch(addNormalizedEntry(0, createAssistantMessage(first + 'cancelled unfinished tail')));
+    await until(async () => payloads.length === 1);
+    msgStore.textBlocks.end(true); release[0]();
+    await until(async () => (await overlays()).some(row => row.state === 'SUCCESS'));
+    await persist; await service.syncSessionCheckpoint(sessionId); await service.pump();
+    expect(payloads).toHaveLength(1);
+    expect((await overlays()).find(row => row.originalText === first)?.translatedText).toBe('Translated ' + first);
+  });
 
   it.each(['PENDING', 'RETRY_WAIT'])('does not tombstone a queued %s version revised before its checkpoint', async (state) => {
     await service.shutdown();

@@ -42,7 +42,7 @@ TEAM_USER 在受理时固定正文、附件、结构化 mentions/target 与实�
 
 TEAM_INITIAL 无等待时返回201真实 TeamRun；等待翻译或前序时返回202、`TEAM_ROOM_PENDING`，没有 destinationId。pending 仅保存意图及预留身份，不提前创建团队、成员、快照或派活。意图固定成员 UUID、展开配置和客户端指纹；等待中 Task 精确 hash 变化会推进 sourceRevision、撤销旧尝试并重算路由。Git 准备在事务外，发布事务复验实体、Task hash、配置、顺序和 epoch，一次创建团队/成员/首消息/共享输入/全部派活/receipt/SENT。初始正文只翻译一次并采纳为首个任务输入。导航使用 SENT 后真实团队 ID。
 
-Session 正文只在真实语义边界或完成信号后翻译，OPEN 原文即时输出。房间自动登记依赖消息事务内固定的启用 epoch，关闭期间与未标记历史不补翻。旧版本/旧 epoch/已撤销来源的迟到结果不能提交。REST 是刷新/重连的权威读模型；Socket 只发送 ID/revision 失效通知，不承载译文或重发业务事件。
+Session 正文在安全的完整段落边界、真实语义边界或完成信号后翻译。TextBlockTracker 将完整段落的原文 UTF-16 结束位置与 epoch 记录为 textBlock.paragraphs，原始 entry 不拆分；共享 getTranslationTextBlocks 投影独立段落来源（父 blockId 加 :p序号）和未完成尾段。段落检查点沿同一持久化链登记并独立发布译文；OPEN 尾段即时显示原文且不外发。前缀被改写时推进父 sourceRevision 并撤销旧段落，停止只中止尾段，静态恢复不新增资格。前端每个 Session 仅有一个完整译文查询缓存，切回立即使用匹配缓存、后台校验；查询键不含正文，瞬时网络错误不清译文，访问被撤销时清缓存，权威快照缺项撤旧。房间自动登记依赖消息事务内固定的启用 epoch，关闭期间与未标记历史不补翻。旧版本/旧 epoch/已撤销来源的迟到结果不能提交。REST 是刷新/重连的权威读模型；Socket 只发送 ID/revision 失效通知，不承载译文或重发业务事件。
 
 配置/overlay/人工动作仅允许当前 owner 或经校验的 internal 身份，拒绝托管 Agent credential。普通写请求保留同源检查；internal 用户输入需显式 `x-agent-tower-input-origin: user`，普通 Agent 输入不二次翻译。密钥只写不回显，使用 keep/replace/clear，attempt 快照及错误不得包含凭据。
 

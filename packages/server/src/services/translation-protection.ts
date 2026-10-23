@@ -240,7 +240,7 @@ function scanInline(text: string, pieces: Piece[]): void {
   }
 }
 
-function scan(text: string): Piece[] {
+function scan(text: string, onParagraph?: (end: number) => void): Piece[] {
   const pieces: Piece[] = [];
   const lines = text.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g)?.filter(Boolean) ?? [];
   let fence: { character: string; length: number } | undefined;
@@ -281,6 +281,8 @@ function scan(text: string): Piece[] {
       || looksLikeCode(body)) {
       addPiece(pieces, line, true);
     } else {
+      // Only this branch is outside fences and multiline code/HTML/link spans.
+      if (!body.trim() && newline) onParagraph?.(offset + line.length);
       // Structured code without a fence and inline code spanning lines must also
       // remain local. If incomplete, conservatively retain the remaining block.
       const jsonStart = body.search(/\S/);
@@ -362,6 +364,15 @@ function scan(text: string): Piece[] {
     offset += line.length;
   }
   return pieces;
+}
+
+/** Keep short adjacent paragraphs together; never cut a protected multiline construct. */
+export function findTranslationParagraphEnds(text: string): number[] {
+  const ends: number[] = [];
+  scan(text, end => {
+    if (end - (ends.at(-1) ?? 0) >= 240 && text.slice(ends.at(-1) ?? 0, end).trim()) ends.push(end);
+  });
+  return ends;
 }
 
 function assertPlainTranslatedText(text: string): void {

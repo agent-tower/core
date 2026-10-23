@@ -9,6 +9,7 @@ import { CodexCliProjector } from '../../runtime/codex-cli-projector.js';
 import { addNormalizedEntry, replaceNormalizedEntry, updateEntryContent } from '../utils/patch.js';
 import { createAssistantMessage, createToolUse } from '../types.js';
 import type { NormalizedEntry } from '../types.js';
+import { getTranslationTextBlocks } from '@agent-tower/shared';
 
 function setup() {
   const store = new MsgStore();
@@ -24,6 +25,41 @@ const bodies = (store: MsgStore) => store.getSnapshot().entries.filter(e => e.en
 // Shapes verified against Claude stream-json, Codex exec/app-server v2,
 // Gemini CLI 0.27.0 nonInteractiveCli/core output types, ACP SDK 1.4.0.
 describe('canonical assistant block lifecycle protocol fixtures', () => {
+  it('seals paragraph sources during streaming without splitting the provider entry or retranslating its prefix', () => {
+    const { store } = setup();
+    const events = vi.fn(); store.onTextBlock(events);
+    const first = 'A completed paragraph. '.repeat(20) + '\n\n';
+    store.pushPatch(addNormalizedEntry(0, createAssistantMessage(first + 'tail')));
+    const entry = bodies(store)[0];
+    const block = entry.metadata!.textBlock!;
+    expect(block.state).toBe('OPEN'); expect(block.paragraphs).toEqual([{ end: first.length, translationEpoch: 7 }]);
+    expect(getTranslationTextBlocks(entry.content, block)).toMatchObject([
+      { blockId: `${block.blockId}:p0`, state: 'SEALED', content: first },
+      { blockId: `${block.blockId}:p1`, state: 'OPEN', content: 'tail' },
+    ]);
+    events.mockClear();
+    store.pushPatch(updateEntryContent(0, first + 'tail continued'));
+    expect(events).not.toHaveBeenCalled();
+    expect(bodies(store)).toHaveLength(1); expect(bodies(store)[0].id).toBe(entry.id);
+    store.textBlocks.end(true);
+    expect(getTranslationTextBlocks(bodies(store)[0].content, bodies(store)[0].metadata!.textBlock!)).toMatchObject([
+      { state: 'SEALED', content: first }, { state: 'ABORTED', content: 'tail continued' },
+    ]);
+  });
+
+  it('invalidates paragraph identities by revision when a provider rewrites the sealed prefix', () => {
+    const { store } = setup();
+    const prefix = 'First paragraph. '.repeat(20) + '\n\n';
+    store.pushPatch(addNormalizedEntry(0, createAssistantMessage(prefix + 'tail')));
+    const initial = bodies(store)[0].metadata!.textBlock!;
+    store.pushPatch(updateEntryContent(0, 'Revised short body'));
+    expect(bodies(store)[0].metadata!.textBlock).toMatchObject({ blockId: initial.blockId, sourceRevision: 2, state: 'OPEN' });
+    expect(bodies(store)[0].metadata!.textBlock!.paragraphs).toBeUndefined();
+    store.pushPatch(updateEntryContent(0, prefix.replace('First', 'Revised') + 'tail'));
+    expect(bodies(store)[0].metadata!.textBlock!.paragraphs).toHaveLength(1);
+    expect(bodies(store)[0].metadata!.textBlock!.sourceRevision).toBe(2);
+  });
+
   it('Claude seals at tool block start before its summary, isolates child streams, and versions final summaries', () => {
     const { store, sealed } = setup();
     const parser = new ClaudeCodeParser(store);

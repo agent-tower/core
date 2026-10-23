@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient, type TranslationSource as SourceRow, type TranslationAttempt as AttemptRow } from '@prisma/client';
 import { sessionMsgStoreManager } from '../output/msg-store.js';
 import type { NormalizedConversation } from '../output/types.js';
-import { TEAM_RUN_TRANSLATION_MAX_MESSAGE_IDS, TEAM_RUN_TRANSLATION_PREVIEW_LENGTH, type TeamRunTranslationOverlay, type TeamRunTranslationOverlaySummary, type TranslationInvalidatedPayload, type SessionTranslationOverlay, type TranslationBlockState, type TranslationDirection, type TranslationSettingsDraft } from '@agent-tower/shared';
+import { getTranslationTextBlocks, type TranslationTextBlock, TEAM_RUN_TRANSLATION_MAX_MESSAGE_IDS, TEAM_RUN_TRANSLATION_PREVIEW_LENGTH, type TeamRunTranslationOverlay, type TeamRunTranslationOverlaySummary, type TranslationInvalidatedPayload, type SessionTranslationOverlay, type TranslationBlockState, type TranslationDirection, type TranslationSettingsDraft } from '@agent-tower/shared';
 import { ServiceError } from '../errors.js';
 import { TranslationSettingsService, type TranslationExecutionConfig } from './translation-settings.service.js';
 import { TranslationClient, TranslationError } from './translation-client.js';
@@ -24,6 +24,18 @@ interface Limits { sources: number; displaySources: number; laneSources: number;
 const DEFAULT_LIMITS: Limits = { sources: 512, displaySources: 384, laneSources: 64, attemptMs: 180_000, chainMs: 300_000, retryDelays: [1_000, 4_000], tickMs: 1_000, leaseMs: 30_000, renewMs: 10_000 };
 interface Handle { generation: number; controller: AbortController; done: Promise<void> }
 type RoomOverlayRow = TeamRunTranslationOverlay & { originalTextTruncated: number | bigint; translatedTextTruncated: number | bigint };
+
+function snapshotBlocks(snapshot: NormalizedConversation | null): Map<string, TranslationTextBlock> | null {
+  if (!snapshot) return null;
+  const blocks = new Map<string, TranslationTextBlock>();
+  for (const entry of snapshot.entries ?? []) {
+    if (entry.entryType !== 'assistant_message' || !entry.metadata?.textBlock) continue;
+    for (const block of getTranslationTextBlocks(entry.content, entry.metadata.textBlock)) {
+      blocks.set(JSON.stringify([block.turnId, block.blockId]), block);
+    }
+  }
+  return blocks;
+}
 
 /** App-owned translation state machine; transcript facts remain in MsgStore/Session snapshots. */
 export class TranslationService {
@@ -264,8 +276,13 @@ export class TranslationService {
       if (source.sourceKind === 'SESSION_BLOCK' && source.sessionId) {
         const session = await this.readableSession(source.sessionId, tx);
         const snapshot = this.sessionSnapshot(session);
-        if (snapshot && !snapshot.entries?.some(e => e.metadata?.textBlock?.turnId === source.turnId && e.metadata.textBlock.blockId === source.blockId)) return 'DELETED';
-        return this.matchesSnapshot(source, snapshot) ? 'CURRENT' : 'STALE';
+        const blocks = snapshotBlocks(snapshot);
+        if (blocks && !blocks.has(JSON.stringify([source.turnId, source.blockId]))) {
+          const parentId = source.blockId?.replace(/:p\d+$/, '');
+          return snapshot?.entries.some(entry => entry.metadata?.textBlock?.turnId === source.turnId
+            && entry.metadata.textBlock.blockId === parentId) ? 'STALE' : 'DELETED';
+        }
+        return this.matchesSnapshot(source, blocks) ? 'CURRENT' : 'STALE';
       }
       else if (source.sourceKind === 'ROOM_MESSAGE' && source.messageId) {
         const live = await this.resolve({ kind: 'ROOM_MESSAGE', messageId: source.messageId }, tx);
@@ -297,11 +314,11 @@ export class TranslationService {
     try { return JSON.parse(session.logSnapshot) as NormalizedConversation; } catch { return { entries: [] }; }
   }
 
-  private matchesSnapshot(source: SourceRow, snapshot: NormalizedConversation | null): boolean {
+  private matchesSnapshot(source: SourceRow, blocks: Map<string, TranslationTextBlock> | null): boolean {
     // Internal pre-lifecycle callers have no snapshot. Runtime sources always have a durable checkpoint.
-    if (!snapshot) return true;
-    const entry = snapshot.entries?.find(e => e.metadata?.textBlock?.turnId === source.turnId && e.metadata.textBlock.blockId === source.blockId);
-    return !!entry && entry.entryType === 'assistant_message' && entry.content === source.originalText && entry.metadata?.textBlock?.sourceRevision === source.sourceRevision && entry.metadata.textBlock.state === source.blockState;
+    if (!blocks) return true;
+    const block = blocks.get(JSON.stringify([source.turnId, source.blockId]));
+    return !!block && block.content === source.originalText && block.sourceRevision === source.sourceRevision && block.state === source.blockState;
   }
 
   async assertReadableSession(sessionId: string): Promise<void> {
@@ -315,16 +332,23 @@ export class TranslationService {
     let snapshot: NormalizedConversation;
     try { snapshot = JSON.parse(session.logSnapshot) as NormalizedConversation; } catch { return; }
     if (!Array.isArray(snapshot.entries)) return;
-    const known = await this.db.translationSource.findMany({ where: { sessionId, sourceKind: 'SESSION_BLOCK' }, select: { id: true, turnId: true, blockId: true, sourceRevision: true, sourceHash: true, blockState: true, deletedAt: true } });
+    const known = await this.db.translationSource.findMany({ where: { sessionId, sourceKind: 'SESSION_BLOCK' }, select: { id: true, turnId: true, blockId: true, sourceRevision: true, sourceHash: true, blockState: true, jobState: true, deletedAt: true } });
     const versions = new Map(known.map(row => [JSON.stringify([row.turnId, row.blockId]), row]));
-    const present = new Set(snapshot.entries.flatMap(entry => entry.metadata?.textBlock ? [entry.metadata.textBlock.blockId] : []));
-    for (const row of known) if (!row.deletedAt && row.blockId && !present.has(row.blockId)) await this.cancel(row.id, true);
-    for (const entry of snapshot.entries) {
-      const block = entry.metadata?.textBlock;
-      if (entry.entryType !== 'assistant_message' || block?.translationEpoch === undefined) continue;
+    const blocks = snapshotBlocks(snapshot)!;
+    // A revised parent may have fewer/different paragraph boundaries. Cancel old
+    // sources without tombstoning identities that a later revision can reuse.
+    const parents = new Map(snapshot.entries.flatMap(entry => entry.metadata?.textBlock
+      ? [[JSON.stringify([entry.metadata.textBlock.turnId, entry.metadata.textBlock.blockId]), entry.metadata.textBlock] as const] : []));
+    for (const row of known) {
+      if (row.deletedAt || !row.blockId || blocks.has(JSON.stringify([row.turnId, row.blockId]))) continue;
+      const parent = parents.get(JSON.stringify([row.turnId, row.blockId.replace(/:p\d+$/, '')]));
+      if (!parent || row.jobState !== 'CANCELLED') await this.cancel(row.id, !parent);
+    }
+    for (const block of blocks.values()) {
+      if (block.translationEpoch === undefined) continue;
       const old = versions.get(JSON.stringify([block.turnId, block.blockId]));
-      if (old?.deletedAt || old && old.sourceRevision === block.sourceRevision && old.sourceHash === createHash('sha256').update(entry.content).digest('hex') && old.blockState === block.state) continue;
-      await this.registerSource({ kind: 'SESSION_BLOCK', sessionId, turnId: block.turnId, blockId: block.blockId, semanticType: 'assistant_message', text: entry.content, state: block.state, sourceRevision: block.sourceRevision, enableEpoch: block.translationEpoch });
+      if (old?.deletedAt || old && old.sourceRevision === block.sourceRevision && old.sourceHash === createHash('sha256').update(block.content).digest('hex') && old.blockState === block.state) continue;
+      await this.registerSource({ kind: 'SESSION_BLOCK', sessionId, turnId: block.turnId, blockId: block.blockId, semanticType: 'assistant_message', text: block.content, state: block.state, sourceRevision: block.sourceRevision, enableEpoch: block.translationEpoch });
     }
   }
 
@@ -345,11 +369,11 @@ export class TranslationService {
 
   async listSessionOverlays(sessionId: string, options: { blockIds?: string[]; cursor?: string } = {}): Promise<{ items: SessionTranslationOverlay[]; nextCursor: string | null }> {
     const session = await this.readableSession(sessionId, this.db);
-    const snapshot = this.sessionSnapshot(session);
+    const blocks = snapshotBlocks(this.sessionSnapshot(session));
     const rows = await this.db.translationSource.findMany({ where: { sessionId, sourceKind: 'SESSION_BLOCK', deletedAt: null, ...(options.blockIds ? { blockId: { in: options.blockIds } } : {}), ...(options.cursor ? { id: { gt: options.cursor } } : {}) }, include: { attempts: { where: { status: 'SUCCESS' }, orderBy: { attemptVersion: 'desc' }, take: 1 } }, orderBy: { id: 'asc' }, take: 100 });
     const items: SessionTranslationOverlay[] = [];
     for (const row of rows) {
-      if (!this.matchesSnapshot(row, snapshot)) continue;
+      if (!this.matchesSnapshot(row, blocks)) continue;
       const attempt = row.attempts.find(a => a.id === row.effectiveAttemptId && a.sourceRevision === row.sourceRevision && a.sourceHash === row.sourceHash);
       items.push({ sourceId: row.id, sessionId, turnId: row.turnId!, blockId: row.blockId!, sourceRevision: row.sourceRevision, overlayRevision: row.overlayRevision, state: row.jobState as SessionTranslationOverlay['state'], originalText: row.originalText, translatedText: attempt?.resultText ?? null, targetLanguage: attempt?.targetLanguage ?? null, errorCode: row.errorCode });
     }

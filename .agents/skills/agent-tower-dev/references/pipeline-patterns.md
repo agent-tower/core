@@ -134,7 +134,7 @@ ACP 的 `metadata.acpTextIdentity` 持久保存原生 session/message 和子流�
 
 Claude 已知旧 message 的完整摘要在 tracker 的历史修订作用域更新自身节点，不能推进当前流或清空新消息正文指针。普通 OPEN 正文 delta 只写 content；metadata 仅在生命周期或 admission 变化时更新，保持 MsgStore 的 replace 历史压缩。
 
-正文块边界经 SessionManager 的同一 snapshot writer 持久化，随后 TranslationService 异步消费带 translationEpoch 的检查点。只有启用期间观察到的内容取得标记，静态历史不扫描；OPEN 不外发。observer/翻译故障不能抛回 Parser/Driver，重启从持久标记补偿。译文只写 TranslationSource/Attempt，独立 translation:invalidated 通知和 owner overlay REST 提供展示/恢复，禁止将译文送回 session:patch、心跳或派活。任务/独立对话与 TeamRun 用户实际投递均接入 MessageDeliveryService，PUBLIC Agent 群消息沿持久资格登记展示来源；完整维护入口见 `docs/conversation-language-translation.md`。
+正文块边界经 SessionManager 的同一 snapshot writer 持久化，随后 TranslationService 异步消费带 translationEpoch 的检查点。只有启用期间观察到的内容取得标记，静态历史不扫描；OPEN 尾段不外发。TextBlockTracker 用保护扫描器识别完整段落，将 UTF-16 结束位置和启用 epoch 写入 textBlock.paragraphs；不拆 provider entry 或改变原文。共享 getTranslationTextBlocks 投影独立 SEALED 段落及剩余尾段，已封口前缀修订推进父 sourceRevision 并撤段落边界，ACP 历史修订同样清除段落与资格。observer/翻译故障不能抛回 Parser/Driver，重启从持久标记补偿。译文只写 TranslationSource/Attempt，独立 translation:invalidated 通知和 owner overlay REST 提供展示/恢复，禁止将译文送回 session:patch、心跳或派活。任务/独立对话与 TeamRun 用户实际投递均接入 MessageDeliveryService，PUBLIC Agent 群消息沿持久资格登记展示来源；完整维护入口见 `docs/conversation-language-translation.md`。
 
 翻译 claim 必须区分当前版本、已过期版本和真实删除。内存修订可能早于持久检查点；此时只取消旧版本，不能写 deletedAt，后续检查点仍更新同一 Source。只有来源身份消失或所属实体不可读才 tombstone。
 

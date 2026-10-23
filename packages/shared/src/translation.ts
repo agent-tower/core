@@ -125,6 +125,31 @@ export interface TextBlockLifecycle {
   sealedReason?: 'TYPE_SWITCH' | 'EXPLICIT' | 'TURN_END';
   /** Only output observed while enabled is recoverable; absent on static history. */
   translationEpoch?: number;
+  /** Completed paragraph boundaries in the original UTF-16 text; the remaining tail stays live. */
+  paragraphs?: Array<{ end: number; translationEpoch?: number }>;
+}
+
+export interface TranslationTextBlock extends TextBlockLifecycle {
+  content: string;
+  start: number;
+  end: number;
+}
+
+/** Project paragraph sources without changing provider entry identities or original bytes. */
+export function getTranslationTextBlocks(content: string, block: TextBlockLifecycle): TranslationTextBlock[] {
+  const { paragraphs, ...identity } = block;
+  if (!paragraphs?.length) return [{ ...identity, content, start: 0, end: content.length }];
+  const result: TranslationTextBlock[] = [];
+  let start = 0;
+  for (const [index, paragraph] of paragraphs.entries()) {
+    if (!Number.isInteger(paragraph.end) || paragraph.end <= start || paragraph.end > content.length) return [];
+    result.push({ ...identity, blockId: `${block.blockId}:p${index}`, state: 'SEALED',
+      translationEpoch: paragraph.translationEpoch, content: content.slice(start, paragraph.end), start, end: paragraph.end });
+    start = paragraph.end;
+  }
+  if (start < content.length) result.push({ ...identity, blockId: `${block.blockId}:p${paragraphs.length}`,
+    content: content.slice(start), start, end: content.length });
+  return result;
 }
 
 export interface SessionTranslationOverlay {

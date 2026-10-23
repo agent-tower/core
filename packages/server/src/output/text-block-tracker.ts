@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { TextBlockLifecycle } from '@agent-tower/shared';
 import type { MsgStore } from './msg-store.js';
 import type { JsonPatch, NormalizedEntry } from './types.js';
+import { findTranslationParagraphEnds } from '../services/translation-protection.js';
 
 /** Per-turn semantic streams at the canonical transcript commit boundary. */
 export class TextBlockTracker {
@@ -92,13 +93,34 @@ export class TextBlockTracker {
         block = { turnId: this.turn.id, runtimeGeneration: this.turn.generation, streamId: this.stream, blockId: randomUUID(), semanticType: 'assistant_message', sourceRevision: 1, state: 'OPEN' };
         this.changed.add(index);
       } else if (contentChanged && block.state !== 'OPEN') {
-        const { sealedReason: _reason, ...open } = block;
+        const { sealedReason: _reason, paragraphs: _paragraphs, ...open } = block;
         block = { ...open, sourceRevision: block.sourceRevision + 1, state: 'OPEN' };
+        this.changed.add(index);
+      } else if (contentChanged && block.paragraphs?.length
+        && !entry.content.startsWith(previous!.content.slice(0, block.paragraphs.at(-1)!.end))) {
+        // A provider correction invalidates every previously sealed paragraph immediately.
+        const { paragraphs: _paragraphs, ...open } = block;
+        block = { ...open, sourceRevision: block.sourceRevision + 1 };
         this.changed.add(index);
       }
       let epoch: number | undefined;
       try { epoch = this.admission(); } catch { /* Translation configuration is an optional observer. */ }
       if (contentChanged && epoch !== undefined && block.translationEpoch !== epoch) block = { ...block, translationEpoch: epoch };
+      if (contentChanged && epoch !== undefined && !this.cancelling) {
+        const start = block.paragraphs?.at(-1)?.end ?? 0;
+        const appending = previous && entry.content.startsWith(previous.content);
+        const appended = appending ? entry.content.slice(previous.content.length) : entry.content;
+        const previousLineEnd = appending && /[\r\n]/.test(appended) ? previous.content.match(/[\r\n][ \t\r]*$/)?.[0] ?? '' : '';
+        // Most deltas (including ordinary code lines) cannot finish a paragraph.
+        // Rescan only when a new blank line appears, and only the unsealed tail.
+        if (entry.content.length - start >= 240 && /(?:\r\n|\n|\r(?!\n))[ \t]*(?:\r\n|\n|\r(?!\n))/.test(previousLineEnd + appended)) {
+          const ends = findTranslationParagraphEnds(entry.content.slice(start));
+          if (ends.length) {
+            block = { ...block, paragraphs: [...block.paragraphs ?? [], ...ends.map(end => ({ end: start + end, translationEpoch: epoch }))] };
+            this.changed.add(index);
+          }
+        }
+      }
       entry = { ...entry, id: previous?.id ?? randomUUID(), timestamp: previous?.timestamp ?? entry.timestamp, metadata: { ...entry.metadata, textBlock: block } };
       this.entries.set(index, entry);
       if (!this.reconciling && block.state === 'OPEN' && (!this.active.has(block.streamId) || this.active.get(block.streamId) === index)) this.active.set(block.streamId, index);

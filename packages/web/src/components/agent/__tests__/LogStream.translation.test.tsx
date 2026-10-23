@@ -108,6 +108,40 @@ describe('User delivery translation indicator', () => {
 })
 
 describe('Assistant translation display', () => {
+  it('shows translated paragraphs together with a live original tail in the same message', async () => {
+    const prefix = 'First completed paragraph. '.repeat(12) + '\n\n'
+    const partial: LogEntry = { ...log, content: prefix + 'Tail still streaming', textBlock: {
+      ...log.textBlock!, state: 'OPEN', paragraphs: [{ end: prefix.length, translationEpoch: 1 }],
+    } }
+    state.overlays = [{ ...overlay, blockId: 'block-a:p0', originalText: prefix, translatedText: '第一段译文。\n\n' }]
+    await render([partial])
+    expect(container.querySelector('[data-markdown]')?.textContent).toBe('第一段译文。\n\nTail still streaming')
+    await render([{ ...partial, content: prefix + 'Tail still streaming and growing' }])
+    expect(container.querySelector('[data-markdown]')?.textContent).toBe('第一段译文。\n\nTail still streaming and growing')
+    act(() => button('Original').click()); await flush()
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(prefix + 'Tail still streaming and growing')
+    // A revision invalidates the whole old prefix immediately, before a new REST response.
+    await render([{ ...partial, content: 'Corrected reply', textBlock: { ...partial.textBlock!, sourceRevision: 5, paragraphs: undefined } }])
+    expect(container.querySelector('[data-markdown]')?.textContent).toBe('Corrected reply')
+    expect(container.querySelector('[data-markdown]')?.textContent).not.toContain('第一段译文')
+  })
+
+  it('keeps a completed paragraph visible when the following paragraph fails', async () => {
+    const prefix = 'First paragraph\n\n'
+    const body: LogEntry = { ...log, content: prefix + 'Second paragraph', textBlock: {
+      ...log.textBlock!, paragraphs: [{ end: prefix.length, translationEpoch: 1 }],
+    } }
+    state.overlays = [
+      { ...overlay, blockId: 'block-a:p0', originalText: prefix, translatedText: '第一段\n\n' },
+      { ...overlay, sourceId: 'source-b', blockId: 'block-a:p1', originalText: 'Second paragraph', translatedText: null, state: 'FAILED', errorCode: 'TIMEOUT' },
+    ]
+    await render([body])
+    expect(container.querySelector('[data-markdown]')?.textContent).toBe('第一段\n\nSecond paragraph')
+    act(() => button('Original').click()); await flush()
+    act(() => button('Retry translation').click()); await flush()
+    expect(apiClient.post).toHaveBeenCalledWith('/sessions/actual-session/translations/source-b/retry', { expectedRevision: 4 })
+  })
+
   it('projects waiting/failed first input once and adopts the formal log by delivery identity', () => {
     const delivery = { id: 'outgoing', originalText: 'First original', state: 'TRANSLATION_FAILED', createdAt: new Date(10).toISOString() } as MessageDelivery
     const waiting = mergeDeliveryLogs([], [delivery])

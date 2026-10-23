@@ -1651,7 +1651,7 @@ export class SessionManager {
     const event = envelope.event;
     if (event.type === 'text_block') {
       const block = event.entry.metadata?.textBlock;
-      if (block?.translationEpoch !== undefined && (block.state !== 'OPEN' || block.sourceRevision > 1)) {
+      if (block?.translationEpoch !== undefined && (block.state !== 'OPEN' || block.sourceRevision > 1 || block.paragraphs?.length)) {
         this.dirtySnapshots.add(sessionId);
         // Coalesce same-tick boundaries through the existing single snapshot writer.
         if (!this.translationBoundaryPending.has(sessionId)) {

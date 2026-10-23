@@ -4,8 +4,8 @@ import { apiClient } from '@/lib/api-client'
 import { useOutgoingSubmissions } from '@/hooks/outgoing-submissions'
 import { OutgoingSubmissionBubble } from './OutgoingSubmissionBubble'
 import { createContext, useContext, useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
-import type { MessageDelivery, SessionTranslationOverlay } from '@agent-tower/shared'
-import { matchingTranslation, useSessionTranslations } from '@/hooks/use-session-translations'
+import { getTranslationTextBlocks, type MessageDelivery } from '@agent-tower/shared'
+import { indexSessionTranslations, sessionTranslationPresentation, useSessionTranslations } from '@/hooks/use-session-translations'
 import { useTranslationReveals } from '@/hooks/translation-reveals'
 import { useTranslationSettings } from '@/hooks/use-translation-settings'
 import { useMessageDeliveries } from '@/hooks/use-message-deliveries'
@@ -807,20 +807,20 @@ const AgentText = memo(({ content, compact }: { content: string; compact?: boole
 AgentText.displayName = 'AgentText'
 
 // 5. Assistant Message — Streamdown 渲染 markdown
-const TranslationContext = createContext<{ sessionId: string; overlays: SessionTranslationOverlay[]; enabled: boolean; claimReveal: (version: string) => boolean } | null>(null)
+const TranslationContext = createContext<{ sessionId: string; overlays: ReturnType<typeof indexSessionTranslations>; enabled: boolean; claimReveal: (version: string) => boolean } | null>(null)
 
 const AssistantMessage = memo(({ log, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }: { log: LogEntry; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler; onOpenVisualization?: OpenVisualizationHandler; downloadSessionId?: string }) => {
   const context = useContext(TranslationContext)
-  const overlay = context ? matchingTranslation(context.sessionId, log, context.overlays) : undefined
-  const translated = overlay?.state === 'SUCCESS' && overlay.translatedText !== null
-  const displayed = translated ? overlay.translatedText! : log.content
+  const presentation = context ? sessionTranslationPresentation(context.sessionId, log, context.overlays) : undefined
+  const overlays = presentation?.overlays.filter(overlay => overlay.state !== 'NOT_REQUIRED') ?? []
+  const displayed = presentation?.content ?? log.content
   const markdownProps = { workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }
-  return <div className={`relative text-foreground min-w-0 ${overlay && overlay.state !== 'NOT_REQUIRED' ? 'pr-8' : ''} ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
-    <TranslationReveal claim={context?.claimReveal} version={translated ? `${overlay.sourceId}:${overlay.sourceRevision}` : null}><MarkdownMessage className="space-y-2" content={displayed} {...markdownProps} /></TranslationReveal>
-    {overlay && overlay.state !== 'NOT_REQUIRED' && <div className="absolute bottom-0 right-0">
-      <TranslationComparison key={`${overlay.sourceId}:${overlay.sourceRevision}`} original={log.content}>
+  return <div className={`relative text-foreground min-w-0 ${overlays.length ? 'pr-8' : ''} ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
+    <TranslationReveal claim={context?.claimReveal} version={presentation?.version ?? null}><MarkdownMessage className="space-y-2" content={displayed} {...markdownProps} /></TranslationReveal>
+    {overlays.length > 0 && <div className="absolute bottom-0 right-0">
+      <TranslationComparison key={`${log.id}:${log.textBlock?.sourceRevision}`} original={log.content}>
         <MarkdownMessage content={log.content} {...markdownProps} />
-        <TranslationStatus overlay={overlay} enabled={context?.enabled ?? false} />
+        {overlays.map(overlay => <TranslationStatus key={overlay.sourceId} overlay={overlay} enabled={context?.enabled ?? false} />)}
       </TranslationComparison>
     </div>}
   </div>
@@ -860,9 +860,9 @@ function formatActivityDuration(durationMs: number, t: Translate): string {
 
 const ThinkingIndicator = memo(({ activity }: { activity?: LogEntry['cursorActivity'] }) => {
   const { t } = useI18n()
-  const mountedAtRef = useRef(Date.now())
-  const [now, setNow] = useState(() => Date.now())
-  const processingStartedAt = activity?.processingStartedAt ?? mountedAtRef.current
+  const [mountedAt] = useState(() => Date.now())
+  const [now, setNow] = useState(mountedAt)
+  const processingStartedAt = activity?.processingStartedAt ?? mountedAt
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -1046,11 +1046,14 @@ const OVERSCAN_ROWS = 8
 const SessionLogStream = forwardRef<LogStreamHandle, LogStreamProps & { sessionId: string }>(function SessionLogStream(props, ref) {
   const translations = useSessionTranslations(props.sessionId, props.logs)
   const settings = useTranslationSettings()
+  const sources = useMemo(() => props.logs.flatMap(log => log.textBlock
+    ? getTranslationTextBlocks(log.content, log.textBlock).map(block => ({ id: JSON.stringify([block.turnId, block.blockId]), revision: block.sourceRevision, streaming: log.textBlock!.state === 'OPEN' })) : []), [props.logs])
+  const overlayIndex = useMemo(() => indexSessionTranslations(translations.overlays), [translations.overlays])
   const claimReveal = useTranslationReveals(props.sessionId,
-    props.logs.filter(log => log.textBlock).map(log => ({ id: JSON.stringify([log.textBlock!.turnId, log.textBlock!.blockId]), revision: log.textBlock!.sourceRevision, streaming: log.textBlock!.state === 'OPEN' })),
+    sources,
     translations.overlays.map(row => ({ id: JSON.stringify([row.turnId, row.blockId]), version: `${row.sourceId}:${row.sourceRevision}`, state: row.state })), props.logs.some(log => log.type !== LogType.Cursor))
-  const context = useMemo(() => ({ sessionId: props.sessionId, overlays: translations.overlays,
-    claimReveal, enabled: !settings.isError && settings.data?.enabled === true }), [props.sessionId, settings.data?.enabled, settings.isError, translations.overlays, claimReveal])
+  const context = useMemo(() => ({ sessionId: props.sessionId, overlays: overlayIndex,
+    claimReveal, enabled: !settings.isError && settings.data?.enabled === true }), [props.sessionId, settings.data?.enabled, settings.isError, overlayIndex, claimReveal])
   const pending = useMessageDeliveries(props.sessionId)
   const sent = useMessageDeliveries(props.sessionId, 'sent')
   const deliveries = useMemo(() => new Map([...pending.data?.pages.flatMap(p => p.items) ?? [], ...sent.data?.pages.flatMap(p => p.items) ?? []].sort((a, b) => a.revision - b.revision).map(item => [item.id, item])), [pending.data, sent.data])

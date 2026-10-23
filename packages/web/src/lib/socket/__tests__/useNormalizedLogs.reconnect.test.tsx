@@ -69,16 +69,18 @@ describe('useNormalizedLogs reconnect recovery', () => {
   let latest: ReturnType<typeof useNormalizedLogs>
 
   function Harness({
+    sessionId = 'session-1',
     sessionStatus = 'RUNNING',
     sessionStartedAt,
     sessionEndedAt,
   }: {
+    sessionId?: string
     sessionStatus?: string
     sessionStartedAt?: string | number | null
     sessionEndedAt?: string | number | null
   }) {
     const result = useNormalizedLogs({
-      sessionId: 'session-1',
+      sessionId,
       sessionStatus,
       sessionStartedAt,
       sessionEndedAt,
@@ -103,6 +105,26 @@ describe('useNormalizedLogs reconnect recovery', () => {
     container.remove()
     vi.useRealTimers()
     vi.restoreAllMocks()
+  })
+
+  it('shows a cached task immediately when switching away from another task with a slow snapshot', async () => {
+    const first = deferred<NormalizedConversation>()
+    const second = deferred<NormalizedConversation>()
+    apiGet.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    useSessionLogStore.getState().setConversation('session-2', { entries: [message('cached', 'Cached task output')], seq: 5 })
+    await act(async () => { root.render(<Harness />) })
+    act(() => { void latest.attach() })
+    expect(latest.isLoadingSnapshot).toBe(true)
+    await act(async () => { root.render(<Harness sessionId="session-2" />) })
+    expect(latest.isLoadingSnapshot).toBe(false)
+    expect(latest.logs.map(log => log.content)).toContain('Cached task output')
+    act(() => { void latest.attach() })
+    expect(latest.isLoadingSnapshot).toBe(false)
+    await act(async () => {
+      first.resolve({ entries: [message('old', 'Previous task')], seq: 1 })
+      second.resolve({ entries: [message('cached', 'Cached task output')], seq: 5 })
+    })
+    expect(latest.entries.map(entry => entry.content)).toEqual(['Cached task output'])
   })
 
   it('tracks output activity across exit and a later follow-up patch', async () => {

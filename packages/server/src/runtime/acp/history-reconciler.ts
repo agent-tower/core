@@ -285,7 +285,7 @@ function entriesEqual(left: NormalizedEntry, right: NormalizedEntry): boolean {
 
 function preserveOriginalBlock(existing: NormalizedEntry, replayed: NormalizedEntry): NormalizedEntry {
   const block = existing.metadata?.textBlock;
-  const { sealedReason: _reason, translationEpoch: _epoch, ...revised } = block ?? {};
+  const { sealedReason: _reason, translationEpoch: _epoch, paragraphs: _paragraphs, ...revised } = block ?? {};
   const identity = replayed.metadata?.acpTextIdentity ?? existing.metadata?.acpTextIdentity;
   const metadata = { ...replayed.metadata, ...(identity ? { acpTextIdentity: identity } : {}) };
   return { ...replayed, id: existing.id, timestamp: existing.timestamp,
