@@ -132,29 +132,30 @@ describe('local translation protection', () => {
     const second = prepareTranslation(original);
     expect(first.segments).not.toEqual(second.segments);
     expect(first.restore(first.segments)).toBe(original);
-    expect(() => first.restore(second.segments)).toThrow('PROTECTION_FAILED');
+    expect(first.restore(second.segments)).toBe(second.segments.join(''));
   });
 
-  it('rejects deleted, duplicated, reordered or foreign tokens and text outside boundaries', () => {
-    const prepared = prepareTranslation('Hello `first` and [the guide](https://private.example)');
+  it('accepts changed placeholders and surrounding text while restoring recognized placeholders', () => {
+    const original = 'Hello `first` and `second`';
+    const prepared = prepareTranslation(original);
     const segment = prepared.segments[0]!;
     const tokens = segment.match(TOKENS)!;
-    const mutations = [
-      segment.replace(tokens[1]!, ''),
-      segment.replace(tokens[1]!, tokens[1]! + tokens[1]!),
-      segment.replace(tokens[1]!, 'TEMP').replace(tokens[2]!, tokens[1]!).replace('TEMP', tokens[2]!),
-      segment.replace(tokens[1]!, '⟦AT_aaaaaaaaaaaaaaaaaaaaaaaa_999⟧'),
-      `prologue ${segment}`,
-      `${segment} epilogue`,
+    const mutations: Array<[string, string]> = [
+      [segment.replace(tokens[0]!, ''), 'Hello  and `second`'],
+      [segment.replace(tokens[0]!, tokens[0]! + tokens[0]!), 'Hello `first``first` and `second`'],
+      [segment.replace(tokens[0]!, 'TEMP').replace(tokens[1]!, tokens[0]!).replace('TEMP', tokens[1]!), 'Hello `second` and `first`'],
+      [segment.replace(tokens[0]!, '⟦AT_aaaaaaaaaaaaaaaaaaaaaaaa_999⟧'), 'Hello ⟦AT_aaaaaaaaaaaaaaaaaaaaaaaa_999⟧ and `second`'],
+      [`prologue ${segment}`, `prologue ${original}`],
+      [`${segment} epilogue`, `${original} epilogue`],
+      [` \n${segment}\n `, ` \n${original}\n `],
     ];
-    for (const result of mutations) expect(() => prepared.restore([result])).toThrow('PROTECTION_FAILED');
-    expect(() => prepared.restore([])).toThrow('PROTECTION_FAILED');
+    for (const [result, expected] of mutations) expect(prepared.restore([result])).toBe(expected);
   });
 
-  it('rejects new Markdown semantics formed across an unchanged original delimiter', () => {
+  it('accepts Markdown structure changes across a restored delimiter', () => {
     const prepared = prepareTranslation('Hello#world');
     const translated = prepared.segments.map((segment) => segment.replace('Hello', '').replace('world', ' heading'));
-    expect(() => prepared.restore(translated)).toThrow('PROTECTION_FAILED');
+    expect(prepared.restore(translated)).toBe('# heading');
     const comparison = prepareTranslation('Hello < private comparison >');
     expect(comparison.segments.join('')).not.toContain('private comparison');
   });
@@ -164,10 +165,22 @@ describe('local translation protection', () => {
     '<img src=x>', '[new link](https://evil.example)', '![image](new.png)',
     'https://evil.example', 'javascript:alert', '/private/new', 'C:\\private\\new',
     '@NewMember', '`new code`', '**new bold**', '# heading', 'new\nline', 'www.evil.example', 'new.pdf',
-  ])('rejects newly introduced active/resource/Markdown syntax: %s', (unsafe) => {
+  ])('preserves syntax returned by the translation service: %s', (translatedText) => {
     const prepared = prepareTranslation('Hello `private`');
-    expect(() => prepared.restore(prepared.segments.map((segment) => segment.replace('Hello', unsafe))))
-      .toThrow('PROTECTION_FAILED');
+    expect(prepared.restore(prepared.segments.map((segment) => segment.replace('Hello', translatedText))))
+      .toBe(`${translatedText} \`private\``);
+  });
+
+  it.each([
+    ['你好！', 'Hello!'],
+    ['任务已经完成（成功）。', 'The task is done (successfully).'],
+    ['例如，可以使用缓存。', 'Use caching, e.g. for repeated reads.'],
+    ['请检查输入和输出。', 'Check input/output.'],
+    ['第一行。第二行。', 'First line.\nSecond line.'],
+    ['检查通过。', '✅'],
+  ])('accepts translated punctuation and formatting for %s', (original, translated) => {
+    const prepared = prepareTranslation(original);
+    expect(prepared.restore([translated])).toBe(translated);
   });
 
   it('splits at Unicode code point boundaries, keeps requests bounded and restores in original index order', () => {

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { TranslationError } from './translation-errors.js';
 
-export const TRANSLATION_PROTECTION_VERSION = 1;
+export const TRANSLATION_PROTECTION_VERSION = 2;
 export const MAX_TRANSLATION_BLOCK_BYTES = 64 * 1024;
 export const MAX_TRANSLATION_SEGMENT_BYTES = 4 * 1024;
 export const MAX_TRANSLATION_SEGMENTS = 16;
@@ -44,7 +44,7 @@ export function renderTranslationTemplate(template: string, targetLanguage: stri
 }
 
 interface Piece { value: string; protected: boolean }
-interface MaskedChunk { value: string; segmentIndex?: number; tokens: string[]; start?: string; end?: string }
+interface MaskedChunk { value: string; segmentIndex?: number }
 
 export interface PreparedTranslation {
   /** Each entry is one request; only this masked text may leave the server. */
@@ -375,18 +375,6 @@ export function findTranslationParagraphEnds(text: string): number[] {
   return ends;
 }
 
-function assertPlainTranslatedText(text: string): void {
-  if (/[\r\n\[\](){}<>`*_~#|\\!@⟦⟧/]/u.test(text)
-    || /::|\b[a-z][a-z0-9+.-]*:\S|\bwww\./i.test(text)
-    || /(?:^|\s)(?:[-+][ \t]|\d+[.)][ \t]|[-=]{3,}(?:\s|$))/.test(text)
-    || /^[ \t]*[-=]+[ \t]*$/.test(text)) {
-    throw new TranslationError('PROTECTION_FAILED');
-  }
-  for (const match of text.matchAll(/(?:^|[^\p{L}\p{N}_])([\p{L}\p{N}_-]+\.[a-z][a-z0-9]{0,15})(?![\p{L}\p{N}_])/giu)) {
-    if (match[1]) throw new TranslationError('PROTECTION_FAILED');
-  }
-}
-
 /**
  * No content classified as protected is included in segments. The mapping and all
  * Markdown/resource bytes remain in this closure, never in persisted job metadata.
@@ -394,12 +382,8 @@ function assertPlainTranslatedText(text: string): void {
 export function prepareTranslation(text: string): PreparedTranslation {
   if (Buffer.byteLength(text, 'utf8') > MAX_TRANSLATION_BLOCK_BYTES) throw new TranslationError('PAYLOAD_TOO_LARGE');
   const pieces = scan(text);
-  const skeleton = JSON.stringify(pieces.filter((piece) => piece.protected).map((piece) => piece.value));
   if (!pieces.some((piece) => !piece.protected && HAS_LANGUAGE.test(piece.value))) {
-    return { segments: [], hasTranslatableText: false, restore: (values) => {
-      if (values.length !== 0) throw new TranslationError('PROTECTION_FAILED');
-      return text;
-    } };
+    return { segments: [], hasTranslatableText: false, restore: () => text };
   }
   let nonce: string;
   do { nonce = randomBytes(12).toString('hex'); } while (text.includes(nonce));
@@ -412,77 +396,41 @@ export function prepareTranslation(text: string): PreparedTranslation {
   const atoms = pieces.flatMap<{ value: string; token: boolean }>((piece) => piece.protected
     ? [{ value: createToken(piece.value), token: true }]
     : Array.from(piece.value, (value) => ({ value, token: false })));
-  // Reserve boundary tokens only when there is a protected structure to anchor.
-  // A plain 64KiB block still fits exactly sixteen 4KiB requests.
   const chunks: MaskedChunk[] = [];
   let atomIndex = 0;
   while (atomIndex < atoms.length) {
     let end = atomIndex;
     let bytes = 0;
-    let hasToken = false;
     let preferredEnd = atomIndex;
     while (end < atoms.length) {
       const atom = atoms[end]!;
       const size = Buffer.byteLength(atom.value, 'utf8');
-      const contentLimit = MAX_TRANSLATION_SEGMENT_BYTES - (hasToken || atom.token ? 128 : 0);
-      if (bytes + size > contentLimit) break;
+      if (bytes + size > MAX_TRANSLATION_SEGMENT_BYTES) break;
       bytes += size;
-      hasToken ||= atom.token;
       end++;
       if (!atom.token && /[\s.!?。！？；;]/u.test(atom.value)) preferredEnd = end;
     }
     if (end < atoms.length && preferredEnd > atomIndex) end = preferredEnd;
     const selected = atoms.slice(atomIndex, end);
-    chunks.push({ value: selected.map((atom) => atom.value).join(''), tokens: selected.filter((atom) => atom.token).map((atom) => atom.value) });
+    chunks.push({ value: selected.map((atom) => atom.value).join('') });
     atomIndex = end;
   }
   const segments: string[] = [];
   for (const chunk of chunks) {
     const natural = chunk.value.replace(TOKEN_PATTERN, '');
     if (!HAS_LANGUAGE.test(natural)) continue;
-    if (chunk.tokens.length > 0) {
-      chunk.start = createToken('');
-      chunk.end = createToken('');
-      chunk.tokens = [chunk.start, ...chunk.tokens, chunk.end];
-    }
     chunk.segmentIndex = segments.length;
-    segments.push((chunk.start ?? '') + chunk.value + (chunk.end ?? ''));
+    segments.push(chunk.value);
   }
   if (segments.length > MAX_TRANSLATION_SEGMENTS) throw new TranslationError('PAYLOAD_TOO_LARGE');
   return {
     segments,
     hasTranslatableText: true,
     restore(translatedSegments) {
-      if (translatedSegments.length !== segments.length) throw new TranslationError('PROTECTION_FAILED');
-      const result = chunks.map((chunk) => {
-        if (chunk.segmentIndex === undefined) return chunk.value;
-        const translated = translatedSegments[chunk.segmentIndex];
-        if (typeof translated !== 'string' || Buffer.byteLength(translated, 'utf8') > 128 * 1024
-          || (chunk.start !== undefined && !translated.startsWith(chunk.start))
-          || (chunk.end !== undefined && !translated.endsWith(chunk.end))) {
-          throw new TranslationError('PROTECTION_FAILED');
-        }
-        const actualTokens = translated.match(TOKEN_PATTERN) ?? [];
-        if (actualTokens.length !== chunk.tokens.length || actualTokens.some((token, index) => token !== chunk.tokens[index])) {
-          throw new TranslationError('PROTECTION_FAILED');
-        }
-        // Check spans separately: removing a placeholder must not hide an added resource.
-        const plainSpans = translated.split(TOKEN_PATTERN);
-        for (const span of plainSpans) assertPlainTranslatedText(span);
-        if (!HAS_LANGUAGE.test(plainSpans.join(''))) throw new TranslationError('EMPTY_RESPONSE');
-        return translated;
-      }).join('');
-      const restored = result.replace(TOKEN_PATTERN, (token) => {
-        const original = originals.get(token);
-        if (original === undefined) throw new TranslationError('PROTECTION_FAILED');
-        return original;
-      });
-      // Reclassification catches new syntax composed across a protected boundary,
-      // even when every original placeholder survived byte-for-byte.
-      if (JSON.stringify(scan(restored).filter((piece) => piece.protected).map((piece) => piece.value)) !== skeleton) {
-        throw new TranslationError('PROTECTION_FAILED');
-      }
-      return restored;
+      const result = chunks.map((chunk) => chunk.segmentIndex === undefined
+        ? chunk.value : translatedSegments[chunk.segmentIndex]).join('');
+      // Restore recognized placeholders without validating or rewriting the translation.
+      return result.replace(TOKEN_PATTERN, (token) => originals.get(token) ?? token);
     },
   };
 }
