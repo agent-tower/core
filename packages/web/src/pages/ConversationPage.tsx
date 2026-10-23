@@ -3,7 +3,7 @@ import { OutgoingSubmissionBubble } from '@/components/agent/OutgoingSubmissionB
 import { getProviderStartIssue } from '@/components/provider/provider-draft'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { ArrowLeft, LayoutList, MessageSquare, Search, Settings, SquarePen, Trash2 } from 'lucide-react'
+import { ArrowLeft, CircleAlert, LayoutList, LoaderCircle, MessageSquare, Search, Settings, SquarePen, Trash2 } from 'lucide-react'
 import { SessionStatus } from '@agent-tower/shared'
 import type { Conversation } from '@agent-tower/shared'
 import { ServerEvents, type SessionCompletedPayload } from '@agent-tower/shared/socket'
@@ -11,6 +11,10 @@ import { AgentSessionPanel } from '@/components/agent'
 import type { AgentSessionSendInput } from '@/components/agent'
 import { BrandLockup } from '@/components/BrandLogo'
 import { CreateTaskInput } from '@/components/task/CreateTaskInput'
+import { sidebarRowClass } from '@/components/task/sidebar-styles'
+import { formatTaskUpdatedAt } from '@/components/task/task-time'
+import { TaskGradientText } from '@/components/task/TaskGradientText'
+import { IconButton, NavGroup, NavRow, Skeleton, SkeletonRows } from '@/design-system'
 import { useProviders } from '@/hooks/use-providers'
 import { isProviderEnabled } from '@/lib/provider-selection'
 import {
@@ -23,7 +27,7 @@ import {
 } from '@/hooks/use-conversations'
 import { queryKeys } from '@/hooks/query-keys'
 import { socketManager } from '@/lib/socket/manager'
-import { translate, useI18n } from '@/lib/i18n'
+import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/ui-store'
 import { useQueryClient } from '@tanstack/react-query'
@@ -79,18 +83,6 @@ function isRunning(status?: SessionStatus | string) {
   return status === SessionStatus.RUNNING || status === SessionStatus.PENDING
 }
 
-function timeAgo(value?: string): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-
-  const diff = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000))
-  if (diff < 60) return translate('{count}s ago', { count: diff })
-  if (diff < 3600) return translate('{count}m ago', { count: Math.floor(diff / 60) })
-  if (diff < 86400) return translate('{count}h ago', { count: Math.floor(diff / 3600) })
-  return translate('{count}d ago', { count: Math.floor(diff / 86400) })
-}
-
 function statusLabel(status: SessionStatus | string, t: (key: string) => string) {
   switch (status) {
     case SessionStatus.RUNNING:
@@ -108,29 +100,67 @@ function statusLabel(status: SessionStatus | string, t: (key: string) => string)
   }
 }
 
-function BlinkingStatusDot({ className, pulseClassName }: { className: string; pulseClassName: string }) {
-  return (
-    <span className="relative inline-flex h-2 w-2">
-      <span className={cn('absolute inline-flex h-full w-full animate-ping motion-reduce:animate-none rounded-full', pulseClassName)} />
-      <span className={cn('relative inline-flex h-2 w-2 rounded-full', className)} />
-    </span>
-  )
-}
-
-function ConversationStatusDot({
+function ConversationStatusIndicator({
   status,
   unread,
 }: {
   status: SessionStatus | string
   unread: boolean
 }) {
-  if (isRunning(status)) {
-    return <BlinkingStatusDot className="bg-success" pulseClassName="bg-success/70" />
+  const { t } = useI18n()
+  const label = unread ? t('Unread') : statusLabel(status, t)
+  const icon = isRunning(status)
+    ? <LoaderCircle className="size-3 text-info motion-safe:animate-spin" aria-hidden="true" />
+    : unread
+      ? <span className="size-1.5 rounded-full bg-warning" aria-hidden="true" />
+      : status === SessionStatus.FAILED
+        ? <CircleAlert className="size-3 text-destructive" aria-hidden="true" />
+        : null
+
+  if (!icon) return null
+
+  return <span role="img" aria-label={label} title={label} className="flex size-3.5 shrink-0 items-center justify-center">{icon}</span>
+}
+
+function ConversationTitle({ conversation, selected = false, unread = false }: {
+  conversation: Conversation
+  selected?: boolean
+  unread?: boolean
+}) {
+  const className = cn(
+    'min-w-0 flex-1 truncate',
+    unread ? 'font-semibold text-foreground' : selected || isRunning(conversation.status) || conversation.status === SessionStatus.FAILED
+      ? 'text-foreground'
+      : 'text-muted-foreground',
+  )
+
+  if (isRunning(conversation.status)) {
+    return <TaskGradientText text={conversation.title} variant="running" animate={!selected} className={className} />
   }
-  if (unread) {
-    return <BlinkingStatusDot className="bg-warning" pulseClassName="bg-warning/70" />
-  }
-  return null
+
+  return <span className={className}>{conversation.title}</span>
+}
+
+function ConversationListSkeleton() {
+  return (
+    <div className="flex-1 overflow-hidden px-2 pt-3" aria-hidden="true">
+      <div className="flex h-8 items-center gap-2.5 px-2 pointer-coarse:h-10">
+        <Skeleton className="size-4 shrink-0" />
+        <Skeleton className="h-3 w-14" />
+      </div>
+      <SkeletonRows rows={6} className="mt-0.5 space-y-px pointer-coarse:[&>div]:h-10" />
+    </div>
+  )
+}
+
+function handleSidebarKeyDown(event: React.KeyboardEvent<HTMLElement>) {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+  const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-sidebar-item]:not(:disabled)'))
+  const index = items.indexOf(event.target as HTMLElement)
+  if (index === -1) return
+  event.preventDefault()
+  items[index + (event.key === 'ArrowDown' ? 1 : -1)]?.focus()
 }
 
 function ConversationListItem({
@@ -148,56 +178,41 @@ function ConversationListItem({
   disabled?: boolean
   unread: boolean
 }) {
-  const { t } = useI18n()
-  const updatedAt = timeAgo(conversation.lastActiveAt ?? conversation.createdAt)
-  const showStatusDot = isRunning(conversation.status) || unread
+  const { t, locale } = useI18n()
+  const updatedAt = conversation.lastActiveAt ?? conversation.updatedAt ?? conversation.createdAt
 
   return (
-    <div
-      className={cn(
-        'group ml-4 mr-2 flex items-center rounded-md transition-colors',
-        selected ? 'bg-accent' : 'hover:bg-accent/50',
-      )}
-    >
+    <div className="group/conversation relative min-w-0">
       <button
         type="button"
         onClick={onSelect}
         title={conversation.title}
-        className="flex min-w-0 flex-1 animate-task-enter items-center gap-2.5 rounded-md px-2 py-2 text-left text-sm"
+        aria-current={selected || undefined}
+        data-sidebar-item=""
+        className={cn(sidebarRowClass(selected), 'task-row animate-task-enter group-hover/conversation:pr-9 group-focus-within/conversation:pr-9 pointer-coarse:pr-10')}
       >
-        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-          <MessageSquare size={14} className="text-muted-foreground" />
-        </span>
-        <span
-          className={cn(
-            'min-w-0 flex-1 truncate',
-            selected ? 'font-medium text-foreground' : 'text-foreground/90',
-          )}
-        >
-          {conversation.title}
-        </span>
-        {showStatusDot ? (
-          <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-            <ConversationStatusDot status={conversation.status} unread={unread} />
-          </span>
-        ) : (
-          <span className="flex w-14 shrink-0 items-center justify-end text-[11px] tabular-nums text-muted-foreground">
-            <span className="truncate group-hover:hidden">{updatedAt}</span>
+        <ConversationTitle conversation={conversation} selected={selected} unread={unread} />
+        <ConversationStatusIndicator status={conversation.status} unread={unread} />
+        {updatedAt && (
+          <span className="task-row-meta group-focus-within/conversation:hidden">
+            <time dateTime={updatedAt} className="text-[11px] tabular-nums text-muted-foreground">
+              {formatTaskUpdatedAt(updatedAt, t, locale)}
+            </time>
           </span>
         )}
       </button>
-      <button
-        type="button"
+      <IconButton
+        size="xs"
+        label={`${t('Delete')} · ${conversation.title}`}
         onClick={(event) => {
           event.stopPropagation()
           onDelete()
         }}
         disabled={disabled}
-        className="mr-1 hidden shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-background hover:text-destructive disabled:opacity-50 group-hover:flex"
-        title={t('Delete')}
+        className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground opacity-0 hover:text-destructive group-hover/conversation:pointer-events-auto group-hover/conversation:opacity-100 group-focus-within/conversation:pointer-events-auto group-focus-within/conversation:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:size-8 pointer-coarse:opacity-100"
       >
         <Trash2 size={14} />
-      </button>
+      </IconButton>
     </div>
   )
 }
@@ -213,7 +228,7 @@ function ConversationSearchModal({
   onClose: () => void
   onSelectConversation: (conversation: Conversation) => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
@@ -275,7 +290,7 @@ function ConversationSearchModal({
   const hasQuery = query.trim().length > 0
 
   return (
-    <div className="fixed inset-0 z-90" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-90" role="dialog" aria-modal="true" aria-label={t('Search conversations...')}>
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
 
       <div className="absolute left-1/2 top-[18vh] w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-popover shadow-popover animate-in fade-in zoom-in-95 duration-100">
@@ -288,7 +303,7 @@ function ConversationSearchModal({
             placeholder={t('Search conversations...')}
             aria-label={t('Search conversations...')}
             autoFocus
-            className="flex-1 border-none bg-transparent py-3 text-sm text-foreground placeholder-muted-foreground/60 focus:outline-none"
+            className="min-w-0 flex-1 border-none bg-transparent py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none pointer-coarse:text-[15px]"
           />
         </div>
 
@@ -307,16 +322,16 @@ function ConversationSearchModal({
                   onClick={() => handleSelect(conversation)}
                   onMouseEnter={() => setActiveIndex(index)}
                   className={cn(
-                    'flex w-full items-center gap-2.5 px-4 py-2 text-left transition-colors',
+                    'flex w-full min-w-0 items-center gap-2.5 px-4 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 pointer-coarse:min-h-10 pointer-coarse:text-[15px]',
                     index === activeIndex && 'bg-accent',
                   )}
                 >
                   <MessageSquare size={14} className="shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate text-sm text-foreground/90" title={conversation.title}>
+                  <span className="min-w-0 flex-1 truncate text-foreground" title={conversation.title}>
                     {conversation.title}
                   </span>
-                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                    {timeAgo(conversation.lastActiveAt ?? conversation.createdAt)}
+                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                    {formatTaskUpdatedAt(conversation.lastActiveAt ?? conversation.updatedAt ?? conversation.createdAt ?? '', t, locale)}
                   </span>
                 </button>
               ))}
@@ -601,7 +616,7 @@ export function ConversationPage() {
           type="button"
           onClick={() => useUIStore.getState().openSettings()}
           className={cn(
-            'rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+            'rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
             usesIntegratedTitlebar && 'app-region-no-drag',
           )}
           title={t('Settings')}
@@ -612,89 +627,73 @@ export function ConversationPage() {
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <aside
+          onKeyDown={handleSidebarKeyDown}
           className={cn(
             'h-full w-full shrink-0 flex-col bg-sidebar md:flex md:w-[320px]',
             showMainOnMobile ? 'hidden md:flex' : 'flex',
           )}
         >
-          <div className="shrink-0 px-2 pb-1 pt-2">
-            <button
-              type="button"
+          <div className="flex shrink-0 flex-col gap-px px-2 pb-1 pt-2">
+            <NavRow
               onClick={handleNewConversation}
-              className={cn(
-                'flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-sm transition-colors',
-                isCreatingNew
-                  ? 'bg-accent text-foreground'
-                  : 'text-foreground/80 hover:bg-accent/50',
-              )}
+              active={!conversationId}
+              icon={<SquarePen />}
+              label={t('New Conversation')}
               title={t('New Conversation')}
-            >
-              <SquarePen size={16} className="text-muted-foreground" />
-              <span>{t('New Conversation')}</span>
-            </button>
-            <button
-              type="button"
+            />
+            <NavRow
               onClick={() => navigate('/')}
-              className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-sm text-foreground/80 transition-colors hover:bg-accent/50"
+              icon={<LayoutList />}
+              label={t('Tasks')}
               title={t('Tasks')}
-            >
-              <LayoutList size={16} className="text-muted-foreground" />
-              <span>{t('Tasks')}</span>
-            </button>
-            <button
-              type="button"
+            />
+            <NavRow
               onClick={() => setIsSearchOpen(true)}
-              className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-sm text-foreground/80 transition-colors hover:bg-accent/50"
+              icon={<Search />}
+              label={t('Search')}
               title={t('Search')}
-            >
-              <Search size={16} className="text-muted-foreground" />
-              <span>{t('Search')}</span>
-            </button>
+            />
           </div>
 
-          <div className="relative min-h-0 flex-1 overflow-y-auto scrollbar-app-thin pb-4 pt-3">
-            {isListLoading ? (
-              <div className="px-4 py-4 text-sm text-muted-foreground">{t('Loading...')}</div>
-            ) : conversations.length === 0 ? (
-              <div className="flex h-full select-none flex-col items-center justify-center px-6 text-center">
-                <MessageSquare size={36} aria-hidden="true" className="mb-3 text-muted-foreground/50" strokeWidth={1.5} />
-                <p className="mb-4 text-sm text-muted-foreground">{t('No conversations')}</p>
-                <button
-                  type="button"
-                  onClick={handleNewConversation}
-                  className="rounded-md bg-brand px-3.5 py-1.5 text-xs font-medium text-brand-foreground transition-colors hover:bg-brand/90"
-                >
-                  {t('New Conversation')}
-                </button>
+          {isListLoading ? (
+            <ConversationListSkeleton />
+          ) : conversations.length === 0 ? (
+            <div className="flex flex-1 select-none flex-col items-center justify-center px-6 pb-[10vh] text-center">
+              <MessageSquare size={36} aria-hidden="true" className="mb-3 text-muted-foreground/50" strokeWidth={1.5} />
+              <p className="mb-4 text-sm text-muted-foreground">{t('No conversations')}</p>
+              <button
+                type="button"
+                onClick={handleNewConversation}
+                className="rounded-md bg-brand px-3.5 py-1.5 text-xs font-medium text-brand-foreground transition-colors hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2"
+              >
+                {t('New Conversation')}
+              </button>
+            </div>
+          ) : (
+            <div className="relative min-h-0 flex-1 overflow-y-auto scrollbar-app-thin scroll-pt-8 pointer-coarse:scroll-pt-10">
+              <div className="px-2 pb-4 pt-3">
+                <NavGroup title={t('History')} icon={<MessageSquare />} count={conversations.length} sticky>
+                  {conversations.map((conversation) => (
+                    <ConversationListItem
+                      key={conversation.id}
+                      conversation={conversation}
+                      selected={conversation.id === conversationId}
+                      disabled={deleteConversation.isPending}
+                      unread={conversation.id !== conversationId && isConversationUnread(conversation)}
+                      onSelect={() => handleSelectConversation(conversation)}
+                      onDelete={() => handleDelete(conversation.id)}
+                    />
+                  ))}
+                </NavGroup>
               </div>
-            ) : (
-              <div className="mb-2">
-                <div className="flex w-full items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-muted-foreground">
-                  <span className="flex-1 text-left">{t('History')}</span>
-                  <span className="text-[11px] font-normal tabular-nums text-muted-foreground">
-                    {conversations.length}
-                  </span>
-                </div>
-                <div className="mt-0.5 flex min-h-[40px] flex-col rounded-md">
-                {conversations.map((conversation) => (
-                  <ConversationListItem
-                    key={conversation.id}
-                    conversation={conversation}
-                    selected={conversation.id === conversationId}
-                    disabled={deleteConversation.isPending}
-                    unread={conversation.id !== conversationId && isConversationUnread(conversation)}
-                    onSelect={() => handleSelectConversation(conversation)}
-                    onDelete={() => handleDelete(conversation.id)}
-                  />
-                ))}
-                </div>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
 
-          <div className="flex items-center justify-between border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">
-            <span>{t('Conversations')} · {conversations.length}</span>
-          </div>
+          {!isListLoading && (
+            <div className="flex h-9 shrink-0 items-center justify-between border-t border-border/60 px-4 text-xs text-muted-foreground">
+              <span className="tabular-nums">{t('Conversations')} · {conversations.length}</span>
+            </div>
+          )}
         </aside>
 
         <main
@@ -708,7 +707,7 @@ export function ConversationPage() {
               {isDetailRoute || isCreatingNew ? (
                 <button
                   type="button"
-                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 md:hidden"
                   onClick={handleBackToList}
                   title={t('Back')}
                 >
@@ -737,7 +736,7 @@ export function ConversationPage() {
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 pb-[10vh] md:px-8">
               <div className="w-full max-w-2xl animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
                 {outgoing.map(item => <OutgoingSubmissionBubble key={item.id} item={item} onConversationCreated={id => { if (creationView.current === currentCreationView) navigate(`/conversations/${id}`) }} />)}
-                <h1 className="mb-8 max-w-full break-words text-center text-[26px] leading-tight tracking-tight text-foreground">
+                <h1 className="mb-5 max-w-full break-words text-center text-[22px] font-medium leading-snug tracking-tight text-foreground md:mb-6 md:text-[26px]">
                   {t('需要我帮你做点什么？')}
                 </h1>
                 <CreateTaskInput

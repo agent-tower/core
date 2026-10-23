@@ -277,6 +277,7 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Stopped': '已停止',
     'Changes': '变更',
     'History': '历史',
+    'Unread': '未读',
     'Conversation': '对话',
     'Conversations': '对话',
     'New Conversation': '新对话',
