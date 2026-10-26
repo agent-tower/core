@@ -494,7 +494,7 @@ export class SessionManager {
     this.conversationQueueStopping = true;
   }
 
-  /** Dispose a TeamRun-owned runtime after its invocation reaches a terminal state. */
+  /** Dispose a runtime while retaining the Session status and persisted history. */
   async disposeRuntimeSession(sessionId: string, expectedRuntimeInstanceId?: string): Promise<void> {
     await this.runtimeCoordinator.disposeSession(sessionId, expectedRuntimeInstanceId);
   }
@@ -2724,11 +2724,33 @@ export class SessionManager {
     } = {},
   ): Promise<void> {
     const generation = options.generation ?? this.sessionGenerations.get(sessionId);
-    await this.externalSessionPersistence.get(sessionId);
+    const runtimeInstanceId = options.runtimeInstanceId ?? this.runtimeCoordinator.getRuntimeInstanceId(sessionId);
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       select: { purpose: true, context: true, conversationId: true },
     });
+
+    try {
+      await this.finalizeSessionExit(sessionId, exitCode, { ...options, generation }, session);
+    } finally {
+      // COMMIT_MSG is a one-shot job, so ACP transport reuse has no purpose.
+      // Close through the existing owner after result extraction, including
+      // failed turns/persistence/extraction; failed cleanup remains retryable.
+      // A late finalizer must never dispose a newer generation of the Session.
+      if (session?.purpose === SessionPurpose.COMMIT_MSG && this.isCurrentGeneration(sessionId, generation)) {
+        await this.disposeRuntimeSession(sessionId, runtimeInstanceId);
+      }
+    }
+  }
+
+  private async finalizeSessionExit(
+    sessionId: string,
+    exitCode: number | undefined,
+    options: { logicalCompletion?: boolean; generation?: number; runtimeInstanceId?: string },
+    session: Pick<PrismaSession, 'purpose' | 'context' | 'conversationId'> | null,
+  ): Promise<void> {
+    const generation = options.generation;
+    await this.externalSessionPersistence.get(sessionId);
 
     // exitCode 非 0 且非 undefined 视为失败
     const isFailed = typeof exitCode === 'number' && exitCode !== 0;

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
-import { AgentType, SessionStatus, TaskStatus } from '../../types/index.js';
+import { AgentType, SessionPurpose, SessionStatus, TaskStatus } from '../../types/index.js';
 import { EventBus } from '../../core/event-bus.js';
 import type { EarlyPtyEvent } from '../../executors/base.executor.js';
 import { RuntimeType, type RuntimeCapabilities } from '@agent-tower/shared';
@@ -186,6 +186,55 @@ function waitForEvent(eventBus: EventBus, event: 'session:completed', timeoutMs 
       resolve(payload as { sessionId: string; status: string });
     });
   });
+}
+
+async function createCommitMessageAcpFixture() {
+  const provider = {
+    id: 'commit-message-acp-provider', name: 'Commit Message ACP',
+    agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP,
+    executionPermission: 'FULL_ACCESS' as const, env: {}, config: {}, isDefault: false,
+  };
+  getProviderByIdMock.mockReturnValue(provider);
+  const { workspace, session } = await createSessionFixture({ providerId: provider.id });
+  await prisma.session.update({
+    where: { id: session.id },
+    data: { purpose: SessionPurpose.COMMIT_MSG, runtimeType: RuntimeType.ACP },
+  });
+  const turns: Array<ReturnType<typeof deferred<RuntimeTurnOutcome>>> = [];
+  let credential = '';
+  const driverSession: DriverSession = {
+    runtimeInstanceId: 'commit-message-runtime',
+    externalSessionId: 'commit-message-external',
+    capabilities: { loadSession: true, terminalInput: false, terminalResize: false, permissions: true },
+    runTurn: vi.fn(async (turn, sink) => {
+      sink.stream({ type: 'external_session_id', externalSessionId: 'commit-message-external' });
+      turn.msgStore.pushPatch([{
+        op: 'add', path: '/entries/-',
+        value: { id: `reply-${turn.turnId}`, entryType: 'assistant_message', content: 'fix: release commit message runtime' },
+      }]);
+      const completion = deferred<RuntimeTurnOutcome>();
+      turns.push(completion);
+      return { completion: completion.promise };
+    }),
+    cancelTurn: vi.fn(async () => { turns.at(-1)?.resolve({ stopReason: 'cancelled' }); }),
+    close: vi.fn(async () => { turns.at(-1)?.resolve({ stopReason: 'cancelled' }); }),
+  };
+  const driver: RuntimeDriver = {
+    type: RuntimeType.ACP,
+    open: vi.fn(async (input, sink) => {
+      credential = input.env.get(AGENT_API_CREDENTIAL_ENV) ?? '';
+      await sink.process({
+        type: 'started', runtimeInstanceId: driverSession.runtimeInstanceId,
+        launchClaimNumber: input.launchClaimNumber!, pid: 4501, processGroupId: '4501',
+        birthMarker: 'test-birth:4501', ownershipToken: 'test-owner:4501',
+      });
+      return driverSession;
+    }),
+  };
+  const eventBus = new EventBus();
+  const manager = new SessionManager(eventBus, undefined, new StaticRuntimeRegistry([driver]));
+  await manager.start(session.id);
+  return { manager, eventBus, driverSession, turns, credential, session, workspace };
 }
 
 async function createRetryableAcpStopFixture(closeFailureMessages: string[]) {
@@ -390,6 +439,129 @@ describe('SessionManager session status vs real process state', () => {
     await prisma.workspace.deleteMany();
     await prisma.task.deleteMany();
     await prisma.project.deleteMany();
+  });
+
+  describe('COMMIT_MSG runtime cleanup', () => {
+    it.each(['completed', 'failed', 'extraction-error'] as const)(
+      'closes the ACP runtime after a %s job while retaining its result and status',
+      async (outcome) => {
+        const { getCommitMessageService } = await import('../../core/container.js');
+        const service = getCommitMessageService();
+        const extract = vi.spyOn(service, 'extractAndCache');
+        if (outcome === 'extraction-error') extract.mockRejectedValueOnce(new Error('cache unavailable'));
+        const { manager, driverSession, turns, credential, session, workspace } = await createCommitMessageAcpFixture();
+        try {
+          if (outcome === 'failed') turns[0]!.reject(new Error('model request failed'));
+          else turns[0]!.resolve({ stopReason: 'end_turn' });
+
+          await vi.waitFor(async () => {
+            expect(await prisma.executionProcess.findFirst({ where: { sessionId: session.id } }))
+              .toMatchObject({ cleanupState: 'CONFIRMED' });
+            expect(manager.hasRuntimeProcessOwner(driverSession.runtimeInstanceId, session.id, 1)).toBe(false);
+          });
+          expect(driverSession.close).toHaveBeenCalledOnce();
+          expect(validateAgentApiCredential(credential)).toBeNull();
+          const persisted = await prisma.session.findUniqueOrThrow({ where: { id: session.id } });
+          expect(persisted.status).toBe(outcome === 'failed' ? SessionStatus.FAILED : SessionStatus.COMPLETED);
+          expect(persisted.logSnapshot).toContain('fix: release commit message runtime');
+          expect(sessionMsgStoreManager.has(session.id)).toBe(false);
+          expect(extract).toHaveBeenCalledTimes(outcome === 'failed' ? 0 : 1);
+          const savedWorkspace = await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } });
+          expect(savedWorkspace.commitMessage).toBe(outcome === 'completed' ? 'fix: release commit message runtime' : null);
+        } finally {
+          extract.mockRestore();
+          await manager.destroyAll();
+        }
+      },
+    );
+
+    it('waits for result extraction before closing, and retries a failed process cleanup', async () => {
+      const { getCommitMessageService } = await import('../../core/container.js');
+      const service = getCommitMessageService();
+      const originalExtract = service.extractAndCache.bind(service);
+      const extracting = deferred<void>();
+      const releaseExtraction = deferred<void>();
+      const extract = vi.spyOn(service, 'extractAndCache').mockImplementation(async (id) => {
+        extracting.resolve();
+        await releaseExtraction.promise;
+        await originalExtract(id);
+      });
+      const { manager, driverSession, turns, session, workspace } = await createCommitMessageAcpFixture();
+      vi.mocked(driverSession.close).mockRejectedValueOnce(new Error('owned process tree still alive'));
+      try {
+        turns[0]!.resolve({ stopReason: 'end_turn' });
+        await extracting.promise;
+        expect(driverSession.close).not.toHaveBeenCalled();
+        releaseExtraction.resolve();
+        await vi.waitFor(async () => {
+          expect(await prisma.executionProcess.findFirst({ where: { sessionId: session.id } }))
+            .toMatchObject({ cleanupState: 'FAILED', cleanupAttemptCount: 1 });
+        });
+        expect(manager.hasRuntimeProcessOwner(driverSession.runtimeInstanceId, session.id, 1)).toBe(true);
+        await manager.retryFailedRuntimeDisposals();
+        expect(driverSession.close).toHaveBeenCalledTimes(2);
+        expect(await prisma.executionProcess.findFirst({ where: { sessionId: session.id } }))
+          .toMatchObject({ cleanupState: 'CONFIRMED', cleanupError: null });
+        expect(await prisma.session.findUnique({ where: { id: session.id } }))
+          .toMatchObject({ status: SessionStatus.COMPLETED });
+        expect(await prisma.workspace.findUnique({ where: { id: workspace.id } }))
+          .toMatchObject({ commitMessage: 'fix: release commit message runtime' });
+      } finally {
+        releaseExtraction.resolve();
+        extract.mockRestore();
+        await manager.destroyAll();
+      }
+    });
+
+    it('closes the runtime even when final snapshot persistence fails', async () => {
+      const { manager, driverSession, turns, session } = await createCommitMessageAcpFixture();
+      const flush = vi.spyOn(manager as any, 'flushSnapshotPersist')
+        .mockRejectedValueOnce(new Error('snapshot write failed'));
+      try {
+        turns[0]!.resolve({ stopReason: 'end_turn' });
+        await vi.waitFor(async () => {
+          expect(await prisma.executionProcess.findFirst({ where: { sessionId: session.id } }))
+            .toMatchObject({ cleanupState: 'CONFIRMED' });
+        });
+        expect(driverSession.close).toHaveBeenCalledOnce();
+      } finally {
+        flush.mockRestore();
+        await (manager as any).flushSnapshotPersist(session.id, SessionStatus.COMPLETED);
+        sessionMsgStoreManager.delete(session.id);
+        await manager.destroyAll();
+      }
+    });
+
+    it('does not close a newer turn when an older commit-message finalizer finishes late', async () => {
+      const { getCommitMessageService } = await import('../../core/container.js');
+      const extracting = deferred<void>();
+      const releaseExtraction = deferred<void>();
+      const extract = vi.spyOn(getCommitMessageService(), 'extractAndCache').mockImplementationOnce(async () => {
+        extracting.resolve();
+        await releaseExtraction.promise;
+      });
+      const { manager, driverSession, turns, session } = await createCommitMessageAcpFixture();
+      try {
+        turns[0]!.resolve({ stopReason: 'end_turn' });
+        await extracting.promise;
+        const oldFinalization = (manager as any).sessionFinalizations.get(session.id) as Promise<void>;
+        await manager.sendMessage(session.id, 'generate an updated commit message');
+        releaseExtraction.resolve();
+        await oldFinalization;
+        expect(driverSession.close).not.toHaveBeenCalled();
+        expect(manager.hasActiveTurn(session.id)).toBe(true);
+        turns[1]!.resolve({ stopReason: 'end_turn' });
+        await vi.waitFor(async () => {
+          expect(await prisma.executionProcess.findFirst({ where: { sessionId: session.id } }))
+            .toMatchObject({ cleanupState: 'CONFIRMED' });
+        });
+        expect(driverSession.close).toHaveBeenCalledOnce();
+      } finally {
+        releaseExtraction.resolve();
+        extract.mockRestore();
+        await manager.destroyAll();
+      }
+    });
   });
 
   it('requires a Provider runtime supported by the selected Agent before persisting a session', async () => {

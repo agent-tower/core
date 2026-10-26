@@ -66,6 +66,8 @@ PENDING -> RUNNING -> COMPLETED
 | `CHAT` | 普通 agent 执行和后续对话 |
 | `COMMIT_MSG` | 生成 commit message |
 
+生成提交说明属于一次性后台任务，完成或失败后会自动释放执行进程；已保存的会话记录和生成结果继续保留。
+
 ## 自动提交
 
 普通 `CHAT` session 正常退出后，后端会尝试对 workspace 中未提交变更做兜底 auto-commit。这样 review 阶段可以看到更稳定的 Git 状态。

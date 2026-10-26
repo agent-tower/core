@@ -35,7 +35,7 @@
 - 区分 `agentTowerAuthKind` 的 browser、agent、internal、unauthenticated。密码关闭、缺少 Origin/Referer 或客户端自报 Session/Invocation 都不构成 internal/Agent 身份。
 - 托管 Agent 取得服务端签发、绑定 Session/Invocation 的 opaque credential；后端由 credential 恢复身份并拒绝冲突 header。应用级内部进程/独立 MCP 使用 internal token，不能将其作为托管 Agent 的默认广域权限。
 - Workspace service 允许已通过 AccessAuth 的 browser 读取 list/logs，控制入口只允许合法 Agent/internal；Route 和 Service 都核验 caller。TeamRun 还验证 invocation、active member 和 `runCommands`，不能靠公开 status cookie 或请求 body 绕过。
-- Agent credential 跟随 DriverSession/MCP transport，跨自然 turn 完成和 follow-up 有效；DriverSession dispose、显式 Session stop/delete、启动失败和 app destroy 撤销。不要在消息自然完成时提前失效，也不要在 stop 后保留。
+- Agent credential 跟随 DriverSession/MCP transport，跨普通 CHAT 的自然 turn 完成和 follow-up 有效；DriverSession dispose（含一次性 COMMIT_MSG 的终态回收）、显式 Session stop/delete、启动失败和 app destroy 撤销。不要在可复用对话的消息自然完成时提前失效，也不要在 stop 后保留。
 - Access Cookie 名称在请求时按规范化绝对 data dir 派生，不按端口或模块加载时的环境缓存。仅兼容当前实例名称和旧 `agent-tower-access`；preview 过滤需识别完整合法名称族。
 - 使用 `utils/error-log.ts:writeErrorLog()` 并沿脱敏边界传递上下文；不能将 token、cookie、prompt、Provider secret、Agent credential 或 TeamRun identity 放进诊断日志。
 

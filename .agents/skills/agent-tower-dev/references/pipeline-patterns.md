@@ -61,6 +61,8 @@ CLI spawn 与 Pipeline attach 之间保留 `collectEarlyPtyEvents()` / `takeEarl
 
 终态 DB、快照、auto-commit、commit message 和任务推进由 SessionManager/Team services 处理。auto-commit 绑定 Session generation，follow-up 在其完成或放弃后再启动，避免旧轮 Git 操作与新轮重叠。
 
+`COMMIT_MSG` 是一次性后台 Session。`SessionManager.handleSessionExit()` 在终态持久化与结果提取之后通过 `finally` 关闭对应 runtime，失败轮次、快照持久化或结果提取异常也执行清理；按 Session generation 与 runtimeInstanceId 隔离旧收尾。使用 Coordinator 的可等待 dispose 保留业务终态、历史与清理失败重试，不依赖 ACP 自行退出、普通聊天连接复用或 workspace 休眠。
+
 ### 进程与资源
 
 - 每次可能 spawn 前先写 durable launch claim，再用持久 `ExecutionProcess`、已验证的 transport 复用或明确的创建 child 前失败来解析 claim。`Session.status` 和空进程列表本身都不能证明未启动或已清理；不完整/未解析证据交给 `session-runtime-cleanup-gate.ts`，不能猜测成功。
@@ -76,7 +78,7 @@ CLI spawn 与 Pipeline attach 之间保留 `collectEarlyPtyEvents()` / `takeEarl
 - 应用关闭经 `runtime/shutdown-coordinator.ts`、`server-entry-shutdown.ts` 与桌面 shutdown 入口等待并重试清理。未确认 owner 必须保留可重试状态并报告失败，不能静默丢弃或提前 `process.exit`。
 - Git、CLI 检测与安装器使用 `utils/owned-child-process.ts` 持有整树 owner；timeout、abort、输出超限和自然根退出都先等清理再返回。通用 child 与 route 局部 manager 注册到 `runtime/application-process-cleanup.ts`，应用关闭后禁止新 spawn；Windows wrapper 在确认后代清理前保持存活，根已退出时按重新核验的后代身份继续清理。
 
-托管 Agent 的 opaque API credential 绑定 Session 身份并随 DriverSession/MCP transport 生命周期复用。自然 turn 完成不撤销；显式 stop、dispose、启动失败和应用销毁会撤销。后续重开连接签发新凭据，避免旧 Agent 仍可调用 workspace 服务。入口是 `utils/agent-api-credential.ts` 与 SessionManager 的环境注入。
+托管 Agent 的 opaque API credential 绑定 Session 身份并随 DriverSession/MCP transport 生命周期复用。普通 CHAT 的自然 turn 完成不撤销；显式 stop、dispose（含 COMMIT_MSG 终态回收）、启动失败和应用销毁会撤销。后续重开连接签发新凭据，避免旧 Agent 仍可调用 workspace 服务。入口是 `utils/agent-api-credential.ts` 与 SessionManager 的环境注入。
 
 ## Provider 与 Agent 扩展
 
