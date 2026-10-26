@@ -45,13 +45,22 @@ description: 当前代码库中公开的主要 REST 端点。
 | `GET` | `/api/projects/:projectId/tasks/stats` | 获取任务统计 |
 | `GET` | `/api/tasks/:id` | 获取任务详情 |
 | `GET` | `/api/tasks/:id/body` | 获取完整任务正文和 prompt |
+| `GET` | `/api/tasks/:id/subtasks` | 分页读取直接子任务，返回紧凑看板 DTO；支持 `status`、`page`、`limit` |
+| `GET` | `/api/tasks/:id/cleanup` | 读取最近一次删除资源清理的状态、错误和下次重试时间 |
+| `POST` | `/api/tasks/:id/cleanup/retry` | 重新排队失败的清理工作 |
 | `PUT` | `/api/tasks/:id` | 更新任务 |
 | `PATCH` | `/api/tasks/:id/status` | 更新任务状态 |
 | `PATCH` | `/api/tasks/:id/position` | 更新任务位置 |
 | `POST` | `/api/tasks/:id/retry` | 重试任务 |
-| `DELETE` | `/api/tasks/:id` | 删除任务 |
+| `DELETE` | `/api/tasks/:id` | 删除任务及全部子任务；可用 `expectedSubtaskCount` 查询参数核对确认范围 |
 
 `/api/task-board` 只返回看板渲染需要的 task、首选 workspace、最新 agent 类型和运行标志，不包含任务正文、完整 workspace 或 session 历史。需要正文时使用 `/api/tasks/:id/body`，需要执行详情时再读取对应 workspace/session 接口。
+
+创建任务接受可选 `parentTaskId`，必须指向同项目中未删除的顶层任务。省略 `baseBranch` 时，子任务默认保存父任务根工作区的分支；父任务没有工作分支时使用它保存的基础分支或项目默认值。显式 `baseBranch` 可以覆盖默认值，`null` 用于本地模式。任务详情返回 `parentTaskId`、`subtaskCount`。
+
+看板条目包含 `parentTaskId`、`subtaskCount`、`runningSubtaskCount`。父任务位于当前分页或状态过滤之外时，响应另带 `parents` 数组供客户端建立展示层级；它不计入当前页的 `data`、`total` 和 `limit`。展开子任务时通过 `/subtasks` 分页读取完整列表。
+
+删除会原子标记父子任务并保存持久清理记录，返回 `204` 表示删除已受理，资源清理由后台执行。提供 `expectedSubtaskCount` 且当前数量不符时返回 `409 / TASK_DELETE_SCOPE_CHANGED`，客户端应重新展示确认框。清理状态为 `PENDING`、`RUNNING`、`COMPLETED` 或 `FAILED`；失败时返回 `lastError` 和 `nextRetryAt`，可显式重试。状态查询在任务数据库记录清理后仍可用。
 
 ## Workspaces
 

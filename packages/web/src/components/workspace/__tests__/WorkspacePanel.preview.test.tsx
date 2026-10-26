@@ -39,7 +39,7 @@ vi.mock('@/stores/git-visibility-store', () => ({
 }))
 vi.mock('@/lib/i18n', () => ({ useI18n: () => ({ t: (value: string) => value }) }))
 
-describe('WorkspacePanel Preview navigation', () => {
+describe('WorkspacePanel tab navigation', () => {
   let container: HTMLDivElement
   let root: Root
 
@@ -52,6 +52,27 @@ describe('WorkspacePanel Preview navigation', () => {
   afterEach(() => {
     act(() => root.unmount())
     container.remove()
+  })
+
+  it.each(['rail', 'tabs'] as const)('opens Subtasks only on demand without a workspace (%s)', async (variant) => {
+    const onCreate = vi.fn()
+    await act(async () => {
+      root.render(<WorkspacePanel variant={variant} gitAvailable={false} hideChanges={variant === 'tabs'}
+        subtasks={<button onClick={onCreate}>Create child in panel</button>} />)
+    })
+    expect(container.textContent).not.toContain('Create child in panel')
+    const subtaskTab = [...container.querySelectorAll('button')].find(button =>
+      button.getAttribute('aria-label') === 'Subtasks' || button.textContent === 'Subtasks')!
+    await act(async () => subtaskTab.click())
+    const createButton = [...container.querySelectorAll('button')].find(button => button.textContent === 'Create child in panel')!
+    expect(createButton).toBeTruthy()
+    await act(async () => createButton.click())
+    expect(onCreate).toHaveBeenCalledOnce()
+    const previewTab = [...container.querySelectorAll('button')].find(button =>
+      button.getAttribute('aria-label') === 'Preview' || button.textContent === 'Preview')!
+    await act(async () => previewTab.click())
+    expect(container.textContent).not.toContain('Create child in panel')
+    expect(container.textContent).toContain('Preview content')
   })
 
   it('expands the desktop rail and forwards an imperative URL to Preview', async () => {

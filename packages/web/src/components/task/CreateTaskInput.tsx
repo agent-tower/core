@@ -17,6 +17,7 @@ type WorkspaceMode = WorkspaceKind.WORKTREE | WorkspaceKind.MAIN_DIRECTORY
 type CreateInputVariant = 'task' | 'conversation'
 
 export interface CreateTaskInputProps {
+  parentTask?: { id: string; title: string; projectId: string; baseBranch?: string | null }
   variant?: CreateInputVariant
   projects: ProjectOption[]
   providers: ProviderOption[]
@@ -35,6 +36,7 @@ export interface CreateTaskInputProps {
     attachmentIds: string[]
     priority: TaskPriority
     baseBranch?: string | null
+    parentTaskId?: string
   }) => Promise<void>
   defaultProjectId?: string
   defaultProviderId?: string
@@ -56,6 +58,7 @@ const CREATE_STEP_LABEL: Record<CreateStep, string> = {
 }
 
 export function CreateTaskInput({
+  parentTask,
   variant = 'task',
   projects,
   providers,
@@ -106,7 +109,7 @@ export function CreateTaskInput({
   }, [defaultProjectId, onProjectChange])
   const selectedProject = useMemo(() => projects.find(p => p.id === projectId), [projects, projectId])
   const selectedProvider = useMemo(() => providers.find(p => p.id === providerId), [providers, providerId])
-  const baseBranch = baseBranchChoice?.projectId === projectId ? baseBranchChoice.value : selectedProject?.mainBranch
+  const baseBranch = baseBranchChoice?.projectId === projectId ? baseBranchChoice.value : parentTask?.baseBranch ?? selectedProject?.mainBranch
   const detectedCapability = projectId ? detectedCapabilityByProjectId[projectId] : undefined
   const selectedProjectIsGitRepo = (detectedCapability?.isGitRepo ?? selectedProject?.isGitRepo) !== false
   const selectedProjectWorktreeReady = (detectedCapability?.worktreeReady ?? selectedProject?.worktreeReady) !== false
@@ -168,6 +171,7 @@ export function CreateTaskInput({
     try {
       const submission = onSubmit({
         title: title.trim(),
+        parentTaskId: parentTask?.id,
         description: '',
         projectId: isConversationMode ? '' : projectId,
         providerId,
@@ -194,7 +198,7 @@ export function CreateTaskInput({
     } catch {
       // Conversation failures are recovered from the submitted message bubble.
     }
-  }, [canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, attachmentFiles, removeFile, priority, baseBranch, baseBranchChoice])
+  }, [parentTask, canSubmit, supportsAttachments, buildMarkdownLinks, getDoneAttachments, onSubmit, title, isConversationMode, projectId, providerId, effectiveCreateMode, effectiveWorkspaceMode, teamRunMode, localProjectOnly, teamTemplateId, memberPresetIds, attachmentFiles, removeFile, priority, baseBranch, baseBranchChoice])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashCommandMenu.handleKeyDown(e)) return
@@ -260,6 +264,9 @@ export function CreateTaskInput({
 
   return (
     <div className="w-full">
+      {parentTask && <p className="mb-3 truncate px-2 text-sm text-muted-foreground" title={parentTask.title}>
+        {t('Parent task: {title}', { title: parentTask.title })}
+      </p>}
       {/* Input box — matches session input style */}
       <div
         ref={inputContainerRef}

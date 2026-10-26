@@ -29,6 +29,18 @@ function makeBoardTask(id: string, projectId = 'project-1'): TaskBoardItem {
 }
 
 describe('task cache helpers', () => {
+  it('removes the family and out-of-page parent context in one optimistic change', () => {
+    const client = new QueryClient()
+    const key = queryKeys.tasks.board({ limit: 1 })
+    client.setQueryData(key, {
+      data: [{ ...makeBoardTask('child'), parentTaskId: 'parent' }, makeBoardTask('other')],
+      parents: [makeBoardTask('parent')], total: 2, page: 1, limit: 1, totalPages: 2,
+    })
+    const before = removeTaskFromBoardCaches(client, 'parent')
+    expect(client.getQueryData(key)).toMatchObject({ data: [makeBoardTask('other')], parents: [], total: 1 })
+    expect(before[0][1]?.data).toHaveLength(2)
+  })
+
   it('matches only task list query keys and supports project list keys with params', () => {
     expect(isTaskListQueryKey(['tasks', 'list', 'project-1', { limit: 1000 }], 'project-1')).toBe(true)
     expect(isTaskListQueryKey(['tasks', 'list', 'project-2', { limit: 1000 }], 'project-1')).toBe(false)

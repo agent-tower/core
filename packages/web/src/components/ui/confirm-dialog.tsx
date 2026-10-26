@@ -12,6 +12,7 @@ export interface ConfirmDialogProps {
   confirmText?: string
   cancelText?: string
   variant?: "danger" | "default"
+  confirmDisabled?: boolean
   isLoading?: boolean
 }
 
@@ -29,6 +30,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   cancelText = "取消",
   variant = "default",
   isLoading = false,
+  confirmDisabled,
 }) => {
   const { t } = useI18n()
   useScrollLock(isOpen)
@@ -43,6 +45,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       cancelLabel={t(cancelText)}
       tone={variant === "danger" ? "danger" : "neutral"}
       loading={isLoading}
+      confirmDisabled={confirmDisabled}
       onConfirm={onConfirm}
     />
   )

@@ -18,6 +18,7 @@ TanStack Query 管理 REST 可重建状态；Zustand 管理客户端状态和高
 
 - 看板统一通过 `useTaskBoard` 请求 `/api/task-board`，All Projects 也是一次 board 请求，避免按 project 创建 `useQueries` fan-out。Task 正文用 `useTaskBody` 按需读取；RoomMessage 列表与全文详情分离。
 - Task mutation、`task:*` 和 TeamRun invalidation 要覆盖 board 与旧 task list cache。沿用 `hooks/use-tasks.ts` 的 query predicate、remove/rollback helper，处理过滤后的列表、总数和 detail/body cache；board item 只用 `projectId` 关联项目元数据。
+- 子任务按 `parentTaskId` 收在父任务行下，右侧图标独立控制展开，子任务显示自己的状态；顶层仍按父任务状态分组。board 的分页外 `parents` 只补展示上下文，展开通过 `useSubtasks()` 分页读取；详情选中不在当前 board 页时按需补读 Task。`task:*` 通知和重连同时失效子任务查询。桌面/手机共用 `SubtaskPanel`，通过 `WorkspacePanel.subtasks` 槽放入独立的子任务标签，仅选中该标签并展开面板时挂载；手机入口在工作区标签栏。子任务是任务级视图，不展示工作区切换器，也不常驻聊天区顶部。创建表单保留父任务身份及分支默认值。删除确认读取实际子任务总数并提交 `expectedSubtaskCount`，整组乐观移除，失败恢复；`use-task-cleanup-monitor.ts` 用 sessionStorage 保留待清理 ID，通过 REST 轮询结果并提供重试。
 - TeamRun 用户提交202先缓存稳定operation，不能当RoomMessage upsert；实际发布后按稳定message id合并messages、run detail和task-run cache。`RoomTimeline` 乐观项与后续输入框草稿/附件隔离；未知受理在sessionStorage保存精确body/UUID，重试复用，损坏记录发送前拒绝，不能把旧附件恢复进新草稿或用新UUID盲发。
 - `TeamRoomDeliveryStatus` 用TEAM_TASK范围有界分页恢复待发操作，共享输入另按50条分页、按需全文，动作使用actionId/expectedRevision。202受理、输入ACCEPTED、房间SENT和成员运行是不同状态；owner主消息显示原文，actualSentText对照来自冻结发布事实。ID/revision通知只失效缓存，刷新/重连走REST。
 

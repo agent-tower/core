@@ -397,7 +397,7 @@ export class WorktreeManager {
   async merge(
     worktreePath: string,
     targetBranch: string,
-    options?: { commitMessage?: string }
+    options?: { commitMessage?: string; targetWorktreePath?: string; restoreOriginalBranch?: boolean }
   ): Promise<{ sha: string; taskBranch: string }> {
     const mergeStart = performance.now();
     const step = (label: string, start: number) =>
@@ -425,15 +425,27 @@ export class WorktreeManager {
       throw new BranchesDivergedError(taskBranch, targetBranch, status.ahead, status.behind);
     }
 
-    // 3. Checkout target branch in main repo
+    const targetPath = options?.targetWorktreePath ?? this.repoPath;
+    const originalBranch = options?.restoreOriginalBranch && !options.targetWorktreePath
+      ? (await execGit(this.repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() : null;
+    const originalHead = originalBranch === 'HEAD'
+      ? (await execGit(this.repoPath, ['rev-parse', 'HEAD'])).trim() : null;
+    if (originalBranch && !(await this.isWorktreeClean(this.repoPath))) throw new WorktreeDirtyError(this.repoPath);
+    if (options?.targetWorktreePath) {
+      const actualBranch = (await execGit(targetPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+      if (actualBranch !== targetBranch) throw new Error('Merge target workspace branch changed. Refresh before merging.');
+      if (!(await this.isWorktreeClean(targetPath))) throw new WorktreeDirtyError(targetPath);
+    }
+
+    // 3. Use the existing target worktree when its branch is already checked out.
     t = performance.now();
-    await execGit(this.repoPath, ['checkout', targetBranch]);
+    if (!options?.targetWorktreePath) await execGit(this.repoPath, ['checkout', targetBranch]);
     step('checkout target', t);
 
     // 4. Squash merge (no commit yet)
     t = performance.now();
     try {
-      await execGit(this.repoPath, [
+      await execGit(targetPath, [
         'merge',
         '--squash',
         '--no-commit',
@@ -442,10 +454,10 @@ export class WorktreeManager {
     } catch (err) {
       if (err instanceof GitError) {
         // Check for merge conflicts
-        const conflictedFiles = await this.getConflictedFiles();
+        const conflictedFiles = await this.getConflictedFilesIn(targetPath);
         if (conflictedFiles.length > 0) {
           // Abort the merge to leave the repo clean
-          const mergeAborted = await execGit(this.repoPath, ['merge', '--abort']).then(() => true).catch(() => {
+          const mergeAborted = await execGit(targetPath, ['merge', '--abort']).then(() => true).catch(() => {
             // merge --abort may fail if no merge in progress, ignore
             return false;
           });
@@ -455,7 +467,7 @@ export class WorktreeManager {
             sourceBranch: taskBranch,
             targetBranch,
             sourceWorktreePath: worktreePath,
-            targetWorktreePath: this.repoPath,
+            targetWorktreePath: targetPath,
           });
         }
       }
@@ -467,12 +479,12 @@ export class WorktreeManager {
     t = performance.now();
     const message =
       options?.commitMessage ?? `squash merge branch '${taskBranch}'`;
-    await execGit(this.repoPath, ['commit', '-m', message]);
+    await execGit(targetPath, ['commit', '-m', message]);
     step('commit', t);
 
     // 6. Get the merge commit SHA
     t = performance.now();
-    const sha = (await execGit(this.repoPath, ['rev-parse', 'HEAD'])).trim();
+    const sha = (await execGit(targetPath, ['rev-parse', 'HEAD'])).trim();
     step('rev-parse SHA', t);
 
     // 7. Update task branch ref to point to the merge commit.
@@ -481,6 +493,11 @@ export class WorktreeManager {
     t = performance.now();
     await execGit(this.repoPath, ['update-ref', `refs/heads/${taskBranch}`, sha]);
     step('update-ref', t);
+    if (originalHead) {
+      await execGit(this.repoPath, ['checkout', '--detach', originalHead]);
+    } else if (originalBranch && originalBranch !== targetBranch) {
+      await execGit(this.repoPath, ['checkout', originalBranch]);
+    }
 
     // Worktree 目录不在此处删除，由 WorkspaceService.cleanup() 统一清理。
     // 避免 merge 同步等待大量文件删除（node_modules 等）。

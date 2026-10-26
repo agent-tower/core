@@ -524,8 +524,10 @@ export interface ProjectGitCapability {
   reason: ProjectGitCapabilityReason
 }
 
-/** 创建任务；省略基础分支时快照项目默认值，null 用于本地模式。 */
+/** 创建任务；省略基础分支时快照父任务工作分支或项目默认值，null 用于本地模式。 */
 export interface CreateTaskInput {
+  /** Same-project parent; only one level of subtasks is supported. */
+  parentTaskId?: string
   title: string
   description?: string
   priority?: number
@@ -534,6 +536,8 @@ export interface CreateTaskInput {
 
 /** 任务 */
 export interface Task {
+  parentTaskId?: string | null
+  subtaskCount?: number
   id: string
   projectId: string
   title: string
@@ -583,6 +587,9 @@ export interface TaskBoardWorkspaceSummary {
 
 /** Compact task read model used by the board list hot path. */
 export interface TaskBoardItem {
+  parentTaskId?: string | null
+  subtaskCount?: number
+  runningSubtaskCount?: number
   id: string
   projectId: string
   title: string
@@ -596,11 +603,20 @@ export interface TaskBoardItem {
 }
 
 export interface TaskBoardResponse {
+  /** Parent context outside the current page/filter; excluded from total. */
+  parents?: TaskBoardItem[]
   data: TaskBoardItem[]
   total: number
   page: number
   limit: number
   totalPages: number
+}
+
+export interface TaskCleanupStatus {
+  taskId: string
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  lastError: string | null
+  nextRetryAt: string | null
 }
 
 /** 工作空间 */

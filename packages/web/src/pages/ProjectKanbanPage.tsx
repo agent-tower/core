@@ -7,9 +7,9 @@ import type { TaskStartProgressState } from '@/components/task/TaskStartProgress
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 import { toast } from 'sonner'
-import { adaptProject, adaptTaskBoardItemForDetail, adaptTaskBoardItemForList, mapTaskStatusToUI, mapUIStatusToTask } from '@/components/task/adapters'
+import { adaptProject, adaptTaskForList, adaptTaskBoardItemForDetail, adaptTaskBoardItemForList, mapTaskStatusToUI, mapUIStatusToTask } from '@/components/task/adapters'
 import { useProjects } from '@/hooks/use-projects'
-import { useTaskBoard, useDeleteTask, useUpdateTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
+import { useTask, useTaskBoard, useDeleteTask, useUpdateTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
 import { useStartSession } from '@/hooks/use-sessions'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
@@ -24,7 +24,7 @@ import type { TeamRunMode } from '@agent-tower/shared'
 import { useCreateTaskTeamRun } from '@/hooks/use-team-run'
 import { CreateProjectModal } from '@/components/project/CreateProjectModal'
 import { BrandLockup } from '@/components/BrandLogo'
-import { CreateTaskInput } from '@/components/task/CreateTaskInput'
+import { CreateTaskInput, type CreateTaskInputProps } from '@/components/task/CreateTaskInput'
 import { getProviderStartIssue } from '@/components/provider/provider-draft'
 import { cn } from '@/lib/utils'
 import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
@@ -151,6 +151,8 @@ function taskToBoardItem(task: Task): TaskBoardItem {
 
   return {
     id: task.id,
+    parentTaskId: task.parentTaskId,
+    subtaskCount: task.subtaskCount,
     projectId: task.projectId,
     title: task.titlePreview ?? task.title,
     status: task.status,
@@ -176,6 +178,8 @@ function taskToBoardItem(task: Task): TaskBoardItem {
 export function ProjectKanbanPage() {
   const { t, locale } = useI18n()
   // === 状态 ===
+  const [subtaskParent, setSubtaskParent] = useState<CreateTaskInputProps['parentTask']>(undefined)
+  const subtaskRequest = useRef(0)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [filterProjectId, setFilterProjectId] = useState<string | null>(null)
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
@@ -206,7 +210,7 @@ export function ProjectKanbanPage() {
     ...(effectiveFilterProjectId ? { projectId: effectiveFilterProjectId } : {}),
     limit: TASK_BOARD_LIMIT,
   })
-  const fetchedTasks = useMemo(() => taskBoardData?.data ?? [], [taskBoardData?.data])
+  const fetchedTasks = useMemo(() => [...(taskBoardData?.data ?? []), ...(taskBoardData?.parents ?? [])], [taskBoardData])
   const [optimisticCreatedTasks, setOptimisticCreatedTasks] = useState<TaskBoardItem[]>([])
   const rawTasks = useMemo<TaskBoardItem[]>(() => {
     if (optimisticCreatedTasks.length === 0) return fetchedTasks
@@ -218,11 +222,14 @@ export function ProjectKanbanPage() {
     ]
   }, [fetchedTasks, optimisticCreatedTasks])
   const [pendingCreatedTaskId, setPendingCreatedTaskId] = useState<string | null>(null)
+  const taskOutsideBoard = useTask(selectedTaskId && !rawTasks.some(task => task.id === selectedTaskId) ? selectedTaskId : '')
   const effectiveSelectedTaskId = useMemo(() => {
     if (selectedTaskId && rawTasks.some(task => task.id === selectedTaskId)) return selectedTaskId
     if (pendingCreatedTaskId && selectedTaskId === pendingCreatedTaskId) return pendingCreatedTaskId
+    if (selectedTaskId && (taskOutsideBoard.isLoading || (taskOutsideBoard.data
+      && (!effectiveFilterProjectId || taskOutsideBoard.data.projectId === effectiveFilterProjectId)))) return selectedTaskId
     return null
-  }, [selectedTaskId, rawTasks, pendingCreatedTaskId])
+  }, [selectedTaskId, rawTasks, pendingCreatedTaskId, taskOutsideBoard.data, taskOutsideBoard.isLoading, effectiveFilterProjectId])
 
   useEffect(() => {
     if (pendingCreatedTaskId && rawTasks.some(task => task.id === pendingCreatedTaskId)) {
@@ -265,14 +272,20 @@ export function ProjectKanbanPage() {
     })
   }, [providersData, providerLastUsedAt])
 
-  const uiTasks = useMemo(() => rawTasks.map(task => (
-    adaptTaskBoardItemForList(task, projects.find(project => project.id === task.projectId))
-  )), [projects, rawTasks])
+  const uiTasks = useMemo(() => {
+    const rows = rawTasks.map(task => adaptTaskBoardItemForList(task, projects.find(project => project.id === task.projectId)))
+    if (taskOutsideBoard.data && effectiveSelectedTaskId === taskOutsideBoard.data.id
+      && !rows.some(task => task.id === taskOutsideBoard.data!.id)) {
+      rows.push(adaptTaskForList(taskOutsideBoard.data))
+    }
+    return rows
+  }, [projects, rawTasks, taskOutsideBoard.data, effectiveSelectedTaskId])
 
   // === 选中的任务详情 ===
   const taskDetailData = useMemo<UITaskDetailData | null>(() => {
     if (!effectiveSelectedTaskId) return null
     const task = rawTasks.find(t => t.id === effectiveSelectedTaskId)
+      ?? (taskOutsideBoard.data ? taskToBoardItem(taskOutsideBoard.data) : undefined)
     if (!task) return null
 
     const project = projects.find(p => p.id === task.projectId)
@@ -285,6 +298,8 @@ export function ProjectKanbanPage() {
 
       return {
         id: task.id,
+        parentTaskId: task.parentTaskId,
+        subtaskCount: task.subtaskCount,
         projectId: task.projectId,
         projectName: 'Unknown',
         projectColor: 'text-muted-foreground',
@@ -303,7 +318,7 @@ export function ProjectKanbanPage() {
     }
 
     return adaptTaskBoardItemForDetail(task, project)
-  }, [effectiveSelectedTaskId, rawTasks, projects])
+  }, [effectiveSelectedTaskId, rawTasks, projects, taskOutsideBoard.data])
 
   // === Mutations ===
   const createTaskTeamRun = useCreateTaskTeamRun()
@@ -376,27 +391,28 @@ export function ProjectKanbanPage() {
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
   }, [queryClient])
 
-  const handleDeleteTask = useCallback((taskId: string) => {
-    deleteTask.mutate(taskId, {
+  const handleDeleteTask = useCallback((taskId: string, expectedSubtaskCount?: number) => {
+    const deletedIds = new Set([taskId, ...rawTasks.filter(task => task.parentTaskId === taskId).map(task => task.id)])
+    deleteTask.mutate({ id: taskId, expectedSubtaskCount }, {
       onSuccess: () => {
         // 删除后清除选中状态
-        if (effectiveSelectedTaskId === taskId) {
+        if (effectiveSelectedTaskId === taskId || taskDetailData?.parentTaskId === taskId) {
           setSelectedTaskId(null)
         }
         setBackgroundStarts(current => {
           const rest = { ...current }
-          delete rest[taskId]
+          for (const id of deletedIds) delete rest[id]
           return rest
         })
-        setOptimisticCreatedTasks(current => current.filter(task => task.id !== taskId))
+        setOptimisticCreatedTasks(current => current.filter(task => task.id !== taskId && task.parentTaskId !== taskId))
         // 刷新所有任务列表
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       },
-      onError: () => {
-        toast.error(t('删除任务失败'))
+      onError: (error) => {
+        toast.error(error instanceof Error ? t(error.message) : t('删除任务失败'))
       },
     })
-  }, [deleteTask, effectiveSelectedTaskId, queryClient, t])
+  }, [deleteTask, effectiveSelectedTaskId, taskDetailData?.parentTaskId, rawTasks, queryClient, t])
 
   const handleTaskStatusChange = useCallback((taskId: string, newStatus: UITaskStatus) => {
     updateTaskStatus.mutate(
@@ -463,6 +479,8 @@ export function ProjectKanbanPage() {
   }, [])
 
   const handleCreateTask = useCallback(() => {
+    subtaskRequest.current++
+    setSubtaskParent(undefined)
     if (activeProjects.length === 0) {
       toast.error(t('没有可用项目，请先创建或恢复项目'))
       return
@@ -488,6 +506,7 @@ export function ProjectKanbanPage() {
     attachmentIds: string[]
     priority: number
     baseBranch?: string | null
+    parentTaskId?: string
   }) => {
     const { title, description, projectId, providerId, mode, workspaceMode, teamRunMode, teamTemplateId, memberPresetIds, attachmentLinks, priority, baseBranch } = data
     const fullDescription = [description, attachmentLinks].filter(Boolean).join('\n\n')
@@ -500,6 +519,7 @@ export function ProjectKanbanPage() {
         description: fullDescription || undefined,
         priority,
         baseBranch,
+        parentTaskId: data.parentTaskId,
       })
       createdTask = created
 
@@ -527,6 +547,7 @@ export function ProjectKanbanPage() {
         setFilterProjectId(null)
       }
       revealCreatedTask(createdTask)
+      setSubtaskParent(undefined)
       setCreateStep('idle')
 
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
@@ -556,7 +577,7 @@ export function ProjectKanbanPage() {
   const isLoading = isProjectsLoading || isTaskBoardLoading
 
   const createTaskProjectOptions = useMemo(() =>
-    activeProjects.map(p => ({
+    activeProjects.filter(p => !subtaskParent || p.id === subtaskParent.projectId).map(p => ({
       id: p.id,
       name: p.name,
       color: uiProjects.find(u => u.id === p.id)?.color,
@@ -566,7 +587,7 @@ export function ProjectKanbanPage() {
       worktreeReady: p.worktreeReady,
       reason: p.reason,
     })),
-    [activeProjects, uiProjects],
+    [activeProjects, uiProjects, subtaskParent],
   )
 
   const createTaskProviderOptions = useMemo(() =>
@@ -585,11 +606,12 @@ export function ProjectKanbanPage() {
   )
 
   const defaultProjectId = useMemo(() => {
+    if (subtaskParent) return subtaskParent.projectId
     if (effectiveFilterProjectId && activeProjects.find(p => p.id === effectiveFilterProjectId)) return effectiveFilterProjectId
     const lastProjectId = localStorage.getItem('lastSelectedProjectId')
     if (lastProjectId && activeProjects.find(p => p.id === lastProjectId)) return lastProjectId
     return activeProjects[0]?.id ?? ''
-  }, [activeProjects, effectiveFilterProjectId])
+  }, [activeProjects, effectiveFilterProjectId, subtaskParent])
 
   const [createTaskProjectId, setCreateTaskProjectId] = useState(defaultProjectId)
 
@@ -603,7 +625,7 @@ export function ProjectKanbanPage() {
       ?? t('Project')
   }, [activeProjects, createTaskProjectId, defaultProjectId, t])
 
-  const createTaskTitle = locale === 'zh-CN'
+  const createTaskTitle = subtaskParent ? t('Create subtask') : locale === 'zh-CN'
     ? `你需要在 ${createTaskProjectName} 中做点什么？`
     : `What do you need to do in ${createTaskProjectName}?`
 
@@ -620,12 +642,38 @@ export function ProjectKanbanPage() {
   const hasWindowsWindowControls = usesIntegratedTitlebar && desktopPlatform === 'win32'
 
   const handleMobileCreateTask = useCallback(() => {
+    subtaskRequest.current++
+    setSubtaskParent(undefined)
     if (activeProjects.length === 0) {
       toast.error(t('没有可用项目，请先创建或恢复项目'))
       return
     }
     setMobileCreateOpen(true)
   }, [activeProjects, t])
+
+  const handleSelectTask = useCallback((id: string) => {
+    subtaskRequest.current++
+    setSubtaskParent(undefined)
+    setSelectedTaskId(id)
+  }, [])
+
+  const handleCreateSubtask = useCallback(async (id: string) => {
+    const request = ++subtaskRequest.current
+    try {
+      const parent = await apiClient.get<Task>(`/tasks/${id}`)
+      if (request !== subtaskRequest.current) return
+      const roots = (parent.workspaces?.filter(workspace => !workspace.parentWorkspaceId && workspace.status !== 'ABANDONED') ?? [])
+        .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
+      const workspace = roots.find(workspace => workspace.status === 'ACTIVE')
+        ?? roots.find(workspace => workspace.status === 'HIBERNATED') ?? roots[0]
+      setSubtaskParent({ id, title: parent.titlePreview ?? parent.title, projectId: parent.projectId,
+        baseBranch: workspace?.branchName || parent.baseBranch })
+      setSelectedTaskId(null)
+      if (isMobile) setMobileCreateOpen(true)
+    } catch (error) {
+      if (request === subtaskRequest.current) toast.error(error instanceof Error ? error.message : t('Failed to create task'))
+    }
+  }, [isMobile, t])
 
   const handleMobileSubmitTask = useCallback(async (data: Parameters<typeof handleSubmitTask>[0]) => {
     await handleSubmitTask(data)
@@ -640,7 +688,12 @@ export function ProjectKanbanPage() {
         <div className="flex flex-col h-dvh bg-background overflow-hidden text-sm">
           <header className="h-12 border-b border-border/60 flex items-center px-4 shrink-0">
             <button
-              onClick={() => setMobileCreateOpen(false)}
+              onClick={() => {
+                subtaskRequest.current++
+                if (subtaskParent) setSelectedTaskId(subtaskParent.id)
+                setSubtaskParent(undefined)
+                setMobileCreateOpen(false)
+              }}
               className="text-sm text-muted-foreground active:text-foreground"
             >
               {t('Cancel')}
@@ -649,6 +702,8 @@ export function ProjectKanbanPage() {
           <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[8vh]">
             <h1 className="max-w-full text-center text-[22px] font-medium tracking-tight leading-snug text-foreground mb-5 break-words">{createTaskTitle}</h1>
             <CreateTaskInput
+              key={subtaskParent?.id ?? "root"}
+              parentTask={subtaskParent}
               projects={createTaskProjectOptions}
               providers={createTaskProviderOptions}
               isProvidersLoading={isProvidersLoading}
@@ -670,6 +725,8 @@ export function ProjectKanbanPage() {
           <Suspense fallback={<div className="flex h-dvh"><TaskDetailLoading /></div>}>
             <MobileTaskDetail
               task={taskDetailData}
+              onSelectTask={handleSelectTask}
+              onCreateSubtask={handleCreateSubtask}
               onBack={() => setSelectedTaskId(null)}
               onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
               onTaskPriorityChange={taskDetailData.projectArchivedAt ? undefined : handleTaskPriorityChange}
@@ -714,10 +771,13 @@ export function ProjectKanbanPage() {
             tasks={uiTasks}
             projects={uiProjects}
             selectedTaskId={null}
-            onSelectTask={setSelectedTaskId}
+            onSelectTask={handleSelectTask}
+          onCreateSubtask={handleCreateSubtask}
+          selectedParentTaskId={taskDetailData?.parentTaskId}
             filterProjectId={effectiveFilterProjectId}
             setFilterProjectId={setFilterProjectId}
             width="100%"
+            onDeleteTask={handleDeleteTask}
             onCreateTask={handleMobileCreateTask}
             onCreateProject={handleCreateProject}
             onTaskStatusChange={handleTaskStatusChange}
@@ -783,7 +843,9 @@ export function ProjectKanbanPage() {
           tasks={uiTasks}
           projects={uiProjects}
           selectedTaskId={effectiveSelectedTaskId}
-          onSelectTask={setSelectedTaskId}
+          onSelectTask={handleSelectTask}
+          onCreateSubtask={handleCreateSubtask}
+          selectedParentTaskId={taskDetailData?.parentTaskId}
           filterProjectId={effectiveFilterProjectId}
           setFilterProjectId={setFilterProjectId}
           width={sidebarWidth}
@@ -809,6 +871,8 @@ export function ProjectKanbanPage() {
             <Suspense fallback={<TaskDetailLoading />}>
               <TaskDetail
                 task={taskDetailData}
+                onSelectTask={handleSelectTask}
+                onCreateSubtask={handleCreateSubtask}
                 onDeleteTask={taskDetailData.projectArchivedAt ? undefined : handleDeleteTask}
                 isDeleting={deleteTask.isPending}
                 onTaskStatusChange={taskDetailData.projectArchivedAt ? undefined : handleTaskStatusChange}
@@ -826,6 +890,8 @@ export function ProjectKanbanPage() {
               <div className="w-full max-w-2xl flex flex-col items-center animate-[fadeInUp_0.5s_cubic-bezier(0.16,1,0.3,1)]">
                 <h1 className="max-w-full text-center text-[26px] font-medium tracking-tight leading-snug text-foreground mb-6 break-words">{createTaskTitle}</h1>
                 <CreateTaskInput
+                  key={subtaskParent?.id ?? "root"}
+                  parentTask={subtaskParent}
                   projects={createTaskProjectOptions}
                   providers={createTaskProviderOptions}
                   isProvidersLoading={isProvidersLoading}

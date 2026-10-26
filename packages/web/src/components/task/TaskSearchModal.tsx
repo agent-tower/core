@@ -113,6 +113,7 @@ export function TaskSearchModal({ isOpen, onClose, tasks, projects, onSelectTask
                     <StatusIcon className={`${iconClass} size-4 shrink-0`} />
                     <span className="flex-1 min-w-0 truncate text-sm text-foreground/90" title={task.title}>
                       {task.title}
+                      {task.parentTaskId && <span className="ml-2 text-xs text-muted-foreground">{t('Parent task: {title}', { title: tasks.find(parent => parent.id === task.parentTaskId)?.title ?? '…' })}</span>}
                     </span>
                     {project && (
                       <span className="shrink-0 max-w-[120px] truncate text-xs text-muted-foreground">

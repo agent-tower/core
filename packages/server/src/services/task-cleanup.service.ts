@@ -29,6 +29,8 @@ interface TaskCleanupWorkspaceSnapshot {
 
 export interface TaskCleanupSnapshot {
   taskId: string;
+  /** Children first, root last. Missing on legacy single-task jobs. */
+  taskIds?: string[];
   projectId: string;
   project: {
     repoPath: string;
@@ -134,7 +136,7 @@ export class TaskCleanupService {
       await this.cleanupSnapshot(snapshot);
 
       await prisma.$transaction([
-        prisma.task.deleteMany({ where: { id: snapshot.taskId } }),
+        prisma.task.deleteMany({ where: { id: { in: snapshot.taskIds ?? [snapshot.taskId] }, deletedAt: { not: null } } }),
         prisma.taskCleanupJob.update({
           where: { id: jobId },
           data: {
@@ -213,7 +215,7 @@ export class TaskCleanupService {
     // the surviving task's sessions before removing resources so idle ACP
     // transports and launches that settled since enqueue are also reclaimed.
     const currentSessions = await prisma.session.findMany({
-      where: { workspace: { taskId: snapshot.taskId } },
+      where: { workspace: { taskId: { in: snapshot.taskIds ?? [snapshot.taskId] } } },
       select: { id: true },
     });
     const sessionIds = new Set([

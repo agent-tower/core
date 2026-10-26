@@ -1,3 +1,4 @@
+import { SubtaskPanel } from '@/components/task/SubtaskPanel'
 import { TeamInitialDeliveryStatus } from '@/components/team/TeamInitialDeliveryStatus'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
@@ -7,7 +8,7 @@ import { LogStream, RuntimePermissionPrompt, TodoPanel, TokenUsageIndicator } fr
 import { LogViewBoundary } from '@/components/errors'
 import {
   ArrowLeft, ArrowUp, Loader2, ArrowDown, Paperclip, Play, Square,
-  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History, Users,
+  MessageSquare, FolderOpen, GitGraph, Code2, Trash2, MoreVertical, History, Users, Plus,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RoomTimeline } from '@/components/team/RoomTimeline'
@@ -83,7 +84,9 @@ const attachmentUrlTransform: UrlTransform = (url) => {
 interface MobileTaskDetailProps {
   task: UITaskDetailData
   onBack: () => void
-  onDeleteTask?: (taskId: string) => void
+  onSelectTask?: (taskId: string) => void
+  onCreateSubtask?: (taskId: string) => void
+  onDeleteTask?: (taskId: string, expectedSubtaskCount?: number) => void
   onTaskPriorityChange?: (taskId: string, priority: number) => void
   isDeleting?: boolean
   autoStartState?: TaskStartProgressState | null
@@ -123,7 +126,7 @@ const TEAM_RUN_TAB_CONFIG: { key: MobileTab; label: string; icon: typeof Message
 
 // ============ Main Component ============
 
-export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityChange, isDeleting, autoStartState, onAutoStartRecovered }: MobileTaskDetailProps) {
+export function MobileTaskDetail({ task, onBack, onSelectTask, onCreateSubtask, onDeleteTask, onTaskPriorityChange, isDeleting, autoStartState, onAutoStartRecovered }: MobileTaskDetailProps) {
   const { t } = useI18n()
   const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
   const [activeTab, setActiveTab] = useState<MobileTab>('chat')
@@ -758,7 +761,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
           >
             <Code2 size={16} />
           </button>
-          {onDeleteTask && !isProjectReadOnly && (
+          {(onDeleteTask || onCreateSubtask) && !isProjectReadOnly && (
             <div className="relative" ref={moreMenuRef}>
               <button
                 onClick={() => setIsMoreMenuOpen(v => !v)}
@@ -769,6 +772,12 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
               </button>
               {isMoreMenuOpen && (
                 <div className="absolute right-0 top-full mt-1 w-40 bg-background rounded-lg border border-border shadow-popover z-50 py-1">
+                  {onCreateSubtask && !task.parentTaskId && (
+                    <button className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/50"
+                      onClick={() => { setIsMoreMenuOpen(false); onCreateSubtask(task.id) }}>
+                      <Plus size={15} /><span>{t('Create subtask')}</span>
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setIsDeleteConfirmOpen(true)
@@ -1200,6 +1209,7 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
       {activeTab === 'workspace' && (
         <div className="flex-1 overflow-hidden">
           <WorkspacePanel
+            subtasks={<SubtaskPanel key={task.id} task={task} onSelectTask={onSelectTask} onCreateSubtask={onCreateSubtask} />}
             sessionId={sessionId || undefined}
             workspaceId={resolvedWorkspaceId}
             workingDir={workingDir}
@@ -1238,8 +1248,8 @@ export function MobileTaskDetail({ task, onBack, onDeleteTask, onTaskPriorityCha
       <DeleteTaskConfirmDialog
         isOpen={isDeleteConfirmOpen}
         onClose={() => setIsDeleteConfirmOpen(false)}
-        onConfirm={() => {
-          onDeleteTask?.(task.id)
+        onConfirm={(count) => {
+          onDeleteTask?.(task.id, count)
           setIsDeleteConfirmOpen(false)
         }}
         taskId={task.id}

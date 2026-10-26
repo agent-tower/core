@@ -45,6 +45,9 @@ model Task {
   position    Int         @default(0)
   projectId   String
   project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parentTaskId String?
+  parentTask  Task?       @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: SetNull)
+  subtasks    Task[]      @relation("TaskSubtasks")
   workspaces  Workspace[]
   deliveries MessageDelivery[]
   taskInputSnapshots TeamTaskInputSnapshot[]
@@ -54,6 +57,7 @@ model Task {
   updatedAt   DateTime    @updatedAt
 
   @@index([projectId])
+  @@index([parentTaskId, deletedAt])
   @@index([status])
   @@index([deletedAt])
   @@index([projectId, deletedAt, status, position])

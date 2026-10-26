@@ -1,6 +1,9 @@
-import { memo, useState, useCallback, useRef, useEffect, useLayoutEffect, useContext, useId, createContext } from 'react'
-import { Check, ChevronRight, Trash2 } from 'lucide-react'
+import { memo, useState, useCallback, useRef, useEffect, useLayoutEffect, useContext, useId } from 'react'
+import { Check, ChevronRight, ListTree, Plus, Trash2 } from 'lucide-react'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
+import { useSubtasks } from '@/hooks/use-tasks'
+import { adaptTaskBoardItemForList } from './adapters'
+import { FlipContext } from './task-list-flip'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { STATUS_STYLES, STATUS_ORDER } from './status-styles'
 import { sidebarRowClass } from './sidebar-styles'
@@ -13,11 +16,6 @@ import { useI18n } from '@/lib/i18n'
 import { cn, truncateEnd } from '@/lib/utils'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
-
-export interface FlipHandle {
-  registry: Map<string, HTMLElement>
-}
-export const FlipContext = createContext<FlipHandle | null>(null)
 
 const TICK_INTERVAL = 30_000
 
@@ -48,6 +46,9 @@ interface TaskGroupProps {
   status: UITaskStatus
   defaultOpen: boolean
   selectedTaskId: string | null
+  selectedParentTaskId?: string | null
+  selectedChildTask?: UITask
+  onCreateSubtask?: (taskId: string) => void
   onSelectTask: (id: string) => void
   projects: UIProject[]
   /** 是否在任务行展示所属项目（按单个项目筛选时冗余，应关闭） */
@@ -59,7 +60,7 @@ interface TaskGroupProps {
   /** 状态变更回调（右键菜单） */
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   /** 删除任务回调（右键菜单） */
-  onDeleteTask?: (taskId: string) => void
+  onDeleteTask?: (taskId: string, expectedSubtaskCount?: number) => void
   /** 修改任务优先级回调（右键菜单） */
   onTaskPriorityChange?: (taskId: string, priority: TaskPriority) => void
   /** 移动端禁用拖拽，改用长按菜单 */
@@ -77,7 +78,15 @@ function DraggableTaskCard({
   onDeleteTask,
   onTaskPriorityChange,
   disableDrag,
+  onCreateSubtask,
+  selectedTaskId,
+  expandForSelection,
+  selectedChildTask,
 }: {
+  onCreateSubtask?: (taskId: string) => void
+  selectedTaskId?: string | null
+  expandForSelection?: boolean
+  selectedChildTask?: UITask
   task: UITask
   status: UITaskStatus
   isSelected: boolean
@@ -85,11 +94,20 @@ function DraggableTaskCard({
   showProject: boolean
   onSelectTask: (id: string) => void
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
-  onDeleteTask?: (taskId: string) => void
+  onDeleteTask?: (taskId: string, expectedSubtaskCount?: number) => void
   onTaskPriorityChange?: (taskId: string, priority: TaskPriority) => void
   disableDrag?: boolean
 }) {
   const { t, locale } = useI18n()
+  const [childrenExpansion, setChildrenExpansion] = useState<{ selection?: string | null; open: boolean }>({ open: false })
+  const childrenOpen = childrenExpansion.open || Boolean(expandForSelection && childrenExpansion.selection !== selectedTaskId)
+  const children = useSubtasks(task.id, childrenOpen && !task.parentTaskId)
+  const childCount = children.data?.pages[0]?.total ?? task.subtaskCount ?? 0
+  const childRows = children.data?.pages.flatMap(page => page.data).map(child => adaptTaskBoardItemForList(child)) ?? []
+  // Search can select a child beyond the first expanded page.
+  if (selectedChildTask?.parentTaskId === task.id && !childRows.some(child => child.id === selectedChildTask.id)) {
+    childRows.push(selectedChildTask)
+  }
   const flip = useContext(FlipContext)
   const cardRef = useRef<HTMLButtonElement | null>(null)
   const isTaskReadOnly = Boolean(task.projectArchivedAt)
@@ -120,10 +138,10 @@ function DraggableTaskCard({
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     if (isTaskReadOnly) return
-    if (!onTaskStatusChange && !onDeleteTask && !onTaskPriorityChange) return
+    if (!onTaskStatusChange && !onDeleteTask && !onTaskPriorityChange && !onCreateSubtask) return
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY })
-  }, [isTaskReadOnly, onTaskStatusChange, onDeleteTask, onTaskPriorityChange])
+  }, [isTaskReadOnly, onTaskStatusChange, onDeleteTask, onTaskPriorityChange, onCreateSubtask, setContextMenu])
 
   const clearLongPress = useCallback(() => {
     if (longPressTimer.current) {
@@ -133,7 +151,7 @@ function DraggableTaskCard({
   }, [])
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    if (!disableDrag || isTaskReadOnly || (!onTaskStatusChange && !onDeleteTask)) return
+    if (!disableDrag || isTaskReadOnly || (!onTaskStatusChange && !onDeleteTask && !onCreateSubtask)) return
     const touch = e.touches[0]
     if (!touch) return
     const { clientX, clientY } = touch
@@ -141,7 +159,7 @@ function DraggableTaskCard({
       longPressTimer.current = null
       setContextMenu({ x: clientX, y: clientY })
     }, 500)
-  }, [disableDrag, isTaskReadOnly, onTaskStatusChange, onDeleteTask])
+  }, [disableDrag, isTaskReadOnly, onTaskStatusChange, onDeleteTask, onCreateSubtask, setContextMenu])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -183,6 +201,7 @@ function DraggableTaskCard({
 
   return (
     <>
+      <div className="flex min-w-0 items-center gap-0.5">
       <button
         ref={mergedRef}
         type="button"
@@ -195,10 +214,14 @@ function DraggableTaskCard({
         aria-label={projectLabel ? `${task.title} — ${projectLabel}` : task.title}
         aria-current={isSelected || undefined}
         data-sidebar-item=""
-        className={cn('task-row animate-task-enter', sidebarRowClass(isSelected), isDragging && 'opacity-30')}
+        className={cn('task-row animate-task-enter', sidebarRowClass(isSelected), 'min-w-0 flex-1', isDragging && 'opacity-30')}
         {...(dragDisabled ? {} : listeners)}
         {...(dragDisabled ? {} : attributes)}
       >
+        {task.parentTaskId && (() => {
+          const { icon: StatusIcon, accentClass, label } = STATUS_STYLES[status]
+          return <span className="shrink-0" title={t(label)} aria-label={t(label)}><StatusIcon className={cn('size-3.5', accentClass)} /></span>
+        })()}
         {/* 行首不放状态图标，宽度全部留给标题；状态由分组标题表达，标题样式只区分「多需要你介入」 */}
         {status === UITaskStatus.Running ? (
           <TaskGradientText text={task.title} variant="running" animate={!isSelected} className={cn('min-w-0 flex-1 truncate', titleClass)} />
@@ -232,6 +255,30 @@ function DraggableTaskCard({
           </span>
         )}
       </button>
+      {!task.parentTaskId && childCount > 0 && (
+        <button type="button" data-sidebar-item="" aria-expanded={childrenOpen}
+          aria-label={t('Subtasks of {title}', { title: task.title })}
+          title={t('{count} subtasks, {running} running', { count: childCount, running: task.runningSubtaskCount ?? 0 })}
+          onClick={() => setChildrenExpansion({ selection: selectedTaskId, open: !childrenOpen })}
+          className="flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-10">
+          <ListTree size={14} /><span className="tabular-nums">{childCount}</span>
+          <ChevronRight size={12} className={cn('transition-transform', childrenOpen && 'rotate-90')} />
+        </button>
+      )}
+      </div>
+      {!task.parentTaskId && childrenOpen && (
+        <div className="ml-4 border-l border-border/60 pl-1" role="group" aria-label={t('Subtasks of {title}', { title: task.title })}>
+          {children.isLoading && <p className="px-2 py-1 text-xs text-muted-foreground">{t('Loading...')}</p>}
+          {children.isError && <button type="button" className={MENU_ITEM_CLASS} onClick={() => children.refetch()}>{t('Could not load subtasks. Retry')}</button>}
+          {childRows.map(row => {
+            return <DraggableTaskCard key={row.id} task={{ ...row, projectArchivedAt: task.projectArchivedAt }} status={row.status}
+              isSelected={selectedTaskId === row.id} project={project} showProject={false}
+              onSelectTask={onSelectTask} onTaskStatusChange={onTaskStatusChange}
+              onDeleteTask={onDeleteTask} onTaskPriorityChange={onTaskPriorityChange} disableDrag={disableDrag} />
+          })}
+          {children.hasNextPage && <button type="button" className={MENU_ITEM_CLASS} disabled={children.isFetchingNextPage} onClick={() => children.fetchNextPage()}>{t('Load more')}</button>}
+        </div>
+      )}
 
       {/* 右键菜单（位置由上方 layout effect 写入） */}
       {contextMenu && (
@@ -240,6 +287,15 @@ function DraggableTaskCard({
           role="menu"
           className="fixed z-[100] w-48 rounded-lg border border-border bg-popover p-1 shadow-popover shadow-black/5 animate-in fade-in zoom-in-95 duration-100"
         >
+          {onCreateSubtask && !task.parentTaskId && (
+            <>
+              <button type="button" role="menuitem" className={MENU_ITEM_CLASS}
+                onClick={() => { onCreateSubtask(task.id); setContextMenu(null) }}>
+                <Plus className="size-3.5 shrink-0" /><span>{t('Create subtask')}</span>
+              </button>
+              {MENU_SEPARATOR}
+            </>
+          )}
           {onTaskStatusChange && (
             <>
               <div className={MENU_LABEL_CLASS}>{t('Move to')}</div>
@@ -303,8 +359,8 @@ function DraggableTaskCard({
       <DeleteTaskConfirmDialog
         isOpen={isDeleteConfirmOpen}
         onClose={() => setIsDeleteConfirmOpen(false)}
-        onConfirm={() => {
-          onDeleteTask?.(task.id)
+        onConfirm={(count) => {
+          onDeleteTask?.(task.id, count)
           setIsDeleteConfirmOpen(false)
         }}
         taskId={task.id}
@@ -320,6 +376,9 @@ export const TaskGroup = memo(function TaskGroup({
   status,
   defaultOpen,
   selectedTaskId,
+  selectedParentTaskId,
+  selectedChildTask,
+  onCreateSubtask,
   onSelectTask,
   projects,
   showProject = true,
@@ -331,7 +390,9 @@ export const TaskGroup = memo(function TaskGroup({
   disableDrag,
 }: TaskGroupProps) {
   const { t } = useI18n()
-  const [isOpen, setIsOpen] = useState(defaultOpen)
+  const [expansion, setExpansion] = useState<{ selection: string | null; open: boolean }>({ selection: null, open: defaultOpen })
+  const isOpen = expansion.open || Boolean(selectedTaskId && expansion.selection !== selectedTaskId
+    && tasks.some(task => task.id === selectedTaskId || task.id === selectedParentTaskId))
   useTick()
 
   const isEmpty = tasks.length === 0
@@ -362,7 +423,7 @@ export const TaskGroup = memo(function TaskGroup({
       <div className="sticky top-0 z-10 bg-sidebar px-2">
         <button
           type="button"
-          onClick={() => !isGlobalDragging && setIsOpen(prev => !prev)}
+          onClick={() => !isGlobalDragging && setExpansion({ selection: selectedTaskId, open: !isOpen })}
           aria-expanded={isOpen}
           data-sidebar-item=""
           // 与任务行同字号、同行高，只靠灰色常规体和任务标题区分层级
@@ -418,6 +479,10 @@ export const TaskGroup = memo(function TaskGroup({
             return (
               <DraggableTaskCard
                 key={task.id}
+                selectedTaskId={selectedTaskId}
+                selectedChildTask={selectedChildTask}
+                expandForSelection={selectedParentTaskId === task.id}
+                onCreateSubtask={task.projectArchivedAt ? undefined : onCreateSubtask}
                 task={task}
                 status={status}
                 isSelected={isSelected}

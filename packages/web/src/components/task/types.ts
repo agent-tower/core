@@ -45,6 +45,9 @@ export interface UIProject {
  * 相比后端 Task，额外携带了 agent / branch 等来自 Workspace/Session 的展示信息。
  */
 export interface UITask {
+  parentTaskId?: string | null
+  subtaskCount?: number
+  runningSubtaskCount?: number
   id: string
   projectId: string
   title: string
@@ -70,6 +73,8 @@ export interface UITask {
  * 包含项目信息、日志等完整渲染数据。
  */
 export interface UITaskDetailData {
+  parentTaskId?: string | null
+  subtaskCount?: number
   id: string
   projectId: string
   projectName: string

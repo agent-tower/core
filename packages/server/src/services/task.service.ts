@@ -5,6 +5,7 @@ import { TaskStatus, SessionStatus, SessionPurpose, WorkspaceKind, WorkspaceStat
 import { getWorkspaceWorkingDir } from './workspace-kind.js';
 import {
   NotFoundError,
+  ServiceError,
   ValidationError,
   InvalidStateTransitionError,
 } from '../errors.js';
@@ -22,6 +23,14 @@ import prismaPkg from '@prisma/client';
 
 const { Prisma } = prismaPkg;
 
+const taskBoardColumns = Prisma.sql`
+  task."id", task."projectId", task."title", task."status", task."priority",
+  task."position", task."updatedAt", task."parentTaskId",
+  (SELECT COUNT(*) FROM "Task" child WHERE child."parentTaskId" = task."id" AND child."deletedAt" IS NULL) AS "subtaskCount",
+  (SELECT COUNT(*) FROM "Task" child WHERE child."parentTaskId" = task."id" AND child."deletedAt" IS NULL AND child."status" = 'IN_PROGRESS') AS "runningSubtaskCount"
+`;
+
+
 interface UpdateTaskInput {
   title?: string;
   description?: string;
@@ -30,6 +39,7 @@ interface UpdateTaskInput {
 
 interface FindTasksParams {
   projectId?: string;
+  parentTaskId?: string;
   status?: TaskStatus;
   page?: number;
   limit?: number;
@@ -79,6 +89,9 @@ type TaskBoardWorkspaceRow = {
 };
 
 type TaskBoardTaskRow = {
+  parentTaskId: string | null;
+  subtaskCount: bigint | number;
+  runningSubtaskCount: bigint | number;
   id: string;
   projectId: string;
   title: string;
@@ -390,11 +403,15 @@ export class TaskService {
       deletedAt: null,
       project: { archivedAt: null },
       ...(params.projectId ? { projectId: params.projectId } : {}),
+      ...(params.parentTaskId ? { parentTaskId: params.parentTaskId } : {}),
       ...(params.status ? { status: params.status } : {}),
     };
 
     const projectFilter = params.projectId
       ? Prisma.sql`AND task."projectId" = ${params.projectId}`
+      : Prisma.empty;
+    const parentFilter = params.parentTaskId
+      ? Prisma.sql`AND task."parentTaskId" = ${params.parentTaskId}`
       : Prisma.empty;
     const statusFilter = params.status
       ? Prisma.sql`AND task."status" = ${params.status}`
@@ -402,20 +419,14 @@ export class TaskService {
 
     const [tasks, total] = await Promise.all([
       prisma.$queryRaw<TaskBoardTaskRow[]>(Prisma.sql`
-        SELECT
-          task."id" AS "id",
-          task."projectId" AS "projectId",
-          task."title" AS "title",
-          task."status" AS "status",
-          task."priority" AS "priority",
-          task."position" AS "position",
-          task."updatedAt" AS "updatedAt"
+        SELECT ${taskBoardColumns}
         FROM "Task" task
         INNER JOIN "Project" project ON project."id" = task."projectId"
         WHERE task."deletedAt" IS NULL
           AND project."archivedAt" IS NULL
           ${projectFilter}
           ${statusFilter}
+          ${parentFilter}
         ORDER BY
           CASE task."status"
             WHEN ${TaskStatus.IN_PROGRESS} THEN 0
@@ -433,7 +444,21 @@ export class TaskService {
       prisma.task.count({ where }),
     ]);
 
-    const taskIds = tasks.map((task) => task.id);
+    // A child can rank ahead of its completed parent or fall on another page.
+    // Return compact parent context without changing the page's count/limit.
+    const pageIds = new Set(tasks.map((task) => task.id));
+    const missingParentIds = [...new Set(tasks.flatMap((task) =>
+      task.parentTaskId && !pageIds.has(task.parentTaskId) ? [task.parentTaskId] : []
+    ))];
+    const parents = params.parentTaskId || missingParentIds.length === 0 ? []
+      : await prisma.$queryRaw<TaskBoardTaskRow[]>(Prisma.sql`
+        SELECT ${taskBoardColumns} FROM "Task" task
+        INNER JOIN "Project" project ON project."id" = task."projectId"
+        WHERE task."id" IN (${Prisma.join(missingParentIds)})
+          AND task."deletedAt" IS NULL AND project."archivedAt" IS NULL
+      `);
+    const allTasks = [...tasks, ...parents];
+    const taskIds = allTasks.map((task) => task.id);
     const workspaceRows = taskIds.length === 0
       ? []
       : await prisma.$queryRaw<TaskBoardWorkspaceRow[]>(Prisma.sql`
@@ -484,7 +509,7 @@ export class TaskService {
     }
 
     const preferredWorkspaceByTaskId = new Map<string, (typeof workspaces)[number]>();
-    for (const task of tasks) {
+    for (const task of allTasks) {
       const candidates = workspacesByTaskId.get(task.id) ?? [];
       const preferred = candidates.find((workspace) => workspace.status === WorkspaceStatus.ACTIVE)
         ?? candidates[0];
@@ -493,7 +518,7 @@ export class TaskService {
       }
     }
 
-    const data: TaskBoardItem[] = tasks.map((task) => {
+    const data: TaskBoardItem[] = allTasks.map((task) => {
       const titlePreview = buildTextPreview(task.title, TASK_TITLE_MAX_LENGTH);
       const preferredWorkspace = preferredWorkspaceByTaskId.get(task.id);
       const hasRunningSession = (workspacesByTaskId.get(task.id) ?? [])
@@ -505,6 +530,9 @@ export class TaskService {
       return {
         id: task.id,
         projectId: task.projectId,
+        parentTaskId: task.parentTaskId,
+        subtaskCount: Number(task.subtaskCount),
+        runningSubtaskCount: Number(task.runningSubtaskCount),
         title: titlePreview,
         status: task.status as TaskStatus,
         priority: task.priority ?? TaskPriority.NORMAL,
@@ -525,7 +553,8 @@ export class TaskService {
     });
 
     return {
-      data,
+      data: data.slice(0, tasks.length),
+      ...(parents.length ? { parents: data.slice(tasks.length) } : {}),
       total,
       page,
       limit,
@@ -572,6 +601,7 @@ export class TaskService {
           projectId: true,
           title: true,
           baseBranch: true,
+          parentTaskId: true,
           status: true,
           priority: true,
           position: true,
@@ -623,6 +653,8 @@ export class TaskService {
         project: true,
         title: true,
         baseBranch: true,
+        parentTaskId: true,
+        _count: { select: { subtasks: { where: { deletedAt: null } } } },
         status: true,
         priority: true,
         position: true,
@@ -636,7 +668,14 @@ export class TaskService {
       throw new NotFoundError('Task', id);
     }
 
-    return withTaskPreviews(withProjectGitMetadata(task), { omitDescription: true });
+    const { _count, ...metadata } = task;
+    return withTaskPreviews(withProjectGitMetadata({ ...metadata, subtaskCount: _count.subtasks }), { omitDescription: true });
+  }
+
+  async findSubtasks(id: string, params: FindTasksParams = {}) {
+    const parent = await prisma.task.findFirst({ where: { id, deletedAt: null } });
+    if (!parent) throw new NotFoundError('Task', id);
+    return this.findBoard({ ...params, projectId: parent.projectId, parentTaskId: id });
   }
 
   async findBodyById(id: string) {
@@ -697,42 +736,75 @@ export class TaskService {
     }
     ensureProjectIsMutable(project, 'create tasks');
 
-    // Resolve at task creation so delayed starts and TeamRun main workspaces
-    // cannot silently follow a later project default change. Local tasks opt out.
-    let baseBranch: string | null = null;
-    if (input.baseBranch !== null) {
-      const requestedBranch = input.baseBranch ?? (
-        (await detectProjectGitCapability(project.repoPath)).worktreeReady ? project.mainBranch : null
-      );
-      if (requestedBranch !== null) {
-        baseBranch = await requireLocalBaseBranch(project.repoPath, requestedBranch);
+    const parent = input.parentTaskId ? await prisma.task.findFirst({
+      where: { id: input.parentTaskId, projectId, deletedAt: null },
+      include: { workspaces: {
+        where: { parentWorkspaceId: null, ownerMemberId: null, status: { not: WorkspaceStatus.ABANDONED } },
+        orderBy: { createdAt: 'desc' },
+      } },
+    }) : null;
+    if (input.parentTaskId && !parent) throw new NotFoundError('Parent task', input.parentTaskId);
+    if (parent?.parentTaskId) throw new ValidationError('Subtasks cannot have their own subtasks');
+    const parentWorkspace = parent?.workspaces.find((workspace) => workspace.status === WorkspaceStatus.ACTIVE)
+      ?? parent?.workspaces.find((workspace) => workspace.status === WorkspaceStatus.HIBERNATED)
+      ?? parent?.workspaces[0];
+    const parentBranch = parentWorkspace?.branchName || parent?.baseBranch;
+
+    const createWithParentBranch = async () => {
+      // Resolve at task creation so delayed starts and TeamRun main workspaces
+      // cannot silently follow a later project default change. Local tasks opt out.
+      let baseBranch: string | null = null;
+      if (input.baseBranch !== null) {
+        const requestedBranch = input.baseBranch ?? parentBranch ?? (
+          (await detectProjectGitCapability(project.repoPath)).worktreeReady ? project.mainBranch : null
+        );
+        if (requestedBranch !== null) {
+          baseBranch = await requireLocalBaseBranch(project.repoPath, requestedBranch);
+        }
       }
-    }
 
-    // 自动计算 position
-    const maxPosition = await prisma.task.aggregate({
-      where: { projectId, status: TaskStatus.TODO, deletedAt: null },
-      _max: { position: true },
-    });
+      // 自动计算 position
+      const maxPosition = await prisma.task.aggregate({
+        where: { projectId, status: TaskStatus.TODO, deletedAt: null },
+        _max: { position: true },
+      });
 
-    const created = await prisma.task.create({
-      data: {
-        title: normalizedInput.title,
-        description: normalizedInput.description,
-        priority: normalizedInput.priority ?? TaskPriority.NORMAL,
-        baseBranch,
-        position: (maxPosition._max.position ?? 0) + 1,
-        projectId,
-      },
-    });
+      const created = await prisma.$transaction(async (tx) => {
+        // Recheck after Git validation, serialized with the deletion marker.
+        if (parent) {
+          const liveParent = await tx.task.findFirst({
+            where: { id: parent.id, projectId, deletedAt: null, project: { archivedAt: null } },
+          });
+          if (!liveParent) throw new NotFoundError('Parent task', parent.id);
+        }
+        return tx.task.create({
+          data: {
+            title: normalizedInput.title,
+            description: normalizedInput.description,
+            priority: normalizedInput.priority ?? TaskPriority.NORMAL,
+            baseBranch,
+            parentTaskId: parent?.id,
+            position: (maxPosition._max.position ?? 0) + 1,
+            projectId,
+          },
+        });
+      });
+      this.eventBus.emit('task:updated', { taskId: created.id, projectId, status: created.status });
+      if (parent) this.eventBus.emit('task:updated', { taskId: parent.id, projectId, status: parent.status });
 
-    return {
-      ...created,
-      project: {
-        ...project,
-        ...buildProjectGitMetadata(project),
-      },
+      return {
+        ...created,
+        project: {
+          ...project,
+          ...buildProjectGitMetadata(project),
+        },
+      };
     };
+    // Serialize branch validation and child persistence with parent workspace
+    // cleanup, so its reference becomes visible before that branch is reclaimed.
+    return parentWorkspace
+      ? defaultWorkspaceLifecycleBarrier.withWorkspace(parentWorkspace.id, createWithParentBranch)
+      : createWithParentBranch();
   }
 
   /**
@@ -865,160 +937,115 @@ export class TaskService {
   /**
    * 快速删除任务
    *
-   * 1. 原子标记 Task 为 deletedAt，使普通列表立即隐藏
-   * 2. 保存后台清理快照
+   * 1. 在同一事务中标记父子 Task 为 deletedAt，并保存清理快照
+   * 2. 普通读取立即隐藏已删除的任务
    * 3. 通过 EventBus 通知前端实时删除
    * 4. 后台 worker 再停止 Session、删除 worktree/branch，并最终硬删除 Task
    */
-  async delete(id: string) {
-    const deletedAt = new Date();
-    const taskForGuard = await prisma.task.findUnique({
-      where: { id },
-      include: { project: true },
-    });
-    if (!taskForGuard || taskForGuard.deletedAt) {
-      throw new NotFoundError('Task', id);
-    }
+  async delete(id: string, expectedSubtaskCount?: number) {
+    const taskForGuard = await prisma.task.findUnique({ where: { id }, include: { project: true } });
+    if (!taskForGuard || taskForGuard.deletedAt) throw new NotFoundError('Task', id);
     ensureProjectIsMutable(taskForGuard.project, 'delete tasks');
+    if (expectedSubtaskCount !== undefined && expectedSubtaskCount !== await prisma.task.count({
+      where: { parentTaskId: id, deletedAt: null },
+    })) {
+      throw new ServiceError('Subtasks changed. Review the deletion confirmation again.', 'TASK_DELETE_SCOPE_CHANGED', 409);
+    }
 
     const workspaceIds = await prisma.workspace.findMany({
-      where: { taskId: id },
+      where: { task: { OR: [{ id }, { parentTaskId: id }], deletedAt: null } },
       select: { id: true },
     });
-    let marked!: { count: number };
-    await defaultWorkspaceLifecycleBarrier.withWorkspaces(
-      workspaceIds.map((workspace) => workspace.id),
-      async () => {
-        for (const workspace of workspaceIds) {
-          await this.backgroundService?.stopAllForWorkspace(workspace.id);
-        }
-
-        marked = await prisma.task.updateMany({
-          where: {
-            id,
-            deletedAt: null,
-            project: { archivedAt: null },
-          },
-          data: { deletedAt },
+    const result = await defaultWorkspaceLifecycleBarrier.withWorkspaces(
+      workspaceIds.map((workspace) => workspace.id), async () => {
+        for (const workspace of workspaceIds) await this.backgroundService?.stopAllForWorkspace(workspace.id);
+        // Mark the complete family and persist its recovery snapshot together.
+        // Child creation rechecks the parent inside its own transaction.
+        return prisma.$transaction(async (tx) => {
+          const parent = await tx.task.findFirst({ where: { id, deletedAt: null }, include: { project: true } });
+          if (!parent) throw new NotFoundError('Task', id);
+          ensureProjectIsMutable(parent.project, 'delete tasks');
+          const family = await tx.task.findMany({
+            where: { OR: [{ id }, { parentTaskId: id }], deletedAt: null },
+            select: { id: true },
+          });
+          if (expectedSubtaskCount !== undefined && expectedSubtaskCount !== family.length - 1) {
+            throw new ServiceError('Subtasks changed. Review the deletion confirmation again.', 'TASK_DELETE_SCOPE_CHANGED', 409);
+          }
+          const taskIds = [...family.filter((task) => task.id !== id).map((task) => task.id), id];
+          await tx.task.updateMany({ where: { id: { in: taskIds } }, data: { deletedAt: new Date() } });
+          const tasks = await tx.task.findMany({
+            where: { id: { in: taskIds } },
+            include: {
+              workspaces: { include: { sessions: true } },
+              teamRun: { include: { invocations: {
+                where: { status: { in: CANCELLABLE_DELETE_INVOCATION_STATUSES } }, select: { id: true },
+              } } },
+            },
+          });
+          const tasksById = new Map(tasks.map((task) => [task.id, task]));
+          const orderedTasks = taskIds.map((taskId) => tasksById.get(taskId)!);
+          const snapshot: TaskCleanupSnapshot = {
+            taskId: id, taskIds, projectId: parent.projectId,
+            project: { repoPath: parent.project.repoPath, mainBranch: parent.project.mainBranch },
+            workspaces: orderedTasks.flatMap((task) => task.workspaces.map((workspace) => ({
+              id: workspace.id,
+              worktreePath: workspace.worktreePath,
+              workingDir: getWorkspaceWorkingDir(workspace),
+              workspaceKind: workspace.workspaceKind,
+              branchName: workspace.branchName,
+              baseBranch: workspace.baseBranch,
+              sessions: workspace.sessions.map((session) => ({ id: session.id })),
+            }))),
+          };
+          await tx.taskCleanupJob.create({
+            data: { taskId: id, projectId: parent.projectId, payload: JSON.stringify(snapshot) },
+          });
+          const teamRunIds = tasks.flatMap((task) => task.teamRun ? [task.teamRun.id] : []);
+          if (teamRunIds.length) {
+            await tx.workRequest.updateMany({
+              where: { teamRunId: { in: teamRunIds }, status: { in: CANCELLABLE_DELETE_WORK_REQUEST_STATUSES } },
+              data: { status: 'CANCELLED' },
+            });
+            await tx.agentInvocation.updateMany({
+              where: { teamRunId: { in: teamRunIds }, status: { in: CANCELLABLE_DELETE_INVOCATION_STATUSES } },
+              data: { status: 'CANCELLED', nextRoomReplyReminderAt: null },
+            });
+          }
+          return {
+            taskIds, projectId: parent.projectId,
+            invocationIds: tasks.flatMap((task) => task.teamRun?.invocations.map((invocation) => invocation.id) ?? []),
+          };
         });
       },
     );
-    if (marked.count === 0) {
-      const current = await prisma.task.findUnique({
-        where: { id },
-        include: { project: true },
-      });
-      if (!current || current.deletedAt) {
-        throw new NotFoundError('Task', id);
-      }
-      ensureProjectIsMutable(current.project, 'delete tasks');
-      throw new NotFoundError('Task', id);
-    }
+    for (const invocationId of result.invocationIds) defaultTeamLockService.releaseByOwner(invocationId);
+    for (const taskId of result.taskIds) this.eventBus.emit('task:deleted', { taskId, projectId: result.projectId });
+    this.cleanupService?.trigger();
+    return true;
+  }
 
-    let deleteResult: { projectId: string; cancelledInvocationIds: string[] };
-    let cleanupJobCreated = false;
-    try {
-      const taskForCleanup = await prisma.task.findUnique({
-        where: { id },
-        include: {
-          project: true,
-          teamRun: {
-            include: {
-              invocations: {
-                where: { status: { in: CANCELLABLE_DELETE_INVOCATION_STATUSES } },
-                select: { id: true },
-              },
-            },
-          },
-          workspaces: {
-            include: { sessions: true },
-          },
-        },
-      });
-      if (!taskForCleanup) {
-        throw new NotFoundError('Task', id);
-      }
-      ensureProjectIsMutable(taskForCleanup.project, 'delete tasks');
+  async getCleanupStatus(taskId: string) {
+    const job = await prisma.taskCleanupJob.findFirst({
+      where: { taskId }, orderBy: { createdAt: 'desc' },
+      select: { taskId: true, status: true, lastError: true, nextRetryAt: true },
+    });
+    if (!job) throw new NotFoundError('Task cleanup', taskId);
+    return job;
+  }
 
-      const snapshot: TaskCleanupSnapshot = {
-        taskId: taskForCleanup.id,
-        projectId: taskForCleanup.projectId,
-        project: {
-          repoPath: taskForCleanup.project.repoPath,
-          mainBranch: taskForCleanup.project.mainBranch,
-        },
-        workspaces: taskForCleanup.workspaces.map((workspace) => ({
-          id: workspace.id,
-          worktreePath: workspace.worktreePath,
-          workingDir: getWorkspaceWorkingDir(workspace),
-          workspaceKind: workspace.workspaceKind,
-          branchName: workspace.branchName,
-          baseBranch: workspace.baseBranch,
-          // Logical completion does not close a reusable ACP adapter.
-          sessions: workspace.sessions.map((session) => ({ id: session.id })),
-        })),
-      };
-      const teamRunId = taskForCleanup.teamRun?.id;
-      const cancelledInvocationIds = taskForCleanup.teamRun?.invocations.map((invocation) => invocation.id) ?? [];
-
-      await prisma.$transaction(async (tx) => {
-        await tx.taskCleanupJob.create({
-          data: {
-            taskId: taskForCleanup.id,
-            projectId: taskForCleanup.projectId,
-            payload: JSON.stringify(snapshot),
-          },
-        });
-
-        if (teamRunId) {
-          await tx.workRequest.updateMany({
-            where: {
-              teamRunId,
-              status: { in: CANCELLABLE_DELETE_WORK_REQUEST_STATUSES },
-            },
-            data: { status: 'CANCELLED' },
-          });
-          await tx.agentInvocation.updateMany({
-            where: {
-              teamRunId,
-              status: { in: CANCELLABLE_DELETE_INVOCATION_STATUSES },
-            },
-            data: {
-              status: 'CANCELLED',
-              nextRoomReplyReminderAt: null,
-            },
-          });
-        }
-      });
-      cleanupJobCreated = true;
-
-      deleteResult = {
-        projectId: taskForCleanup.projectId,
-        cancelledInvocationIds,
-      };
-    } catch (error) {
-      if (!cleanupJobCreated) {
-        await prisma.task.updateMany({
-          where: { id, deletedAt },
-          data: { deletedAt: null },
-        }).catch(() => {
-          // If rollback fails, leave the task hidden rather than masking the original error.
-        });
-      }
-      throw error;
-    }
-
-    for (const invocationId of deleteResult.cancelledInvocationIds) {
-      defaultTeamLockService.releaseByOwner(invocationId);
-    }
-
-    this.eventBus.emit('task:deleted', {
-      taskId: id,
-      projectId: deleteResult.projectId,
+  async retryCleanup(taskId: string) {
+    const job = await prisma.taskCleanupJob.findFirst({ where: { taskId }, orderBy: { createdAt: 'desc' } });
+    if (!job) throw new NotFoundError('Task cleanup', taskId);
+    const project = await prisma.project.findUnique({ where: { id: job.projectId } });
+    if (!project) throw new NotFoundError('Project', job.projectId);
+    ensureProjectIsMutable(project, 'retry task cleanup');
+    await prisma.taskCleanupJob.updateMany({
+      where: { id: job.id, status: 'FAILED' },
+      data: { status: 'PENDING', attempts: 0, lastError: null, nextRetryAt: null },
     });
     this.cleanupService?.trigger();
-
-    return true;
+    return this.getCleanupStatus(taskId);
   }
 
   /**

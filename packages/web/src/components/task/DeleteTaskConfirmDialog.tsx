@@ -1,12 +1,14 @@
 import { useMemo } from 'react'
 import { SessionStatus, type Workspace } from '@agent-tower/shared'
 import { ConfirmDialog } from '../ui/confirm-dialog'
+import { useSubtasks } from '@/hooks/use-tasks'
+import { Button } from '@/design-system'
 import { useWorkspaces } from '@/hooks/use-workspaces'
 import { useI18n } from '@/lib/i18n'
 
 type TranslateFn = (source: string, values?: Record<string, string | number | boolean | null | undefined>) => string
 
-export function buildDeleteTaskWarnings(workspaces: Workspace[] | undefined, t: TranslateFn): string[] {
+function buildDeleteTaskWarnings(workspaces: Workspace[] | undefined, t: TranslateFn): string[] {
   const warnings: string[] = []
   if (!workspaces || workspaces.length === 0) return warnings
 
@@ -27,7 +29,7 @@ export function buildDeleteTaskWarnings(workspaces: Workspace[] | undefined, t: 
 export interface DeleteTaskConfirmDialogProps {
   isOpen: boolean
   onClose: () => void
-  onConfirm: () => void
+  onConfirm: (subtaskCount: number) => void
   taskId: string
   taskTitle: string
   /** Pre-fetched workspaces — when provided, skips internal fetch (avoids duplicate queries) */
@@ -50,6 +52,8 @@ export function DeleteTaskConfirmDialog({
     externalWorkspaces === undefined && isOpen ? taskId : ''
   )
 
+  const children = useSubtasks(taskId, isOpen)
+  const subtaskCount = children.data?.pages[0]?.total ?? 0
   const workspaces = externalWorkspaces ?? fetchedWorkspaces
   const warningsLoading = externalWorkspaces === undefined && isOpen && isLoadingWorkspaces
 
@@ -62,11 +66,16 @@ export function DeleteTaskConfirmDialog({
     <ConfirmDialog
       isOpen={isOpen}
       onClose={onClose}
-      onConfirm={onConfirm}
+      onConfirm={() => onConfirm(subtaskCount)}
       title={t('删除任务')}
       description={
         <>
-          <p>{t('确认删除任务「{title}」？此操作不可撤销。', { title: taskTitle })}</p>
+          <p>{subtaskCount > 0
+            ? t('Delete “{title}” and its {count} subtasks? This cannot be undone.', { title: taskTitle, count: subtaskCount })
+            : t('确认删除任务「{title}」？此操作不可撤销。', { title: taskTitle })}</p>
+          {subtaskCount > 0 && <p className="mt-2 text-warning-ink">{t('All related Agents and services will stop. Their worktrees and owned branches will be deleted.')}</p>}
+          {children.isError && <Button variant="ghost" size="sm" onClick={() => children.refetch()}>{t('Could not load subtasks. Retry')}</Button>}
+          {children.isFetching && <p className="mt-2 text-xs text-muted-foreground">{t('Loading...')}</p>}
           {warningsLoading ? (
             <p className="mt-2 text-xs text-muted-foreground">{t('加载中...')}</p>
           ) : warnings.length > 0 ? (
@@ -81,9 +90,10 @@ export function DeleteTaskConfirmDialog({
           ) : null}
         </>
       }
-      confirmText={t('删除')}
+      confirmText={subtaskCount > 0 ? t('Delete all') : t('删除')}
       variant="danger"
-      isLoading={isLoading || warningsLoading}
+      isLoading={isLoading}
+      confirmDisabled={warningsLoading || children.isFetching || children.isError || !children.data}
     />
   )
 }

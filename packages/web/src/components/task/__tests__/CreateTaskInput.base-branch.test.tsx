@@ -58,6 +58,13 @@ async function submit() {
 afterEach(() => { act(() => root?.unmount()); container?.remove() })
 
 describe('task creation base branch', () => {
+  it('defaults a subtask to its parent branch and submits the relationship', async () => {
+    const { onSubmit } = render({ parentTask: { id: 'parent', title: 'Parent task', projectId: 'a', baseBranch: 'at/parent' } })
+    expect(button('Base branch')!.textContent).toBe('at/parent')
+    await submit()
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ parentTaskId: 'parent', baseBranch: 'at/parent', projectId: 'a' }))
+  })
+
   it('defaults to the project base, saves an override and resets after submission', async () => {
     const { onSubmit } = render()
     expect(button('Base branch')!.textContent).toBe('main')

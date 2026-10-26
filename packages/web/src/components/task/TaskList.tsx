@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo, useEffect, useLayoutEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { SquarePen, FolderPlus, Search, Layers, MessageSquare } from 'lucide-react'
 import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
@@ -6,8 +6,8 @@ import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core'
 import { useI18n } from '@/lib/i18n'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useDesktopTitlebar } from '@/lib/desktop-titlebar'
-import { TaskGroup, FlipContext } from './TaskGroup'
-import type { FlipHandle } from './TaskGroup'
+import { TaskGroup } from './TaskGroup'
+import { FlipContext, type FlipHandle } from './task-list-flip'
 import { TaskSearchModal } from './TaskSearchModal'
 import { STATUS_STYLES } from './status-styles'
 import { sidebarRowClass } from './sidebar-styles'
@@ -23,6 +23,8 @@ interface TaskListProps {
   tasks?: UITask[]
   projects?: UIProject[]
   selectedTaskId: string | null
+  selectedParentTaskId?: string | null
+  onCreateSubtask?: (taskId: string) => void
   onSelectTask: (id: string) => void
   filterProjectId: string | null
   setFilterProjectId: (id: string | null) => void
@@ -35,7 +37,7 @@ interface TaskListProps {
   /** 拖拽变更任务状态回调 */
   onTaskStatusChange?: (taskId: string, newStatus: UITaskStatus) => void
   /** 删除任务回调 */
-  onDeleteTask?: (taskId: string) => void
+  onDeleteTask?: (taskId: string, expectedSubtaskCount?: number) => void
   /** 修改任务优先级回调 */
   onTaskPriorityChange?: (taskId: string, priority: TaskPriority) => void
   /** 首屏数据加载中：顶部菜单照常可用，列表区显示骨架 */
@@ -101,6 +103,8 @@ export function TaskList({
   tasks = [],
   projects = [],
   selectedTaskId,
+  selectedParentTaskId,
+  onCreateSubtask,
   onSelectTask,
   filterProjectId,
   setFilterProjectId,
@@ -120,13 +124,10 @@ export function TaskList({
   const [activeDragFromStatus, setActiveDragFromStatus] = useState<UITaskStatus | null>(null)
   const [isSearchOpen, setIsSearchOpen] = useState(false)
 
-  const flipRegistryRef = useRef<Map<string, HTMLElement>>(new Map())
   const activeGhostsRef = useRef<Set<HTMLDivElement>>(new Set())
   const previousCardsRef = useRef<Map<string, { status: UITaskStatus; rect: DOMRect; html: string }>>(new Map())
 
-  const flipHandle = useMemo<FlipHandle>(() => ({
-    registry: flipRegistryRef.current,
-  }), [])
+  const [flipHandle] = useState<FlipHandle>(() => ({ registry: new Map() }))
 
   const removeGhost = useCallback((ghost: HTMLDivElement) => {
     ghost.remove()
@@ -225,7 +226,7 @@ export function TaskList({
     const nextCards = new Map<string, { status: UITaskStatus; rect: DOMRect; html: string }>()
 
     for (const task of filteredTasks) {
-      const el = flipRegistryRef.current.get(task.id)
+      const el = flipHandle.registry.get(task.id)
       if (!el) continue
 
       const current = {
@@ -260,7 +261,7 @@ export function TaskList({
     }
 
     previousCardsRef.current = nextCards
-  }, [filteredTasks, createStatusMoveGhost, getGroupFallbackRect])
+  }, [filteredTasks, createStatusMoveGhost, getGroupFallbackRect, flipHandle])
 
   useEffect(() => () => {
     for (const ghost of activeGhostsRef.current) ghost.remove()
@@ -303,7 +304,7 @@ export function TaskList({
   const canCreateTask = !isCurrentProjectArchived
 
   // 单次遍历分组
-  const grouped = groupTasksByStatus(filteredTasks)
+  const grouped = groupTasksByStatus(filteredTasks.filter(task => !task.parentTaskId))
   const dragStatus = activeDragTask ? STATUS_STYLES[activeDragTask.status] : null
 
   // ↑/↓ 在侧栏可聚焦项（菜单、分组标题、任务行）之间移动焦点，Enter/空格沿用按钮默认行为
@@ -385,6 +386,9 @@ export function TaskList({
                 status={status}
                 defaultOpen={defaultOpen}
                 selectedTaskId={selectedTaskId}
+                selectedChildTask={tasks.find(task => task.id === selectedTaskId && task.parentTaskId)}
+                selectedParentTaskId={selectedParentTaskId ?? tasks.find(task => task.id === selectedTaskId)?.parentTaskId}
+                onCreateSubtask={onCreateSubtask}
                 onSelectTask={onSelectTask}
                 projects={projects}
                 showProject={!filterProjectId}

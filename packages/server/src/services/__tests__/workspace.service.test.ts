@@ -414,6 +414,45 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     },
   );
 
+  it('merges a subtask into the parent worktree without completing the parent task', async () => {
+    const { project, task: parent } = await createTask('Subtask merge');
+    const parentWorkspace = await prisma.workspace.create({ data: {
+      taskId: parent.id, branchName: 'at/parent', baseBranch: 'main', worktreePath: '/parent',
+    } });
+    const child = await prisma.task.create({ data: { projectId: project.id, title: 'Child', parentTaskId: parent.id, baseBranch: 'at/parent', status: 'IN_REVIEW' } });
+    const childWorkspace = await prisma.workspace.create({ data: {
+      taskId: child.id, branchName: 'at/child', baseBranch: 'at/parent', worktreePath: '/child',
+    } });
+    await service.merge(childWorkspace.id);
+    expect(mergeWorktreeMock).toHaveBeenCalledWith('/child', 'at/parent', expect.objectContaining({ targetWorktreePath: '/parent' }));
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: child.id } })).status).toBe('DONE');
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: parent.id } })).status).toBe('TODO');
+    expect((await prisma.workspace.findUniqueOrThrow({ where: { id: parentWorkspace.id } })).status).toBe('ACTIVE');
+  });
+
+  it('blocks a subtask merge while its parent has an active write session', async () => {
+    const { project, task: parent } = await createTask('Busy parent');
+    const parentWorkspace = await prisma.workspace.create({ data: { taskId: parent.id, branchName: 'at/parent', baseBranch: 'main', worktreePath: '/parent' } });
+    const child = await prisma.task.create({ data: { projectId: project.id, title: 'Child', parentTaskId: parent.id } });
+    const workspace = await prisma.workspace.create({ data: { taskId: child.id, branchName: 'at/child', baseBranch: 'at/parent', worktreePath: '/child' } });
+    await prisma.session.create({ data: { workspaceId: parentWorkspace.id, agentType: 'CODEX', prompt: 'busy', status: 'RUNNING' } });
+    await expect(service.merge(workspace.id)).rejects.toMatchObject({ code: 'PARENT_WORKSPACE_HAS_ACTIVE_SESSION' });
+    expect(mergeWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('retains a merged parent branch and its ownership until its subtasks no longer depend on it', async () => {
+    const { project, task: parent } = await createTask('Retain parent branch');
+    await prisma.task.update({ where: { id: parent.id }, data: { status: 'DONE' } });
+    const workspace = await prisma.workspace.create({ data: { taskId: parent.id, branchName: 'at/parent', baseBranch: 'main', worktreePath: '/parent', status: 'MERGED' } });
+    const child = await prisma.task.create({ data: { projectId: project.id, title: 'Child', parentTaskId: parent.id, baseBranch: 'at/parent' } });
+    await service.cleanup();
+    expect(deleteBranchIfSafeMock).not.toHaveBeenCalled();
+    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).not.toBeNull();
+    await prisma.task.update({ where: { id: child.id }, data: { deletedAt: new Date() } });
+    await service.cleanup();
+    expect(deleteBranchIfSafeMock).toHaveBeenCalledWith('at/parent', expect.anything());
+  });
+
   it('creates a main-directory workspace without creating a git worktree', async () => {
     const { project, task } = await createTask('main directory workspace task');
 

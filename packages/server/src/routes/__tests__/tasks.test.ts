@@ -57,6 +57,27 @@ describe('task routes', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
+  it('preserves the parent relation through HTTP and rejects a stale deletion scope', async () => {
+    const project = await prisma.project.create({ data: { name: 'Subtasks', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Parent', projectId: project.id } });
+    const app = await buildTestApp();
+    try {
+      const created = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks`,
+        payload: { title: 'Child', parentTaskId: parent.id, baseBranch: null } });
+      expect(created.statusCode).toBe(201);
+      expect(created.json()).toMatchObject({ parentTaskId: parent.id, baseBranch: null });
+      const children = await app.inject({ method: 'GET', url: `/api/tasks/${parent.id}/subtasks?limit=1` });
+      expect(children.json()).toMatchObject({ total: 1, data: [expect.objectContaining({ id: created.json().id, parentTaskId: parent.id })] });
+      const detail = await app.inject({ method: 'GET', url: `/api/tasks/${parent.id}` });
+      expect(detail.json().subtaskCount).toBe(1);
+      const refused = await app.inject({ method: 'DELETE', url: `/api/tasks/${parent.id}?expectedSubtaskCount=0` });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().code).toBe('TASK_DELETE_SCOPE_CHANGED');
+      expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(2);
+      expect(await prisma.taskCleanupJob.count()).toBe(0);
+    } finally { await app.close(); }
+  });
+
   it('rejects creating a task with an all-whitespace title before writing it', async () => {
     const project = await prisma.project.create({
       data: {

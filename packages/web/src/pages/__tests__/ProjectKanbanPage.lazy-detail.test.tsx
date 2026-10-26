@@ -31,6 +31,7 @@ vi.mock('@/hooks/use-projects', () => ({
   useProjects: () => ({ data: { data: fixtures.projects }, isLoading: false }),
 }))
 vi.mock('@/hooks/use-tasks', () => ({
+  useTask: () => ({ data: undefined, isLoading: false }),
   useTaskBoard: () => ({ data: { data: fixtures.tasks }, isLoading: false }),
   useDeleteTask: () => ({}),
   useUpdateTask: () => ({}),

@@ -43,6 +43,7 @@ export function useTaskRealtimeSync() {
         predicate: (query) => isTaskListQueryKey(query.queryKey, payload.projectId)
           || isTaskBoardQueryKey(query.queryKey, payload.projectId),
       })
+      queryClient.invalidateQueries({ queryKey: ['tasks', 'subtasks'] })
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.detail(payload.taskId),
       })
@@ -55,6 +56,7 @@ export function useTaskRealtimeSync() {
         predicate: (query) => isTaskListQueryKey(query.queryKey, payload.projectId)
           || isTaskBoardQueryKey(query.queryKey, payload.projectId),
       })
+      queryClient.invalidateQueries({ queryKey: ['tasks', 'subtasks'] })
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
     }
 

@@ -36,6 +36,43 @@ describe('WorktreeManager.remove', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it('squash-merges a subtask into its checked-out parent branch', async () => {
+    const parentPath = await manager.create('at/parent');
+    fs.writeFileSync(path.join(parentPath, 'parent.txt'), 'parent code');
+    git(parentPath, ['add', '.']); git(parentPath, ['commit', '-m', 'parent change']);
+    const childPath = await manager.create('at/child', 'at/parent');
+    expect(fs.readFileSync(path.join(childPath, 'parent.txt'), 'utf8')).toBe('parent code');
+    fs.writeFileSync(path.join(childPath, 'child.txt'), 'child code');
+    git(childPath, ['add', '.']); git(childPath, ['commit', '-m', 'child change']);
+    await manager.merge(childPath, 'at/parent', { targetWorktreePath: parentPath });
+    expect(fs.readFileSync(path.join(parentPath, 'child.txt'), 'utf8')).toBe('child code');
+    expect(git(repoPath, ['branch', '--show-current']).trim()).toBe('main');
+    expect(git(parentPath, ['status', '--porcelain']).trim()).toBe('');
+    expect(git(repoPath, ['log', '-1', '--format=%s'])).toContain('initial commit');
+  });
+
+  it.each([false, true])('restores the project checkout after merging into a reclaimed parent branch (detached: %s)', async (detached) => {
+    const parentPath = await manager.create('at/parent');
+    const childPath = await manager.create('at/child', 'at/parent');
+    fs.writeFileSync(path.join(childPath, 'child.txt'), 'child code');
+    git(childPath, ['add', '.']); git(childPath, ['commit', '-m', 'child change']);
+    await manager.remove(parentPath);
+    if (detached) git(repoPath, ['checkout', '--detach', 'main']);
+    await manager.merge(childPath, 'at/parent', { restoreOriginalBranch: true });
+    expect(git(repoPath, ['branch', '--show-current']).trim()).toBe(detached ? '' : 'main');
+    expect(git(repoPath, ['show', 'at/parent:child.txt'])).toBe('child code');
+    expect(fs.existsSync(path.join(repoPath, 'child.txt'))).toBe(false);
+  });
+
+  it('rejects merging into a dirty or changed parent worktree', async () => {
+    const parentPath = await manager.create('at/parent');
+    const childPath = await manager.create('at/child', 'at/parent');
+    fs.writeFileSync(path.join(parentPath, 'README.md'), 'uncommitted parent edits');
+    await expect(manager.merge(childPath, 'at/parent', { targetWorktreePath: parentPath })).rejects.toThrow();
+    expect(fs.readFileSync(path.join(parentPath, 'README.md'), 'utf8')).toBe('uncommitted parent edits');
+    await expect(manager.merge(childPath, 'main', { targetWorktreePath: parentPath })).rejects.toThrow('branch changed');
+  });
+
   it('removes a registered worktree using git worktree registry state', async () => {
     const worktreePath = await manager.create('at/12345678');
 

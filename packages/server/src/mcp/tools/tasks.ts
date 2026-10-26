@@ -40,6 +40,7 @@ export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
           description: params.description,
           priority: params.priority,
           baseBranch: params.base_branch,
+          parentTaskId: params.parent_task_id,
         });
         return { content: [{ type: 'text', text: JSON.stringify(task, null, 2) }] };
       } catch (e: any) {
@@ -91,7 +92,7 @@ export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
 
   server.tool(
     'delete_task',
-    'Delete a task. `task_id` is required.',
+    'Delete a task AND ALL its subtasks, stopping their sessions and cleaning up their worktrees and owned branches. Confirm the complete deletion scope with the user first. `task_id` is required.',
     DeleteTaskInput.shape,
     async (params) => {
       try {

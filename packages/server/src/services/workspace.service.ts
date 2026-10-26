@@ -2145,7 +2145,17 @@ export class WorkspaceService {
   async merge(id: string, commitMessage?: string): Promise<string>;
   async merge(id: string, options?: MergeWorkspaceOptions): Promise<string>;
   async merge(id: string, commitMessageOrOptions?: string | MergeWorkspaceOptions): Promise<string> {
-    return defaultWorkspaceLifecycleBarrier.withWorkspace(id, async () => {
+    const source = await prisma.workspace.findUnique({ where: { id }, include: { task: true } });
+    if (!source || source.task.deletedAt) throw new NotFoundError('Workspace', id);
+    const target = source.parentWorkspaceId || !source.baseBranch ? null : await prisma.workspace.findFirst({
+      where: {
+        id: { not: id }, branchName: source.baseBranch, status: WorkspaceStatus.ACTIVE,
+        parentWorkspaceId: null, workspaceKind: WorkspaceKind.WORKTREE,
+        task: { projectId: source.task.projectId, deletedAt: null },
+      },
+      include: { task: { include: { project: true } } },
+    });
+    return defaultWorkspaceLifecycleBarrier.withWorkspaces([id, ...(target ? [target.id] : [])], async () => {
       const options = typeof commitMessageOrOptions === 'string'
         ? { commitMessage: commitMessageOrOptions }
         : (commitMessageOrOptions ?? {});
@@ -2154,8 +2164,22 @@ export class WorkspaceService {
         include: { task: { include: { project: true, teamRun: true } } },
       });
 
-      if (!workspace) {
+      if (!workspace || workspace.task.deletedAt) {
         throw new NotFoundError('Workspace', id);
+      }
+      if (workspace.baseBranch !== source.baseBranch) {
+        throw new ServiceError('Merge target changed. Refresh before merging.', 'MERGE_TARGET_CHANGED', 409);
+      }
+      const currentTarget = target ? await prisma.workspace.findUnique({
+        where: { id: target.id }, include: { task: { include: { project: true } } },
+      }) : null;
+      if (target && (!currentTarget || currentTarget.task.deletedAt || currentTarget.status !== WorkspaceStatus.ACTIVE
+        || currentTarget.branchName !== workspace.baseBranch)) {
+        throw new ServiceError('Merge target changed. Refresh before merging.', 'MERGE_TARGET_CHANGED', 409);
+      }
+      if (currentTarget) {
+        await this.assertNoActiveWriteSessions(currentTarget.id);
+        await this.assertNoActiveBackgroundServices(currentTarget.id);
       }
       ensureProjectIsMutable(workspace.task.project, 'merge workspaces');
       this.assertWorktreeWorkspace(workspace);
@@ -2164,14 +2188,14 @@ export class WorkspaceService {
       }
 
       return this.withMergeTargetLock(
-        this.getMergeLockTarget(workspace),
+        currentTarget ? this.getParentWorkspaceMergeLockTarget(currentTarget.id) : this.getMergeLockTarget(workspace),
         options.lockOwnerId,
-        () => this.mergeWithLock(workspace, options)
+        () => this.mergeWithLock(workspace, options, currentTarget)
       );
     });
   }
 
-  private async mergeWithLock(workspace: MergeWorkspaceRecord, options: MergeWorkspaceOptions): Promise<string> {
+  private async mergeWithLock(workspace: MergeWorkspaceRecord, options: MergeWorkspaceOptions, targetWorkspace: WorkspaceWithTaskProject | null = null): Promise<string> {
     if (this.isTeamRunDedicatedChildWorkspace(workspace) && workspace.status === WorkspaceStatus.MERGED) {
       if (!workspace.worktreePath) {
         return '';
@@ -2206,7 +2230,7 @@ export class WorkspaceService {
     if (parentWorkspace) {
       return this.mergeChildIntoParent(workspace, parentWorkspace, options.commitMessage);
     }
-    return this.mergeRootWorkspaceToMain(workspace, options.commitMessage);
+    return this.mergeRootWorkspaceToMain(workspace, options.commitMessage, targetWorkspace);
   }
 
   private isTeamRunDedicatedChildWorkspace(workspace: MergeWorkspaceRecord): workspace is TeamRunChildWorkspaceRecord {
@@ -2406,7 +2430,7 @@ export class WorkspaceService {
     return sha;
   }
 
-  private async mergeRootWorkspaceToMain(workspace: MergeWorkspaceRecord, commitMessage?: string): Promise<string> {
+  private async mergeRootWorkspaceToMain(workspace: MergeWorkspaceRecord, commitMessage?: string, targetWorkspace: WorkspaceWithTaskProject | null = null): Promise<string> {
     this.assertWorktreeWorkspace(workspace);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
@@ -2416,11 +2440,15 @@ export class WorkspaceService {
       ({ sha } = await worktreeManager.merge(
         workspace.worktreePath,
         targetBranch,
-        { commitMessage: commitMessage || workspace.commitMessage || undefined }
+        { commitMessage: commitMessage || workspace.commitMessage || undefined,
+          ...(targetWorkspace ? { targetWorktreePath: targetWorkspace.worktreePath }
+            : workspace.task.parentTaskId ? { restoreOriginalBranch: true } : {}),
+        }
       ));
     } catch (error) {
       if (error instanceof MergeConflictError) {
         error.sourceWorkspaceId = workspace.id;
+        if (targetWorkspace) error.targetWorkspaceId = targetWorkspace.id;
         error.sourceWorktreePath ??= workspace.worktreePath;
         error.sourceBranch ??= workspace.branchName;
         error.targetBranch ??= targetBranch;
@@ -2923,6 +2951,19 @@ export class WorkspaceService {
               }
             }
 
+            const referencedByChild = await prisma.task.findFirst({
+              where: { parentTaskId: workspace.taskId, deletedAt: null, OR: [
+                { baseBranch: workspace.branchName },
+                { workspaces: { some: { baseBranch: workspace.branchName } } },
+              ] }, select: { id: true },
+            });
+            // Retain the owner record so the branch can be reclaimed on family deletion.
+            if (referencedByChild) {
+              // The directory has been reclaimed; the branch still belongs to this task.
+              await this.backgroundService.releaseLogsForWorkspace?.(workspace.id);
+              cleaned++;
+              return;
+            }
             // Task 已 DONE，branch 不再需要，删除。安全 helper 会跳过 base/main/master/current/missing。
             const branchDeleteResult = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
               protectedBranches: [workspace.task.project.mainBranch, workspace.baseBranch],

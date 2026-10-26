@@ -1,3 +1,4 @@
+import { SubtaskPanel } from '@/components/task/SubtaskPanel'
 import { retainTaskSubscription } from '@/lib/socket/task-subscription'
 import { TeamInitialDeliveryStatus } from '@/components/team/TeamInitialDeliveryStatus'
 import { taskStartSubmission } from '@/hooks/task-start-submission'
@@ -95,7 +96,9 @@ const attachmentUrlTransform: UrlTransform = (url) => {
 interface TaskDetailProps {
   task: UITaskDetailData | null
   /** 删除任务回调 — 传入 taskId */
-  onDeleteTask?: (taskId: string) => void
+  onSelectTask?: (taskId: string) => void
+  onCreateSubtask?: (taskId: string) => void
+  onDeleteTask?: (taskId: string, expectedSubtaskCount?: number) => void
   /** 删除中状态 */
   isDeleting?: boolean
   /** 状态变更回调 */
@@ -223,7 +226,7 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
 
 // ============ TaskDetail Component ============
 
-export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange, onTaskPriorityChange, autoStartState, onAutoStartRecovered }: TaskDetailProps) {
+export function TaskDetail({ task, onSelectTask, onCreateSubtask, onDeleteTask, isDeleting, onTaskStatusChange, onTaskPriorityChange, autoStartState, onAutoStartRecovered }: TaskDetailProps) {
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
@@ -647,9 +650,9 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
     openInEditorMutation.mutate({ workspaceId: selectedWorkspace.id })
   }, [openInEditorMutation, selectedWorkspace?.id])
 
-  const handleDeleteTask = useCallback(() => {
+  const handleDeleteTask = useCallback((count: number) => {
     if (!task?.id || !onDeleteTask) return
-    onDeleteTask(task.id)
+    onDeleteTask(task.id, count)
     setIsDeleteConfirmOpen(false)
   }, [task?.id, onDeleteTask])
 
@@ -1036,7 +1039,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
             </button>
 
             {/* More Actions — 创建 TeamRun / 重新开始 / 删除任务 */}
-            {(onDeleteTask || showCreateTeamRunEntry) && !isProjectReadOnly && (
+            {(onDeleteTask || onCreateSubtask || showCreateTeamRunEntry) && !isProjectReadOnly && (
               <div className="relative" ref={moreMenuRef}>
                 <button
                   onClick={() => setIsMoreMenuOpen(v => !v)}
@@ -1047,6 +1050,12 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
                 </button>
                 {isMoreMenuOpen && (
                   <div className="absolute right-0 top-full mt-2 w-44 bg-background rounded-lg border border-border shadow-popover z-50 py-1">
+                    {onCreateSubtask && !task.parentTaskId && (
+                      <button className="w-full flex items-center gap-2 px-3 py-2 text-sm text-foreground/80 hover:bg-muted/50"
+                        onClick={() => { setIsMoreMenuOpen(false); onCreateSubtask(task.id) }}>
+                        <Plus size={15} /><span>{t('Create subtask')}</span>
+                      </button>
+                    )}
                     {showCreateTeamRunEntry && (
                       <button
                         onClick={() => {
@@ -1518,6 +1527,7 @@ export function TaskDetail({ task, onDeleteTask, isDeleting, onTaskStatusChange,
           }}
         >
           <WorkspacePanel
+            subtasks={<SubtaskPanel key={task.id} task={task} onSelectTask={onSelectTask} onCreateSubtask={onCreateSubtask} />}
             sessionId={sessionId || undefined}
             workspaceId={resolvedWorkspaceId}
             workingDir={workingDir}

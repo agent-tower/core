@@ -751,93 +751,113 @@ describe('TaskService', () => {
     });
   });
 
-  it('marks deleted before reading the cleanup snapshot so new resource creation is rejected', async () => {
-    const service = new TaskService(
-      new EventBus(),
-      { stop: vi.fn(), isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager,
-      { trigger: vi.fn() },
-    );
-    const project = await prisma.project.create({
-      data: {
-        name: 'Task delete ordering project',
-        repoPath: testDir,
-        mainBranch: 'main',
-      },
-    });
-    const task = await prisma.task.create({
-      data: {
-        title: 'Delete ordering task',
-        projectId: project.id,
-      },
-    });
-    const existingWorkspace = await prisma.workspace.create({
-      data: {
-        taskId: task.id,
-        branchName: 'at/existing-before-delete',
-        baseBranch: 'main',
-        worktreePath: path.join(testDir, '.worktrees', 'at', 'existing-before-delete'),
-        status: 'ACTIVE',
-      },
-    });
-    const runningSession = await prisma.session.create({
-      data: {
-        workspaceId: existingWorkspace.id,
-        agentType: 'CODEX',
-        prompt: 'run',
-        status: 'RUNNING',
-      },
-    });
-    let releaseSnapshotRead!: () => void;
-    const releaseSnapshotReadPromise = new Promise<void>((resolve) => {
-      releaseSnapshotRead = resolve;
-    });
-    let snapshotReadStarted!: () => void;
-    const snapshotReadStartedPromise = new Promise<void>((resolve) => {
-      snapshotReadStarted = resolve;
-    });
-    let shouldDelaySnapshotRead = true;
+  it('commits deletion markers and recovery snapshot atomically, then rejects new resources', async () => {
+    const service = new TaskService(new EventBus(), {} as SessionManager, { trigger: vi.fn() });
+    const project = await prisma.project.create({ data: { name: 'Atomic deletion', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Parent', projectId: project.id } });
+    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id } });
+    let failSnapshot = true;
     prisma.$use(async (params, next) => {
-      const include = (params.args as { include?: { workspaces?: unknown } } | undefined)?.include;
-      const isSnapshotRead = params.model === 'Task'
-        && params.action === 'findUnique'
-        && Boolean(include?.workspaces);
-      if (shouldDelaySnapshotRead && isSnapshotRead) {
-        shouldDelaySnapshotRead = false;
-        snapshotReadStarted();
-        await releaseSnapshotReadPromise;
+      if (failSnapshot && params.model === 'TaskCleanupJob' && params.action === 'create') {
+        failSnapshot = false;
+        throw new Error('snapshot persistence failed');
       }
       return next(params);
     });
-
-    const deletePromise = service.delete(task.id);
-    await snapshotReadStartedPromise;
-    await expect(prisma.task.findUnique({ where: { id: task.id } })).resolves.toMatchObject({
-      deletedAt: expect.any(Date),
-    });
+    await expect(service.delete(parent.id)).rejects.toThrow('snapshot persistence failed');
+    expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(2);
+    expect(await prisma.taskCleanupJob.count()).toBe(0);
+    await service.delete(parent.id);
+    expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(0);
     const workspaceService = new WorkspaceService();
-    await expect(workspaceService.create(task.id)).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-      statusCode: 404,
-    });
-    const sessionManager = new SessionManagerClass(new EventBus());
-    await expect(sessionManager.create(existingWorkspace.id, AgentType.CODEX, 'late session')).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-      statusCode: 404,
-    });
-    releaseSnapshotRead();
+    await expect(workspaceService.create(parent.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(workspaceService.create(child.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(service.create(project.id, { title: 'Late child', parentTaskId: parent.id })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
 
-    await expect(deletePromise).resolves.toBe(true);
+  it('inherits the parent root branch, permits an override, and rejects invalid parents', async () => {
+    const repoPath = path.join(testDir, 'subtask-branches');
+    fs.mkdirSync(repoPath, { recursive: true });
+    const git = (args: string[]) => execFileSync('git', args, { cwd: repoPath, stdio: 'pipe' });
+    git(['init', '-b', 'main']);
+    git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'initial']);
+    git(['branch', 'at/parent']);
+    git(['branch', 'develop']);
+    const project = await prisma.project.create({ data: { name: 'Branches', repoPath, mainBranch: 'main' } });
+    const parent = await prisma.task.create({ data: { title: 'Parent', projectId: project.id, baseBranch: 'main' } });
+    await prisma.workspace.create({ data: { taskId: parent.id, branchName: 'at/parent', worktreePath: '/unused', baseBranch: 'main' } });
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const child = await service.create(project.id, { title: 'Child', parentTaskId: parent.id });
+    expect(child).toMatchObject({ parentTaskId: parent.id, baseBranch: 'at/parent' });
+    const override = await service.create(project.id, { title: 'Override', parentTaskId: parent.id, baseBranch: 'develop' });
+    expect(override.baseBranch).toBe('develop');
+    const local = await service.create(project.id, { title: 'Local', parentTaskId: parent.id, baseBranch: null });
+    expect(local.baseBranch).toBeNull();
+    await expect(service.create(project.id, { title: 'Nested', parentTaskId: child.id })).rejects.toThrow('Subtasks cannot');
+    const other = await prisma.project.create({ data: { name: 'Other', repoPath: testDir } });
+    await expect(service.create(other.id, { title: 'Cross project', parentTaskId: parent.id })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await service.updateStatus(child.id, 'DONE' as any);
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: parent.id } })).status).toBe('TODO');
+  });
 
-    const cleanupJob = await prisma.taskCleanupJob.findFirstOrThrow({ where: { taskId: task.id } });
-    const payload = JSON.parse(cleanupJob.payload) as TaskCleanupSnapshot;
-    expect(payload.workspaces).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: existingWorkspace.id,
-        branchName: existingWorkspace.branchName,
-        worktreePath: existingWorkspace.worktreePath,
-        sessions: [{ id: runningSession.id }],
-      }),
-    ]));
+  it('keeps parent context when a running child is on a different page or status filter', async () => {
+    const project = await prisma.project.create({ data: { name: 'Board tree', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Done parent', projectId: project.id, status: 'DONE' } });
+    const child = await prisma.task.create({ data: { title: 'Running child', projectId: project.id, status: 'IN_PROGRESS', parentTaskId: parent.id } });
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const page = await service.findBoard({ limit: 1 });
+    expect(page.data.map(task => task.id)).toEqual([child.id]);
+    expect(page.parents).toEqual([expect.objectContaining({ id: parent.id, subtaskCount: 1, runningSubtaskCount: 1 })]);
+    expect(page.total).toBe(2);
+    const filtered = await service.findBoard({ status: 'IN_PROGRESS' as any });
+    expect(filtered.parents?.[0].id).toBe(parent.id);
+    expect((await service.findSubtasks(parent.id)).data.map(task => task.id)).toEqual([child.id]);
+  });
+
+  it('deletes the complete family and cleans child branches before the parent, preserving unrelated tasks', async () => {
+    const project = await prisma.project.create({ data: { name: 'Cascade', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Parent', projectId: project.id } });
+    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id } });
+    const other = await prisma.task.create({ data: { title: 'Other', projectId: project.id } });
+    const rootWorkspace = await prisma.workspace.create({ data: { taskId: parent.id, branchName: 'at/parent', worktreePath: '/unused/parent', baseBranch: 'main' } });
+    const childWorkspace = await prisma.workspace.create({ data: { taskId: child.id, branchName: 'at/child', worktreePath: '/unused/child', baseBranch: 'at/parent' } });
+    const stop = vi.fn();
+    const sessionManager = { stop, isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager;
+    const eventBus = new EventBus();
+    const deleted: string[] = [];
+    eventBus.on('task:deleted', event => deleted.push(event.taskId));
+    const service = new TaskService(eventBus, sessionManager, { trigger: vi.fn() });
+    await expect(service.delete(parent.id, 0)).rejects.toMatchObject({ code: 'TASK_DELETE_SCOPE_CHANGED' });
+    expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(3);
+    await service.delete(parent.id, 1);
+    expect(deleted).toEqual([child.id, parent.id]);
+    const job = await prisma.taskCleanupJob.findFirstOrThrow({ where: { taskId: parent.id } });
+    expect(JSON.parse(job.payload).taskIds).toEqual([child.id, parent.id]);
+    const worker = new TaskCleanupService(sessionManager);
+    deleteBranchIfSafeMock.mockResolvedValueOnce({ status: 'failed', branchName: 'at/child', reason: 'temporary lock' });
+    await worker.processDueJobs();
+    expect((await service.getCleanupStatus(parent.id)).status).toBe('FAILED');
+    expect(await prisma.task.count({ where: { id: { in: [parent.id, child.id] } } })).toBe(2);
+    await service.retryCleanup(parent.id);
+    expect((await service.getCleanupStatus(parent.id)).status).toBe('PENDING');
+    deleteBranchIfSafeMock.mockClear();
+    await worker.processDueJobs();
+    expect(removeWorktreeMock.mock.calls.slice(-2).map(call => call[0])).toEqual([childWorkspace.worktreePath, rootWorkspace.worktreePath]);
+    expect(deleteBranchIfSafeMock.mock.calls.map(call => call[0])).toEqual(['at/child', 'at/parent']);
+    expect(await prisma.task.count()).toBe(1);
+    expect(await prisma.task.findUnique({ where: { id: other.id } })).not.toBeNull();
+    expect((await service.getCleanupStatus(parent.id)).status).toBe('COMPLETED');
+  });
+
+  it('deleting one child preserves its parent and sibling', async () => {
+    const project = await prisma.project.create({ data: { name: 'Child deletion', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Parent', projectId: project.id } });
+    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id } });
+    const sibling = await prisma.task.create({ data: { title: 'Sibling', projectId: project.id, parentTaskId: parent.id } });
+    const service = new TaskService(new EventBus(), {} as SessionManager, { trigger: vi.fn() });
+    await service.delete(child.id, 0);
+    expect((await service.findById(parent.id)).subtaskCount).toBe(1);
+    expect((await service.findById(sibling.id)).parentTaskId).toBe(parent.id);
   });
 
   it('filters deleted tasks from lists and stats', async () => {

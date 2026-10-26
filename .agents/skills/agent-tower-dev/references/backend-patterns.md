@@ -56,7 +56,8 @@
 - 看板走 `GET /api/task-board` 和 `TaskService.findBoard()` 的紧凑 DTO，批量读取 task、首选 workspace 与最新 session。完整 description 和历史通过详情/body 接口按需读取；列表 mapper 不加载完整关系或按 task/project 启动额外查询。
 - `TaskService` 有不同的创建和更新归一化路径。创建时，超长单一 title 按完整 Unicode code point 边界派生展示 title 和剩余正文，正文保留原始空白并放在独立 description 前面；更新长标题则沿既有 `normalizeUpdateTaskInput()` 合并输入和原 description。不要把二者统一成新算法或顺带回写历史 RoomMessage。
 - 原创建入口的 TeamRun 首条消息和 WorkRequest instruction 使用 `title + description`，保留正文实际内容，不按文本相似度猜测来源。新 scheduler 的 Task prompt 段来自 Invocation 固定共享输入，精确 hash 不 trim；普通 Task/会话创建沿已有正文组合规则。
-- Task 普通读取和变更要考虑 `deletedAt` 与 Project `archivedAt`，复用 `services/deleted-task-guard.ts` / `project-guards.ts`。删除先标记 Task、保存 `TaskCleanupJob` 快照并取消待执行 TeamRun 工作，再由 `task-cleanup.service.ts` 停止 Session、回收 worktree/branch 并最终硬删除。仅 cascade 或同步删数据库行不能完成资源回收。
+- Task 的 `parentTaskId` 只建立同项目、一级子任务关系，不联动运行或状态；Service 创建事务重验父任务未删除，防止与整组删除竞争。REST `parentTaskId` / MCP `parent_task_id` 省略 `baseBranch` 时取父任务根工作区分支，不能误取 TeamRun 成员工作区。`findBoard()` 返回子任务数量和分页外 `parents` 上下文，分页统计只计算 `data`；`/tasks/:id/subtasks` 为按需分页的紧凑读模型。
+- Task 普通读取和变更要考虑 `deletedAt` 与 Project `archivedAt`，复用 `services/deleted-task-guard.ts` / `project-guards.ts`。删除父任务会包含全部子任务：同一事务写入整组 `deletedAt`、`TaskCleanupJob` 快照和 TeamRun 取消状态，再由 `task-cleanup.service.ts` 停止 Session、回收 worktree/branch 并最终硬删除。快照 `taskIds` 为子任务在前、父任务在后，兼容旧快照只含 `taskId`；Session 补读覆盖整组。UI 删除携带 `expectedSubtaskCount`，数量变化返回 409；`GET /tasks/:id/cleanup` 与 `POST /tasks/:id/cleanup/retry` 提供可恢复的清理结果。仅数据库 cascade 不能完成资源回收。
 - Project 的 Git capability 是持久化读模型。列表只读保存值，旧 null 值可做廉价 `.git` fallback；创建、恢复、显式 refresh 和危险 Git 操作前才实时探测。不要在列表请求运行 `git rev-parse`。
 - `Project.lastActivityAt` 由最近未删除 Task 的 `createdAt` 聚合，没有 Task 时用 Project `createdAt`；更新 Task 不推进该值。前端按服务端字段排序，不能从分页/过滤后的 board 反推。
 

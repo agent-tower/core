@@ -1,7 +1,8 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
+import { useMutation, useQuery, useInfiniteQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import type { CreateTaskInput, Task, TaskBoardResponse, TaskBody, TaskStatus } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
+import { useTaskCleanupMonitor } from './use-task-cleanup-monitor'
 
 // ============ API 响应类型 ============
 
@@ -57,7 +58,7 @@ export function removeTaskFromListCaches(
 
   queryClient.setQueriesData<PaginatedResponse<Task>>({ predicate }, (current) => {
     if (!current || !Array.isArray(current.data)) return current
-    const nextData = current.data.filter((task) => task.id !== taskId)
+    const nextData = current.data.filter((task) => task.id !== taskId && task.parentTaskId !== taskId)
     if (nextData.length === current.data.length) return current
     return {
       ...current,
@@ -104,11 +105,13 @@ export function removeTaskFromBoardCaches(
 
   queryClient.setQueriesData<TaskBoardResponse>({ predicate }, (current) => {
     if (!current || !Array.isArray(current.data)) return current
-    const nextData = current.data.filter((task) => task.id !== taskId)
-    if (nextData.length === current.data.length) return current
+    const nextData = current.data.filter((task) => task.id !== taskId && task.parentTaskId !== taskId)
+    const parents = current.parents?.filter(task => task.id !== taskId)
+    if (nextData.length === current.data.length && parents?.length === current.parents?.length) return current
     return {
       ...current,
       data: nextData,
+      ...(parents ? { parents } : {}),
       total: Math.max(0, current.total - (current.data.length - nextData.length)),
     }
   })
@@ -167,6 +170,19 @@ export function useTaskBoard(options?: TaskBoardParams) {
   return useQuery({
     queryKey: queryKeys.tasks.board(options as Record<string, unknown> | undefined),
     queryFn: () => apiClient.get<TaskBoardResponse>('/task-board', { params }),
+  })
+}
+
+/** Child pages load only when the sidebar group or detail panel is opened. */
+export function useSubtasks(taskId: string, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.tasks.subtasks(taskId),
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) => apiClient.get<TaskBoardResponse>(`/tasks/${taskId}/subtasks`, {
+      params: { page: String(pageParam), limit: '100' },
+    }),
+    getNextPageParam: page => page.page < page.totalPages ? page.page + 1 : undefined,
+    enabled: Boolean(taskId) && enabled,
   })
 }
 
@@ -265,10 +281,17 @@ export function useUpdateTaskStatus() {
  */
 export function useDeleteTask() {
   const queryClient = useQueryClient()
+  const trackCleanup = useTaskCleanupMonitor()
 
   return useMutation({
-    mutationFn: (id: string) => apiClient.delete<void>(`/tasks/${id}`),
-    onMutate: async (id) => {
+    mutationFn: (input: string | { id: string; expectedSubtaskCount?: number }) => {
+      const { id, expectedSubtaskCount } = typeof input === 'string' ? { id: input } : input
+      return apiClient.delete<void>(`/tasks/${id}`, expectedSubtaskCount === undefined ? undefined : {
+        params: { expectedSubtaskCount: String(expectedSubtaskCount) },
+      })
+    },
+    onMutate: async (input) => {
+      const id = typeof input === 'string' ? input : input.id
       await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all })
       const snapshots = removeTaskFromListCaches(queryClient, id)
       const boardSnapshots = removeTaskFromBoardCaches(queryClient, id)
@@ -281,8 +304,10 @@ export function useDeleteTask() {
       if (context?.boardSnapshots) {
         restoreTaskBoardCaches(queryClient, context.boardSnapshots)
       }
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
     },
-    onSuccess: () => {
+    onSuccess: (_data, input) => {
+      trackCleanup(typeof input === 'string' ? input : input.id)
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
     },

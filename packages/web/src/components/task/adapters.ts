@@ -183,6 +183,8 @@ export function adaptTaskForList(task: SharedTask): UITask {
 
   return {
     id: task.id,
+    parentTaskId: task.parentTaskId,
+    subtaskCount: task.subtaskCount,
     projectId: task.projectId,
     title: task.titlePreview ?? task.title,
     status: mapTaskStatusToUI(task.status),
@@ -211,6 +213,9 @@ export function adaptTaskBoardItemForList(
 
   return {
     id: task.id,
+    parentTaskId: task.parentTaskId,
+    subtaskCount: task.subtaskCount,
+    runningSubtaskCount: task.runningSubtaskCount,
     projectId: task.projectId,
     title: task.title,
     status: mapTaskStatusToUI(task.status),
@@ -245,6 +250,8 @@ export function adaptTaskForDetail(
 
   return {
     id: task.id,
+    parentTaskId: task.parentTaskId,
+    subtaskCount: task.subtaskCount,
     projectId: project.id,
     projectName: project.name,
     projectColor: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],
@@ -274,6 +281,8 @@ export function adaptTaskBoardItemForDetail(
 
   return {
     id: task.id,
+    parentTaskId: task.parentTaskId,
+    subtaskCount: task.subtaskCount,
     projectId: project.id,
     projectName: project.name,
     projectColor: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],

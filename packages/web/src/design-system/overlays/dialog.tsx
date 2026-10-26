@@ -84,11 +84,12 @@ export interface ConfirmDialogProps {
   /** danger：删除、终止等不可逆操作，主按钮变红并带警示图标 */
   tone?: 'neutral' | 'danger'
   loading?: boolean
+  confirmDisabled?: boolean
   onConfirm: () => void
 }
 
 /** 确认框：二次确认一个操作。文案写清后果（「删除后无法恢复」），按钮写动作本身而不是「确定」 */
-export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, cancelLabel, tone = 'neutral', loading = false, onConfirm }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, cancelLabel, tone = 'neutral', loading = false, confirmDisabled = false, onConfirm }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -108,7 +109,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
         footer={
           <>
             <Button variant="ghost" size="md" onClick={() => onOpenChange(false)} disabled={loading}>{cancelLabel}</Button>
-            <Button variant="primary" tone={tone} size="md" loading={loading} onClick={onConfirm}>{confirmLabel}</Button>
+            <Button variant="primary" tone={tone} size="md" loading={loading} disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</Button>
           </>
         }
       />

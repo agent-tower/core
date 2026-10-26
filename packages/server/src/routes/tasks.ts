@@ -12,6 +12,7 @@ import {
 } from '../core/container.js';
 
 const createTaskSchema = z.object({
+  parentTaskId: z.string().uuid().optional(),
   title: z.string().min(1, 'title is required').refine((value) => value.trim().length > 0, 'title is required'),
   description: z.string().optional(),
   baseBranch: z.string().trim().min(1).nullable().optional(),
@@ -146,6 +147,22 @@ export async function taskRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get<{ Params: { id: string } }>('/tasks/:id/subtasks', async (request, reply) => {
+    try {
+      return await taskService.findSubtasks(request.params.id, taskListQuerySchema.parse(request.query));
+    } catch (error) { return handleError(error, reply); }
+  });
+
+  app.get<{ Params: { id: string } }>('/tasks/:id/cleanup', async (request, reply) => {
+    try { return await taskService.getCleanupStatus(request.params.id); }
+    catch (error) { return handleError(error, reply); }
+  });
+
+  app.post<{ Params: { id: string } }>('/tasks/:id/cleanup/retry', async (request, reply) => {
+    try { return await taskService.retryCleanup(request.params.id); }
+    catch (error) { return handleError(error, reply); }
+  });
+
   // 更新任务
   app.put<{ Params: { id: string } }>('/tasks/:id', async (request, reply) => {
     try {
@@ -191,7 +208,8 @@ export async function taskRoutes(app: FastifyInstance) {
     '/tasks/:id',
     async (request, reply) => {
       try {
-        await taskService.delete(request.params.id);
+        const query = z.object({ expectedSubtaskCount: z.coerce.number().int().min(0).optional() }).parse(request.query);
+        await taskService.delete(request.params.id, query.expectedSubtaskCount);
         reply.code(204);
         return;
       } catch (error) {
