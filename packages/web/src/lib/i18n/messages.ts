@@ -2,6 +2,14 @@ import type { AppLocale } from '@agent-tower/shared'
 
 export const messages: Record<AppLocale, Record<string, string>> = {
   'zh-CN': {
+    'Handoff note': '交接笔记',
+    'Handoff Markdown': '交接笔记 Markdown',
+    'Progress, decisions, and next steps': '进展、决策与下一步',
+    'Could not load the handoff note.': '无法加载交接笔记。',
+    'Could not save the handoff note. Your draft is preserved.': '交接笔记保存失败，草稿已保留。',
+    'The handoff changed elsewhere. Your draft is preserved. Cancel editing to view the latest note.': '交接笔记已被更新，当前草稿已保留。取消编辑可查看最新内容。',
+    'Summarize progress, decisions, verification, open problems, and next steps.': '记录进展、决策、验证结果、未解决问题及下一步。',
+    'No handoff note yet. Record what has been done and what comes next.': '暂无交接笔记。可以记录已完成的工作和下一步安排。',
     "Create subtask": "创建子任务",
     "Subtasks": "子任务",
     "{count} subtasks": "{count} 个子任务",

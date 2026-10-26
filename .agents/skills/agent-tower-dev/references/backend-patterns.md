@@ -53,6 +53,8 @@
 
 ## Task 与 Project 读写模型
 
+- 交接笔记只存 `Task.handoff`，shared DTO 在 `task-handoff.ts`。`TaskHandoffService` 通过 `GET/PATCH /tasks/:id/handoff` 和 MCP `get_task_handoff/update_task_handoff` 提供按需读取及 `oldString/newString` 精确替换；空 oldString 仅初始化空笔记，歧义/未命中拒绝，数据库按读到的原正文条件更新以检测并发写入。没有修订表或日志副本。普通 task mapper 不返回 handoff，变更复用 `task:updated` 失效通知。浏览器复用 owner/CSRF 检查（包括密码关闭），托管 Agent 必须绑定当前 Task，团队调用另外验证 invocation 与未移除成员。专项验证：`routes/__tests__/task-handoff.test.ts`。
+
 - 看板走 `GET /api/task-board` 和 `TaskService.findBoard()` 的紧凑 DTO，批量读取 task、首选 workspace 与最新 session。完整 description 和历史通过详情/body 接口按需读取；列表 mapper 不加载完整关系或按 task/project 启动额外查询。
 - `TaskService` 有不同的创建和更新归一化路径。创建时，超长单一 title 按完整 Unicode code point 边界派生展示 title 和剩余正文，正文保留原始空白并放在独立 description 前面；更新长标题则沿既有 `normalizeUpdateTaskInput()` 合并输入和原 description。不要把二者统一成新算法或顺带回写历史 RoomMessage。
 - 原创建入口的 TeamRun 首条消息和 WorkRequest instruction 使用 `title + description`，保留正文实际内容，不按文本相似度猜测来源。新 scheduler 的 Task prompt 段来自 Invocation 固定共享输入，精确 hash 不 trim；普通 Task/会话创建沿已有正文组合规则。

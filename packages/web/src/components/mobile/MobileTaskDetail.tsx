@@ -1,4 +1,5 @@
 import { SubtaskPanel } from '@/components/task/SubtaskPanel'
+import { TaskHandoffPanel } from '@/components/task/TaskHandoffPanel'
 import { TeamInitialDeliveryStatus } from '@/components/team/TeamInitialDeliveryStatus'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
@@ -1209,6 +1210,7 @@ export function MobileTaskDetail({ task, onBack, onSelectTask, onCreateSubtask, 
       {activeTab === 'workspace' && (
         <div className="flex-1 overflow-hidden">
           <WorkspacePanel
+            handoff={<TaskHandoffPanel key={task.id} taskId={task.id} readOnly={isProjectReadOnly} />}
             subtasks={<SubtaskPanel key={task.id} task={task} onSelectTask={onSelectTask} onCreateSubtask={onCreateSubtask} />}
             sessionId={sessionId || undefined}
             workspaceId={resolvedWorkspaceId}

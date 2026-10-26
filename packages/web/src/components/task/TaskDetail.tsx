@@ -72,6 +72,7 @@ import { TaskPrioritySelect } from './TaskPrioritySelect'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
 import { useSkillMentionMenu } from './useSkillMentionMenu'
 import { EditableTaskTitle } from './EditableTaskTitle'
+import { TaskHandoffPanel } from './TaskHandoffPanel'
 import { Streamdown } from 'streamdown'
 import type { UrlTransform } from 'streamdown'
 import { useI18n } from '@/lib/i18n'
@@ -1527,6 +1528,7 @@ export function TaskDetail({ task, onSelectTask, onCreateSubtask, onDeleteTask, 
           }}
         >
           <WorkspacePanel
+            handoff={<TaskHandoffPanel key={task.id} taskId={task.id} readOnly={isProjectReadOnly} />}
             subtasks={<SubtaskPanel key={task.id} task={task} onSelectTask={onSelectTask} onCreateSubtask={onCreateSubtask} />}
             sessionId={sessionId || undefined}
             workspaceId={resolvedWorkspaceId}

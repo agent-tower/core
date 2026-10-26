@@ -1,3 +1,5 @@
+import { withTaskHandoff } from './task-handoff.js';
+
 const WORKSPACE_BACKGROUND_SERVICE_POLICY = `<workspace_background_service_policy>
 For commands expected to keep running after this agent turn ends, including development servers, file watchers, and background workers, use the Agent Tower workspace service MCP tools. Do not start those commands in the agent terminal, and do not use nohup, disown, shell backgrounding, or a detached child process as a substitute.
 
@@ -9,13 +11,18 @@ export function withWorkspaceBackgroundServicePolicy(prompt: string): string {
 }
 
 export function buildWorkspaceRuntimePrompt(
-  session: { context?: string | null; purpose?: string | null; conversationId?: string | null },
+  session: {
+    context?: string | null;
+    purpose?: string | null;
+    conversationId?: string | null;
+    workspace?: { task: { id: string; handoff?: string | null } } | null;
+  },
   prompt: string,
 ): string {
   return session.context === 'WORKSPACE'
     && session.purpose === 'CHAT'
     && !session.conversationId
-    ? withWorkspaceBackgroundServicePolicy(prompt)
+    ? withWorkspaceBackgroundServicePolicy(session.workspace ? withTaskHandoff(prompt, session.workspace.task) : prompt)
     : prompt;
 }
 

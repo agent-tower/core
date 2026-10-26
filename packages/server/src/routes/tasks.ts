@@ -1,8 +1,10 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z, ZodError } from 'zod';
 import { TaskService } from '../services/task.service.js';
 import { TaskStatus } from '../types/index.js';
-import { TaskPriority } from '@agent-tower/shared';
+import { TaskPriority, TASK_HANDOFF_MAX_LENGTH } from '@agent-tower/shared';
+import { TaskHandoffService, type TaskHandoffCaller } from '../services/task-handoff.service.js';
+import { requireTranslationOwner } from './translations.js';
 import { ServiceError } from '../errors.js';
 import {
   getEventBus,
@@ -24,6 +26,20 @@ const updateTaskSchema = z.object({
   description: z.string().optional(),
   priority: z.nativeEnum(TaskPriority).optional(),
 });
+
+const updateHandoffSchema = z.object({
+  oldString: z.string().max(TASK_HANDOFF_MAX_LENGTH),
+  newString: z.string().max(TASK_HANDOFF_MAX_LENGTH),
+}).strict();
+
+async function handoffCaller(request: FastifyRequest): Promise<TaskHandoffCaller> {
+  if (request.agentTowerAuthKind === 'agent' && request.agentTowerAgentIdentity) {
+    return { kind: 'agent', ...request.agentTowerAgentIdentity };
+  }
+  // The shared owner guard also handles password-disabled browsers and CSRF.
+  await requireTranslationOwner(request);
+  return { kind: request.agentTowerAuthKind === 'internal' ? 'internal' : 'browser' };
+}
 
 const updateStatusSchema = z.object({
   status: z.nativeEnum(TaskStatus, {
@@ -74,6 +90,7 @@ function handleError(error: unknown, reply: any) {
 }
 
 export async function taskRoutes(app: FastifyInstance) {
+  const handoffService = new TaskHandoffService(getEventBus());
   const taskService = new TaskService(
     getEventBus(),
     getSessionManager(),
@@ -145,6 +162,16 @@ export async function taskRoutes(app: FastifyInstance) {
     } catch (error) {
       return handleError(error, reply);
     }
+  });
+
+  app.get<{ Params: { id: string } }>('/tasks/:id/handoff', async (request, reply) => {
+    try { return await handoffService.get(request.params.id, await handoffCaller(request)); }
+    catch (error) { return handleError(error, reply); }
+  });
+
+  app.patch<{ Params: { id: string } }>('/tasks/:id/handoff', async (request, reply) => {
+    try { return await handoffService.update(request.params.id, updateHandoffSchema.parse(request.body), await handoffCaller(request)); }
+    catch (error) { return handleError(error, reply); }
   });
 
   app.get<{ Params: { id: string } }>('/tasks/:id/subtasks', async (request, reply) => {

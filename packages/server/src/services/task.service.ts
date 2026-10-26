@@ -318,6 +318,11 @@ function normalizeUpdateTaskInput(
 }
 
 
+function withoutTaskHandoff<T extends object>(task: T): Omit<T, 'handoff'> {
+  const { handoff: _handoff, ...metadata } = task as T & { handoff?: string | null };
+  return metadata;
+}
+
 function withTaskPreviews<T extends { title: string; description?: string | null }>(
   task: T,
   options: { omitDescription?: boolean } = {}
@@ -329,7 +334,7 @@ function withTaskPreviews<T extends { title: string; description?: string | null
     || Boolean(task.description && task.description !== contentPreview);
 
   const base = {
-    ...task,
+    ...withoutTaskHandoff(task),
     title: titlePreview,
     titlePreview,
     contentPreview: contentPreview || undefined,
@@ -354,7 +359,7 @@ type ProjectWithStoredGitCapability = {
 
 function withProjectGitMetadata<T extends { project: ProjectWithStoredGitCapability }>(
   task: T
-): Omit<T, 'project'> & { project: T['project'] & ReturnType<typeof getStoredProjectGitCapability> } {
+): Omit<T, 'project' | 'handoff'> & { project: T['project'] & ReturnType<typeof getStoredProjectGitCapability> } {
   const capability = getStoredProjectGitCapability(task.project);
   return withProjectGitCapability(task, capability);
 }
@@ -362,14 +367,16 @@ function withProjectGitMetadata<T extends { project: ProjectWithStoredGitCapabil
 function withProjectGitCapability<T extends { project: ProjectWithStoredGitCapability }>(
   task: T,
   capability: ReturnType<typeof getStoredProjectGitCapability>
-): Omit<T, 'project'> & { project: T['project'] & ReturnType<typeof getStoredProjectGitCapability> } {
-  return {
+): Omit<T, 'project' | 'handoff'> & { project: T['project'] & ReturnType<typeof getStoredProjectGitCapability> } {
+  const result = {
     ...task,
     project: {
       ...task.project,
       ...capability,
     },
   };
+  delete (result as { handoff?: unknown }).handoff;
+  return result;
 }
 
 function buildProjectGitMetadata(project: ProjectWithStoredGitCapability) {
@@ -831,7 +838,7 @@ export class TaskService {
     }
 
     return {
-      ...updated,
+      ...withoutTaskHandoff(updated),
       project: {
         ...task.project,
         ...buildProjectGitMetadata(task.project),
@@ -884,7 +891,7 @@ export class TaskService {
     this.emitTaskUpdated(id, task.projectId, status);
 
     return {
-      ...updated,
+      ...withoutTaskHandoff(updated),
       project: {
         ...task.project,
         ...buildProjectGitMetadata(task.project),
@@ -926,7 +933,7 @@ export class TaskService {
     }
 
     return {
-      ...updated,
+      ...withoutTaskHandoff(updated),
       project: {
         ...task.project,
         ...buildProjectGitMetadata(task.project),

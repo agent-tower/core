@@ -3,15 +3,41 @@
  */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AgentTowerClient } from '../http-client.js';
+import { AgentTowerApiError } from '../http-client.js';
 import {
   ListTasksInput,
   CreateTaskInput,
   GetTaskInput,
   UpdateTaskInput,
   DeleteTaskInput,
+  GetTaskHandoffInput,
+  UpdateTaskHandoffInput,
 } from '../types.js';
 
 export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
+  server.tool(
+    'get_task_handoff',
+    'Read the task handoff Markdown before continuing work or editing the note. It summarizes progress, decisions, verification, and next steps; detailed evidence stays in existing session history. An empty note returns content="". task_id is required.',
+    GetTaskHandoffInput.shape,
+    async ({ task_id }) => {
+      try {
+        return { content: [{ type: 'text', text: JSON.stringify(await client.getTaskHandoff(task_id)) }] };
+      } catch (error) { return handoffError(error); }
+    },
+  );
+
+  server.tool(
+    'update_task_handoff',
+    'Edit the shared task handoff like a file: replace exactly one literal occurrence of old_string with new_string. Read the current note first. Empty old_string only initializes an empty note; empty new_string deletes the match. Missing or ambiguous matches and concurrent changes fail without overwriting. Include more context or reread before retrying. Write a concise, self-contained handoff so the next person or AI can continue without rereading the entire conversation. Preserve human corrections and distinguish completed and verified work from proposals or uncertainty. Update at useful milestones; keep detailed logs in session history. Returns the saved note.',
+    UpdateTaskHandoffInput.shape,
+    async ({ task_id, old_string, new_string }) => {
+      try {
+        const result = await client.updateTaskHandoff(task_id, { oldString: old_string, newString: new_string });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (error) { return handoffError(error); }
+    },
+  );
+
   server.tool(
     'list_tasks',
     'List tasks in a project with optional status filter. `project_id` is required!',
@@ -103,4 +129,14 @@ export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
       }
     }
   );
+}
+
+function handoffError(error: unknown) {
+  return {
+    isError: true,
+    content: [{ type: 'text' as const, text: JSON.stringify({
+      code: error instanceof AgentTowerApiError ? error.code : 'HANDOFF_REQUEST_FAILED',
+      message: error instanceof Error ? error.message : 'Task handoff request failed.',
+    }) }],
+  };
 }

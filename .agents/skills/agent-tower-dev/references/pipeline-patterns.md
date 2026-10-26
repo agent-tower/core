@@ -32,6 +32,8 @@ Parser / Projector -> MsgStore -> Runtime events -> SessionManager / EventBus ->
 
 ## 消息与恢复
 
+- `buildWorkspaceRuntimePrompt` 只在 workspace CHAT 回合附加任务交接上下文（`prompts/task-handoff.ts`）。正文来自本轮读取的 Task，作为有界、JSON 转义的历史资料注入；更长或更新的笔记由 Agent 通过 MCP 读取，阶段性更新使用精确文本替换。独立对话和 COMMIT_MSG 不注入。该指引不等于后台自动总结，也不替代原生 resume 或现有会话日志。
+
 ### 独立对话与任务 follow-up
 
 `ConversationService` 创建独立对话时将首条 prompt 入队，后续 `/conversations/:id/message` 在消息持久化后返回 `202`。`SessionManager.enqueueConversationMessage()` 写入 `ConversationTurn` 并立即显示用户消息；每个 Session 的 worker 串行执行，等待上一轮完成后才派发下一条。不要把 ACP initialize 或模型回复重新放入 HTTP 请求等待链路。

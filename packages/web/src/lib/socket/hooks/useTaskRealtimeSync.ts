@@ -44,12 +44,14 @@ export function useTaskRealtimeSync() {
           || isTaskBoardQueryKey(query.queryKey, payload.projectId),
       })
       queryClient.invalidateQueries({ queryKey: ['tasks', 'subtasks'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.handoff(payload.taskId) })
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.detail(payload.taskId),
       })
     }
 
     const handleTaskDeleted = (payload: TaskDeletedPayload) => {
+      queryClient.removeQueries({ queryKey: queryKeys.tasks.handoff(payload.taskId) })
       removeTaskFromListCaches(queryClient, payload.taskId, payload.projectId)
       removeTaskFromBoardCaches(queryClient, payload.taskId, payload.projectId)
       queryClient.invalidateQueries({

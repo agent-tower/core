@@ -2,6 +2,7 @@
  * MCP tool 输入参数的 Zod schema 定义
  */
 import { z } from 'zod';
+import { TASK_HANDOFF_MAX_LENGTH } from '@agent-tower/shared';
 
 // ── Projects ──
 
@@ -30,6 +31,17 @@ export const CreateTaskInput = z.object({
 
 export const GetTaskInput = z.object({
   task_id: z.string().describe('The ID of the task to retrieve'),
+});
+
+export const GetTaskHandoffInput = z.object({
+  task_id: z.string().min(1).describe('The Agent Tower task ID. Use the current task from get_context when available.'),
+});
+
+export const UpdateTaskHandoffInput = GetTaskHandoffInput.extend({
+  old_string: z.string().max(TASK_HANDOFF_MAX_LENGTH)
+    .describe('Exact text to replace, matching once. Use an empty string only to initialize an empty handoff.'),
+  new_string: z.string().max(TASK_HANDOFF_MAX_LENGTH)
+    .describe('Literal replacement text. Empty deletes the matched text. To insert, include the original text plus the addition.'),
 });
 
 export const UpdateTaskInput = z.object({

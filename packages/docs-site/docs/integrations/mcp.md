@@ -97,6 +97,8 @@ pnpm --filter @agent-tower/server dev
 | `create_task` | 创建任务；`parent_task_id` 创建子任务，`base_branch` 指定本地基础分支 |
 | `get_task` | 获取任务详情 |
 | `update_task` | 更新任务标题、描述或状态 |
+| `get_task_handoff` | 按 `task_id` 读取当前交接笔记，返回 `{ taskId, content }` |
+| `update_task_handoff` | 用 `old_string`、`new_string` 精确替换交接笔记中的一处文本 |
 | `delete_task` | 删除任务及其全部子任务，清理对应工作目录和任务分支；调用前确认完整删除范围 |
 
 `create_task` 的可选参数 `base_branch` 使用本地分支名称，例如 `develop`。省略时保存父任务工作分支（有 `parent_task_id` 时），否则保存项目当前默认基础分支；`null` 表示本地目录任务不选择分支。非 Git 或尚无提交的项目省略时保存为空。远程引用、标签和提交表达式不可用。
@@ -108,6 +110,26 @@ pnpm --filter @agent-tower/server dev
 ```
 
 任务详情返回 `baseBranch`。稍后调用 `create_workspace` 或启动 TeamRun 时，新建根工作区使用保存的分支，并将它用于差异比较、rebase 和合并；团队成员工作区仍从团队主工作区分支创建。省略参数的旧调用方式仍然可用。
+
+### 交接笔记
+
+`get_task_handoff` 和 `update_task_handoff` 都要求传入 `task_id`。托管 Agent 只能访问当前任务的笔记；团队成员还需通过 Session/Invocation 和成员身份校验。任务元数据、列表与 `get_context` 不附带笔记正文，使用读取工具按需获取。
+
+先读取笔记，再像编辑文件一样提交改动：
+
+```json
+{
+  "task_id": "任务 ID",
+  "old_string": "- 下一步：实现登录接口",
+  "new_string": "- 已完成：登录接口\n- 下一步：补充接口测试"
+}
+```
+
+- `old_string` 必须逐字匹配一处，包括空白和换行；匹配多处时增加上下文。
+- 空 `old_string` 仅用于初始化空笔记。空 `new_string` 删除匹配的片段。
+- 插入内容时，`new_string` 包含原片段及新增内容。替换文本按字面处理，`$&` 等字符没有特殊含义。
+- 缺少匹配、存在歧义或写入时正文发生变化会报错，应重新读取后编辑。错误结果带 `code` 和 `message`。
+- 成功返回完整的已保存笔记。笔记有长度上限，详细日志继续保留在现有会话历史。
 
 ### Providers
 

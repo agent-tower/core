@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useImperativeHandle, useCallback } from "react"
-import { Code2, Terminal, Globe, GitGraph, History, ListTree, PanelRightClose, Users } from "lucide-react"
+import { Code2, Terminal, Globe, GitGraph, History, ListTree, NotebookPen, PanelRightClose, Users } from "lucide-react"
 import type { TeamRun, Workspace } from "@agent-tower/shared"
 
 import { cn } from "@/lib/utils"
@@ -16,7 +16,7 @@ import { useProject } from "@/hooks/use-projects"
 import { useGitVisibilityStore, type VisibleGitTab } from "@/stores/git-visibility-store"
 import type { QuickCommand } from "@agent-tower/shared"
 
-export type WorkspaceTab = "editor" | "terminal" | "preview" | "review" | "history" | "subtasks"
+export type WorkspaceTab = "editor" | "terminal" | "preview" | "review" | "history" | "subtasks" | "handoff"
 type WorkspaceTabWithTeam = WorkspaceTab | "team-status"
 
 export interface WorkspacePanelHandle {
@@ -45,6 +45,8 @@ export interface WorkspacePanelProps {
   teamStatus?: React.ReactNode
   /** Task relationships; mounted only while the Subtasks tab is visible. */
   subtasks?: React.ReactNode
+  /** Task-scoped handoff, available even before a workspace is created. */
+  handoff?: React.ReactNode
   /** Git operation props for Changes tab */
   gitProps?: {
     branchName: string
@@ -157,6 +159,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     teamRun,
     teamStatus,
     subtasks,
+    handoff,
     gitProps,
     workspaces,
     selectedWorkspaceId,
@@ -183,6 +186,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     }, [expanded, onExpandedChange])
 
     const hasSubtasks = subtasks != null
+    const hasHandoff = handoff != null
     const tabs = useMemo(() => {
       const baseTabs = hideChanges ? MOBILE_TABS : DESKTOP_TABS
       const gitFilteredTabs = gitAvailable
@@ -191,14 +195,17 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
       const workspaceTabs = readOnly
         ? gitFilteredTabs.filter((tab) => tab.key !== 'terminal')
         : gitFilteredTabs
-      const availableTabs = hasSubtasks
+      const taskTabs = hasSubtasks
         ? [...workspaceTabs, { key: "subtasks" as const, label: "Subtasks", icon: <ListTree size={14} /> }]
         : workspaceTabs
+      const availableTabs = hasHandoff
+        ? [...taskTabs, { key: "handoff" as const, label: "Handoff note", icon: <NotebookPen size={14} /> }]
+        : taskTabs
 
       return teamRun
         ? [{ key: "team-status" as const, label: "Team Status", icon: <Users size={14} /> }, ...availableTabs]
         : availableTabs
-    }, [gitAvailable, hideChanges, readOnly, teamRun, hasSubtasks])
+    }, [gitAvailable, hideChanges, readOnly, teamRun, hasSubtasks, hasHandoff])
     const [activeTab, setActiveTab] = useState<WorkspaceTabWithTeam>(() => (
       previewRequest
         ? 'preview'
@@ -304,7 +311,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
 
     const content = (
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-        {showSwitcher && activeTab !== "subtasks" && (
+        {showSwitcher && activeTab !== "subtasks" && activeTab !== "handoff" && (
           <div className="shrink-0 px-3 py-1.5 border-b border-border/60 bg-muted/40">
             <WorkspaceSwitcher
               workspaces={workspaces}
@@ -323,6 +330,7 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
           )}
 
           {activeTab === "subtasks" && subtasks}
+          {activeTab === "handoff" && handoff}
 
           {activeTab === "editor" && (
             <EditorView ref={editorRef} workingDir={workingDir} readOnly={readOnly} />

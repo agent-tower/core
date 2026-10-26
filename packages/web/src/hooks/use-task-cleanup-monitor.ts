@@ -36,7 +36,7 @@ export function useTaskCleanupMonitor() {
       if (!job) return
       const toastId = `task-cleanup:${taskId}`
       if (job.status === 'COMPLETED') {
-        toast.success(t('Task resources deleted'), { id: toastId })
+        toast.dismiss(toastId)
         completed.push(taskId)
       } else if (job.status === 'FAILED') {
         toast.error(t('Task resource cleanup failed'), {
@@ -53,7 +53,8 @@ export function useTaskCleanupMonitor() {
           },
         })
       } else {
-        toast.loading(t('Deleting task resources…'), { id: toastId })
+        // Cleanup runs silently; dismiss any previous loading or retry error toast.
+        toast.dismiss(toastId)
       }
     })
     // Retire completed server operations from the persisted monitoring list.

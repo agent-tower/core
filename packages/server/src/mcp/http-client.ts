@@ -4,6 +4,8 @@
  */
 import type {
   CreateTaskInput,
+  TaskHandoff,
+  UpdateTaskHandoffInput,
   WorkspaceBackgroundServiceDto,
   WorkspaceBackgroundServiceInputResponse,
   WorkspaceBackgroundServiceLogsResponse,
@@ -132,6 +134,14 @@ export class AgentTowerClient {
 
   async getTask(taskId: string) {
     return this.request<any>('GET', `/api/tasks/${taskId}`);
+  }
+
+  async getTaskHandoff(taskId: string): Promise<TaskHandoff> {
+    return this.request<TaskHandoff>('GET', `/api/tasks/${encodeURIComponent(taskId)}/handoff`);
+  }
+
+  async updateTaskHandoff(taskId: string, input: UpdateTaskHandoffInput): Promise<TaskHandoff> {
+    return this.request<TaskHandoff>('PATCH', `/api/tasks/${encodeURIComponent(taskId)}/handoff`, input);
   }
 
   async updateTask(taskId: string, input: { title?: string; description?: string; priority?: number }) {

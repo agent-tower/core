@@ -14,6 +14,8 @@
 
 ## 状态与缓存
 
+- `TaskHandoffPanel` 在桌面/手机详情通过 `WorkspacePanel.handoff` 槽按需挂载，是 Task 级视图，不显示工作区切换器。`use-task-handoff.ts` 的正文查询属于 tasks key，`task:updated` 和重连触发刷新；编辑草稿独立于 Query cache，并按 taskId 在 sessionStorage 暂存以保留面板切换后的输入。保存仍走精确替换，失败保留草稿；归档只读。浏览器 fixture 为 `components/task/__tests__/task-handoff.fixture.html`（`?mobile=1` 使用移动标签栏），使用真实组件与隔离内存 API；HTTP/并发行为由后端专项测试验证。
+
 TanStack Query 管理 REST 可重建状态；Zustand 管理客户端状态和高频日志，如 `session-log-store`、`git-visibility-store`、`agent-store`、`ui-store`。多数 key 在 `hooks/query-keys.ts`，TeamRun、MemberPreset、TeamTemplate key 与 `hooks/use-team-run.ts` 共置；扩展相应领域 key，不借局部修改统一全仓库。
 
 - 看板统一通过 `useTaskBoard` 请求 `/api/task-board`，All Projects 也是一次 board 请求，避免按 project 创建 `useQueries` fan-out。Task 正文用 `useTaskBody` 按需读取；RoomMessage 列表与全文详情分离。

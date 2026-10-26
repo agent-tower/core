@@ -39,6 +39,7 @@ model Task {
   id          String      @id @default(uuid())
   title       String
   description String?
+  handoff     String? // Task-scoped Markdown handoff; detailed history stays in Session.
   baseBranch  String?
   status      String      @default("TODO")
   priority    Int         @default(0)
