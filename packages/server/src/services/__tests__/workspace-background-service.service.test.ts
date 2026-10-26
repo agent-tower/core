@@ -385,9 +385,7 @@ describe('WorkspaceBackgroundService', () => {
       await shutdown;
     }
     expect(manager.startCalls).toHaveBeenCalledTimes(1);
-    expect(await service.list(workspace.id)).toEqual([
-      expect.objectContaining({ desiredState: 'RUNNING', runtimeState: 'STOPPED' }),
-    ]);
+    expect(await service.list(workspace.id)).toEqual([]);
   });
 
   it('retains a failed shutdown owner and retries it on the next attempt', async () => {
@@ -403,37 +401,92 @@ describe('WorkspaceBackgroundService', () => {
     expect(manager.has(running.id)).toBe(false);
   });
 
-  it('stops runtime on app shutdown while preserving desired state for startup recovery', async () => {
+  it('keeps services stopped after app restart until explicitly started again', async () => {
     const manager = new FakeProcessManager();
     const service = new WorkspaceBackgroundService(manager as any);
     const { workspace } = await createWorkspace('shutdown');
-    await service.start(workspace.id, 'web', { command: 'node' });
+    const running = await service.start(workspace.id, 'web', { command: 'node' });
 
     await service.shutdown();
-    await expect(service.list(workspace.id)).resolves.toEqual([
-      expect.objectContaining({ desiredState: 'RUNNING', runtimeState: 'STOPPED' }),
-    ]);
+    expect(manager.has(running.id)).toBe(false);
+    await expect(prisma.workspaceBackgroundService.findUniqueOrThrow({ where: { id: running.id } }))
+      .resolves.toMatchObject({
+        desiredState: 'STOPPED',
+        runtimeState: 'STOPPED',
+        runtimeInstanceId: null,
+        pid: null,
+      });
 
     await expect(service.reconcile()).rejects.toMatchObject({ code: 'SERVICE_SHUTTING_DOWN' });
-    const recoveredService = new WorkspaceBackgroundService(manager as any);
-    await recoveredService.reconcile();
-    await expect(recoveredService.list(workspace.id)).resolves.toEqual([
-      expect.objectContaining({ desiredState: 'RUNNING', runtimeState: 'RUNNING' }),
-    ]);
-    expect(manager.startCalls).toHaveBeenCalledTimes(2);
+    const restartedManager = new FakeProcessManager();
+    const restartedService = new WorkspaceBackgroundService(restartedManager as any);
+    await restartedService.reconcile();
+    await expect(restartedService.list(workspace.id)).resolves.toEqual([]);
+    expect(restartedManager.startCalls).not.toHaveBeenCalled();
+
+    await expect(restartedService.start(workspace.id, 'web', { command: 'node' }))
+      .resolves.toMatchObject({ id: running.id, desiredState: 'RUNNING', runtimeState: 'RUNNING' });
+    expect(restartedManager.startCalls).toHaveBeenCalledTimes(1);
+    await restartedService.shutdown();
   });
 
-  it('persists FAILED and lastError when reconcile cannot resolve the stored cwd', async () => {
+  it('clears legacy launch intent and stale runtimes across tasks without starting services', async () => {
     const manager = new FakeProcessManager();
     const service = new WorkspaceBackgroundService(manager as any);
-    const { workspace } = await createWorkspace('reconcile-missing-cwd');
-    await prisma.workspaceBackgroundService.create({
+    const records = [];
+    for (const runtimeState of ['STARTING', 'RUNNING', 'STOPPING', 'STOPPED', 'EXITED', 'FAILED']) {
+      const { workspace } = await createWorkspace(`startup-${runtimeState}`);
+      const hasRuntime = ['STARTING', 'RUNNING', 'STOPPING'].includes(runtimeState);
+      records.push(await prisma.workspaceBackgroundService.create({
+        data: {
+          workspaceId: workspace.id,
+          name: 'web',
+          command: 'node',
+          argsJson: '["server.js"]',
+          desiredState: 'RUNNING',
+          runtimeState,
+          runtimeInstanceId: hasRuntime ? `old-${runtimeState}` : null,
+          pid: hasRuntime ? 12345 : null,
+        },
+      }));
+    }
+
+    await service.reconcile();
+
+    expect(manager.startCalls).not.toHaveBeenCalled();
+    for (const record of records) {
+      await expect(service.list(record.workspaceId)).resolves.toEqual([]);
+      await expect(prisma.workspaceBackgroundService.findUniqueOrThrow({ where: { id: record.id } }))
+        .resolves.toMatchObject({
+          command: 'node',
+          argsJson: '["server.js"]',
+          desiredState: 'STOPPED',
+          runtimeState: 'STOPPED',
+          runtimeInstanceId: null,
+          pid: null,
+          stoppedAt: expect.any(Date),
+        });
+    }
+
+    await expect(service.restart(records[0].workspaceId, 'web'))
+      .resolves.toMatchObject({ id: records[0].id, desiredState: 'RUNNING', runtimeState: 'RUNNING' });
+    expect(manager.startCalls).toHaveBeenCalledTimes(1);
+    await service.shutdown();
+  });
+
+  it.each([
+    { relativeCwd: 'missing-directory', argsJson: '[]' },
+    { relativeCwd: '.', argsJson: 'invalid-json' },
+  ])('does not attempt to launch an obsolete service configuration on startup: %j', async (spec) => {
+    const manager = new FakeProcessManager();
+    const service = new WorkspaceBackgroundService(manager as any);
+    const { workspace } = await createWorkspace('obsolete-service');
+    const record = await prisma.workspaceBackgroundService.create({
       data: {
         workspaceId: workspace.id,
         name: 'web',
         command: 'node',
-        argsJson: '[]',
-        relativeCwd: 'missing-directory',
+        ...spec,
         desiredState: 'RUNNING',
         runtimeState: 'STOPPED',
       },
@@ -441,13 +494,13 @@ describe('WorkspaceBackgroundService', () => {
 
     await service.reconcile();
 
-    await expect(service.list(workspace.id)).resolves.toEqual([
-      expect.objectContaining({
-        desiredState: 'RUNNING',
-        runtimeState: 'FAILED',
-        lastError: 'Workspace service working directory does not exist',
-      }),
-    ]);
+    await expect(service.list(workspace.id)).resolves.toEqual([]);
+    await expect(prisma.workspaceBackgroundService.findUniqueOrThrow({ where: { id: record.id } }))
+      .resolves.toMatchObject({
+        desiredState: 'STOPPED',
+        runtimeState: 'STOPPED',
+        lastError: null,
+      });
     expect(manager.startCalls).not.toHaveBeenCalled();
   });
 

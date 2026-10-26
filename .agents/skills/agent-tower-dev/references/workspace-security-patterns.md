@@ -20,7 +20,7 @@
 
 - 定义属于 workspace，独立 PTY 属于 app-owned process manager，生命周期不随 Agent turn、Session 自然完成或 Socket 断开结束。跨 turn 运行的开发 server/watch/worker 使用 workspace-context service MCP；普通 Agent 子进程仍按 runtime 规则清理。
 - 命令以 `command + args[]`、workspace 内相对 cwd 表达，不新增任意 env 或 shell 字符串输入。自然退出记录 EXITED/FAILED，不自动 crash restart。
-- 显式 stop、workspace hibernate/archive/delete 和 task/project cleanup 将 desired state 置为 STOPPED 并清理进程树；reactivate 不自动恢复。应用优雅关闭只停止 runtime、保留 desired state，启动 `reconcile()` 重建仍有效的 desired RUNNING 服务。
+- 显式 stop、workspace hibernate/archive/delete、task/project cleanup 和应用优雅关闭将被停止服务的 desired state 置为 STOPPED 并清理进程树；reactivate 不自动恢复。启动 `reconcile()` 只清理历史 desired RUNNING 或活跃 runtime 记录，将 desired/runtime 置为 STOPPED 并清空 runtime identity/PID，兼容旧版本恢复意图但不自动启动服务。命令定义保留供显式 start/restart 复用。
 - 后台服务 `shutdown()` 先关闭启动入口，等待已进入的启动交接，然后清理；失败可重试。关闭后的同一实例不能通过 `reconcile()` 重新接收启动，服务重启使用新实例。
 - 完全停止指 desired/runtime 均为 STOPPED 且无 runtime identity。定义保留供同名同配置重启，但不显示在列表、不占服务配额；新建和重启完全停止的定义都要在 lifecycle barrier 内检查可用槽位。不要只按记录总数计算配额。
 - merge 默认阻止源 workspace 的活跃后台服务。已有 `stopActiveServices` 请求语义表示调用方明确选择先停止；完成 merge gate 后清理、重验再合并，不能在检查失败前先杀进程。

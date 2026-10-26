@@ -288,7 +288,7 @@ export class WorkspaceBackgroundService {
       this.withLock(`${workspaceId}:${name}`, async () => {
         await this.requireWorkspace(workspaceId, false);
         const record = await this.requireRecord(workspaceId, name);
-        return toDto(await this.stopRecord(record, false));
+        return toDto(await this.stopRecord(record));
       })
     ));
   }
@@ -299,7 +299,7 @@ export class WorkspaceBackgroundService {
       this.withLock(`${workspaceId}:${name}`, async () => {
         const workspace = await this.requireWorkspace(workspaceId, true);
         let record = await this.requireRecord(workspaceId, name);
-        record = await this.stopRecord(record, false);
+        record = await this.stopRecord(record);
         await this.requireAvailableServiceSlot(workspaceId);
         const args = parseArgs(record.argsJson);
         if (!args) {
@@ -358,10 +358,7 @@ export class WorkspaceBackgroundService {
     return { serviceName: name, accepted: true, byteLength };
   }
 
-  async stopAllForWorkspace(
-    workspaceId: string,
-    options: { preserveDesired?: boolean } = {},
-  ): Promise<void> {
+  async stopAllForWorkspace(workspaceId: string): Promise<void> {
     await this.lifecycleBarrier.withWorkspace(workspaceId, async () => {
       const records = await prisma.workspaceBackgroundService.findMany({ where: { workspaceId } });
       const errors: unknown[] = [];
@@ -369,7 +366,7 @@ export class WorkspaceBackgroundService {
         try {
           await this.withLock(`${workspaceId}:${record.name}`, async () => {
             const current = await prisma.workspaceBackgroundService.findUnique({ where: { id: record.id } });
-            if (current) await this.stopRecord(current, options.preserveDesired === true);
+            if (current) await this.stopRecord(current);
           });
         } catch (error) {
           errors.push(error);
@@ -389,70 +386,23 @@ export class WorkspaceBackgroundService {
 
   async reconcile(): Promise<void> {
     this.assertAcceptingStarts();
+    // Startup only: discard the previous app instance's runtime snapshot and
+    // launch intent. Saved definitions remain available for explicit starts.
     await prisma.workspaceBackgroundService.updateMany({
-      where: { runtimeState: { in: ACTIVE_RUNTIME_STATES } },
+      where: {
+        OR: [
+          { desiredState: 'RUNNING' },
+          { runtimeState: { in: ACTIVE_RUNTIME_STATES } },
+        ],
+      },
       data: {
+        desiredState: 'STOPPED',
         runtimeState: 'STOPPED',
         runtimeInstanceId: null,
         pid: null,
         stoppedAt: new Date(),
       },
     });
-    const desired = await prisma.workspaceBackgroundService.findMany({
-      where: { desiredState: 'RUNNING' },
-      include: { workspace: { include: { task: { include: { project: true } } } } },
-    });
-    for (const record of desired) {
-      const workspace = record.workspace;
-      const args = parseArgs(record.argsJson);
-      if (!args) {
-        await prisma.workspaceBackgroundService.update({
-          where: { id: record.id },
-          data: {
-            runtimeState: 'FAILED',
-            runtimeInstanceId: null,
-            pid: null,
-            lastError: 'Stored service arguments are invalid',
-          },
-        });
-        continue;
-      }
-      if (
-        workspace.status !== WorkspaceStatus.ACTIVE
-        || workspace.task.deletedAt
-        || workspace.task.project.archivedAt
-      ) {
-        await prisma.workspaceBackgroundService.update({
-          where: { id: record.id },
-          data: { desiredState: 'STOPPED', runtimeState: 'STOPPED' },
-        });
-        continue;
-      }
-      try {
-        await this.start(workspace.id, record.name, {
-          command: record.command,
-          args,
-          relativeCwd: record.relativeCwd,
-        });
-      } catch (error) {
-        // A cwd or validation failure can happen before startRecord() creates a
-        // runtime generation, so reconcile owns the fallback FAILED state.
-        if (this.processManager.has(record.id)) continue;
-        const message = error instanceof ServiceError
-          ? error.message
-          : 'Failed to restore workspace service';
-        await prisma.workspaceBackgroundService.updateMany({
-          where: { id: record.id, desiredState: 'RUNNING' },
-          data: {
-            runtimeState: 'FAILED',
-            runtimeInstanceId: null,
-            pid: null,
-            lastError: message,
-            stoppedAt: new Date(),
-          },
-        });
-      }
-    }
   }
 
   async shutdown(): Promise<void> {
@@ -474,7 +424,7 @@ export class WorkspaceBackgroundService {
       try {
         await this.withLock(`${record.workspaceId}:${record.name}`, async () => {
           const current = await prisma.workspaceBackgroundService.findUnique({ where: { id: record.id } });
-          if (current) await this.stopRecord(current, true);
+          if (current) await this.stopRecord(current);
         });
       } catch (error) {
         errors.push(error);
@@ -576,20 +526,18 @@ export class WorkspaceBackgroundService {
 
   private async stopRecord(
     record: WorkspaceBackgroundServiceRecord,
-    preserveDesired: boolean,
   ): Promise<WorkspaceBackgroundServiceRecord> {
-    const desiredState = preserveDesired ? record.desiredState : 'STOPPED';
     if (record.runtimeInstanceId && this.processManager.has(record.id, record.runtimeInstanceId)) {
       await prisma.workspaceBackgroundService.updateMany({
         where: { id: record.id, runtimeInstanceId: record.runtimeInstanceId },
-        data: { desiredState, runtimeState: 'STOPPING' },
+        data: { desiredState: 'STOPPED', runtimeState: 'STOPPING' },
       });
       await this.processManager.stop(record.id, record.runtimeInstanceId);
     }
     await prisma.workspaceBackgroundService.update({
       where: { id: record.id },
       data: {
-        desiredState,
+        desiredState: 'STOPPED',
         runtimeState: 'STOPPED',
         runtimeInstanceId: null,
         pid: null,

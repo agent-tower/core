@@ -143,6 +143,8 @@ pnpm --filter @agent-tower/server dev
 
 启动参数不接受 shell 命令字符串、绝对工作目录或自定义环境变量。项目继续通过自己的 `.env` 和启动脚本加载配置。服务崩溃后不会自动重启；workspace 休眠、归档或删除时会停止服务并清除期望运行状态，之后唤醒不会自动恢复。日志仅保存在当前 Agent Tower 进程的有界内存中，应用重启后不会保留。
 
+Agent Tower 重启不会自动恢复后台服务，旧版本留下的期望运行状态也会在启动时清除。命令定义仍会保留；需要继续运行时，调用 `start_workspace_service`（同名同配置）或 `control_workspace_service` 的 `restart`。
+
 ### Sessions
 
 | Tool | 说明 |

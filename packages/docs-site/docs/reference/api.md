@@ -95,6 +95,8 @@ Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspac
 
 这些接口管理由 workspace 持有的长期进程。服务不会因启动它的 Agent session 完成、停止或 Socket 断开而退出；workspace 休眠、归档或删除时会停止。日志是有界内存 buffer，应用重启后不保留。`desiredState` 与 `runtimeState` 都是 `STOPPED` 且没有 runtime identity 的定义不会出现在列表中，也不计入每个 workspace 最多 20 个服务的配额；同名同配置启动时仍可复用该定义。
 
+Agent Tower 关闭时停止托管服务；启动时将遗留的期望运行记录或活跃运行状态重置为 `STOPPED`，清除 runtime identity 和 PID，不自动启动服务。命令定义保留，后续显式启动或重启请求仍可复用。
+
 | Method | Path | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/workspaces/:workspaceId/services` | 列出服务及 desired/runtime 状态 |
