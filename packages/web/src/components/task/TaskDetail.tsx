@@ -1,3 +1,4 @@
+import { canCreateSubtask } from '@agent-tower/shared'
 import { SubtaskPanel } from '@/components/task/SubtaskPanel'
 import { retainTaskSubscription } from '@/lib/socket/task-subscription'
 import { TeamInitialDeliveryStatus } from '@/components/team/TeamInitialDeliveryStatus'
@@ -1051,7 +1052,7 @@ export function TaskDetail({ task, onSelectTask, onCreateSubtask, onDeleteTask, 
                 </button>
                 {isMoreMenuOpen && (
                   <div className="absolute right-0 top-full mt-2 w-44 bg-background rounded-lg border border-border shadow-popover z-50 py-1">
-                    {onCreateSubtask && !task.parentTaskId && (
+                    {onCreateSubtask && canCreateSubtask(task) && (
                       <button className="w-full flex items-center gap-2 px-3 py-2 text-sm text-foreground/80 hover:bg-muted/50"
                         onClick={() => { setIsMoreMenuOpen(false); onCreateSubtask(task.id) }}>
                         <Plus size={15} /><span>{t('Create subtask')}</span>

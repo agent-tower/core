@@ -1,3 +1,4 @@
+import { canCreateSubtask } from '@agent-tower/shared'
 import { SubtaskPanel } from '@/components/task/SubtaskPanel'
 import { TaskHandoffPanel } from '@/components/task/TaskHandoffPanel'
 import { TeamInitialDeliveryStatus } from '@/components/team/TeamInitialDeliveryStatus'
@@ -773,7 +774,7 @@ export function MobileTaskDetail({ task, onBack, onSelectTask, onCreateSubtask, 
               </button>
               {isMoreMenuOpen && (
                 <div className="absolute right-0 top-full mt-1 w-40 bg-background rounded-lg border border-border shadow-popover z-50 py-1">
-                  {onCreateSubtask && !task.parentTaskId && (
+                  {onCreateSubtask && canCreateSubtask(task) && (
                     <button className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/50"
                       onClick={() => { setIsMoreMenuOpen(false); onCreateSubtask(task.id) }}>
                       <Plus size={15} /><span>{t('Create subtask')}</span>

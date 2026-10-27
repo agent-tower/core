@@ -19,7 +19,7 @@ export const ListTasksInput = z.object({
 });
 
 export const CreateTaskInput = z.object({
-  parent_task_id: z.string().uuid().optional().describe("Same-project parent task. Defaults the base/merge branch to its current root workspace branch. One level of subtasks is supported."),
+  parent_task_id: z.string().uuid().optional().describe("Same-project parent task. Defaults the base/merge branch to its current root workspace branch. At most three task levels (root, child, grandchild) are supported; a grandchild cannot be a parent."),
   project_id: z.string().describe('The ID of the project to create the task in'),
   title: z.string().min(1).describe('The title of the task'),
   description: z.string().optional().describe('Optional description of the task'),

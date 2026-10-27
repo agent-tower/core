@@ -99,11 +99,11 @@ pnpm --filter @agent-tower/server dev
 | `update_task` | 更新任务标题、描述或状态 |
 | `get_task_handoff` | 按 `task_id` 读取当前交接笔记，返回 `{ taskId, content }` |
 | `update_task_handoff` | 用 `old_string`、`new_string` 精确替换交接笔记中的一处文本 |
-| `delete_task` | 删除任务及其全部子任务，清理对应工作目录和任务分支；调用前确认完整删除范围 |
+| `delete_task` | 删除任务及其全部子任务和孙任务，清理对应工作目录和任务分支；调用前确认完整删除范围 |
 
 `create_task` 的可选参数 `base_branch` 使用本地分支名称，例如 `develop`。省略时保存父任务工作分支（有 `parent_task_id` 时），否则保存项目当前默认基础分支；`null` 表示本地目录任务不选择分支。非 Git 或尚无提交的项目省略时保存为空。远程引用、标签和提交表达式不可用。
 
-`parent_task_id` 必须指向同一项目中未删除的顶层任务，目前只支持一级子任务。父任务还没有工作分支时沿用它保存的基础分支或项目默认值。`get_task` 返回 `parentTaskId` 和直接子任务数量 `subtaskCount`；父子任务独立执行和更新状态。
+`parent_task_id` 必须指向同一项目中未删除的主任务或子任务，最多支持主任务 → 子任务 → 孙任务三级；孙任务不能再作为父任务。父任务还没有工作分支时沿用它保存的基础分支或项目默认值。`get_task` 返回 `parentTaskId`、从主任务到直接父任务的 `ancestorIds` 和直接子任务数量 `subtaskCount`；父子任务独立执行和更新状态。
 
 ```json
 { "project_id": "项目 ID", "title": "开发功能", "base_branch": "develop" }

@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useInfiniteQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
+import { isTaskInSubtree, type TaskDeletionScope } from '@agent-tower/shared'
+import { useMutation, useQuery, useInfiniteQuery, useQueryClient, type QueryClient, type QueryKey, type InfiniteData } from '@tanstack/react-query'
 import type { CreateTaskInput, Task, TaskBoardResponse, TaskBody, TaskStatus } from '@agent-tower/shared'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from './query-keys'
@@ -58,7 +59,7 @@ export function removeTaskFromListCaches(
 
   queryClient.setQueriesData<PaginatedResponse<Task>>({ predicate }, (current) => {
     if (!current || !Array.isArray(current.data)) return current
-    const nextData = current.data.filter((task) => task.id !== taskId && task.parentTaskId !== taskId)
+    const nextData = current.data.filter((task) => !isTaskInSubtree(task, taskId))
     if (nextData.length === current.data.length) return current
     return {
       ...current,
@@ -105,8 +106,8 @@ export function removeTaskFromBoardCaches(
 
   queryClient.setQueriesData<TaskBoardResponse>({ predicate }, (current) => {
     if (!current || !Array.isArray(current.data)) return current
-    const nextData = current.data.filter((task) => task.id !== taskId && task.parentTaskId !== taskId)
-    const parents = current.parents?.filter(task => task.id !== taskId)
+    const nextData = current.data.filter((task) => !isTaskInSubtree(task, taskId))
+    const parents = current.parents?.filter(task => !isTaskInSubtree(task, taskId))
     if (nextData.length === current.data.length && parents?.length === current.parents?.length) return current
     return {
       ...current,
@@ -171,6 +172,29 @@ export function useTaskBoard(options?: TaskBoardParams) {
     queryKey: queryKeys.tasks.board(options as Record<string, unknown> | undefined),
     queryFn: () => apiClient.get<TaskBoardResponse>('/task-board', { params }),
   })
+}
+
+export function useTaskDeletionScope(taskId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.tasks.deletionScope(taskId),
+    queryFn: () => apiClient.get<TaskDeletionScope>(`/tasks/${taskId}/deletion-scope`),
+    enabled: Boolean(taskId) && enabled,
+  })
+}
+
+/** Remove visible descendants from every loaded child page; REST restores authoritative totals. */
+export function removeTaskFromSubtaskCaches(queryClient: QueryClient, taskId: string) {
+  const filter = { queryKey: ['tasks', 'subtasks'] }
+  const snapshots = queryClient.getQueriesData<InfiniteData<TaskBoardResponse>>(filter)
+  queryClient.setQueriesData<InfiniteData<TaskBoardResponse>>(filter, current => {
+    if (!current) return current
+    const removedIds = new Set(current.pages.flatMap(page => page.data.filter(task => isTaskInSubtree(task, taskId)).map(task => task.id)))
+    if (!removedIds.size) return current
+    return { ...current, pages: current.pages.map(page => ({
+      ...page, data: page.data.filter(task => !removedIds.has(task.id)), total: Math.max(0, page.total - removedIds.size),
+    })) }
+  })
+  return snapshots
 }
 
 /** Child pages load only when the sidebar group or detail panel is opened. */
@@ -295,12 +319,14 @@ export function useDeleteTask() {
       await queryClient.cancelQueries({ queryKey: queryKeys.tasks.all })
       const snapshots = removeTaskFromListCaches(queryClient, id)
       const boardSnapshots = removeTaskFromBoardCaches(queryClient, id)
-      return { snapshots, boardSnapshots }
+      const subtaskSnapshots = removeTaskFromSubtaskCaches(queryClient, id)
+      return { snapshots, boardSnapshots, subtaskSnapshots }
     },
     onError: (_error, _id, context) => {
       if (context?.snapshots) {
         restoreTaskListCaches(queryClient, context.snapshots)
       }
+      for (const [key, data] of context?.subtaskSnapshots ?? []) queryClient.setQueryData(key, data)
       if (context?.boardSnapshots) {
         restoreTaskBoardCaches(queryClient, context.boardSnapshots)
       }

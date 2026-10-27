@@ -180,6 +180,11 @@ export async function taskRoutes(app: FastifyInstance) {
     } catch (error) { return handleError(error, reply); }
   });
 
+  app.get<{ Params: { id: string } }>('/tasks/:id/deletion-scope', async (request, reply) => {
+    try { return await taskService.getDeletionScope(request.params.id); }
+    catch (error) { return handleError(error, reply); }
+  });
+
   app.get<{ Params: { id: string } }>('/tasks/:id/cleanup', async (request, reply) => {
     try { return await taskService.getCleanupStatus(request.params.id); }
     catch (error) { return handleError(error, reply); }

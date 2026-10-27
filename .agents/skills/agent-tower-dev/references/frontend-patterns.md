@@ -20,7 +20,7 @@ TanStack Query 管理 REST 可重建状态；Zustand 管理客户端状态和高
 
 - 看板统一通过 `useTaskBoard` 请求 `/api/task-board`，All Projects 也是一次 board 请求，避免按 project 创建 `useQueries` fan-out。Task 正文用 `useTaskBody` 按需读取；RoomMessage 列表与全文详情分离。
 - Task mutation、`task:*` 和 TeamRun invalidation 要覆盖 board 与旧 task list cache。沿用 `hooks/use-tasks.ts` 的 query predicate、remove/rollback helper，处理过滤后的列表、总数和 detail/body cache；board item 只用 `projectId` 关联项目元数据。
-- 子任务按 `parentTaskId` 收在父任务行下，右侧图标独立控制展开，子任务显示自己的状态；顶层仍按父任务状态分组。board 的分页外 `parents` 只补展示上下文，展开通过 `useSubtasks()` 分页读取；详情选中不在当前 board 页时按需补读 Task。`task:*` 通知和重连同时失效子任务查询。桌面/手机共用 `SubtaskPanel`，通过 `WorkspacePanel.subtasks` 槽放入独立的子任务标签，仅选中该标签并展开面板时挂载；手机入口在工作区标签栏。子任务是任务级视图，不展示工作区切换器，也不常驻聊天区顶部。创建表单保留父任务身份及分支默认值。删除确认读取实际子任务总数并提交 `expectedSubtaskCount`，整组乐观移除，失败恢复；`use-task-cleanup-monitor.ts` 用 sessionStorage 保留待清理 ID，通过 REST 轮询结果并提供重试。
+- 三级任务按 `parentTaskId` 逐层收在父任务行下，shared `canCreateSubtask` 依据 `ancestorIds` 限制创建到孙任务，右侧图标独立控制展开，子任务显示自己的状态；顶层仍按父任务状态分组。board 的分页外 `parents` 补齐全部祖先展示上下文，选中路径逐层展开且允许手动收起；展开通过 `useSubtasks()` 分页读取；详情选中不在当前 board 页时按需补读 Task 及至多两个缺失祖先。`task:*` 通知和重连同时失效子任务与删除范围查询。桌面/手机共用 `SubtaskPanel`，通过 `WorkspacePanel.subtasks` 槽放入独立的子任务标签，仅选中该标签并展开面板时挂载；手机入口在工作区标签栏。子任务是任务级视图，不展示工作区切换器，也不常驻聊天区顶部。详情的子任务标签同时显示父入口与直属孩子，孙任务仅保留父入口和层级上限提示。创建表单保留直接父任务身份及分支默认值。删除确认从 `/deletion-scope` 读取全部后代总数并提交 `expectedSubtaskCount`，按 `ancestorIds` 对 board/list/已加载子页整树乐观移除，失败恢复；`use-task-cleanup-monitor.ts` 用 sessionStorage 保留待清理 ID，通过 REST 轮询结果并提供重试。
 - TeamRun 用户提交202先缓存稳定operation，不能当RoomMessage upsert；实际发布后按稳定message id合并messages、run detail和task-run cache。`RoomTimeline` 乐观项与后续输入框草稿/附件隔离；未知受理在sessionStorage保存精确body/UUID，重试复用，损坏记录发送前拒绝，不能把旧附件恢复进新草稿或用新UUID盲发。
 - `TeamRoomDeliveryStatus` 用TEAM_TASK范围有界分页恢复待发操作，共享输入另按50条分页、按需全文，动作使用actionId/expectedRevision。202受理、输入ACCEPTED、房间SENT和成员运行是不同状态；owner主消息显示原文，actualSentText对照来自冻结发布事实。ID/revision通知只失效缓存，刷新/重连走REST。
 
@@ -111,3 +111,5 @@ CLI/ACP 共用 ExecutionPermissionSelector，固定三项并消费服务端 opti
 ResolveConflictsDialog 有原 token 时通过 source workspace 的 `POST /conflict-context` 只读核验，原目标和接收范围由服务端证明决定；恢复、刷新及重开均不写Git、不自动发送。现场变化（包括部分stage）会保守拒绝，界面须展示实际目标目录并说明保留成果、手工继续，或明确abort/重做；项目目标无workspace映射时不把源IDE冒充实际目标。历史无证明且失效签名不能补回跨目录授权；不要承诺全部冲突均可AI恢复。
 
 TEAM_INITIAL 创建响应为201 TeamRun或202 MessageDeliverySubmission；202只缓存操作，plannedTeamRunId不能成为team query或导航ID。`team-initial-submission.ts`按task在sessionStorage保留精确body/UUID，未知响应重试不得重建意图、覆盖新草稿或附件。桌面/手机未建队详情以TEAM_TASK有界REST恢复pending；task room只供owner ID/revision失效，`lib/socket/task-subscription.ts`让TaskDetail与状态组件共用引用计数订阅，重连重订阅。SENT后REST失效真实task-team query。
+
+三级任务浏览器验收使用 `components/task/__tests__/subtasks.fixture.html`（`?mobile=1` 使用手机标签栏），复用实际列表、子任务面板、创建表单和删除确认及隔离内存 API；后端范围/分支/并发规则由 task/workspace service 和 route 测试验证。

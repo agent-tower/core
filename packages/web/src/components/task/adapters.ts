@@ -184,6 +184,7 @@ export function adaptTaskForList(task: SharedTask): UITask {
   return {
     id: task.id,
     parentTaskId: task.parentTaskId,
+    ancestorIds: task.ancestorIds,
     subtaskCount: task.subtaskCount,
     projectId: task.projectId,
     title: task.titlePreview ?? task.title,
@@ -214,6 +215,7 @@ export function adaptTaskBoardItemForList(
   return {
     id: task.id,
     parentTaskId: task.parentTaskId,
+    ancestorIds: task.ancestorIds,
     subtaskCount: task.subtaskCount,
     runningSubtaskCount: task.runningSubtaskCount,
     projectId: task.projectId,
@@ -251,6 +253,7 @@ export function adaptTaskForDetail(
   return {
     id: task.id,
     parentTaskId: task.parentTaskId,
+    ancestorIds: task.ancestorIds,
     subtaskCount: task.subtaskCount,
     projectId: project.id,
     projectName: project.name,
@@ -282,6 +285,7 @@ export function adaptTaskBoardItemForDetail(
   return {
     id: task.id,
     parentTaskId: task.parentTaskId,
+    ancestorIds: task.ancestorIds,
     subtaskCount: task.subtaskCount,
     projectId: project.id,
     projectName: project.name,

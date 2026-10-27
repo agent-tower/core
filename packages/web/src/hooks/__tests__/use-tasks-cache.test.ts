@@ -7,6 +7,7 @@ import {
   isTaskListQueryKey,
   removeTaskFromBoardCaches,
   removeTaskFromListCaches,
+  removeTaskFromSubtaskCaches,
 } from '../use-tasks'
 
 function makeTask(id: string, projectId = 'project-1'): Task {
@@ -39,6 +40,28 @@ describe('task cache helpers', () => {
     const before = removeTaskFromBoardCaches(client, 'parent')
     expect(client.getQueryData(key)).toMatchObject({ data: [makeBoardTask('other')], parents: [], total: 1 })
     expect(before[0][1]?.data).toHaveLength(2)
+  })
+
+  it('removes grandchildren across board and child pages and preserves a rollback snapshot', () => {
+    const client = new QueryClient()
+    const root = makeBoardTask('root')
+    const child = { ...makeBoardTask('child'), parentTaskId: 'root', ancestorIds: ['root'] }
+    const grandchild = { ...makeBoardTask('grandchild'), parentTaskId: 'child', ancestorIds: ['root', 'child'] }
+    const other = makeBoardTask('other')
+    const boardKey = queryKeys.tasks.board({ limit: 2 })
+    const childKey = queryKeys.tasks.subtasks('child')
+    const page = { data: [grandchild, other], parents: [root, child], total: 2, page: 1, limit: 2, totalPages: 1 }
+    client.setQueryData(boardKey, page)
+    client.setQueryData(childKey, { pages: [{ ...page, data: [grandchild], parents: [], total: 1 }], pageParams: [1] })
+    const boardSnapshots = removeTaskFromBoardCaches(client, 'root')
+    const childSnapshots = removeTaskFromSubtaskCaches(client, 'root')
+    expect(client.getQueryData(boardKey)).toMatchObject({ data: [other], parents: [], total: 1 })
+    expect(client.getQueryData(childKey)).toMatchObject({ pages: [{ data: [], total: 0 }] })
+    for (const [key, data] of [...boardSnapshots, ...childSnapshots]) client.setQueryData(key, data)
+    expect(client.getQueryData(boardKey)).toEqual(page)
+    expect(client.getQueryData(childKey)).toMatchObject({ pages: [{ data: [grandchild], total: 1 }] })
+    removeTaskFromBoardCaches(client, 'child')
+    expect(client.getQueryData(boardKey)).toMatchObject({ data: [other], parents: [root] })
   })
 
   it('matches only task list query keys and supports project list keys with params', () => {

@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { SessionStatus, type Workspace } from '@agent-tower/shared'
 import { ConfirmDialog } from '../ui/confirm-dialog'
-import { useSubtasks } from '@/hooks/use-tasks'
+import { useTaskDeletionScope } from '@/hooks/use-tasks'
 import { Button } from '@/design-system'
 import { useWorkspaces } from '@/hooks/use-workspaces'
 import { useI18n } from '@/lib/i18n'
@@ -52,8 +52,8 @@ export function DeleteTaskConfirmDialog({
     externalWorkspaces === undefined && isOpen ? taskId : ''
   )
 
-  const children = useSubtasks(taskId, isOpen)
-  const subtaskCount = children.data?.pages[0]?.total ?? 0
+  const children = useTaskDeletionScope(taskId, isOpen)
+  const subtaskCount = children.data?.descendantCount ?? 0
   const workspaces = externalWorkspaces ?? fetchedWorkspaces
   const warningsLoading = externalWorkspaces === undefined && isOpen && isLoadingWorkspaces
 
@@ -71,7 +71,7 @@ export function DeleteTaskConfirmDialog({
       description={
         <>
           <p>{subtaskCount > 0
-            ? t('Delete “{title}” and its {count} subtasks? This cannot be undone.', { title: taskTitle, count: subtaskCount })
+            ? t('Delete “{title}” and all {count} descendants? This cannot be undone.', { title: taskTitle, count: subtaskCount })
             : t('确认删除任务「{title}」？此操作不可撤销。', { title: taskTitle })}</p>
           {subtaskCount > 0 && <p className="mt-2 text-warning-ink">{t('All related Agents and services will stop. Their worktrees and owned branches will be deleted.')}</p>}
           {children.isError && <Button variant="ghost" size="sm" onClick={() => children.refetch()}>{t('Could not load subtasks. Retry')}</Button>}

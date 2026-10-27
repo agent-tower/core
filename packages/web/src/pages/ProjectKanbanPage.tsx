@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { taskStartSubmission } from '@/hooks/task-start-submission'
 import { useQueryClient } from '@tanstack/react-query'
-import { TaskPriority, WorkspaceKind, type Task, type TaskBoardItem } from '@agent-tower/shared'
+import { TaskPriority, WorkspaceKind, getTaskAncestorIds, isTaskInSubtree, canCreateSubtask, type Task, type TaskBoardItem } from '@agent-tower/shared'
 import { TaskList } from '@/components/task/TaskList'
 import type { TaskStartProgressState } from '@/components/task/TaskStartProgress'
 import type { UITaskDetailData } from '@/components/task/types'
@@ -152,6 +152,7 @@ function taskToBoardItem(task: Task): TaskBoardItem {
   return {
     id: task.id,
     parentTaskId: task.parentTaskId,
+    ancestorIds: task.ancestorIds,
     subtaskCount: task.subtaskCount,
     projectId: task.projectId,
     title: task.titlePreview ?? task.title,
@@ -223,6 +224,15 @@ export function ProjectKanbanPage() {
   }, [fetchedTasks, optimisticCreatedTasks])
   const [pendingCreatedTaskId, setPendingCreatedTaskId] = useState<string | null>(null)
   const taskOutsideBoard = useTask(selectedTaskId && !rawTasks.some(task => task.id === selectedTaskId) ? selectedTaskId : '')
+  const selectedRow = rawTasks.find(task => task.id === selectedTaskId) ?? taskOutsideBoard.data
+  const selectedAncestorIds = useMemo(() => selectedRow ? getTaskAncestorIds(selectedRow) : [], [selectedRow])
+  const missingAncestorId = (index: number) => {
+    const id = selectedAncestorIds[index]
+    return id && !rawTasks.some(task => task.id === id) ? id : ''
+  }
+  // At most two ancestors; fetch only missing rows for a selection outside the board page.
+  const firstAncestor = useTask(missingAncestorId(0))
+  const secondAncestor = useTask(missingAncestorId(1))
   const effectiveSelectedTaskId = useMemo(() => {
     if (selectedTaskId && rawTasks.some(task => task.id === selectedTaskId)) return selectedTaskId
     if (pendingCreatedTaskId && selectedTaskId === pendingCreatedTaskId) return pendingCreatedTaskId
@@ -278,8 +288,13 @@ export function ProjectKanbanPage() {
       && !rows.some(task => task.id === taskOutsideBoard.data!.id)) {
       rows.push(adaptTaskForList(taskOutsideBoard.data))
     }
+    for (const ancestor of [firstAncestor.data, secondAncestor.data]) {
+      if (ancestor && selectedAncestorIds.includes(ancestor.id) && !rows.some(task => task.id === ancestor.id)) {
+        rows.push(adaptTaskForList(ancestor))
+      }
+    }
     return rows
-  }, [projects, rawTasks, taskOutsideBoard.data, effectiveSelectedTaskId])
+  }, [projects, rawTasks, taskOutsideBoard.data, effectiveSelectedTaskId, firstAncestor.data, secondAncestor.data, selectedAncestorIds])
 
   // === 选中的任务详情 ===
   const taskDetailData = useMemo<UITaskDetailData | null>(() => {
@@ -299,6 +314,7 @@ export function ProjectKanbanPage() {
       return {
         id: task.id,
         parentTaskId: task.parentTaskId,
+        ancestorIds: task.ancestorIds,
         subtaskCount: task.subtaskCount,
         projectId: task.projectId,
         projectName: 'Unknown',
@@ -392,11 +408,11 @@ export function ProjectKanbanPage() {
   }, [queryClient])
 
   const handleDeleteTask = useCallback((taskId: string, expectedSubtaskCount?: number) => {
-    const deletedIds = new Set([taskId, ...rawTasks.filter(task => task.parentTaskId === taskId).map(task => task.id)])
+    const deletedIds = new Set([taskId, ...rawTasks.filter(task => isTaskInSubtree(task, taskId)).map(task => task.id)])
     deleteTask.mutate({ id: taskId, expectedSubtaskCount }, {
       onSuccess: () => {
         // 删除后清除选中状态
-        if (effectiveSelectedTaskId === taskId || taskDetailData?.parentTaskId === taskId) {
+        if (effectiveSelectedTaskId === taskId || (taskDetailData && isTaskInSubtree(taskDetailData, taskId))) {
           setSelectedTaskId(null)
         }
         setBackgroundStarts(current => {
@@ -404,7 +420,7 @@ export function ProjectKanbanPage() {
           for (const id of deletedIds) delete rest[id]
           return rest
         })
-        setOptimisticCreatedTasks(current => current.filter(task => task.id !== taskId && task.parentTaskId !== taskId))
+        setOptimisticCreatedTasks(current => current.filter(task => !isTaskInSubtree(task, taskId)))
         // 刷新所有任务列表
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
       },
@@ -412,7 +428,7 @@ export function ProjectKanbanPage() {
         toast.error(error instanceof Error ? t(error.message) : t('删除任务失败'))
       },
     })
-  }, [deleteTask, effectiveSelectedTaskId, taskDetailData?.parentTaskId, rawTasks, queryClient, t])
+  }, [deleteTask, effectiveSelectedTaskId, taskDetailData, rawTasks, queryClient, t])
 
   const handleTaskStatusChange = useCallback((taskId: string, newStatus: UITaskStatus) => {
     updateTaskStatus.mutate(
@@ -662,6 +678,7 @@ export function ProjectKanbanPage() {
     try {
       const parent = await apiClient.get<Task>(`/tasks/${id}`)
       if (request !== subtaskRequest.current) return
+      if (!canCreateSubtask(parent)) throw new Error(t('Tasks support at most three levels'))
       const roots = (parent.workspaces?.filter(workspace => !workspace.parentWorkspaceId && workspace.status !== 'ABANDONED') ?? [])
         .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
       const workspace = roots.find(workspace => workspace.status === 'ACTIVE')

@@ -18,7 +18,7 @@ import { ensureProjectIsMutable, getStoredProjectGitCapability, detectProjectGit
 import { requireLocalBaseBranch } from '../git/base-branch.js';
 import { defaultTeamLockService } from './team-lock.service.js';
 import type { CreateTaskInput, TaskBoardItem, TaskBoardResponse } from '@agent-tower/shared';
-import { TaskPriority } from '@agent-tower/shared';
+import { TaskPriority, MAX_TASK_DEPTH, type TaskDeletionScope } from '@agent-tower/shared';
 import prismaPkg from '@prisma/client';
 
 const { Prisma } = prismaPkg;
@@ -26,6 +26,7 @@ const { Prisma } = prismaPkg;
 const taskBoardColumns = Prisma.sql`
   task."id", task."projectId", task."title", task."status", task."priority",
   task."position", task."updatedAt", task."parentTaskId",
+  (SELECT parent."parentTaskId" FROM "Task" parent WHERE parent."id" = task."parentTaskId") AS "grandparentTaskId",
   (SELECT COUNT(*) FROM "Task" child WHERE child."parentTaskId" = task."id" AND child."deletedAt" IS NULL) AS "subtaskCount",
   (SELECT COUNT(*) FROM "Task" child WHERE child."parentTaskId" = task."id" AND child."deletedAt" IS NULL AND child."status" = 'IN_PROGRESS') AS "runningSubtaskCount"
 `;
@@ -90,6 +91,7 @@ type TaskBoardWorkspaceRow = {
 
 type TaskBoardTaskRow = {
   parentTaskId: string | null;
+  grandparentTaskId: string | null;
   subtaskCount: bigint | number;
   runningSubtaskCount: bigint | number;
   id: string;
@@ -100,6 +102,22 @@ type TaskBoardTaskRow = {
   position: number;
   updatedAt: Date | string | number;
 };
+
+// The schema stores adjacency; these bounded reads cover the supported three levels.
+function subtreeWhere(id: string, projectId?: string) {
+  return { deletedAt: null, ...(projectId ? { projectId } : {}), OR: [
+    { id }, { parentTaskId: id }, { parentTask: { parentTaskId: id, deletedAt: null } },
+  ] };
+}
+
+function ancestorIds(parentTaskId?: string | null, grandparentTaskId?: string | null): string[] {
+  return [grandparentTaskId, parentTaskId].filter((id): id is string => Boolean(id));
+}
+
+function withHierarchy<T extends { parentTaskId?: string | null; parentTask?: { parentTaskId: string | null } | null }>(task: T) {
+  const { parentTask, ...metadata } = task;
+  return { ...metadata, ancestorIds: ancestorIds(task.parentTaskId, parentTask?.parentTaskId) };
+}
 
 function sliceAtCompleteCodePointBoundary(value: string, maxLength: number): string {
   let end = 0;
@@ -451,17 +469,17 @@ export class TaskService {
       prisma.task.count({ where }),
     ]);
 
-    // A child can rank ahead of its completed parent or fall on another page.
-    // Return compact parent context without changing the page's count/limit.
+    // Descendants can rank ahead of their ancestors or fall on another page.
+    // Return the complete compact path without changing the page count/limit.
     const pageIds = new Set(tasks.map((task) => task.id));
     const missingParentIds = [...new Set(tasks.flatMap((task) =>
-      task.parentTaskId && !pageIds.has(task.parentTaskId) ? [task.parentTaskId] : []
+      ancestorIds(task.parentTaskId, task.grandparentTaskId).filter(id => !pageIds.has(id))
     ))];
     const parents = params.parentTaskId || missingParentIds.length === 0 ? []
       : await prisma.$queryRaw<TaskBoardTaskRow[]>(Prisma.sql`
         SELECT ${taskBoardColumns} FROM "Task" task
         INNER JOIN "Project" project ON project."id" = task."projectId"
-        WHERE task."id" IN (${Prisma.join(missingParentIds)})
+        WHERE task."id" IN (SELECT value FROM json_each(${JSON.stringify(missingParentIds)}))
           AND task."deletedAt" IS NULL AND project."archivedAt" IS NULL
       `);
     const allTasks = [...tasks, ...parents];
@@ -538,6 +556,7 @@ export class TaskService {
         id: task.id,
         projectId: task.projectId,
         parentTaskId: task.parentTaskId,
+        ancestorIds: ancestorIds(task.parentTaskId, task.grandparentTaskId),
         subtaskCount: Number(task.subtaskCount),
         runningSubtaskCount: Number(task.runningSubtaskCount),
         title: titlePreview,
@@ -609,6 +628,7 @@ export class TaskService {
           title: true,
           baseBranch: true,
           parentTaskId: true,
+          parentTask: { select: { parentTaskId: true } },
           status: true,
           priority: true,
           position: true,
@@ -639,7 +659,7 @@ export class TaskService {
 
     return {
       data: data.map((task) => (
-        withTaskPreviews(withProjectGitCapability(task, projectGitCapability), { omitDescription: true })
+        withTaskPreviews(withProjectGitCapability(withHierarchy(task), projectGitCapability), { omitDescription: true })
       )),
       total,
       page,
@@ -661,6 +681,7 @@ export class TaskService {
         title: true,
         baseBranch: true,
         parentTaskId: true,
+        parentTask: { select: { parentTaskId: true } },
         _count: { select: { subtasks: { where: { deletedAt: null } } } },
         status: true,
         priority: true,
@@ -676,7 +697,7 @@ export class TaskService {
     }
 
     const { _count, ...metadata } = task;
-    return withTaskPreviews(withProjectGitMetadata({ ...metadata, subtaskCount: _count.subtasks }), { omitDescription: true });
+    return withTaskPreviews(withProjectGitMetadata({ ...withHierarchy(metadata), subtaskCount: _count.subtasks }), { omitDescription: true });
   }
 
   async findSubtasks(id: string, params: FindTasksParams = {}) {
@@ -745,17 +766,24 @@ export class TaskService {
 
     const parent = input.parentTaskId ? await prisma.task.findFirst({
       where: { id: input.parentTaskId, projectId, deletedAt: null },
-      include: { workspaces: {
+      include: { parentTask: { select: { parentTaskId: true } }, workspaces: {
         where: { parentWorkspaceId: null, ownerMemberId: null, status: { not: WorkspaceStatus.ABANDONED } },
         orderBy: { createdAt: 'desc' },
       } },
     }) : null;
     if (input.parentTaskId && !parent) throw new NotFoundError('Parent task', input.parentTaskId);
-    if (parent?.parentTaskId) throw new ValidationError('Subtasks cannot have their own subtasks');
+    if (parent?.parentTask?.parentTaskId) throw new ValidationError('Tasks support at most three levels');
     const parentWorkspace = parent?.workspaces.find((workspace) => workspace.status === WorkspaceStatus.ACTIVE)
       ?? parent?.workspaces.find((workspace) => workspace.status === WorkspaceStatus.HIBERNATED)
       ?? parent?.workspaces[0];
     const parentBranch = parentWorkspace?.branchName || parent?.baseBranch;
+    // A grandchild may inherit an ancestor branch before its parent starts.
+    // Serialize validation/persistence with that branch owner's cleanup as well.
+    const requestedParentBranch = input.baseBranch ?? parentBranch;
+    const branchOwners = input.baseBranch === null || !requestedParentBranch ? [] : await prisma.workspace.findMany({
+      where: { task: { projectId, deletedAt: null }, branchName: requestedParentBranch },
+      select: { id: true },
+    });
 
     const createWithParentBranch = async () => {
       // Resolve at task creation so delayed starts and TeamRun main workspaces
@@ -781,8 +809,10 @@ export class TaskService {
         if (parent) {
           const liveParent = await tx.task.findFirst({
             where: { id: parent.id, projectId, deletedAt: null, project: { archivedAt: null } },
+            include: { parentTask: { select: { parentTaskId: true } } },
           });
           if (!liveParent) throw new NotFoundError('Parent task', parent.id);
+          if (liveParent.parentTask?.parentTaskId) throw new ValidationError('Tasks support at most three levels');
         }
         return tx.task.create({
           data: {
@@ -801,6 +831,7 @@ export class TaskService {
 
       return {
         ...created,
+        ancestorIds: parent ? ancestorIds(parent.id, parent.parentTaskId) : [],
         project: {
           ...project,
           ...buildProjectGitMetadata(project),
@@ -809,9 +840,10 @@ export class TaskService {
     };
     // Serialize branch validation and child persistence with parent workspace
     // cleanup, so its reference becomes visible before that branch is reclaimed.
-    return parentWorkspace
-      ? defaultWorkspaceLifecycleBarrier.withWorkspace(parentWorkspace.id, createWithParentBranch)
-      : createWithParentBranch();
+    return defaultWorkspaceLifecycleBarrier.withWorkspaces(
+      [...branchOwners.map(workspace => workspace.id), ...(parentWorkspace ? [parentWorkspace.id] : [])],
+      createWithParentBranch,
+    );
   }
 
   /**
@@ -953,14 +985,15 @@ export class TaskService {
     const taskForGuard = await prisma.task.findUnique({ where: { id }, include: { project: true } });
     if (!taskForGuard || taskForGuard.deletedAt) throw new NotFoundError('Task', id);
     ensureProjectIsMutable(taskForGuard.project, 'delete tasks');
-    if (expectedSubtaskCount !== undefined && expectedSubtaskCount !== await prisma.task.count({
-      where: { parentTaskId: id, deletedAt: null },
-    })) {
+    const familyWhere = subtreeWhere(id, taskForGuard.projectId);
+    if (expectedSubtaskCount !== undefined && expectedSubtaskCount !== (await prisma.task.count({
+      where: familyWhere,
+    })) - 1) {
       throw new ServiceError('Subtasks changed. Review the deletion confirmation again.', 'TASK_DELETE_SCOPE_CHANGED', 409);
     }
 
     const workspaceIds = await prisma.workspace.findMany({
-      where: { task: { OR: [{ id }, { parentTaskId: id }], deletedAt: null } },
+      where: { task: familyWhere },
       select: { id: true },
     });
     const result = await defaultWorkspaceLifecycleBarrier.withWorkspaces(
@@ -973,13 +1006,23 @@ export class TaskService {
           if (!parent) throw new NotFoundError('Task', id);
           ensureProjectIsMutable(parent.project, 'delete tasks');
           const family = await tx.task.findMany({
-            where: { OR: [{ id }, { parentTaskId: id }], deletedAt: null },
-            select: { id: true },
+            where: familyWhere,
+            select: { id: true, parentTaskId: true },
           });
           if (expectedSubtaskCount !== undefined && expectedSubtaskCount !== family.length - 1) {
             throw new ServiceError('Subtasks changed. Review the deletion confirmation again.', 'TASK_DELETE_SCOPE_CHANGED', 409);
           }
-          const taskIds = [...family.filter((task) => task.id !== id).map((task) => task.id), id];
+          const byId = new Map(family.map(task => [task.id, task]));
+          const depth = (task: typeof family[number]) => {
+            let current = task;
+            let value = 0;
+            while (current.parentTaskId && byId.has(current.parentTaskId) && value < MAX_TASK_DEPTH) {
+              current = byId.get(current.parentTaskId)!;
+              value++;
+            }
+            return value;
+          };
+          const taskIds = family.sort((a, b) => depth(b) - depth(a) || a.id.localeCompare(b.id)).map(task => task.id);
           await tx.task.updateMany({ where: { id: { in: taskIds } }, data: { deletedAt: new Date() } });
           const tasks = await tx.task.findMany({
             where: { id: { in: taskIds } },
@@ -1030,6 +1073,14 @@ export class TaskService {
     for (const taskId of result.taskIds) this.eventBus.emit('task:deleted', { taskId, projectId: result.projectId });
     this.cleanupService?.trigger();
     return true;
+  }
+
+  async getDeletionScope(id: string): Promise<TaskDeletionScope> {
+    return prisma.$transaction(async tx => {
+      const task = await tx.task.findFirst({ where: { id, deletedAt: null }, select: { projectId: true } });
+      if (!task) throw new NotFoundError('Task', id);
+      return { descendantCount: (await tx.task.count({ where: subtreeWhere(id, task.projectId) })) - 1 };
+    });
   }
 
   async getCleanupStatus(taskId: string) {

@@ -18,7 +18,8 @@ vi.mock('@/lib/desktop-titlebar', () => ({ useDesktopTitlebar: () => ({ preserve
 vi.mock('../TaskGradientText', () => ({ TaskGradientText: ({ text }: { text: string }) => <span>{text}</span> }))
 
 const parent: UITask = { id: 'parent', projectId: 'project', title: 'Parent', status: UITaskStatus.Running, agent: '', branch: 'at/parent', description: '', subtaskCount: 1 }
-const child: UITask = { id: 'child', projectId: 'project', parentTaskId: 'parent', title: 'Child', status: UITaskStatus.Review, agent: '', branch: 'at/child', description: '' }
+const child: UITask = { id: 'child', projectId: 'project', parentTaskId: 'parent', ancestorIds: ['parent'], subtaskCount: 1, title: 'Child', status: UITaskStatus.Review, agent: '', branch: 'at/child', description: '' }
+const grandchild: UITask = { ...child, id: 'grandchild', title: 'Grandchild', parentTaskId: 'child', ancestorIds: ['parent', 'child'], subtaskCount: 0 }
 const childPage = { data: [{ ...child, status: 'IN_REVIEW', updatedAt: 1 }], total: 1, page: 1, limit: 100, totalPages: 1 }
 let root: Root
 let container: HTMLDivElement
@@ -43,6 +44,8 @@ async function click(element: HTMLElement | undefined) {
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    if (input.includes('/tasks/child/subtasks')) return Response.json({ ...childPage, data: [{ ...grandchild, status: 'IN_REVIEW', updatedAt: 1 }] })
+    if (input.endsWith('/tasks/child')) return Response.json({ ...child, status: 'IN_REVIEW' })
     if (input.includes('/subtasks')) return Response.json(childPage)
     if (input.endsWith('/tasks/parent')) return Response.json({ id: 'parent', title: 'Parent', projectId: 'project', status: 'IN_PROGRESS' })
     return Response.json([])
@@ -94,13 +97,44 @@ describe('subtask navigation and confirmation', () => {
     expect(onSelect).toHaveBeenCalledWith('child')
   })
 
-  it('shows a backlink and no create-child action for a subtask', async () => {
+  it('shows a backlink, grandchildren and a create action for a child task', async () => {
     const onSelect = vi.fn()
     mount(<SubtaskPanel task={{ ...child, projectName: 'Project', projectColor: '', mainBranch: 'at/parent' }} onSelectTask={onSelect} onCreateSubtask={vi.fn()} />)
     await settle()
     await click(button('Parent task: Parent'))
     expect(onSelect).toHaveBeenCalledWith('parent')
+    expect(button('Create subtask')).toBeTruthy()
+    expect(button('GrandchildReview')).toBeTruthy()
+  })
+
+  it('reveals a grandchild beyond both child pages and creates only under its parent', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ...childPage, data: [], total: 101, totalPages: 2 })))
+    const onCreate = vi.fn()
+    const onSelect = vi.fn()
+    mount(<TaskList tasks={[parent, child, grandchild]} projects={[]} selectedTaskId="grandchild" onSelectTask={onSelect}
+      filterProjectId={null} setFilterProjectId={vi.fn()} onCreateSubtask={onCreate} />)
+    await settle()
+    expect(button('Child')).toBeTruthy()
+    expect(button('Grandchild')).toBeTruthy()
+    await click(button('Grandchild'))
+    expect(onSelect).toHaveBeenCalledWith('grandchild')
+    await act(async () => button('Grandchild')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 50, clientY: 50 })))
     expect(button('Create subtask')).toBeUndefined()
+    await act(async () => button('Child')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 50, clientY: 50 })))
+    await click(button('Create subtask'))
+    expect(onCreate).toHaveBeenCalledWith('child')
+    await click(button('Subtasks of Child'))
+    expect(button('Grandchild')).toBeUndefined()
+    expect(button('Child')).toBeTruthy()
+  })
+
+  it('keeps the parent link but hides creation and child loading for a grandchild', async () => {
+    mount(<SubtaskPanel task={{ ...grandchild, projectName: 'Project', projectColor: '', mainBranch: 'at/child' }} onSelectTask={vi.fn()} onCreateSubtask={vi.fn()} />)
+    await settle()
+    expect(button('Parent task: Child')).toBeTruthy()
+    expect(button('Create subtask')).toBeUndefined()
+    expect(document.body.textContent).toContain('Tasks support at most three levels')
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/grandchild/subtasks'))).toBe(false)
   })
 
   it('waits for the actual child count and passes the reviewed deletion scope', async () => {
@@ -109,9 +143,9 @@ describe('subtask navigation and confirmation', () => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(done => { resolve = done })))
     mount(<DeleteTaskConfirmDialog isOpen onClose={vi.fn()} onConfirm={onConfirm} taskId="parent" taskTitle="Parent" workspaces={[]} />)
     expect(button('删除')?.disabled).toBe(true)
-    await act(async () => resolve(Response.json({ ...childPage, total: 3 })))
+    await act(async () => resolve(Response.json({ descendantCount: 3 })))
     await settle()
-    expect(document.body.textContent).toContain('its 3 subtasks')
+    expect(document.body.textContent).toContain('all 3 descendants')
     await click(button('Delete all'))
     expect(onConfirm).toHaveBeenCalledWith(3)
   })

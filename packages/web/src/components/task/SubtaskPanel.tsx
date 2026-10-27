@@ -1,3 +1,4 @@
+import { canCreateSubtask } from '@agent-tower/shared'
 import { ListTree, Plus } from 'lucide-react'
 import { Button } from '@/design-system'
 import { useSubtasks, useTask } from '@/hooks/use-tasks'
@@ -14,31 +15,30 @@ export function SubtaskPanel({ task, onSelectTask, onCreateSubtask }: {
 }) {
   const { t } = useI18n()
   const parent = useTask(task.parentTaskId ?? '')
-  const children = useSubtasks(task.id, !task.parentTaskId)
+  const children = useSubtasks(task.id, canCreateSubtask(task))
   const count = children.data?.pages[0]?.total ?? task.subtaskCount ?? 0
 
-  if (task.parentTaskId) {
-    return (
-      <div className="p-3">
-        <Button variant="link" size="sm" className="max-w-full" onClick={() => onSelectTask?.(task.parentTaskId!)}>
-          <ListTree size={14} className="shrink-0" />
-          <span className="truncate">{t('Parent task: {title}', { title: parent.data?.titlePreview ?? parent.data?.title ?? t('Loading...') })}</span>
-        </Button>
-      </div>
-    )
-  }
 
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label={t('Subtasks')}>
+      {task.parentTaskId && (
+        <div className="shrink-0 border-b border-border/60 px-3 py-2">
+          <Button variant="link" size="sm" className="max-w-full" onClick={() => onSelectTask?.(task.parentTaskId!)}>
+            <ListTree size={14} className="shrink-0" />
+            <span className="truncate">{t('Parent task: {title}', { title: parent.data?.titlePreview ?? parent.data?.title ?? t('Loading...') })}</span>
+          </Button>
+        </div>
+      )}
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
         <span className="text-xs tabular-nums text-muted-foreground">{t('{count} subtasks', { count })}</span>
-        {onCreateSubtask && !task.projectArchivedAt && (
+        {onCreateSubtask && canCreateSubtask(task) && !task.projectArchivedAt && (
           <Button variant="ghost" size="sm" onClick={() => onCreateSubtask(task.id)}>
             <Plus size={14} />{t('Create subtask')}
           </Button>
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {!canCreateSubtask(task) && <p className="px-3 py-8 text-center text-sm text-muted-foreground">{t('Tasks support at most three levels')}</p>}
         {children.isLoading && <p className="px-2 py-1 text-xs text-muted-foreground">{t('Loading...')}</p>}
         {children.isError && <Button variant="ghost" size="sm" onClick={() => children.refetch()}>{t('Could not load subtasks. Retry')}</Button>}
         {children.data?.pages.flatMap(page => page.data).map(child => {

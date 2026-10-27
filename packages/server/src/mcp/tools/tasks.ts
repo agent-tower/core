@@ -118,7 +118,7 @@ export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
 
   server.tool(
     'delete_task',
-    'Delete a task AND ALL its subtasks, stopping their sessions and cleaning up their worktrees and owned branches. Confirm the complete deletion scope with the user first. `task_id` is required.',
+    'Delete a task AND ALL its descendants (children and grandchildren), stopping their sessions and cleaning up their worktrees and owned branches. Confirm the complete deletion scope with the user first. `task_id` is required.',
     DeleteTaskInput.shape,
     async (params) => {
       try {

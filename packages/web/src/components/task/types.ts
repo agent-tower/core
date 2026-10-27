@@ -46,6 +46,7 @@ export interface UIProject {
  */
 export interface UITask {
   parentTaskId?: string | null
+  ancestorIds?: string[]
   subtaskCount?: number
   runningSubtaskCount?: number
   id: string
@@ -74,6 +75,7 @@ export interface UITask {
  */
 export interface UITaskDetailData {
   parentTaskId?: string | null
+  ancestorIds?: string[]
   subtaskCount?: number
   id: string
   projectId: string

@@ -793,7 +793,14 @@ describe('TaskService', () => {
     expect(override.baseBranch).toBe('develop');
     const local = await service.create(project.id, { title: 'Local', parentTaskId: parent.id, baseBranch: null });
     expect(local.baseBranch).toBeNull();
-    await expect(service.create(project.id, { title: 'Nested', parentTaskId: child.id })).rejects.toThrow('Subtasks cannot');
+    const grandchild = await service.create(project.id, { title: 'Nested', parentTaskId: child.id });
+    expect(grandchild).toMatchObject({ parentTaskId: child.id, ancestorIds: [parent.id, child.id], baseBranch: 'at/parent' });
+    git(['branch', 'at/child']);
+    await prisma.workspace.create({ data: { taskId: child.id, branchName: 'at/child', worktreePath: '/unused-child', baseBranch: 'at/parent' } });
+    const fromChildBranch = await service.create(project.id, { title: 'Child branch', parentTaskId: child.id });
+    expect(fromChildBranch.baseBranch).toBe('at/child');
+    await expect(service.create(project.id, { title: 'Fourth level', parentTaskId: grandchild.id })).rejects.toThrow('at most three levels');
+    expect((await service.findById(grandchild.id)).ancestorIds).toEqual([parent.id, child.id]);
     const other = await prisma.project.create({ data: { name: 'Other', repoPath: testDir } });
     await expect(service.create(other.id, { title: 'Cross project', parentTaskId: parent.id })).rejects.toMatchObject({ code: 'NOT_FOUND' });
     await service.updateStatus(child.id, 'DONE' as any);
@@ -814,13 +821,54 @@ describe('TaskService', () => {
     expect((await service.findSubtasks(parent.id)).data.map(task => task.id)).toEqual([child.id]);
   });
 
+  it('returns the full ancestor path when only a grandchild matches the board page', async () => {
+    const project = await prisma.project.create({ data: { name: 'Three levels', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Root', projectId: project.id, status: 'DONE' } });
+    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id, status: 'DONE' } });
+    const grandchild = await prisma.task.create({ data: { title: 'Grandchild', projectId: project.id, parentTaskId: child.id, status: 'IN_PROGRESS' } });
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const board = await service.findBoard({ status: 'IN_PROGRESS' as any, limit: 1 });
+    expect(board).toMatchObject({ total: 1, data: [{ id: grandchild.id, ancestorIds: [parent.id, child.id] }] });
+    expect(board.parents?.map(task => task.id).sort()).toEqual([parent.id, child.id].sort());
+    const children = await service.findSubtasks(parent.id);
+    expect(children).toMatchObject({ total: 1, data: [{ id: child.id, subtaskCount: 1, ancestorIds: [parent.id] }] });
+    expect((await service.findSubtasks(child.id)).data[0]?.ancestorIds).toEqual([parent.id, child.id]);
+  });
+
+  it('rechecks the full deletion scope when a grandchild is created during deletion preparation', async () => {
+    const project = await prisma.project.create({ data: { name: 'Delete race', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Root', projectId: project.id } });
+    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id } });
+    await prisma.workspace.create({ data: { taskId: parent.id, branchName: 'at/root', worktreePath: '/unused' } });
+    let ready!: () => void;
+    let resume!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const blocked = new Promise<void>(resolve => { resume = resolve; });
+    const service = new TaskService(new EventBus(), {} as SessionManager, { trigger: vi.fn() }, {
+      stopAllForWorkspace: vi.fn(async () => { ready(); await blocked; }),
+    });
+    const deletion = service.delete(parent.id, 1);
+    const rejected = expect(deletion).rejects.toMatchObject({ code: 'TASK_DELETE_SCOPE_CHANGED' });
+    await started;
+    const grandchild = await service.create(project.id, { title: 'Concurrent grandchild', parentTaskId: child.id, baseBranch: null });
+    resume();
+    await rejected;
+    expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(3);
+    expect(await prisma.taskCleanupJob.count()).toBe(0);
+    await service.delete(parent.id, 2);
+    await expect(service.create(project.id, { title: 'Too late', parentTaskId: child.id, baseBranch: null })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(await prisma.task.findUnique({ where: { id: grandchild.id } })).toMatchObject({ deletedAt: expect.any(Date) });
+  });
+
   it('deletes the complete family and cleans child branches before the parent, preserving unrelated tasks', async () => {
     const project = await prisma.project.create({ data: { name: 'Cascade', repoPath: testDir } });
     const parent = await prisma.task.create({ data: { title: 'Parent', projectId: project.id } });
     const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id } });
+    const grandchild = await prisma.task.create({ data: { title: 'Grandchild', projectId: project.id, parentTaskId: child.id } });
     const other = await prisma.task.create({ data: { title: 'Other', projectId: project.id } });
     const rootWorkspace = await prisma.workspace.create({ data: { taskId: parent.id, branchName: 'at/parent', worktreePath: '/unused/parent', baseBranch: 'main' } });
     const childWorkspace = await prisma.workspace.create({ data: { taskId: child.id, branchName: 'at/child', worktreePath: '/unused/child', baseBranch: 'at/parent' } });
+    const grandchildWorkspace = await prisma.workspace.create({ data: { taskId: grandchild.id, branchName: 'at/grandchild', worktreePath: '/unused/grandchild', baseBranch: 'at/child' } });
     const stop = vi.fn();
     const sessionManager = { stop, isRuntimeCleanupConfirmed: vi.fn(async () => true) } as unknown as SessionManager;
     const eventBus = new EventBus();
@@ -828,22 +876,23 @@ describe('TaskService', () => {
     eventBus.on('task:deleted', event => deleted.push(event.taskId));
     const service = new TaskService(eventBus, sessionManager, { trigger: vi.fn() });
     await expect(service.delete(parent.id, 0)).rejects.toMatchObject({ code: 'TASK_DELETE_SCOPE_CHANGED' });
-    expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(3);
-    await service.delete(parent.id, 1);
-    expect(deleted).toEqual([child.id, parent.id]);
+    expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(4);
+    expect(await service.getDeletionScope(parent.id)).toEqual({ descendantCount: 2 });
+    await service.delete(parent.id, 2);
+    expect(deleted).toEqual([grandchild.id, child.id, parent.id]);
     const job = await prisma.taskCleanupJob.findFirstOrThrow({ where: { taskId: parent.id } });
-    expect(JSON.parse(job.payload).taskIds).toEqual([child.id, parent.id]);
+    expect(JSON.parse(job.payload).taskIds).toEqual([grandchild.id, child.id, parent.id]);
     const worker = new TaskCleanupService(sessionManager);
-    deleteBranchIfSafeMock.mockResolvedValueOnce({ status: 'failed', branchName: 'at/child', reason: 'temporary lock' });
+    deleteBranchIfSafeMock.mockResolvedValueOnce({ status: 'failed', branchName: 'at/grandchild', reason: 'temporary lock' });
     await worker.processDueJobs();
     expect((await service.getCleanupStatus(parent.id)).status).toBe('FAILED');
-    expect(await prisma.task.count({ where: { id: { in: [parent.id, child.id] } } })).toBe(2);
+    expect(await prisma.task.count({ where: { id: { in: [parent.id, child.id, grandchild.id] } } })).toBe(3);
     await service.retryCleanup(parent.id);
     expect((await service.getCleanupStatus(parent.id)).status).toBe('PENDING');
     deleteBranchIfSafeMock.mockClear();
     await worker.processDueJobs();
-    expect(removeWorktreeMock.mock.calls.slice(-2).map(call => call[0])).toEqual([childWorkspace.worktreePath, rootWorkspace.worktreePath]);
-    expect(deleteBranchIfSafeMock.mock.calls.map(call => call[0])).toEqual(['at/child', 'at/parent']);
+    expect(removeWorktreeMock.mock.calls.slice(-3).map(call => call[0])).toEqual([grandchildWorkspace.worktreePath, childWorkspace.worktreePath, rootWorkspace.worktreePath]);
+    expect(deleteBranchIfSafeMock.mock.calls.map(call => call[0])).toEqual(['at/grandchild', 'at/child', 'at/parent']);
     expect(await prisma.task.count()).toBe(1);
     expect(await prisma.task.findUnique({ where: { id: other.id } })).not.toBeNull();
     expect((await service.getCleanupStatus(parent.id)).status).toBe('COMPLETED');
@@ -855,7 +904,13 @@ describe('TaskService', () => {
     const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id } });
     const sibling = await prisma.task.create({ data: { title: 'Sibling', projectId: project.id, parentTaskId: parent.id } });
     const service = new TaskService(new EventBus(), {} as SessionManager, { trigger: vi.fn() });
-    await service.delete(child.id, 0);
+    const grandchild = await prisma.task.create({ data: { title: 'Grandchild', projectId: project.id, parentTaskId: child.id } });
+    const otherGrandchild = await prisma.task.create({ data: { title: 'Other grandchild', projectId: project.id, parentTaskId: child.id } });
+    await service.delete(grandchild.id, 0);
+    expect((await service.findById(child.id)).subtaskCount).toBe(1);
+    expect((await service.findById(otherGrandchild.id)).parentTaskId).toBe(child.id);
+    await service.delete(child.id, 1);
+    await expect(service.findById(otherGrandchild.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect((await service.findById(parent.id)).subtaskCount).toBe(1);
     expect((await service.findById(sibling.id)).parentTaskId).toBe(parent.id);
   });

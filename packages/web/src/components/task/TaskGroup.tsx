@@ -7,7 +7,7 @@ import { FlipContext } from './task-list-flip'
 import { DeleteTaskConfirmDialog } from './DeleteTaskConfirmDialog'
 import { STATUS_STYLES, STATUS_ORDER } from './status-styles'
 import { sidebarRowClass } from './sidebar-styles'
-import { TaskPriority } from '@agent-tower/shared'
+import { TaskPriority, canCreateSubtask } from '@agent-tower/shared'
 import { TaskPriorityIndicator } from './TaskPrioritySelect'
 import { TASK_PRIORITY_OPTIONS } from './task-priority'
 import { formatTaskUpdatedAt } from './task-time'
@@ -47,7 +47,7 @@ interface TaskGroupProps {
   defaultOpen: boolean
   selectedTaskId: string | null
   selectedParentTaskId?: string | null
-  selectedChildTask?: UITask
+  selectionPath?: UITask[]
   onCreateSubtask?: (taskId: string) => void
   onSelectTask: (id: string) => void
   projects: UIProject[]
@@ -81,12 +81,12 @@ function DraggableTaskCard({
   onCreateSubtask,
   selectedTaskId,
   expandForSelection,
-  selectedChildTask,
+  selectionPath,
 }: {
   onCreateSubtask?: (taskId: string) => void
   selectedTaskId?: string | null
   expandForSelection?: boolean
-  selectedChildTask?: UITask
+  selectionPath?: UITask[]
   task: UITask
   status: UITaskStatus
   isSelected: boolean
@@ -101,10 +101,11 @@ function DraggableTaskCard({
   const { t, locale } = useI18n()
   const [childrenExpansion, setChildrenExpansion] = useState<{ selection?: string | null; open: boolean }>({ open: false })
   const childrenOpen = childrenExpansion.open || Boolean(expandForSelection && childrenExpansion.selection !== selectedTaskId)
-  const children = useSubtasks(task.id, childrenOpen && !task.parentTaskId)
+  const children = useSubtasks(task.id, childrenOpen && canCreateSubtask(task))
   const childCount = children.data?.pages[0]?.total ?? task.subtaskCount ?? 0
   const childRows = children.data?.pages.flatMap(page => page.data).map(child => adaptTaskBoardItemForList(child)) ?? []
-  // Search can select a child beyond the first expanded page.
+  // Keep every edge of a selected path visible, even beyond the first child page.
+  const selectedChildTask = selectionPath?.find(node => node.parentTaskId === task.id)
   if (selectedChildTask?.parentTaskId === task.id && !childRows.some(child => child.id === selectedChildTask.id)) {
     childRows.push(selectedChildTask)
   }
@@ -255,7 +256,7 @@ function DraggableTaskCard({
           </span>
         )}
       </button>
-      {!task.parentTaskId && childCount > 0 && (
+      {canCreateSubtask(task) && childCount > 0 && (
         <button type="button" data-sidebar-item="" aria-expanded={childrenOpen}
           aria-label={t('Subtasks of {title}', { title: task.title })}
           title={t('{count} subtasks, {running} running', { count: childCount, running: task.runningSubtaskCount ?? 0 })}
@@ -266,13 +267,16 @@ function DraggableTaskCard({
         </button>
       )}
       </div>
-      {!task.parentTaskId && childrenOpen && (
+      {canCreateSubtask(task) && childrenOpen && (
         <div className="ml-4 border-l border-border/60 pl-1" role="group" aria-label={t('Subtasks of {title}', { title: task.title })}>
           {children.isLoading && <p className="px-2 py-1 text-xs text-muted-foreground">{t('Loading...')}</p>}
           {children.isError && <button type="button" className={MENU_ITEM_CLASS} onClick={() => children.refetch()}>{t('Could not load subtasks. Retry')}</button>}
           {childRows.map(row => {
             return <DraggableTaskCard key={row.id} task={{ ...row, projectArchivedAt: task.projectArchivedAt }} status={row.status}
               isSelected={selectedTaskId === row.id} project={project} showProject={false}
+              selectedTaskId={selectedTaskId} selectionPath={selectionPath}
+              expandForSelection={selectionPath?.some(node => node.parentTaskId === row.id)}
+              onCreateSubtask={onCreateSubtask}
               onSelectTask={onSelectTask} onTaskStatusChange={onTaskStatusChange}
               onDeleteTask={onDeleteTask} onTaskPriorityChange={onTaskPriorityChange} disableDrag={disableDrag} />
           })}
@@ -287,7 +291,7 @@ function DraggableTaskCard({
           role="menu"
           className="fixed z-[100] w-48 rounded-lg border border-border bg-popover p-1 shadow-popover shadow-black/5 animate-in fade-in zoom-in-95 duration-100"
         >
-          {onCreateSubtask && !task.parentTaskId && (
+          {onCreateSubtask && canCreateSubtask(task) && (
             <>
               <button type="button" role="menuitem" className={MENU_ITEM_CLASS}
                 onClick={() => { onCreateSubtask(task.id); setContextMenu(null) }}>
@@ -377,7 +381,7 @@ export const TaskGroup = memo(function TaskGroup({
   defaultOpen,
   selectedTaskId,
   selectedParentTaskId,
-  selectedChildTask,
+  selectionPath,
   onCreateSubtask,
   onSelectTask,
   projects,
@@ -392,7 +396,7 @@ export const TaskGroup = memo(function TaskGroup({
   const { t } = useI18n()
   const [expansion, setExpansion] = useState<{ selection: string | null; open: boolean }>({ selection: null, open: defaultOpen })
   const isOpen = expansion.open || Boolean(selectedTaskId && expansion.selection !== selectedTaskId
-    && tasks.some(task => task.id === selectedTaskId || task.id === selectedParentTaskId))
+    && tasks.some(task => task.id === selectedTaskId || task.id === selectedParentTaskId || selectionPath?.some(node => node.id === task.id)))
   useTick()
 
   const isEmpty = tasks.length === 0
@@ -480,8 +484,8 @@ export const TaskGroup = memo(function TaskGroup({
               <DraggableTaskCard
                 key={task.id}
                 selectedTaskId={selectedTaskId}
-                selectedChildTask={selectedChildTask}
-                expandForSelection={selectedParentTaskId === task.id}
+                selectionPath={selectionPath}
+                expandForSelection={selectedParentTaskId === task.id || selectionPath?.some(node => node.parentTaskId === task.id)}
                 onCreateSubtask={task.projectArchivedAt ? undefined : onCreateSubtask}
                 task={task}
                 status={status}

@@ -75,6 +75,46 @@ describe('task routes', () => {
       expect(refused.json().code).toBe('TASK_DELETE_SCOPE_CHANGED');
       expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(2);
       expect(await prisma.taskCleanupJob.count()).toBe(0);
+      const grandchild = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks`,
+        payload: { title: 'Grandchild', parentTaskId: created.json().id, baseBranch: null } });
+      expect(grandchild.statusCode).toBe(201);
+      expect(grandchild.json().ancestorIds).toEqual([parent.id, created.json().id]);
+      const tooDeep = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks`,
+        payload: { title: 'Fourth level', parentTaskId: grandchild.json().id, baseBranch: null } });
+      expect(tooDeep.statusCode).toBe(400);
+      const scope = await app.inject({ method: 'GET', url: `/api/tasks/${parent.id}/deletion-scope` });
+      expect(scope.json()).toEqual({ descendantCount: 2 });
+      const stale = await app.inject({ method: 'DELETE', url: `/api/tasks/${parent.id}?expectedSubtaskCount=1` });
+      expect(stale.statusCode).toBe(409);
+      expect(await prisma.task.count({ where: { deletedAt: null } })).toBe(3);
+
+    } finally { await app.close(); }
+  });
+
+  it('enforces the three-level limit through the MCP handler and its real HTTP client', async () => {
+    const project = await prisma.project.create({ data: { name: 'MCP hierarchy', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Root', projectId: project.id } });
+    const app = await buildTestApp();
+    const { registerTaskTools } = await import('../../mcp/tools/tasks.js');
+    const { AgentTowerClient } = await import('../../mcp/http-client.js');
+    const { CreateTaskInput } = await import('../../mcp/types.js');
+    const handlers = new Map<string, (input: any) => Promise<any>>();
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 });
+      registerTaskTools({ tool: (name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => handlers.set(name, handler) } as any, new AgentTowerClient(address));
+      const create = async (parentId: string) => handlers.get('create_task')!(CreateTaskInput.parse({
+        project_id: project.id, title: 'Nested through MCP', parent_task_id: parentId, base_branch: null,
+      }));
+      const child = await create(parent.id);
+      expect(child.isError).toBeUndefined();
+      const childId = JSON.parse(child.content[0].text).id;
+      const grandchild = await create(childId);
+      expect(grandchild.isError).toBeUndefined();
+      expect(JSON.parse(grandchild.content[0].text).ancestorIds).toEqual([parent.id, childId]);
+      const fourth = await create(JSON.parse(grandchild.content[0].text).id);
+      expect(fourth.isError).toBe(true);
+      expect(fourth.content[0].text).toContain('at most three levels');
+      expect(await prisma.task.count()).toBe(3);
     } finally { await app.close(); }
   });
 

@@ -526,7 +526,7 @@ export interface ProjectGitCapability {
 
 /** 创建任务；省略基础分支时快照父任务工作分支或项目默认值，null 用于本地模式。 */
 export interface CreateTaskInput {
-  /** Same-project parent; only one level of subtasks is supported. */
+  /** Same-project parent; at most three levels including the root task. */
   parentTaskId?: string
   title: string
   description?: string
@@ -537,6 +537,8 @@ export interface CreateTaskInput {
 /** 任务 */
 export interface Task {
   parentTaskId?: string | null
+  /** Root first, immediate parent last; at most two IDs. */
+  ancestorIds?: string[]
   subtaskCount?: number
   id: string
   projectId: string
@@ -588,6 +590,8 @@ export interface TaskBoardWorkspaceSummary {
 /** Compact task read model used by the board list hot path. */
 export interface TaskBoardItem {
   parentTaskId?: string | null
+  /** Root first, immediate parent last; at most two IDs. */
+  ancestorIds?: string[]
   subtaskCount?: number
   runningSubtaskCount?: number
   id: string
@@ -603,7 +607,7 @@ export interface TaskBoardItem {
 }
 
 export interface TaskBoardResponse {
-  /** Parent context outside the current page/filter; excluded from total. */
+  /** All ancestor context outside the current page/filter; excluded from total. */
   parents?: TaskBoardItem[]
   data: TaskBoardItem[]
   total: number

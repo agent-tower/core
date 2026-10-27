@@ -453,6 +453,33 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(deleteBranchIfSafeMock).toHaveBeenCalledWith('at/parent', expect.anything());
   });
 
+  it('retains an ancestor branch referenced only by a grandchild', async () => {
+    const { project, task: parent } = await createTask('Grandchild branch dependency');
+    await prisma.task.update({ where: { id: parent.id }, data: { status: 'DONE' } });
+    const workspace = await prisma.workspace.create({ data: { taskId: parent.id, branchName: 'at/root', baseBranch: 'main', worktreePath: '/root', status: 'MERGED' } });
+    const child = await prisma.task.create({ data: { projectId: project.id, title: 'Child', parentTaskId: parent.id, baseBranch: 'main' } });
+    const grandchild = await prisma.task.create({ data: { projectId: project.id, title: 'Grandchild', parentTaskId: child.id, baseBranch: 'at/root' } });
+    await service.cleanup();
+    expect(deleteBranchIfSafeMock).not.toHaveBeenCalled();
+    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).not.toBeNull();
+    await prisma.task.update({ where: { id: grandchild.id }, data: { deletedAt: new Date() } });
+    await service.cleanup();
+    expect(deleteBranchIfSafeMock).toHaveBeenCalledWith('at/root', expect.anything());
+  });
+
+  it('merges a grandchild into its immediate parent without completing either ancestor', async () => {
+    const { project, task: parent } = await createTask('Grandchild merge');
+    const child = await prisma.task.create({ data: { projectId: project.id, title: 'Child', parentTaskId: parent.id } });
+    await prisma.workspace.create({ data: { taskId: child.id, branchName: 'at/child', baseBranch: 'main', worktreePath: '/child' } });
+    const grandchild = await prisma.task.create({ data: { projectId: project.id, title: 'Grandchild', parentTaskId: child.id, status: 'IN_REVIEW' } });
+    const workspace = await prisma.workspace.create({ data: { taskId: grandchild.id, branchName: 'at/grandchild', baseBranch: 'at/child', worktreePath: '/grandchild' } });
+    await service.merge(workspace.id);
+    expect(mergeWorktreeMock).toHaveBeenCalledWith('/grandchild', 'at/child', expect.objectContaining({ targetWorktreePath: '/child' }));
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: grandchild.id } })).status).toBe('DONE');
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: child.id } })).status).toBe('TODO');
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: parent.id } })).status).toBe('TODO');
+  });
+
   it('creates a main-directory workspace without creating a git worktree', async () => {
     const { project, task } = await createTask('main directory workspace task');
 

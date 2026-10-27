@@ -2951,14 +2951,14 @@ export class WorkspaceService {
               }
             }
 
-            const referencedByChild = await prisma.task.findFirst({
-              where: { parentTaskId: workspace.taskId, deletedAt: null, OR: [
+            const referencedByTask = await prisma.task.findFirst({
+              where: { projectId: workspace.task.projectId, id: { not: workspace.taskId }, deletedAt: null, OR: [
                 { baseBranch: workspace.branchName },
                 { workspaces: { some: { baseBranch: workspace.branchName } } },
               ] }, select: { id: true },
             });
             // Retain the owner record so the branch can be reclaimed on family deletion.
-            if (referencedByChild) {
+            if (referencedByTask) {
               // The directory has been reclaimed; the branch still belongs to this task.
               await this.backgroundService.releaseLogsForWorkspace?.(workspace.id);
               cleaned++;

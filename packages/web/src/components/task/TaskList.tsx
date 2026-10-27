@@ -13,7 +13,7 @@ import { STATUS_STYLES } from './status-styles'
 import { sidebarRowClass } from './sidebar-styles'
 import type { UITask, UIProject } from './types'
 import { UITaskStatus } from './types'
-import { TaskPriority } from '@agent-tower/shared'
+import { TaskPriority, getTaskAncestorIds } from '@agent-tower/shared'
 import { cn } from '@/lib/utils'
 
 const GHOST_DURATION = 260
@@ -304,6 +304,9 @@ export function TaskList({
   const canCreateTask = !isCurrentProjectArchived
 
   // 单次遍历分组
+  const selectedTask = tasks.find(task => task.id === selectedTaskId)
+  const selectedAncestors = selectedTask ? getTaskAncestorIds(selectedTask) : []
+  const selectionPath = tasks.filter(task => task.id === selectedTaskId || selectedAncestors.includes(task.id) || task.id === selectedParentTaskId)
   const grouped = groupTasksByStatus(filteredTasks.filter(task => !task.parentTaskId))
   const dragStatus = activeDragTask ? STATUS_STYLES[activeDragTask.status] : null
 
@@ -386,7 +389,7 @@ export function TaskList({
                 status={status}
                 defaultOpen={defaultOpen}
                 selectedTaskId={selectedTaskId}
-                selectedChildTask={tasks.find(task => task.id === selectedTaskId && task.parentTaskId)}
+                selectionPath={selectionPath}
                 selectedParentTaskId={selectedParentTaskId ?? tasks.find(task => task.id === selectedTaskId)?.parentTaskId}
                 onCreateSubtask={onCreateSubtask}
                 onSelectTask={onSelectTask}

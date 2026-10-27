@@ -37,6 +37,7 @@ export const queryKeys = {
     body: (id: string) => ['tasks', 'body', id] as const,
     handoff: (id: string) => ['tasks', 'handoff', id] as const,
     subtasks: (id: string) => ['tasks', 'subtasks', id] as const,
+    deletionScope: (id: string) => ['tasks', 'deletion-scope', id] as const,
     cleanup: (id: string) => ['task-cleanup', id] as const,
     stats: (projectId: string) => ['tasks', 'stats', projectId] as const,
   },
