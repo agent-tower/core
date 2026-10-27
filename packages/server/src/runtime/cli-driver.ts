@@ -318,11 +318,11 @@ class CliDriverSession implements DriverSession {
   }
 
   private async closeActive(): Promise<void> {
-    const targets = [
+    const targets = new Set([
       ...(this.active ? [this.active] : []),
       ...this.pendingCleanup,
-    ];
-    if (targets.length === 0) return;
+    ]);
+    if (targets.size === 0) return;
     const closeError = new AgentRuntimeError('runtime_disposed', 'close', 'CLI runtime session was closed', true);
     for (const active of targets) {
       active.requestProcessStop?.();
@@ -457,7 +457,6 @@ class CliDriverSession implements DriverSession {
       if (active.treeCleanupConfirmed) {
         active.processExited = true;
         active.resolveProcessExit();
-        this.pendingCleanup.delete(active);
       } else {
         // A root exit without matched evidence is an unresolved generation;
         // keep it reachable and block admission/shutdown until recovered.
@@ -570,13 +569,15 @@ class CliDriverSession implements DriverSession {
         }
         active.processEvents.shift();
       }
-      if (active.processExited) this.cleanupRawExitTracking(active);
     })();
     active.processEventFlush = flush;
     try {
       await flush;
     } finally {
-      if (active.processEventFlush === flush) active.processEventFlush = undefined;
+      if (active.processEventFlush === flush) {
+        active.processEventFlush = undefined;
+        if (active.processExited) this.cleanupRawExitTracking(active);
+      }
     }
   }
 
@@ -660,7 +661,11 @@ class CliDriverSession implements DriverSession {
     active.pipeline?.destroy();
     this.cleanupTurnResources(active);
     if (active.processExited || active.settled) {
-      if (!active.processExited) this.pendingCleanup.add(active);
+      // Tree exit and durable cleanup acknowledgement are separate boundaries.
+      // A follow-up must retain the previous owner until both have completed.
+      if (!active.processExited || active.processEvents.length > 0 || active.processEventFlush) {
+        this.pendingCleanup.add(active);
+      }
       this.active = undefined;
     }
   }
