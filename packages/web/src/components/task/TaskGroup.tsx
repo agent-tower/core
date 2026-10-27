@@ -11,6 +11,7 @@ import { TaskPriority, canCreateSubtask } from '@agent-tower/shared'
 import { TaskPriorityIndicator } from './TaskPrioritySelect'
 import { TASK_PRIORITY_OPTIONS } from './task-priority'
 import { formatTaskUpdatedAt } from './task-time'
+import { getTaskActivitySummary, getTaskStatusSummary } from './task-status-summary'
 import { TaskGradientText } from './TaskGradientText'
 import { useI18n } from '@/lib/i18n'
 import { cn, truncateEnd } from '@/lib/utils'
@@ -199,6 +200,7 @@ function DraggableTaskCard({
   const projectTag = showProject ? project : undefined
   const updatedLabel = task.updatedAt ? formatTaskUpdatedAt(task.updatedAt, t, locale) : null
   const { titleClass } = STATUS_STYLES[status]
+  const statusSummary = getTaskStatusSummary(task, t)
 
   return (
     <>
@@ -211,7 +213,7 @@ function DraggableTaskCard({
         onTouchStart={handleTouchStart}
         onTouchEnd={clearLongPress}
         onTouchMove={clearLongPress}
-        title={projectTag ? `${task.title} · ${projectTag.name}` : task.title}
+        title={[projectTag ? `${task.title} · ${projectTag.name}` : task.title, statusSummary].filter(Boolean).join('\n')}
         aria-label={projectLabel ? `${task.title} — ${projectLabel}` : task.title}
         aria-current={isSelected || undefined}
         data-sidebar-item=""
@@ -259,7 +261,7 @@ function DraggableTaskCard({
       {canCreateSubtask(task) && childCount > 0 && (
         <button type="button" data-sidebar-item="" aria-expanded={childrenOpen}
           aria-label={t('Subtasks of {title}', { title: task.title })}
-          title={t('{count} subtasks, {running} running', { count: childCount, running: task.runningSubtaskCount ?? 0 })}
+          title={[t('{count} subtasks', { count: childCount }), getTaskActivitySummary(task, t)].filter(Boolean).join('\n')}
           onClick={() => setChildrenExpansion({ selection: selectedTaskId, open: !childrenOpen })}
           className="flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-10">
           <ListTree size={14} /><span className="tabular-nums">{childCount}</span>
@@ -302,8 +304,9 @@ function DraggableTaskCard({
           )}
           {onTaskStatusChange && (
             <>
-              <div className={MENU_LABEL_CLASS}>{t('Move to')}</div>
-              {STATUS_ORDER.filter(s => s !== status).map(optStatus => {
+              <div className={MENU_LABEL_CLASS}>{task.ownStatus && task.ownStatus !== status
+                ? t('Own status: {status}', { status: t(task.ownStatus) }) : t('Move to')}</div>
+              {STATUS_ORDER.filter(s => s !== (task.ownStatus ?? status)).map(optStatus => {
                 const { icon: Icon, label, accentClass } = STATUS_STYLES[optStatus]
                 return (
                   <button

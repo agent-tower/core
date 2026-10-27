@@ -13,7 +13,7 @@ export const ListProjectsInput = z.object({});
 export const ListTasksInput = z.object({
   project_id: z.string().describe('The ID of the project to list tasks from'),
   status: z.enum(['TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED']).optional()
-    .describe("Optional status filter: 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'"),
+    .describe("Optional displayStatus filter (includes child/grandchild activity): 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE', 'CANCELLED'. Returned status is the task's own state."),
   limit: z.number().int().min(1).max(100).optional()
     .describe('Maximum number of tasks to return (default: 50)'),
 });

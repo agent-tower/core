@@ -69,6 +69,7 @@ import { TaskStartProgress, type TaskStartProgressState } from './TaskStartProgr
 import type { UITaskDetailData } from './types'
 import { UITaskStatus } from './types'
 import { STATUS_STYLES } from './status-styles'
+import { getTaskActivitySummary, getTaskStatusSummary } from './task-status-summary'
 import { TaskPrioritySelect } from './TaskPrioritySelect'
 import { useSlashCommandMenu } from './useSlashCommandMenu'
 import { useSkillMentionMenu } from './useSkillMentionMenu'
@@ -177,7 +178,12 @@ const STATUS_OPTIONS = [
   { status: UITaskStatus.Cancelled, className: 'bg-muted/50 text-muted-foreground', hoverClass: 'hover:bg-border', icon: statusIcon(UITaskStatus.Cancelled) },
 ] as const
 
-function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChangeStatus?: (newStatus: UITaskStatus) => void }) {
+function StatusBadge({ status, ownStatus = status, summary, onChangeStatus }: {
+  status: UITaskStatus
+  ownStatus?: UITaskStatus
+  summary?: string
+  onChangeStatus?: (newStatus: UITaskStatus) => void
+}) {
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -196,6 +202,7 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
   return (
     <div className="relative" ref={ref}>
       <button
+        title={summary}
         onClick={() => onChangeStatus && setIsOpen(v => !v)}
         className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${current.className} ${onChangeStatus ? 'cursor-pointer hover:opacity-80' : ''}`}
       >
@@ -210,7 +217,8 @@ function StatusBadge({ status, onChangeStatus }: { status: UITaskStatus; onChang
 
       {isOpen && (
         <div className="absolute right-0 top-full mt-2 w-40 bg-background rounded-lg border border-border shadow-popover z-50 py-1 animate-in fade-in zoom-in-95 duration-100">
-          {STATUS_OPTIONS.filter(o => o.status !== status).map(opt => (
+          {ownStatus !== status && <div className="px-3 py-1 text-xs text-muted-foreground">{t('Own status: {status}', { status: t(ownStatus) })}</div>}
+          {STATUS_OPTIONS.filter(o => o.status !== ownStatus).map(opt => (
             <button
               key={opt.status}
               onClick={() => { onChangeStatus?.(opt.status); setIsOpen(false) }}
@@ -1020,8 +1028,11 @@ export function TaskDetail({ task, onSelectTask, onCreateSubtask, onDeleteTask, 
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0">
+          {getTaskActivitySummary(task, t) && <span className="max-w-56 truncate text-xs text-muted-foreground" title={getTaskStatusSummary(task, t)}>{getTaskActivitySummary(task, t)}</span>}
           <StatusBadge
             status={task.status}
+            ownStatus={task.ownStatus}
+            summary={getTaskStatusSummary(task, t)}
             onChangeStatus={!isProjectReadOnly && onTaskStatusChange ? (newStatus) => onTaskStatusChange(task.id, newStatus) : undefined}
           />
           <TaskPrioritySelect

@@ -86,6 +86,13 @@ export function isTaskListQueryKey(queryKey: QueryKey, projectId?: string): bool
   return projectId ? queryKey[2] === projectId : true
 }
 
+/** The changed descendant need not be cached; refresh cached ancestors in its project. */
+export function isTaskDetailQueryForProject(query: { queryKey: QueryKey; state: { data: unknown } }, projectId: string): boolean {
+  if (query.queryKey[0] !== 'tasks' || query.queryKey[1] !== 'detail') return false
+  const task = query.state.data as Task | undefined
+  return !task || task.projectId === projectId
+}
+
 export function isTaskBoardQueryKey(queryKey: QueryKey, projectId?: string): boolean {
   if (!Array.isArray(queryKey)) return false
   if (queryKey[0] !== 'tasks' || queryKey[1] !== 'board') return false

@@ -42,7 +42,7 @@ export function SubtaskPanel({ task, onSelectTask, onCreateSubtask }: {
         {children.isLoading && <p className="px-2 py-1 text-xs text-muted-foreground">{t('Loading...')}</p>}
         {children.isError && <Button variant="ghost" size="sm" onClick={() => children.refetch()}>{t('Could not load subtasks. Retry')}</Button>}
         {children.data?.pages.flatMap(page => page.data).map(child => {
-          const style = STATUS_STYLES[mapTaskStatusToUI(child.status)]
+          const style = STATUS_STYLES[mapTaskStatusToUI(child.displayStatus ?? child.status)]
           return (
             <Button key={child.id} variant="ghost" size="sm" className="w-full justify-start" title={child.title} onClick={() => onSelectTask?.(child.id)}>
               <style.icon className={cn('size-3.5 shrink-0', style.accentClass)} />

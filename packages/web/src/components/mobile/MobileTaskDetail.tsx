@@ -1,6 +1,7 @@
 import { canCreateSubtask } from '@agent-tower/shared'
 import { SubtaskPanel } from '@/components/task/SubtaskPanel'
 import { TaskHandoffPanel } from '@/components/task/TaskHandoffPanel'
+import { getTaskActivitySummary, getTaskStatusSummary } from '@/components/task/task-status-summary'
 import { TeamInitialDeliveryStatus } from '@/components/team/TeamInitialDeliveryStatus'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
@@ -99,7 +100,8 @@ type MobileTab = 'chat' | 'team-status' | 'changes' | 'history' | 'workspace'
 
 // ============ Status Badge ============
 
-function StatusDot({ status }: { status: UITaskStatus }) {
+function StatusDot({ status, summary }: { status: UITaskStatus; summary?: string }) {
+  const { t } = useI18n()
   const colors: Record<UITaskStatus, string> = {
     [UITaskStatus.Running]: 'bg-info',
     [UITaskStatus.Review]: 'bg-warning',
@@ -107,7 +109,7 @@ function StatusDot({ status }: { status: UITaskStatus }) {
     [UITaskStatus.Done]: 'bg-success',
     [UITaskStatus.Cancelled]: 'bg-muted-foreground/60',
   }
-  return <span className={`w-2.5 h-2.5 rounded-full ${colors[status]}`} />
+  return <span title={summary ?? t(status)} aria-label={summary ?? t(status)} className={`w-2.5 h-2.5 rounded-full ${colors[status]}`} />
 }
 
 // ============ Tab Bar ============
@@ -749,8 +751,9 @@ export function MobileTaskDetail({ task, onBack, onSelectTask, onCreateSubtask, 
               <span className="text-muted-foreground">/</span>
               <span className="font-mono truncate">{task.branch}</span>
             </div>
+            {getTaskActivitySummary(task, t) && <p className="truncate text-xs text-muted-foreground" title={getTaskStatusSummary(task, t)}>{getTaskActivitySummary(task, t)}</p>}
           </div>
-          <StatusDot status={task.status} />
+          <StatusDot status={task.status} summary={getTaskStatusSummary(task, t)} />
           <TaskPrioritySelect
             value={task.priority}
             compact

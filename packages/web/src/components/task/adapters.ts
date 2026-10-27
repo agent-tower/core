@@ -58,6 +58,15 @@ export function mapUIStatusToTask(status: UITaskStatus): SharedTaskStatus {
   }
 }
 
+export function adaptTaskDisplayState(task: SharedTask | TaskBoardItem) {
+  return {
+    status: mapTaskStatusToUI(task.displayStatus ?? task.status),
+    ownStatus: mapTaskStatusToUI(task.status),
+    runningDescendantCount: task.runningDescendantCount,
+    reviewDescendantCount: task.reviewDescendantCount,
+  }
+}
+
 /**
  * 将 AgentType 枚举映射为用户友好的显示名称
  */
@@ -188,7 +197,7 @@ export function adaptTaskForList(task: SharedTask): UITask {
     subtaskCount: task.subtaskCount,
     projectId: task.projectId,
     title: task.titlePreview ?? task.title,
-    status: mapTaskStatusToUI(task.status),
+    ...adaptTaskDisplayState(task),
     priority: task.priority,
     agent,
     branch,
@@ -220,7 +229,7 @@ export function adaptTaskBoardItemForList(
     runningSubtaskCount: task.runningSubtaskCount,
     projectId: task.projectId,
     title: task.title,
-    status: mapTaskStatusToUI(task.status),
+    ...adaptTaskDisplayState(task),
     priority: task.priority,
     agent: task.latestAgentType ? formatAgentType(task.latestAgentType) : '—',
     branch,
@@ -259,7 +268,7 @@ export function adaptTaskForDetail(
     projectName: project.name,
     projectColor: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],
     title: task.titlePreview ?? task.title,
-    status: mapTaskStatusToUI(task.status),
+    ...adaptTaskDisplayState(task),
     priority: task.priority,
     branch,
     mainBranch: activeWorkspace?.baseBranch ?? project.mainBranch ?? 'main',
@@ -291,7 +300,7 @@ export function adaptTaskBoardItemForDetail(
     projectName: project.name,
     projectColor: project.color || PROJECT_COLORS[hashStringToIndex(project.name, PROJECT_COLORS.length)],
     title: task.title,
-    status: mapTaskStatusToUI(task.status),
+    ...adaptTaskDisplayState(task),
     priority: task.priority,
     branch,
     mainBranch: project.mainBranch ?? 'main',

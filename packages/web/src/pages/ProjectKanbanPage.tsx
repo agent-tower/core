@@ -7,7 +7,7 @@ import type { TaskStartProgressState } from '@/components/task/TaskStartProgress
 import type { UITaskDetailData } from '@/components/task/types'
 import { UITaskStatus } from '@/components/task/types'
 import { toast } from 'sonner'
-import { adaptProject, adaptTaskForList, adaptTaskBoardItemForDetail, adaptTaskBoardItemForList, mapTaskStatusToUI, mapUIStatusToTask } from '@/components/task/adapters'
+import { adaptProject, adaptTaskForList, adaptTaskBoardItemForDetail, adaptTaskBoardItemForList, adaptTaskDisplayState, mapUIStatusToTask } from '@/components/task/adapters'
 import { useProjects } from '@/hooks/use-projects'
 import { useTask, useTaskBoard, useDeleteTask, useUpdateTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
 import { useStartSession } from '@/hooks/use-sessions'
@@ -157,6 +157,9 @@ function taskToBoardItem(task: Task): TaskBoardItem {
     projectId: task.projectId,
     title: task.titlePreview ?? task.title,
     status: task.status,
+    displayStatus: task.displayStatus,
+    runningDescendantCount: task.runningDescendantCount,
+    reviewDescendantCount: task.reviewDescendantCount,
     priority: task.priority,
     ...(preferredWorkspace ? {
       preferredWorkspace: {
@@ -320,7 +323,7 @@ export function ProjectKanbanPage() {
         projectName: 'Unknown',
         projectColor: 'text-muted-foreground',
         title: task.title,
-        status: mapTaskStatusToUI(task.status),
+        ...adaptTaskDisplayState(task),
         priority: task.priority,
         branch,
         mainBranch: 'main',

@@ -6,14 +6,14 @@ import { AgentType, TaskStatus, canCreateSubtask, isTaskInSubtree, type TaskBoar
 import { I18nProvider } from '@/lib/i18n'
 import { Button } from '@/design-system'
 import { WorkspacePanel, type WorkspacePanelHandle } from '@/components/workspace/WorkspacePanel'
-import { useTaskBoard, useDeleteTask } from '@/hooks/use-tasks'
+import { useTaskBoard, useDeleteTask, useUpdateTaskStatus } from '@/hooks/use-tasks'
 import { apiClient } from '@/lib/api-client'
 import { queryKeys } from '@/hooks/query-keys'
 import { TaskList } from '../TaskList'
 import { SubtaskPanel } from '../SubtaskPanel'
 import { CreateTaskInput } from '../CreateTaskInput'
 import { DeleteTaskConfirmDialog } from '../DeleteTaskConfirmDialog'
-import { adaptTaskBoardItemForList, adaptTaskBoardItemForDetail } from '../adapters'
+import { adaptTaskBoardItemForList, adaptTaskBoardItemForDetail, mapUIStatusToTask } from '../adapters'
 import '@/index.css'
 
 // Production components and hooks with an isolated API; no live tasks or processes.
@@ -25,7 +25,16 @@ let tasks: TaskBoardItem[] = [
   { id: 'other', projectId: project.id, title: '独立任务：整理文档', status: TaskStatus.TODO, ancestorIds: [], updatedAt: 1 },
 ]
 const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-const page = (data: TaskBoardItem[]) => ({ data, total: data.length, page: 1, limit: 100, totalPages: 1 })
+// Simulated server responses for browser interaction; SQL aggregation is covered by service tests.
+const readTask = (task: TaskBoardItem): TaskBoardItem => {
+  const descendants = tasks.filter(candidate => candidate.id !== task.id && isTaskInSubtree(candidate, task.id))
+  const runningDescendantCount = descendants.filter(child => child.status === TaskStatus.IN_PROGRESS).length
+  const reviewDescendantCount = descendants.filter(child => child.status === TaskStatus.IN_REVIEW).length
+  const displayStatus = task.status === TaskStatus.IN_PROGRESS || runningDescendantCount > 0 ? TaskStatus.IN_PROGRESS
+    : task.status === TaskStatus.IN_REVIEW || reviewDescendantCount > 0 ? TaskStatus.IN_REVIEW : task.status
+  return { ...task, displayStatus, runningDescendantCount, reviewDescendantCount }
+}
+const page = (data: TaskBoardItem[]) => ({ data: data.map(readTask), total: data.length, page: 1, limit: 100, totalPages: 1 })
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin)
   if (url.pathname === '/api/app-settings') return Response.json({ locale: 'zh-CN' })
@@ -44,6 +53,10 @@ globalThis.fetch = async (input, init) => {
     const task = tasks.find(task => task.id === id)
     if (url.pathname.endsWith('/cleanup')) return Response.json({ taskId: id, status: 'COMPLETED' })
     if (!task) return Response.json({ error: 'Task not found' }, { status: 404 })
+    if (url.pathname.endsWith('/status') && init?.method === 'PATCH') {
+      task.status = JSON.parse(String(init.body)).status
+      return Response.json(readTask(task))
+    }
     if (url.pathname.endsWith('/subtasks')) return Response.json(page(tasks.filter(task => task.parentTaskId === id)))
     if (url.pathname.endsWith('/deletion-scope')) return Response.json({ descendantCount: tasks.filter(task => task.id !== id && isTaskInSubtree(task, id)).length })
     if (url.pathname.endsWith('/workspaces')) return Response.json([])
@@ -54,7 +67,7 @@ globalThis.fetch = async (input, init) => {
       tasks = tasks.map(task => ({ ...task, subtaskCount: tasks.filter(child => child.parentTaskId === task.id).length }))
       return new Response(null, { status: 204 })
     }
-    return Response.json({ ...task, project, workspaces: [] })
+    return Response.json({ ...readTask(task), project, workspaces: [] })
   }
   if (url.pathname === '/api/team-templates' || url.pathname === '/api/member-presets' || url.pathname.includes('slash-command')) return Response.json([])
   return Response.json({ error: 'Unexpected fixture request' }, { status: 404 })
@@ -68,6 +81,7 @@ export function Fixture() {
   const mobile = new URLSearchParams(location.search).has('mobile')
   const board = useTaskBoard()
   const remove = useDeleteTask()
+  const updateStatus = useUpdateTaskStatus()
   const rows = board.data?.data ?? []
   const selected = rows.find(task => task.id === selectedId)
   const parent = rows.find(task => task.id === parentId)
@@ -84,6 +98,7 @@ export function Fixture() {
         <TaskList tasks={rows.map(task => adaptTaskBoardItemForList(task, project))} projects={[]}
           width={mobile ? '100%' : 400} selectedTaskId={selectedId}
           onSelectTask={id => { setSelectedId(id); setParentId(undefined) }} onCreateSubtask={setParentId}
+          onTaskStatusChange={(id, status) => updateStatus.mutate({ id, status: mapUIStatusToTask(status) })}
           filterProjectId={null} setFilterProjectId={() => {}} onDeleteTask={(id, count) => remove.mutate({ id, expectedSubtaskCount: count })} />
       </div>
       <div className="min-h-0 min-w-0 flex-1 border-l border-border">

@@ -61,6 +61,8 @@ description: 当前代码库中公开的主要 REST 端点。
 
 看板条目包含 `parentTaskId`、`ancestorIds`、`subtaskCount`、`runningSubtaskCount`；两个计数都只统计直属子任务。祖先任务位于当前分页或状态过滤之外时，响应另带包含全部缺失祖先的 `parents` 数组供客户端建立展示层级；它不计入当前页的 `data`、`total` 和 `limit`。展开子任务时通过 `/subtasks` 分页读取完整列表。
 
+看板、项目任务列表、子任务列表和任务详情另返回 `displayStatus`、`runningDescendantCount`、`reviewDescendantCount`。后两个计数包含未删除的子任务和孙任务，不包含自身。自身或后代有 `IN_PROGRESS` 时，展示状态为 `IN_PROGRESS`；否则有 `IN_REVIEW` 时为 `IN_REVIEW`；其余返回自身状态。分页前的状态筛选、排序和项目任务统计均按展示状态计算。返回的 `status` 仍是持久化的自身状态，状态更新及拖拽只修改所选任务自身，不回写祖先或后代状态。
+
 删除会原子标记当前任务及全部后代并保存持久清理记录，返回 `204` 表示删除已受理，资源清理由后台执行。客户端从 `/deletion-scope` 获取 `descendantCount` 后以 `expectedSubtaskCount` 提交，参数表示全部后代总数（兼容原单层场景），而非 `/subtasks` 的直属数量。提供该参数且当前数量不符时返回 `409 / TASK_DELETE_SCOPE_CHANGED`，客户端应重新展示确认框。清理状态为 `PENDING`、`RUNNING`、`COMPLETED` 或 `FAILED`；失败时返回 `lastError` 和 `nextRetryAt`，可显式重试。状态查询在任务数据库记录清理后仍可用。
 
 ## Workspaces

@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { PrismaClient } from '@prisma/client';
 import type { SessionManager } from '../session-manager.js';
 import type { TaskCleanupSnapshot } from '../task-cleanup.service.js';
-import { AgentType, WorkspaceKind } from '../../types/index.js';
+import { AgentType, WorkspaceKind, TaskStatus } from '../../types/index.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-task-service-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -809,7 +809,7 @@ describe('TaskService', () => {
 
   it('keeps parent context when a running child is on a different page or status filter', async () => {
     const project = await prisma.project.create({ data: { name: 'Board tree', repoPath: testDir } });
-    const parent = await prisma.task.create({ data: { title: 'Done parent', projectId: project.id, status: 'DONE' } });
+    const parent = await prisma.task.create({ data: { title: 'Done parent', projectId: project.id, status: 'DONE', position: 2 } });
     const child = await prisma.task.create({ data: { title: 'Running child', projectId: project.id, status: 'IN_PROGRESS', parentTaskId: parent.id } });
     const service = new TaskService(new EventBus(), {} as SessionManager);
     const page = await service.findBoard({ limit: 1 });
@@ -817,22 +817,89 @@ describe('TaskService', () => {
     expect(page.parents).toEqual([expect.objectContaining({ id: parent.id, subtaskCount: 1, runningSubtaskCount: 1 })]);
     expect(page.total).toBe(2);
     const filtered = await service.findBoard({ status: 'IN_PROGRESS' as any });
-    expect(filtered.parents?.[0].id).toBe(parent.id);
+    expect(filtered.total).toBe(2);
+    expect(filtered.data).toContainEqual(expect.objectContaining({ id: parent.id, status: 'DONE', displayStatus: 'IN_PROGRESS' }));
     expect((await service.findSubtasks(parent.id)).data.map(task => task.id)).toEqual([child.id]);
   });
 
-  it('returns the full ancestor path when only a grandchild matches the board page', async () => {
+  it('returns the full ancestor path when only a grandchild fits the board page', async () => {
     const project = await prisma.project.create({ data: { name: 'Three levels', repoPath: testDir } });
-    const parent = await prisma.task.create({ data: { title: 'Root', projectId: project.id, status: 'DONE' } });
-    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id, status: 'DONE' } });
+    const parent = await prisma.task.create({ data: { title: 'Root', projectId: project.id, status: 'DONE', position: 3 } });
+    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id, status: 'DONE', position: 2 } });
     const grandchild = await prisma.task.create({ data: { title: 'Grandchild', projectId: project.id, parentTaskId: child.id, status: 'IN_PROGRESS' } });
     const service = new TaskService(new EventBus(), {} as SessionManager);
     const board = await service.findBoard({ status: 'IN_PROGRESS' as any, limit: 1 });
-    expect(board).toMatchObject({ total: 1, data: [{ id: grandchild.id, ancestorIds: [parent.id, child.id] }] });
+    expect(board).toMatchObject({ total: 3, totalPages: 3, data: [{ id: grandchild.id, ancestorIds: [parent.id, child.id] }] });
     expect(board.parents?.map(task => task.id).sort()).toEqual([parent.id, child.id].sort());
+    expect(board.parents?.every(task => task.status === 'DONE' && task.displayStatus === 'IN_PROGRESS')).toBe(true);
     const children = await service.findSubtasks(parent.id);
     expect(children).toMatchObject({ total: 1, data: [{ id: child.id, subtaskCount: 1, ancestorIds: [parent.id] }] });
     expect((await service.findSubtasks(child.id)).data[0]?.ancestorIds).toEqual([parent.id, child.id]);
+  });
+
+  it.each(Object.values(TaskStatus))('restores own %s status as descendants finish, without advancing ancestors', async ownStatus => {
+    const project = await prisma.project.create({ data: { name: 'Display status', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Root', projectId: project.id, status: ownStatus } });
+    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id, status: 'CANCELLED' } });
+    const grandchild = await prisma.task.create({ data: { title: 'Grandchild', projectId: project.id, parentTaskId: child.id, status: 'IN_PROGRESS' } });
+    const sibling = await prisma.task.create({ data: { title: 'Sibling', projectId: project.id, parentTaskId: parent.id, status: 'IN_REVIEW' } });
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+
+    expect(await service.findById(parent.id)).toMatchObject({
+      status: ownStatus, displayStatus: 'IN_PROGRESS', runningDescendantCount: 1, reviewDescendantCount: 1,
+    });
+    await service.updateStatus(grandchild.id, TaskStatus.IN_REVIEW);
+    expect(await service.findById(parent.id)).toMatchObject({
+      status: ownStatus, displayStatus: ownStatus === TaskStatus.IN_PROGRESS ? 'IN_PROGRESS' : 'IN_REVIEW',
+      runningDescendantCount: 0, reviewDescendantCount: 2,
+    });
+    await service.updateStatus(grandchild.id, TaskStatus.DONE);
+    expect((await service.findById(child.id)).displayStatus).toBe('CANCELLED');
+    expect((await service.findById(parent.id)).displayStatus).toBe(ownStatus === TaskStatus.IN_PROGRESS ? 'IN_PROGRESS' : 'IN_REVIEW');
+    await service.updateStatus(sibling.id, TaskStatus.CANCELLED);
+    expect(await service.findById(parent.id)).toMatchObject({
+      status: ownStatus, displayStatus: ownStatus, runningDescendantCount: 0, reviewDescendantCount: 0,
+    });
+    await service.updateStatus(grandchild.id, TaskStatus.IN_PROGRESS);
+    expect((await service.findById(parent.id)).displayStatus).toBe('IN_PROGRESS');
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: parent.id } })).status).toBe(ownStatus);
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: child.id } })).status).toBe('CANCELLED');
+  });
+
+  it('uses the full subtree for filtered pages, details, project lists and statistics', async () => {
+    const project = await prisma.project.create({ data: { name: 'Aggregate pages', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Root', projectId: project.id, status: 'DONE', position: 0 } });
+    const child = await prisma.task.create({ data: { title: 'Child', projectId: project.id, parentTaskId: parent.id, status: 'TODO', position: 1 } });
+    const grandchild = await prisma.task.create({ data: { title: 'Grandchild', projectId: project.id, parentTaskId: child.id, status: 'IN_PROGRESS', position: 2 } });
+    await prisma.task.create({ data: { title: 'Review', projectId: project.id, parentTaskId: parent.id, status: 'IN_REVIEW' } });
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    const params = { status: TaskStatus.IN_PROGRESS, limit: 1 };
+    const expected = { id: parent.id, status: 'DONE', displayStatus: 'IN_PROGRESS', runningDescendantCount: 1, reviewDescendantCount: 1 };
+    expect(await service.findBoard({ ...params, projectId: project.id })).toMatchObject({ data: [expected], total: 3, totalPages: 3 });
+    expect(await service.findByProjectId(project.id, params)).toMatchObject({ data: [expected], total: 3, totalPages: 3 });
+    expect(await service.findById(parent.id)).toMatchObject(expected);
+    expect(await service.findSubtasks(parent.id, params)).toMatchObject({ data: [{ id: child.id, status: 'TODO', displayStatus: 'IN_PROGRESS' }], total: 1 });
+    expect(await service.getStatsByProjectId(project.id)).toEqual({ total: 4, todo: 0, inProgress: 3, inReview: 1, done: 0, cancelled: 0 });
+    expect((await service.findBoard({ projectId: project.id, status: TaskStatus.DONE })).total).toBe(0);
+
+    // Editing the parent still affects only its own state, including while it is aggregated.
+    await service.updatePosition(parent.id, 0, TaskStatus.CANCELLED);
+    expect(await service.findById(parent.id)).toMatchObject({ status: 'CANCELLED', displayStatus: 'IN_PROGRESS' });
+    await service.delete(grandchild.id);
+    expect(await service.findById(parent.id)).toMatchObject({ status: 'CANCELLED', displayStatus: 'IN_REVIEW', runningDescendantCount: 0 });
+    expect((await service.findById(child.id)).displayStatus).toBe('TODO');
+    expect(await service.getStatsByProjectId(project.id)).toEqual({ total: 3, todo: 1, inProgress: 0, inReview: 2, done: 0, cancelled: 0 });
+  });
+
+  it('ignores deleted descendants and deleted intermediate tasks when summarizing activity', async () => {
+    const project = await prisma.project.create({ data: { name: 'Deleted descendants', repoPath: testDir } });
+    const parent = await prisma.task.create({ data: { title: 'Root', projectId: project.id, status: 'DONE' } });
+    const child = await prisma.task.create({ data: { title: 'Deleted child', projectId: project.id, parentTaskId: parent.id, status: 'IN_PROGRESS', deletedAt: new Date() } });
+    await prisma.task.create({ data: { title: 'Hidden grandchild', projectId: project.id, parentTaskId: child.id, status: 'IN_PROGRESS' } });
+    await prisma.task.create({ data: { title: 'Deleted review', projectId: project.id, parentTaskId: parent.id, status: 'IN_REVIEW', deletedAt: new Date() } });
+    const service = new TaskService(new EventBus(), {} as SessionManager);
+    expect(await service.findById(parent.id)).toMatchObject({ status: 'DONE', displayStatus: 'DONE', runningDescendantCount: 0, reviewDescendantCount: 0 });
+    expect((await service.findBoard({ projectId: project.id, status: TaskStatus.DONE })).data.map(task => task.id)).toEqual([parent.id]);
   });
 
   it('rechecks the full deletion scope when a grandchild is created during deletion preparation', async () => {

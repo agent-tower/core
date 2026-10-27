@@ -40,7 +40,7 @@ export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
 
   server.tool(
     'list_tasks',
-    'List tasks in a project with optional status filter. `project_id` is required!',
+    'List tasks in a project with optional display-status filter. displayStatus includes active children and grandchildren (IN_PROGRESS before IN_REVIEW); status remains the task\'s own editable state. `project_id` is required!',
     ListTasksInput.shape,
     async (params) => {
       try {

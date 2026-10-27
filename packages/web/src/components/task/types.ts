@@ -24,6 +24,14 @@ export const UITaskStatus = {
 
 export type UITaskStatus = (typeof UITaskStatus)[keyof typeof UITaskStatus]
 
+interface UITaskDisplayState {
+  /** Aggregated status for display; ownStatus is the editable task status. */
+  status: UITaskStatus
+  ownStatus?: UITaskStatus
+  runningDescendantCount?: number
+  reviewDescendantCount?: number
+}
+
 // ============ UI 实体类型 ============
 
 /** UI 层项目类型 — 仅包含渲染所需字段 */
@@ -44,7 +52,7 @@ export interface UIProject {
  *
  * 相比后端 Task，额外携带了 agent / branch 等来自 Workspace/Session 的展示信息。
  */
-export interface UITask {
+export interface UITask extends UITaskDisplayState {
   parentTaskId?: string | null
   ancestorIds?: string[]
   subtaskCount?: number
@@ -73,7 +81,7 @@ export interface UITask {
  *
  * 包含项目信息、日志等完整渲染数据。
  */
-export interface UITaskDetailData {
+export interface UITaskDetailData extends UITaskDisplayState {
   parentTaskId?: string | null
   ancestorIds?: string[]
   subtaskCount?: number

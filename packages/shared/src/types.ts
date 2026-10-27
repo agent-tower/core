@@ -534,8 +534,17 @@ export interface CreateTaskInput {
   baseBranch?: string | null
 }
 
+/** Read-only status summary of a task and its non-deleted descendants. */
+export interface TaskDisplayState {
+  /** IN_PROGRESS first, then IN_REVIEW, otherwise the task's own status. */
+  displayStatus?: TaskStatus
+  /** Counts exclude the task itself and include children and grandchildren. */
+  runningDescendantCount?: number
+  reviewDescendantCount?: number
+}
+
 /** 任务 */
-export interface Task {
+export interface Task extends TaskDisplayState {
   parentTaskId?: string | null
   /** Root first, immediate parent last; at most two IDs. */
   ancestorIds?: string[]
@@ -552,6 +561,7 @@ export interface Task {
   contentPreview?: string
   /** True when one or more large text fields were truncated in this payload. */
   isTruncated?: boolean
+  /** Persisted own status; use displayStatus for the task and its descendants. */
   status: TaskStatus
   /** 优先级 (对应 Prisma priority) */
   priority?: number
@@ -588,7 +598,7 @@ export interface TaskBoardWorkspaceSummary {
 }
 
 /** Compact task read model used by the board list hot path. */
-export interface TaskBoardItem {
+export interface TaskBoardItem extends TaskDisplayState {
   parentTaskId?: string | null
   /** Root first, immediate parent last; at most two IDs. */
   ancestorIds?: string[]
@@ -597,6 +607,7 @@ export interface TaskBoardItem {
   id: string
   projectId: string
   title: string
+  /** Persisted own status; displayStatus drives board grouping and filtering. */
   status: TaskStatus
   /** 待审查任务按优先级降序排列。 */
   priority?: number

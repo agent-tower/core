@@ -293,6 +293,7 @@ export function TaskList({
     if (!task || !fromStatus || !toStatus) return
     if (task.projectArchivedAt) return
     if (fromStatus === toStatus) return
+    if ((task.ownStatus ?? fromStatus) === toStatus) return
 
     onTaskStatusChange?.(task.id, toStatus)
   }, [onTaskStatusChange])

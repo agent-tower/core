@@ -8,6 +8,8 @@ import { TaskList } from '../TaskList'
 import { DeleteTaskConfirmDialog } from '../DeleteTaskConfirmDialog'
 import { SubtaskPanel } from '../SubtaskPanel'
 import { UITaskStatus, type UITask } from '../types'
+import { TaskStatus } from '@agent-tower/shared'
+import { adaptTaskBoardItemForList } from '../adapters'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 vi.mock('@/lib/i18n', () => ({ useI18n: () => ({
@@ -59,6 +61,38 @@ afterEach(() => {
 })
 
 describe('subtask navigation and confirmation', () => {
+  it('groups a collapsed parent by descendant activity and edits its own status', async () => {
+    const task = adaptTaskBoardItemForList({
+      id: 'parent', projectId: 'project', title: 'Parent', status: TaskStatus.DONE,
+      displayStatus: TaskStatus.IN_PROGRESS, runningDescendantCount: 2, reviewDescendantCount: 1,
+      subtaskCount: 1, updatedAt: 1,
+    })
+    const onChange = vi.fn()
+    mount(<TaskList tasks={[task]} projects={[]} selectedTaskId={null} onSelectTask={vi.fn()}
+      filterProjectId={null} setFilterProjectId={vi.fn()} onTaskStatusChange={onChange} />)
+    expect(button('Parent')?.closest('[data-task-group-status]')?.getAttribute('data-task-group-status')).toBe('Running')
+    expect(button('Parent')?.title).toContain('Own status: Done')
+    expect(button('Parent')?.title).toContain('2 running, 1 in review')
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/subtasks'))).toBe(false)
+
+    await act(async () => button('Parent')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 50, clientY: 50 })))
+    expect(document.body.textContent).toContain('Own status: Done')
+    const options = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+    expect(options.some(option => option.textContent === 'Done')).toBe(false)
+    await click(options.find(option => option.textContent === 'Running'))
+    expect(onChange).toHaveBeenCalledWith('parent', UITaskStatus.Running)
+  })
+
+  it('shows the aggregated status of a child even when its grandchildren are not loaded', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      ...childPage, data: [{ ...childPage.data[0], status: 'DONE', displayStatus: 'IN_PROGRESS', runningDescendantCount: 1 }],
+    })))
+    mount(<SubtaskPanel task={{ ...parent, projectName: 'Project', projectColor: '', mainBranch: 'main' }} onSelectTask={vi.fn()} />)
+    await settle()
+    expect(button('ChildRunning')).toBeTruthy()
+    expect(button('ChildDone')).toBeUndefined()
+  })
+
   it('keeps children out of top-level groups and expands without selecting the parent', async () => {
     const onSelect = vi.fn()
     const onCreate = vi.fn()

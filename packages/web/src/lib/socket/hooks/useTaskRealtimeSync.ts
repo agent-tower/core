@@ -9,6 +9,7 @@ import {
 import { queryKeys } from '@/hooks/query-keys'
 import {
   isTaskBoardQueryKey,
+  isTaskDetailQueryForProject,
   isTaskListQueryKey,
   removeTaskFromBoardCaches,
   removeTaskFromListCaches,
@@ -39,7 +40,8 @@ export function useTaskRealtimeSync() {
     const handleTaskUpdated = async (payload: TaskUpdatedPayload) => {
       await queryClient.cancelQueries({
         predicate: (query) => isTaskListQueryKey(query.queryKey, payload.projectId)
-          || isTaskBoardQueryKey(query.queryKey, payload.projectId),
+          || isTaskBoardQueryKey(query.queryKey, payload.projectId)
+          || isTaskDetailQueryForProject(query, payload.projectId),
       })
       queryClient.invalidateQueries({
         predicate: (query) => isTaskListQueryKey(query.queryKey, payload.projectId)
@@ -50,11 +52,17 @@ export function useTaskRealtimeSync() {
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.handoff(payload.taskId) })
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(payload.taskId) })
       queryClient.invalidateQueries({
-        queryKey: queryKeys.tasks.detail(payload.taskId),
+        predicate: (query) => isTaskDetailQueryForProject(query, payload.projectId),
       })
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.stats(payload.projectId) })
     }
 
-    const handleTaskDeleted = (payload: TaskDeletedPayload) => {
+    const handleTaskDeleted = async (payload: TaskDeletedPayload) => {
+      await queryClient.cancelQueries({
+        predicate: (query) => isTaskListQueryKey(query.queryKey, payload.projectId)
+          || isTaskBoardQueryKey(query.queryKey, payload.projectId)
+          || isTaskDetailQueryForProject(query, payload.projectId),
+      })
       queryClient.removeQueries({ queryKey: queryKeys.tasks.handoff(payload.taskId) })
       removeTaskFromListCaches(queryClient, payload.taskId, payload.projectId)
       removeTaskFromBoardCaches(queryClient, payload.taskId, payload.projectId)
@@ -65,6 +73,8 @@ export function useTaskRealtimeSync() {
       })
       queryClient.invalidateQueries({ queryKey: ['tasks', 'subtasks'] })
       queryClient.invalidateQueries({ queryKey: ['tasks', 'deletion-scope'] })
+      queryClient.invalidateQueries({ predicate: (query) => isTaskDetailQueryForProject(query, payload.projectId) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks.stats(payload.projectId) })
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all })
     }
 

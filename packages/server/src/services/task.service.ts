@@ -20,12 +20,14 @@ import { defaultTeamLockService } from './team-lock.service.js';
 import type { CreateTaskInput, TaskBoardItem, TaskBoardResponse } from '@agent-tower/shared';
 import { TaskPriority, MAX_TASK_DEPTH, type TaskDeletionScope } from '@agent-tower/shared';
 import prismaPkg from '@prisma/client';
+import { taskDisplayColumnsSql, taskDisplayStatusSql, mapTaskDisplayState, type TaskDisplayRow } from './task-display-state.js';
 
 const { Prisma } = prismaPkg;
 
 const taskBoardColumns = Prisma.sql`
   task."id", task."projectId", task."title", task."status", task."priority",
   task."position", task."updatedAt", task."parentTaskId",
+  ${taskDisplayColumnsSql},
   (SELECT parent."parentTaskId" FROM "Task" parent WHERE parent."id" = task."parentTaskId") AS "grandparentTaskId",
   (SELECT COUNT(*) FROM "Task" child WHERE child."parentTaskId" = task."id" AND child."deletedAt" IS NULL) AS "subtaskCount",
   (SELECT COUNT(*) FROM "Task" child WHERE child."parentTaskId" = task."id" AND child."deletedAt" IS NULL AND child."status" = 'IN_PROGRESS') AS "runningSubtaskCount"
@@ -89,7 +91,7 @@ type TaskBoardWorkspaceRow = {
   hasActiveSession: bigint | number | boolean;
 };
 
-type TaskBoardTaskRow = {
+type TaskBoardTaskRow = TaskDisplayRow & {
   parentTaskId: string | null;
   grandparentTaskId: string | null;
   subtaskCount: bigint | number;
@@ -417,21 +419,11 @@ export class TaskService {
     private readonly backgroundService?: Pick<WorkspaceBackgroundService, 'stopAllForWorkspace'>,
   ) {}
 
-  /**
-   * Compact board read model. Query count remains fixed as project/task counts grow.
-   */
-  async findBoard(params: FindTasksParams = {}): Promise<TaskBoardResponse> {
+  /** Page and count using the same display status, before loading associations. */
+  private async findPage(params: FindTasksParams, includeArchived = false) {
     const page = Math.max(1, params.page || 1);
     const limit = Math.min(1000, Math.max(1, params.limit || 1000));
     const skip = (page - 1) * limit;
-    const where = {
-      deletedAt: null,
-      project: { archivedAt: null },
-      ...(params.projectId ? { projectId: params.projectId } : {}),
-      ...(params.parentTaskId ? { parentTaskId: params.parentTaskId } : {}),
-      ...(params.status ? { status: params.status } : {}),
-    };
-
     const projectFilter = params.projectId
       ? Prisma.sql`AND task."projectId" = ${params.projectId}`
       : Prisma.empty;
@@ -439,21 +431,22 @@ export class TaskService {
       ? Prisma.sql`AND task."parentTaskId" = ${params.parentTaskId}`
       : Prisma.empty;
     const statusFilter = params.status
-      ? Prisma.sql`AND task."status" = ${params.status}`
+      ? Prisma.sql`AND (${taskDisplayStatusSql}) = ${params.status}`
       : Prisma.empty;
+    const fromWhere = Prisma.sql`
+      FROM "Task" task
+      INNER JOIN "Project" project ON project."id" = task."projectId"
+      WHERE task."deletedAt" IS NULL
+        ${includeArchived ? Prisma.empty : Prisma.sql`AND project."archivedAt" IS NULL`}
+        ${projectFilter} ${statusFilter} ${parentFilter}
+    `;
 
-    const [tasks, total] = await Promise.all([
+    const [tasks, counts] = await Promise.all([
       prisma.$queryRaw<TaskBoardTaskRow[]>(Prisma.sql`
         SELECT ${taskBoardColumns}
-        FROM "Task" task
-        INNER JOIN "Project" project ON project."id" = task."projectId"
-        WHERE task."deletedAt" IS NULL
-          AND project."archivedAt" IS NULL
-          ${projectFilter}
-          ${statusFilter}
-          ${parentFilter}
+        ${fromWhere}
         ORDER BY
-          CASE task."status"
+          CASE "displayStatus"
             WHEN ${TaskStatus.IN_PROGRESS} THEN 0
             WHEN ${TaskStatus.IN_REVIEW} THEN 1
             WHEN ${TaskStatus.TODO} THEN 2
@@ -461,13 +454,21 @@ export class TaskService {
             WHEN ${TaskStatus.CANCELLED} THEN 4
             ELSE 99
           END ASC,
-          CASE WHEN task."status" = ${TaskStatus.IN_REVIEW} THEN task."priority" ELSE 0 END DESC,
+          CASE WHEN "displayStatus" = ${TaskStatus.IN_REVIEW} THEN task."priority" ELSE 0 END DESC,
           task."position" ASC,
           task."id" ASC
         LIMIT ${limit} OFFSET ${skip}
       `),
-      prisma.task.count({ where }),
+      prisma.$queryRaw<Array<{ total: bigint | number }>>(Prisma.sql`SELECT COUNT(*) AS total ${fromWhere}`),
     ]);
+    return { tasks, total: Number(counts[0].total), page, limit };
+  }
+
+  /**
+   * Compact board read model. Query count remains fixed as project/task counts grow.
+   */
+  async findBoard(params: FindTasksParams = {}): Promise<TaskBoardResponse> {
+    const { tasks, total, page, limit } = await this.findPage(params);
 
     // Descendants can rank ahead of their ancestors or fall on another page.
     // Return the complete compact path without changing the page count/limit.
@@ -561,6 +562,7 @@ export class TaskService {
         runningSubtaskCount: Number(task.runningSubtaskCount),
         title: titlePreview,
         status: task.status as TaskStatus,
+        ...mapTaskDisplayState(task),
         priority: task.priority ?? TaskPriority.NORMAL,
         ...(preferredWorkspace ? {
           preferredWorkspace: {
@@ -600,67 +602,38 @@ export class TaskService {
       throw new NotFoundError('Project', projectId);
     }
 
-    const page = Math.max(1, params.page || 1);
-    const limit = Math.min(1000, Math.max(1, params.limit || 200));
-    const skip = (page - 1) * limit;
-
-    const where: any = { projectId, deletedAt: null };
-    if (params.status) {
-      where.status = params.status;
-    }
-
-    // Active tasks first (IN_PROGRESS → IN_REVIEW → TODO), then completed (DONE → CANCELLED).
-    // Raw SQL CASE needed because Prisma orderBy doesn't support custom sort functions.
-    const statusOrder: Record<string, number> = {
-      [TaskStatus.IN_PROGRESS]: 0,
-      [TaskStatus.IN_REVIEW]: 1,
-      [TaskStatus.TODO]: 2,
-      [TaskStatus.DONE]: 3,
-      [TaskStatus.CANCELLED]: 4,
-    };
-
-    const [data, total] = await Promise.all([
-      prisma.task.findMany({
-        where,
-        select: {
-          id: true,
-          projectId: true,
-          title: true,
-          baseBranch: true,
-          parentTaskId: true,
-          parentTask: { select: { parentTaskId: true } },
-          status: true,
-          priority: true,
-          position: true,
-          createdAt: true,
-          updatedAt: true,
-          workspaces: { include: { sessions: visibleSessionSummary } },
-          project: true,
-        },
-        orderBy: [{ updatedAt: 'desc' }],
-        skip,
-        take: limit,
-      }),
-      prisma.task.count({ where }),
-    ]);
-
-    data.sort((a, b) => {
-      const sa = statusOrder[a.status] ?? 99;
-      const sb = statusOrder[b.status] ?? 99;
-      if (sa !== sb) return sa - sb;
-      if (a.status === TaskStatus.IN_REVIEW) {
-        const priorityDelta = (b.priority ?? TaskPriority.NORMAL) - (a.priority ?? TaskPriority.NORMAL);
-        if (priorityDelta !== 0) return priorityDelta;
-      }
-      return (a.position ?? 0) - (b.position ?? 0) || a.id.localeCompare(b.id);
+    const { tasks, total, page, limit } = await this.findPage({
+      ...params, projectId, limit: params.limit || 200,
+    }, true);
+    const data = await prisma.task.findMany({
+      where: { id: { in: tasks.map(task => task.id) }, deletedAt: null },
+      select: {
+        id: true,
+        projectId: true,
+        title: true,
+        baseBranch: true,
+        parentTaskId: true,
+        parentTask: { select: { parentTaskId: true } },
+        status: true,
+        priority: true,
+        position: true,
+        createdAt: true,
+        updatedAt: true,
+        workspaces: { include: { sessions: visibleSessionSummary } },
+        project: true,
+      },
     });
-
+    const byId = new Map(data.map(task => [task.id, task]));
     const projectGitCapability = getStoredProjectGitCapability(project);
 
     return {
-      data: data.map((task) => (
-        withTaskPreviews(withProjectGitCapability(withHierarchy(task), projectGitCapability), { omitDescription: true })
-      )),
+      data: tasks.flatMap(row => {
+        const task = byId.get(row.id);
+        return task ? [withTaskPreviews(withProjectGitCapability({
+          ...withHierarchy(task), status: row.status as TaskStatus, ...mapTaskDisplayState(row),
+          subtaskCount: Number(row.subtaskCount),
+        }, projectGitCapability), { omitDescription: true })] : [];
+      }),
       total,
       page,
       limit,
@@ -697,7 +670,7 @@ export class TaskService {
     }
 
     const { _count, ...metadata } = task;
-    return withTaskPreviews(withProjectGitMetadata({ ...withHierarchy(metadata), subtaskCount: _count.subtasks }), { omitDescription: true });
+    return this.withDisplayState(withTaskPreviews(withProjectGitMetadata({ ...withHierarchy(metadata), subtaskCount: _count.subtasks }), { omitDescription: true }));
   }
 
   async findSubtasks(id: string, params: FindTasksParams = {}) {
@@ -1118,11 +1091,11 @@ export class TaskService {
       throw new NotFoundError('Project', projectId);
     }
 
-    const counts = await prisma.task.groupBy({
-      by: ['status'],
-      where: { projectId, deletedAt: null },
-      _count: { id: true },
-    });
+    const counts = await prisma.$queryRaw<Array<{ displayStatus: string; count: bigint | number }>>(Prisma.sql`
+      SELECT ${taskDisplayStatusSql} AS "displayStatus", COUNT(*) AS count
+      FROM "Task" task WHERE task."projectId" = ${projectId} AND task."deletedAt" IS NULL
+      GROUP BY "displayStatus"
+    `);
 
     const stats = {
       total: 0,
@@ -1134,9 +1107,9 @@ export class TaskService {
     };
 
     for (const row of counts) {
-      const count = row._count.id;
+      const count = Number(row.count);
       stats.total += count;
-      switch (row.status) {
+      switch (row.displayStatus) {
         case TaskStatus.TODO:
           stats.todo = count;
           break;
@@ -1218,6 +1191,15 @@ export class TaskService {
   }
 
   // ── 内部方法 ────────────────────────────────────────────────────────────────
+
+  private async withDisplayState<T extends { id: string }>(task: T) {
+    const [state] = await prisma.$queryRaw<Array<TaskDisplayRow & { status: TaskStatus }>>(Prisma.sql`
+      SELECT task."status", ${taskDisplayColumnsSql} FROM "Task" task
+      WHERE task."id" = ${task.id} AND task."deletedAt" IS NULL
+    `);
+    if (!state) throw new NotFoundError('Task', task.id);
+    return { ...task, status: state.status, ...mapTaskDisplayState(state) };
+  }
 
   /**
    * 发射 task:updated 事件，通知 SocketGateway 转发到前端

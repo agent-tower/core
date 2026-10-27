@@ -2,6 +2,8 @@ import type { AppLocale } from '@agent-tower/shared'
 
 export const messages: Record<AppLocale, Record<string, string>> = {
   'zh-CN': {
+    'Own status: {status}': '自身状态：{status}',
+    'Subtasks and grandchildren: {running} running, {review} in review': '子孙任务：{running} 个进行中，{review} 个待审查',
     'Handoff note': '交接笔记',
     'Handoff Markdown': '交接笔记 Markdown',
     'Progress, decisions, and next steps': '进展、决策与下一步',
@@ -780,6 +782,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'days left': '天后到期',
   },
   en: {
+    'Own status: {status}': 'Own status: {status}',
+    'Subtasks and grandchildren: {running} running, {review} in review': 'Subtasks and grandchildren: {running} running, {review} in review',
     "Create subtask": "Create subtask",
     "Subtasks": "Subtasks",
     "{count} subtasks": "{count} subtasks",
