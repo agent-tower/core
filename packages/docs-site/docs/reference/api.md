@@ -76,15 +76,17 @@ description: 当前代码库中公开的主要 REST 端点。
 | `GET` | `/api/workspaces/:id/diff` | 获取 workspace diff |
 | `POST` | `/api/workspaces/:id/merge` | squash merge；可用 `stopActiveServices: true` 明确允许先停止源 workspace 的活跃后台服务 |
 | `POST` | `/api/workspaces/:id/archive` | 归档 workspace |
-| `DELETE` | `/api/workspaces/:id` | 删除 workspace |
+| `DELETE` | `/api/workspaces/:id` | 回收 workspace 运行资源，保留任务及会话历史 |
 | `POST` | `/api/workspaces/:id/open-editor` | 在 IDE 中打开 workspace |
 | `POST` | `/api/workspaces/:id/rebase` | rebase workspace |
 | `GET` | `/api/workspaces/:id/git-status` | 获取所查目录的 Git 状态 |
 | `POST` | `/api/workspaces/:id/conflict-context` | owner 只读核验原冲突证明并换签；id 为原 source workspace |
 | `POST` | `/api/workspaces/:id/abort-operation` | 中止当前 Git 操作 |
 | `POST` | `/api/workspaces/:id/reactivate` | 唤醒休眠 workspace |
-| `POST` | `/api/system/cleanup` | 清理可清理的 workspace |
+| `POST` | `/api/system/cleanup` | 回收已完成任务的已合并/归档 workspace 资源，保留会话历史 |
 | `POST` | `/api/system/hibernate-idle` | 手动触发空闲 workspace 休眠 |
+
+资源清理保留 Workspace 和 Session 记录，清空 `worktreePath`、`workingDir` 和 `previewTarget`，完成时记录 `cleanedAt`；已合并状态保留，单独删除其他状态的 workspace 后标为 `ABANDONED`。历史 workspace/session 仍可通过 GET 查询，对话快照可跨重启读取；新建会话或继续执行要求 ACTIVE workspace，历史工作区返回 `409 WORKSPACE_NOT_ACTIVE`。任务删除流程最终硬删除任务时，才级联删除这些历史记录。清理失败保留资源身份供重试，主目录模式不删除项目目录。
 
 Setup 进度快照保存在当前服务进程内，运行态保留至脚本结束，终态最多保留 10 分钟；服务重启后不保留。前端可在打开任务或 Socket 重连时读取快照，补偿错过的进度事件。
 

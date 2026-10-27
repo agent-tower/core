@@ -10,6 +10,7 @@ import { prisma } from '../utils/index.js';
 import { getProviderById } from '../executors/index.js';
 import { RuntimeType } from '@agent-tower/shared';
 import { ServiceError } from '../errors.js';
+import { assertWorkspaceSessionAvailable } from '../services/session-resource-cleanup.js';
 import {
   AgentVisualizationError,
   AgentVisualizationService,
@@ -127,6 +128,8 @@ function validateWorkspaceBackedSession(existing: {
   context?: string | null;
   conversationId?: string | null;
   workspace?: {
+    status: string;
+    cleanedAt?: Date | null;
     task: {
       deletedAt?: Date | null;
       project: { name: string; archivedAt: Date | null; repoDeletedAt: Date | null };
@@ -151,6 +154,14 @@ function validateWorkspaceBackedSession(existing: {
   if (projectError) {
     reply.code(400);
     return projectError;
+  }
+
+  try {
+    assertWorkspaceSessionAvailable(existing.workspace);
+  } catch (error) {
+    if (!(error instanceof ServiceError)) throw error;
+    reply.code(error.statusCode);
+    return { error: error.message, code: error.code };
   }
 
   return null;

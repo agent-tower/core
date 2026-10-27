@@ -170,6 +170,7 @@ describe('session runtime routes', () => {
     findSession.mockResolvedValue({
       id: 'session-1',
       workspace: {
+        status: 'ACTIVE',
         task: {
           deletedAt: null,
           project: { name: 'Project', archivedAt: null, repoDeletedAt: null },
@@ -202,6 +203,7 @@ describe('session runtime routes', () => {
     findSession.mockResolvedValue({
       id: 'session-1',
       workspace: {
+        status: 'ACTIVE',
         task: {
           deletedAt: null,
           project: { name: 'Project', archivedAt: null, repoDeletedAt: null },

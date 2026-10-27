@@ -22,6 +22,8 @@ interface TaskCleanupWorkspaceSnapshot {
   worktreePath: string;
   workingDir: string;
   workspaceKind: string;
+  /** Completed resource cleanup relinquished branch ownership; legacy snapshots omit this. */
+  resourcesCleaned?: boolean;
   branchName: string;
   baseBranch: string | null;
   sessions: TaskCleanupSessionSnapshot[];
@@ -227,6 +229,7 @@ export class TaskCleanupService {
     }
 
     for (const workspace of snapshot.workspaces) {
+      if (workspace.resourcesCleaned) continue;
       if (!isWorktreeWorkspace(workspace)) continue;
       if (!workspace.worktreePath) continue;
       const result = await worktreeManager.remove(workspace.worktreePath);
@@ -236,6 +239,7 @@ export class TaskCleanupService {
     }
 
     for (const workspace of snapshot.workspaces) {
+      if (workspace.resourcesCleaned) continue;
       if (!isWorktreeWorkspace(workspace)) continue;
       const result = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
         protectedBranches: [snapshot.project.mainBranch, workspace.baseBranch],

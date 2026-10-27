@@ -767,7 +767,7 @@ export class TaskService {
     const parent = input.parentTaskId ? await prisma.task.findFirst({
       where: { id: input.parentTaskId, projectId, deletedAt: null },
       include: { parentTask: { select: { parentTaskId: true } }, workspaces: {
-        where: { parentWorkspaceId: null, ownerMemberId: null, status: { not: WorkspaceStatus.ABANDONED } },
+        where: { parentWorkspaceId: null, ownerMemberId: null, status: { not: WorkspaceStatus.ABANDONED }, cleanedAt: null },
         orderBy: { createdAt: 'desc' },
       } },
     }) : null;
@@ -1041,6 +1041,7 @@ export class TaskService {
             workspaces: orderedTasks.flatMap((task) => task.workspaces.map((workspace) => ({
               id: workspace.id,
               worktreePath: workspace.worktreePath,
+              resourcesCleaned: workspace.cleanedAt != null,
               workingDir: getWorkspaceWorkingDir(workspace),
               workspaceKind: workspace.workspaceKind,
               branchName: workspace.branchName,

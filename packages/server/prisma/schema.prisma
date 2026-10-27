@@ -315,6 +315,7 @@ model Workspace {
   commitMessage     String? // AI 生成的 commit message（合并时使用）
   previewTarget     String? // Preview 代理目标（仅允许 loopback 地址）
   hibernatedAt      DateTime? // 自动休眠时间
+  cleanedAt         DateTime? // 资源清理完成；保留工作区身份及会话历史直到任务删除
   sessions          Session[]
   backgroundServices WorkspaceBackgroundService[]
   verdicts          WorkspaceVerdict[]
@@ -328,6 +329,7 @@ model Workspace {
   @@index([taskId, parentWorkspaceId])
   @@index([workspaceKind])
   @@index([workingDir])
+  @@index([status, cleanedAt])
 }
 
 // Workspace-owned long-running process definition and runtime snapshot.

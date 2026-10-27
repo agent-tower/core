@@ -1374,6 +1374,7 @@ export class WorkspaceService {
           ownerMemberId: options.ownerMemberId,
           workspaceKind: WorkspaceKind.WORKTREE,
           status: { in: [WorkspaceStatus.MERGED, WorkspaceStatus.HIBERNATED] },
+          cleanedAt: null,
         },
         orderBy: { updatedAt: 'desc' },
       });
@@ -1807,7 +1808,23 @@ export class WorkspaceService {
       return this.restoreInactiveWorkspace(workspace);
     }
 
-    if (workspace.status === WorkspaceStatus.MERGED) {
+    if (workspace.status === WorkspaceStatus.MERGED
+      || (workspace.status === WorkspaceStatus.ABANDONED && workspace.cleanedAt)) {
+      if (workspace.cleanedAt) {
+        return defaultWorkspaceLifecycleBarrier.withWorkspaces([workspace.id, mainWorkspace.id], async () => {
+          const current = await prisma.workspace.findUnique({
+            where: { id: workspace.id }, include: { task: { include: { project: true } } },
+          });
+          if (!current) throw new NotFoundError('Workspace', workspace.id);
+          ensureTaskNotDeleted(current.task);
+          const activeMain = await prisma.workspace.findFirst({
+            where: { id: mainWorkspace.id, status: WorkspaceStatus.ACTIVE, cleanedAt: null, task: { deletedAt: null } },
+          });
+          if (!activeMain) throw new ServiceError('TeamRun main workspace is no longer active', 'WORKSPACE_NOT_ACTIVE', 409);
+          if (!current.cleanedAt) return this.activateDedicatedWorkspace(current, mainWorkspace);
+          return this.resetMergedDedicatedWorkspace(current, mainWorkspace);
+        });
+      }
       return this.resetMergedDedicatedWorkspace(workspace, mainWorkspace);
     }
 
@@ -1826,58 +1843,77 @@ export class WorkspaceService {
     this.assertWorktreeWorkspace(mainWorkspace);
 
     const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-    const worktreePath = await worktreeManager.ensureWorktreeExists(workspace.branchName);
-    if (!(await worktreeManager.isWorktreeClean(worktreePath))) {
-      throw new ServiceError(
-        `Cannot start new work from merged workspace ${workspace.id} because it has uncommitted changes`,
-        'MERGED_WORKSPACE_DIRTY',
-        409,
-      );
+    // The retained record still occupies the member's unique workspace slot.
+    // Rebuild its resources with a fresh branch; the previous name is no longer owned.
+    const branchName = workspace.cleanedAt ? `${workspace.branchName}-${randomUUID().slice(0, 8)}` : workspace.branchName;
+    const worktreePath = workspace.cleanedAt
+      ? await worktreeManager.create(branchName, mainWorkspace.branchName)
+      : await worktreeManager.ensureWorktreeExists(branchName);
+    let resourcesBound = false;
+    try {
+      if (!(await worktreeManager.isWorktreeClean(worktreePath))) {
+        throw new ServiceError(
+          `Cannot start new work from merged workspace ${workspace.id} because it has uncommitted changes`,
+          'MERGED_WORKSPACE_DIRTY',
+          409,
+        );
+      }
+
+      const mainHead = (await execGit(mainWorkspace.worktreePath, ['rev-parse', 'HEAD'])).trim();
+      await execGit(worktreePath, ['reset', '--hard', mainHead]);
+
+      const actualHead = (await execGit(worktreePath, ['rev-parse', 'HEAD'])).trim();
+      if (!mainHead || actualHead !== mainHead || !(await worktreeManager.isWorktreeClean(worktreePath))) {
+        throw new ServiceError(
+          `Merged workspace ${workspace.id} could not be aligned to the TeamRun main workspace`,
+          'MERGED_WORKSPACE_RESET_FAILED',
+          500,
+        );
+      }
+
+      const updateResult = await prisma.workspace.updateMany({
+        where: {
+          id: workspace.id,
+          status: workspace.status,
+          cleanedAt: workspace.cleanedAt,
+          task: { deletedAt: null },
+        },
+        data: {
+          status: WorkspaceStatus.ACTIVE,
+          branchName,
+          baseBranch: mainWorkspace.branchName,
+          worktreePath,
+          workingDir: worktreePath,
+          hibernatedAt: null,
+          commitMessage: null,
+          cleanedAt: null,
+        },
+      });
+      if (updateResult.count !== 1) {
+        throw new ServiceError(
+          `Merged workspace ${workspace.id} changed state while starting new work`,
+          'MERGED_WORKSPACE_STATE_CHANGED',
+          409,
+        );
+      }
+      resourcesBound = true;
+
+      this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
+      this.fireSetupScript(workspace.id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
+
+      const activated = await prisma.workspace.findUniqueOrThrow({
+        where: { id: workspace.id },
+        include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
+      });
+      return activated;
+    } catch (error) {
+      if (workspace.cleanedAt && !resourcesBound) {
+        await this.cleanupCreatedWorktree(worktreeManager, worktreePath, branchName, [
+          workspace.task.project.mainBranch, mainWorkspace.branchName,
+        ]);
+      }
+      throw error;
     }
-
-    const mainHead = (await execGit(mainWorkspace.worktreePath, ['rev-parse', 'HEAD'])).trim();
-    await execGit(worktreePath, ['reset', '--hard', mainHead]);
-
-    const actualHead = (await execGit(worktreePath, ['rev-parse', 'HEAD'])).trim();
-    if (!mainHead || actualHead !== mainHead || !(await worktreeManager.isWorktreeClean(worktreePath))) {
-      throw new ServiceError(
-        `Merged workspace ${workspace.id} could not be aligned to the TeamRun main workspace`,
-        'MERGED_WORKSPACE_RESET_FAILED',
-        500,
-      );
-    }
-
-    const updateResult = await prisma.workspace.updateMany({
-      where: {
-        id: workspace.id,
-        status: WorkspaceStatus.MERGED,
-        task: { deletedAt: null },
-      },
-      data: {
-        status: WorkspaceStatus.ACTIVE,
-        baseBranch: mainWorkspace.branchName,
-        worktreePath,
-        workingDir: worktreePath,
-        hibernatedAt: null,
-        commitMessage: null,
-      },
-    });
-    if (updateResult.count !== 1) {
-      throw new ServiceError(
-        `Merged workspace ${workspace.id} changed state while starting new work`,
-        'MERGED_WORKSPACE_STATE_CHANGED',
-        409,
-      );
-    }
-
-    this.runCopyFiles(workspace.task.project.repoPath, worktreePath, workspace.task.project.copyFiles);
-    this.fireSetupScript(workspace.id, workspace.taskId, worktreePath, workspace.task.project.setupScript);
-
-    const activated = await prisma.workspace.findUniqueOrThrow({
-      where: { id: workspace.id },
-      include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
-    });
-    return activated;
   }
 
   private async waitForWorkspaceReady(workspace: WorkspaceWithTaskProject): Promise<WorkspaceWithTaskProject> {
@@ -1965,12 +2001,8 @@ export class WorkspaceService {
   // ── Delete ───────────────────────────────────────────────────────────────────
 
   /**
-   * 删除 Workspace
-   *
-   * - 删除前检查是否有 RUNNING 状态的 Session，有则拒绝删除
-   * - 删除时先停止所有关联 Session 的进程
-   * - 删除时调用 WorktreeManager.remove 清理 worktree
-   * - worktree 清理失败时仍然删除数据库记录（记录警告日志）
+   * 回收 Workspace 的运行资源，保留任务下的会话历史。
+   * 只有任务/项目硬删除才级联删除 Workspace 和 Session。
    */
   async delete(id: string) {
     return withSessionResourceCleanup({ workspaceId: id }, () => (
@@ -1991,6 +2023,8 @@ export class WorkspaceService {
       throw new NotFoundError('Workspace', id);
     }
     ensureProjectIsMutable(workspace.task.project, 'delete workspaces');
+    ensureTaskNotDeleted(workspace.task);
+    if (workspace.cleanedAt) return true;
 
     // A completed ACP turn may still own a reusable adapter process.
     for (const session of workspace.sessions) {
@@ -1999,22 +2033,36 @@ export class WorkspaceService {
 
     await this.backgroundService.stopAllForWorkspace(id);
 
-    if (isWorktreeWorkspace(workspace) && workspace.worktreePath) {
-      // 清理 worktree
-      try {
-        const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-        await worktreeManager.remove(workspace.worktreePath);
-      } catch (err) {
-        // worktree 清理失败时记录警告但不阻断删除
-        console.warn(
-          `[WorkspaceService] Failed to remove worktree for workspace ${id}: ${err instanceof Error ? err.message : err}`
-        );
+    const worktreeManager = isWorktreeWorkspace(workspace)
+      ? new WorktreeManager(workspace.task.project.repoPath) : null;
+    if (worktreeManager && workspace.worktreePath) {
+      const result = await worktreeManager.remove(workspace.worktreePath);
+      if (result.status === 'unregistered') {
+        throw new ServiceError('Workspace directory could not be safely removed', 'WORKSPACE_CLEANUP_PENDING', 409);
       }
     }
 
-    // 删除数据库记录（级联删除 sessions/services）
     await this.backgroundService.releaseLogsForWorkspace?.(id);
-    await prisma.workspace.delete({ where: { id } });
+    await prisma.workspace.update({
+      where: { id },
+      data: {
+        status: workspace.status === WorkspaceStatus.MERGED ? WorkspaceStatus.MERGED : WorkspaceStatus.ABANDONED,
+        worktreePath: '',
+        workingDir: '',
+        previewTarget: null,
+        hibernatedAt: null,
+      },
+    });
+    try {
+      // Preserve branch ownership for retry if another task still needs it.
+      if (!worktreeManager || await this.cleanupWorkspaceBranch(workspace, worktreeManager)) {
+        await prisma.workspace.update({ where: { id }, data: { cleanedAt: new Date() } });
+      }
+    } finally {
+      this.eventBus.emit('task:updated', {
+        taskId: workspace.taskId, projectId: workspace.task.projectId, status: workspace.task.status,
+      });
+    }
     return true;
   }
 
@@ -2907,7 +2955,7 @@ export class WorkspaceService {
   // ── Cleanup ──────────────────────────────────────────────────────────────────
 
   /**
-   * 清理所有 ABANDONED/MERGED 状态且关联 Task 为 DONE 的 Workspace
+   * 回收已完成任务的 ABANDONED/MERGED Workspace 资源，保留会话历史。
    *
    * @returns 被清理的 Workspace 数量
    */
@@ -2915,33 +2963,39 @@ export class WorkspaceService {
     const workspaces = await prisma.workspace.findMany({
       where: {
         status: { in: [WorkspaceStatus.ABANDONED, WorkspaceStatus.MERGED] },
-        task: { status: TaskStatus.DONE },
+        cleanedAt: null,
+        task: { status: TaskStatus.DONE, deletedAt: null },
       },
-      include: { task: { include: { project: true } } },
+      select: { id: true },
     });
 
     let cleaned = 0;
 
-    for (const workspace of workspaces) {
+    for (const candidate of workspaces) {
       try {
-        await withSessionResourceCleanup({ workspaceId: workspace.id }, () => (
-          defaultWorkspaceLifecycleBarrier.withWorkspace(workspace.id, async () => {
+        await withSessionResourceCleanup({ workspaceId: candidate.id }, () => (
+          defaultWorkspaceLifecycleBarrier.withWorkspace(candidate.id, async () => {
+            // Recheck after acquiring the lifecycle lock: another cleanup or
+            // reactivation may have already consumed this candidate.
+            const workspace = await prisma.workspace.findFirst({
+              where: {
+                id: candidate.id, cleanedAt: null,
+                status: { in: [WorkspaceStatus.ABANDONED, WorkspaceStatus.MERGED] },
+                task: { status: TaskStatus.DONE, deletedAt: null },
+              },
+              include: { task: { include: { project: true } } },
+            });
+            if (!workspace) return;
             const sessions = await prisma.session.findMany({ where: { workspaceId: workspace.id }, select: { id: true } });
             for (const session of sessions) {
               await stopSessionForResourceCleanup(this.sessionService, session.id);
             }
             await this.backgroundService.stopAllForWorkspace(workspace.id);
-            if (isMainDirectoryWorkspace(workspace)) {
-              await this.backgroundService.releaseLogsForWorkspace?.(workspace.id);
-              await prisma.workspace.delete({ where: { id: workspace.id } });
-              cleaned++;
-              return;
-            }
-
-            const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
+            const worktreeManager = isWorktreeWorkspace(workspace)
+              ? new WorktreeManager(workspace.task.project.repoPath) : null;
 
             // 清理残留 worktree（如果还存在）
-            if (workspace.worktreePath) {
+            if (worktreeManager && workspace.worktreePath) {
               const removeResult = await worktreeManager.remove(workspace.worktreePath);
               if (removeResult.status === 'unregistered') {
                 console.warn(
@@ -2951,47 +3005,53 @@ export class WorkspaceService {
               }
             }
 
-            const referencedByTask = await prisma.task.findFirst({
-              where: { projectId: workspace.task.projectId, id: { not: workspace.taskId }, deletedAt: null, OR: [
-                { baseBranch: workspace.branchName },
-                { workspaces: { some: { baseBranch: workspace.branchName } } },
-              ] }, select: { id: true },
-            });
-            // Retain the owner record so the branch can be reclaimed on family deletion.
-            if (referencedByTask) {
-              // The directory has been reclaimed; the branch still belongs to this task.
-              await this.backgroundService.releaseLogsForWorkspace?.(workspace.id);
-              cleaned++;
-              return;
-            }
-            // Task 已 DONE，branch 不再需要，删除。安全 helper 会跳过 base/main/master/current/missing。
-            const branchDeleteResult = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
-              protectedBranches: [workspace.task.project.mainBranch, workspace.baseBranch],
-            });
-            if (branchDeleteResult.status === 'failed') {
-              console.warn(
-                `[WorkspaceService] cleanup: failed to delete branch ${branchDeleteResult.branchName} for workspace ${workspace.id}: ${branchDeleteResult.reason}`,
-              );
-            } else if (branchDeleteResult.status === 'checked_out') {
-              console.warn(
-                `[WorkspaceService] cleanup: skipped checked-out branch ${branchDeleteResult.branchName} for workspace ${workspace.id}: ${branchDeleteResult.reason}`,
-              );
-            }
-
+            // Clear live paths even when branch reclamation needs a later retry.
+            // MAIN_DIRECTORY releases its binding without removing project files.
             await this.backgroundService.releaseLogsForWorkspace?.(workspace.id);
-            await prisma.workspace.delete({ where: { id: workspace.id } });
-            cleaned++;
+            await prisma.workspace.update({
+              where: { id: workspace.id },
+              data: { worktreePath: '', workingDir: '', previewTarget: null },
+            });
+            const cleanupComplete = !worktreeManager || await this.cleanupWorkspaceBranch(workspace, worktreeManager);
+
+            if (cleanupComplete) {
+              await prisma.workspace.update({ where: { id: workspace.id }, data: { cleanedAt: new Date() } });
+            }
+            if (cleanupComplete || getWorkspaceWorkingDir(workspace)) {
+              cleaned++;
+              this.eventBus.emit('task:updated', {
+                taskId: workspace.taskId, projectId: workspace.task.projectId, status: workspace.task.status,
+              });
+            }
           })
         ));
       } catch (err) {
         // Keep process evidence and directory resources for a later retry.
         console.warn(
-          `[WorkspaceService] cleanup: failed for workspace ${workspace.id}: ${err instanceof Error ? err.message : err}`
+          `[WorkspaceService] cleanup: failed for workspace ${candidate.id}: ${err instanceof Error ? err.message : err}`
         );
       }
     }
 
     return cleaned;
+  }
+
+  private async cleanupWorkspaceBranch(workspace: WorkspaceWithTaskProject, worktreeManager: WorktreeManager): Promise<boolean> {
+    const referencedByTask = await prisma.task.findFirst({
+      where: { projectId: workspace.task.projectId, id: { not: workspace.taskId }, deletedAt: null, OR: [
+        { baseBranch: workspace.branchName },
+        { workspaces: { some: { baseBranch: workspace.branchName, cleanedAt: null } } },
+      ] }, select: { id: true },
+    });
+    if (referencedByTask) return false;
+    const result = await worktreeManager.deleteBranchIfSafe(workspace.branchName, {
+      protectedBranches: [workspace.task.project.mainBranch, workspace.baseBranch],
+    });
+    if (result.status === 'failed' || result.status === 'checked_out') {
+      console.warn(`[WorkspaceService] cleanup: branch ${result.branchName} retained for workspace ${workspace.id}: ${result.reason}`);
+      return false;
+    }
+    return true;
   }
 
   // ── Startup Prune ────────────────────────────────────────────────────────────

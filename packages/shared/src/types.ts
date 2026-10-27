@@ -648,6 +648,8 @@ export interface Workspace {
   previewTarget?: string | null
   /** 自动休眠时间 */
   hibernatedAt?: string | null
+  /** 运行资源已清理，工作空间及会话记录仍保留用于历史查询。 */
+  cleanedAt?: string | null
   /** 关联的会话列表（API include 时返回） */
   sessions?: Session[]
   createdAt?: string

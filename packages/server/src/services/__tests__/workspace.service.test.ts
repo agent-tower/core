@@ -2561,7 +2561,7 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(lockService.listLocks()).toEqual([]);
   });
 
-  it('cleans up stale managed worktree records and deletes their branches', async () => {
+  it('reclaims stale managed worktrees and branches while retaining history records', async () => {
     const { project, task } = await createTask('cleanup stale workspace task');
     await prisma.task.update({
       where: { id: task.id },
@@ -2588,7 +2588,11 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(deleteBranchIfSafeMock).toHaveBeenCalledWith(workspace.branchName, {
       protectedBranches: [project.mainBranch, workspace.baseBranch],
     });
-    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toBeNull();
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({
+      status: 'MERGED', worktreePath: '', workingDir: '', cleanedAt: expect.any(Date),
+    });
+    await expect(service.cleanup()).resolves.toBe(0);
+    expect(removeWorktreeMock).toHaveBeenCalledTimes(1);
   });
 
   it('retries periodic cleanup only after completed session trees are confirmed stopped', async () => {
@@ -2614,7 +2618,10 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     isRuntimeCleanupConfirmed.mockResolvedValue(true);
     await expect(service.cleanup()).resolves.toBe(1);
     expect(removeWorktreeMock).toHaveBeenCalledWith(workspace.worktreePath);
-    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).toBeNull();
+    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).toMatchObject({
+      cleanedAt: expect.any(Date), worktreePath: '',
+    });
+    expect(await prisma.session.count({ where: { workspaceId: workspace.id } })).toBe(1);
   });
 
   it('stops background services before cleanup removes a workspace directory', async () => {
@@ -2644,7 +2651,7 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(removeWorktreeMock).toHaveBeenCalledWith(workspace.worktreePath);
   });
 
-  it('cleans up stale managed TeamRun nested worktree records', async () => {
+  it('reclaims stale managed TeamRun worktrees while retaining workspace identity', async () => {
     const { project, task, teamRun } = await createTeamRunWithMember();
     await prisma.task.update({
       where: { id: task.id },
@@ -2680,7 +2687,9 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(deleteBranchIfSafeMock).toHaveBeenCalledWith(workspace.branchName, {
       protectedBranches: [project.mainBranch, workspace.baseBranch],
     });
-    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toBeNull();
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({
+      status: 'MERGED', worktreePath: '', workingDir: '', cleanedAt: expect.any(Date),
+    });
   });
 
   it('keeps non-managed unregistered worktree records for retry', async () => {
@@ -2760,5 +2769,32 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
 
     expect(cleaned).toBe(0);
     expect(removeWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['failed', 'checked_out'] as const)('retries %s branch cleanup without removing history or the directory twice', async (status) => {
+    const { task } = await createTask('pending branch cleanup');
+    await prisma.task.update({ where: { id: task.id }, data: { status: 'DONE' } });
+    const workspace = await prisma.workspace.create({ data: {
+      taskId: task.id, branchName: 'at/pending-branch', worktreePath: '/pending-branch', status: 'MERGED',
+      sessions: { create: { agentType: 'CODEX', prompt: 'history', status: 'COMPLETED', logSnapshot: '{"entries":[]}' } },
+    }, include: { sessions: true } });
+    Object.assign(service, { sessionService: { stop: vi.fn(async () => workspace.sessions[0]), isRuntimeCleanupConfirmed: vi.fn(async () => true) } });
+    deleteBranchIfSafeMock.mockResolvedValueOnce({ status, branchName: workspace.branchName });
+    await service.cleanup();
+    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).toMatchObject({ worktreePath: '', cleanedAt: null });
+    await service.cleanup();
+    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).toMatchObject({ cleanedAt: expect.any(Date) });
+    expect((await prisma.session.findUniqueOrThrow({ where: { id: workspace.sessions[0]!.id } })).logSnapshot).toBe('{"entries":[]}');
+    expect(removeWorktreeMock).toHaveBeenCalledTimes(1);
+    expect(deleteBranchIfSafeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('serializes concurrent cleanups before releasing the same workspace resources', async () => {
+    const { task } = await createTask('concurrent cleanup');
+    await prisma.task.update({ where: { id: task.id }, data: { status: 'DONE' } });
+    await prisma.workspace.create({ data: { taskId: task.id, branchName: 'at/concurrent', worktreePath: '/concurrent', status: 'MERGED' } });
+    const results = await Promise.all([service.cleanup(), service.cleanup()]);
+    expect(results.reduce((sum, count) => sum + count, 0)).toBe(1);
+    expect(removeWorktreeMock).toHaveBeenCalledTimes(1);
   });
 });

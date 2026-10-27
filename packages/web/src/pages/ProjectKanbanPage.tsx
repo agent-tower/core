@@ -679,7 +679,7 @@ export function ProjectKanbanPage() {
       const parent = await apiClient.get<Task>(`/tasks/${id}`)
       if (request !== subtaskRequest.current) return
       if (!canCreateSubtask(parent)) throw new Error(t('Tasks support at most three levels'))
-      const roots = (parent.workspaces?.filter(workspace => !workspace.parentWorkspaceId && workspace.status !== 'ABANDONED') ?? [])
+      const roots = (parent.workspaces?.filter(workspace => !workspace.parentWorkspaceId && !workspace.cleanedAt && workspace.status !== 'ABANDONED') ?? [])
         .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
       const workspace = roots.find(workspace => workspace.status === 'ACTIVE')
         ?? roots.find(workspace => workspace.status === 'HIBERNATED') ?? roots[0]

@@ -32,6 +32,7 @@ export function useTaskRealtimeSync() {
     // On reconnect: invalidate all task queries to compensate for missed events
     const handleReconnect = () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all })
     }
 
     // --- Event handlers ---
@@ -47,6 +48,7 @@ export function useTaskRealtimeSync() {
       queryClient.invalidateQueries({ queryKey: ['tasks', 'subtasks'] })
       queryClient.invalidateQueries({ queryKey: ['tasks', 'deletion-scope'] })
       queryClient.invalidateQueries({ queryKey: queryKeys.tasks.handoff(payload.taskId) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.list(payload.taskId) })
       queryClient.invalidateQueries({
         queryKey: queryKeys.tasks.detail(payload.taskId),
       })

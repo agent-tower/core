@@ -56,7 +56,7 @@ import {
   type RuntimeTurnEventEnvelope,
 } from '../runtime/index.js';
 import { buildWorkspaceRuntimePrompt } from '../prompts/workspace-background-service-policy.js';
-import { assertSessionResourceAvailable } from './session-resource-cleanup.js';
+import { assertSessionResourceAvailable, assertWorkspaceSessionAvailable } from './session-resource-cleanup.js';
 import {
   cleanupPersistedAcpProcessTree,
   type PersistedAcpProcessIdentity,
@@ -657,6 +657,7 @@ export class SessionManager {
       throw new NotFoundError('Workspace', workspaceId);
     }
     ensureTaskNotDeleted(workspace.task);
+    assertWorkspaceSessionAvailable(workspace);
     assertSessionResourceAvailable({ workspaceId });
 
     const provider = providerId ? getProviderById(providerId) : null;
@@ -2580,6 +2581,7 @@ export class SessionManager {
       throw new NotFoundError('Workspace', session.workspaceId ?? session.id);
     }
     ensureTaskNotDeleted(session.workspace.task);
+    assertWorkspaceSessionAvailable(session.workspace);
   }
 
   private getExecutionWorkingDir(session: SessionExecutionRecord): string {

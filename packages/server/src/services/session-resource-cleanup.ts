@@ -1,5 +1,13 @@
 import { ServiceError } from '../errors.js';
 import type { SessionManager } from './session-manager.js';
+import { WorkspaceStatus } from '../types/index.js';
+
+/** Historical sessions stay readable, but cannot launch in a reclaimed workspace. */
+export function assertWorkspaceSessionAvailable(workspace: { status: string; cleanedAt?: Date | null }): void {
+  if (workspace.cleanedAt || workspace.status !== WorkspaceStatus.ACTIVE) {
+    throw new ServiceError('Workspace is read-only. Create or reactivate a workspace to continue.', 'WORKSPACE_NOT_ACTIVE', 409);
+  }
+}
 
 interface SessionResource {
   workspaceId?: string | null;
