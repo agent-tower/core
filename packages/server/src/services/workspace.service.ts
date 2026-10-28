@@ -2227,7 +2227,8 @@ export class WorkspaceService {
       }
       if (currentTarget) {
         await this.assertNoActiveWriteSessions(currentTarget.id);
-        await this.assertNoActiveBackgroundServices(currentTarget.id);
+        // Target services may keep running during a merge. Uncomment to restore this guard.
+        // await this.assertNoActiveBackgroundServices(currentTarget.id);
       }
       ensureProjectIsMutable(workspace.task.project, 'merge workspaces');
       this.assertWorktreeWorkspace(workspace);

@@ -10,7 +10,7 @@
 - `GET /projects/:projectId/workspace-branches` 为项目设置和任务合并确认框提供本地分支与紧凑根 workspace 列表；单个 workspace 的编辑入口是 `SubmitChangesDialog`，`PATCH /workspaces/:id/base-branch` 更新 ACTIVE WORKTREE 根 workspace 的基础分支。修改带原值校验、复用 lifecycle barrier，与 rebase/merge 串行；拒绝托管 Agent、成员子 workspace、运行中的 Session/Invocation、未结束 Git 操作及无共同历史的分支。更新只写元数据并清空旧提交消息；`workspace:git_changed` 的 `base-branch` reason 同步失效 workspace/任务及 Git 缓存，重连补读元数据。UI 保存后关闭合并确认框，先重新审查差异，不自动合并。不要将此字段误认为只影响合并目标，它也控制 diff 和 rebase。
 - 一个 Task 可有主 workspace、成员 workspace 和目标提交执行 workspace；hibernate/reactivate 与 merge/archive/delete 是不同操作。修改路径、清理或主 workspace 选择时检查子 workspace、watcher、session 和后台服务，沿既有生命周期入口处理。
 - 完成任务的 `WorkspaceService.cleanup()` 与单独 `delete()` 只回收运行资源，保留 Workspace/Session/logSnapshot 及 TeamRun 关联；清空 live paths/preview，完成后写 `cleanedAt`，只有 Task/Project 硬删除才级联清历史。保留 MERGED 结果，单独删除其他状态变 ABANDONED；Session 新建/启动/发送要求 ACTIVE。`cleanedAt` 非空的根工作区不参与自动复用或父任务默认分支选择；TeamRun dedicated 唯一槽位可在主/成员 lifecycle barrier 内从主分支重建，使用新分支名并保留原 Session，失败补偿未绑定资源。任务删除快照保存 `resourcesCleaned`，已清资源不再按历史分支名重复删除，兼容旧快照。分支仍被其他任务引用或删除失败时保留 ownership、`cleanedAt=null` 供重试，已回收目录不重复删除。清理通过 `task:updated` 失效 workspace 列表，重连补读；持久历史验收见 `routes/__tests__/workspace-history.test.ts`（临时 SQLite/真实 Git，覆盖冷读、任务删除及 MAIN_DIRECTORY/TeamRun）。
-- Task 父子关系与 TeamRun `parentWorkspaceId` 分开。普通根 workspace 合并目标若已在另一个活跃根 worktree 中检出，合并在目标目录执行，源/目标共用排序获取的 lifecycle barrier，并检查目标活动会话、后台服务、分支及脏状态。子任务在父 worktree 已回收时合并到保存的父分支，成功后恢复项目目录原分支。父任务常规 cleanup 会保留仍被子任务引用的分支及 workspace 所有权记录，整组任务删除时再回收。
+- Task 父子关系与 TeamRun `parentWorkspaceId` 分开。普通根 workspace 合并目标若已在另一个活跃根 worktree 中检出，合并在目标目录执行，源/目标共用排序获取的 lifecycle barrier，并检查目标活动会话、分支及脏状态；目标后台服务不阻止合并且不会被合并停止。子任务在父 worktree 已回收时合并到保存的父分支，成功后恢复项目目录原分支。父任务常规 cleanup 会保留仍被子任务引用的分支及 workspace 所有权记录，整组任务删除时再回收。
 - `services/workspace-lifecycle-barrier.ts` 的 app 级 barrier 协调同一 workspace 的 start/restart、merge、hibernate、archive/delete 和 task/project cleanup。停止资源、文件系统操作和终态写入需在相同 barrier 内；多 workspace 通过 `withWorkspaces()` 排序获取，避免锁顺序不一致。
 - 删除、归档、休眠及周期清理通过 `session-resource-cleanup.ts` 对所有关联 Session 执行 stop 和 cleanup gate，包括已完成的 ACP 会话；未确认清理时保留目录与数据库身份。Task cleanup 快照也包含所有 Session，执行旧快照时合并当前关联 Session，不能按业务状态筛掉 runtime owner。
 - 独立终端 `destroy()` / `destroyAll()` / `cleanupBySocket()` 均可等待；整树退出确认后才删除 owner，失败保持可重试。HTTP、Socket 断开、TTL 和应用关闭调用方必须等待或显式处理失败。
@@ -24,7 +24,7 @@
 - 显式 stop、workspace hibernate/archive/delete、task/project cleanup 和应用优雅关闭将被停止服务的 desired state 置为 STOPPED 并清理进程树；reactivate 不自动恢复。启动 `reconcile()` 只清理历史 desired RUNNING 或活跃 runtime 记录，将 desired/runtime 置为 STOPPED 并清空 runtime identity/PID，兼容旧版本恢复意图但不自动启动服务。命令定义保留供显式 start/restart 复用。
 - 后台服务 `shutdown()` 先关闭启动入口，等待已进入的启动交接，然后清理；失败可重试。关闭后的同一实例不能通过 `reconcile()` 重新接收启动，服务重启使用新实例。
 - 完全停止指 desired/runtime 均为 STOPPED 且无 runtime identity。定义保留供同名同配置重启，但不显示在列表、不占服务配额；新建和重启完全停止的定义都要在 lifecycle barrier 内检查可用槽位。不要只按记录总数计算配额。
-- merge 默认阻止源 workspace 的活跃后台服务。已有 `stopActiveServices` 请求语义表示调用方明确选择先停止；完成 merge gate 后清理、重验再合并，不能在检查失败前先杀进程。
+- merge 默认阻止源 workspace 的活跃后台服务。已有 `stopActiveServices` 请求语义表示调用方明确选择先停止源服务；完成 merge gate 后清理、重验再合并，不能在检查失败前先杀进程。目标 workspace 的后台服务拦截调用已注释，恢复时只需启用 `merge()` 内目标检查调用；不要同时关闭源服务检查、TeamRun readiness 或源服务停服流程。
 - 日志是有界内存数据，实体删除需释放；seq 仅在同一 `runtimeInstanceId` 内有效。增量请求携带上一 generation，响应分别表达 `reset`、`truncated`、`hasMore`；换代替换缓存，正常分页不等于丢日志。
 - Unix 的 poll/signal 复用 `utils/unix-process-identity.ts` adapter，发信号前校验 PID/PGID、birth identity 及 token 或已验证的父子关系；不回退到未校验的 kill。Linux `/proc` start ticks 与 macOS 秒级 marker 能力不同，单靠 birth marker 不足以证明归属。Windows 重新核验 birth identity 后执行树清理，根先退出时仍需处理已记录后代。
 

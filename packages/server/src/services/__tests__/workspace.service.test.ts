@@ -440,6 +440,43 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     expect(mergeWorktreeMock).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, true])(
+    'keeps target background services running when merging with stopActiveServices=%s', async (stopActiveServices) => {
+      const { project, task: parent } = await createTask('Parent with background services');
+      const parentWorkspace = await prisma.workspace.create({ data: {
+        taskId: parent.id, branchName: 'at/parent', baseBranch: 'main', worktreePath: '/parent',
+      } });
+      const child = await prisma.task.create({ data: {
+        projectId: project.id, title: 'Child', parentTaskId: parent.id, status: 'IN_REVIEW',
+      } });
+      const childWorkspace = await prisma.workspace.create({ data: {
+        taskId: child.id, branchName: 'at/child', baseBranch: 'at/parent', worktreePath: '/child',
+      } });
+      const background = await prisma.workspaceBackgroundService.create({ data: {
+        workspaceId: parentWorkspace.id,
+        name: 'web',
+        command: 'node',
+        desiredState: 'RUNNING',
+        runtimeState: 'RUNNING',
+        runtimeInstanceId: 'runtime-parent-web',
+        pid: 4321,
+      } });
+      const stopAllForWorkspace = vi.fn().mockRejectedValue(new Error('target service must not be stopped'));
+      const lifecycleService = new WorkspaceService(new TeamLockService(), { stopAllForWorkspace });
+
+      await expect(lifecycleService.merge(childWorkspace.id, { stopActiveServices }))
+        .resolves.toBe('root-merge-sha');
+
+      expect(mergeWorktreeMock).toHaveBeenCalledWith('/child', 'at/parent',
+        expect.objectContaining({ targetWorktreePath: '/parent' }));
+      expect(stopAllForWorkspace).not.toHaveBeenCalled();
+      await expect(prisma.workspaceBackgroundService.findUnique({ where: { id: background.id } }))
+        .resolves.toEqual(background);
+      await expect(prisma.workspace.findUnique({ where: { id: parentWorkspace.id } }))
+        .resolves.toMatchObject({ status: 'ACTIVE' });
+    },
+  );
+
   it('retains a merged parent branch and its ownership until its subtasks no longer depend on it', async () => {
     const { project, task: parent } = await createTask('Retain parent branch');
     await prisma.task.update({ where: { id: parent.id }, data: { status: 'DONE' } });

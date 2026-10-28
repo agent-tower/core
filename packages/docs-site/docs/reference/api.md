@@ -94,7 +94,7 @@ Setup 进度快照保存在当前服务进程内，运行态保留至脚本结�
 
 基础分支修改仅适用于 ACTIVE 的 WORKTREE 根 workspace，且不能由 TeamRun 成员所有。目标必须是已有本地分支，与源分支不同且具有共同历史；Agent 正在执行、Git 操作未结束或 `expectedBaseBranch` 已过期时返回 409。保存更新 `baseBranch`、清空旧生成提交消息，广播 `workspace:git_changed`（`reason: base-branch`）；不 checkout、rebase 或修改提交历史。
 
-Merge readiness 和实际 merge 锁内都会检查后台服务；候选 workspace 存在 `STARTING`、`RUNNING`、`STOPPING` 服务，或任意状态仍保留 runtime identity 时，默认以 `409 WORKSPACE_HAS_ACTIVE_SERVICE` 阻止合并。用户明确确认后，merge 请求可携带 `stopActiveServices: true`，服务端会在 workspace lifecycle barrier 和 merge target lock 内先停止这些服务，再重新检查并执行合并；停止后的服务不会自动恢复。
+Merge readiness 和实际 merge 锁内都会检查源 workspace 的后台服务；源 workspace 存在 `STARTING`、`RUNNING`、`STOPPING` 服务，或任意状态仍保留 runtime identity 时，默认以 `409 WORKSPACE_HAS_ACTIVE_SERVICE` 阻止合并。用户明确确认后，merge 请求可携带 `stopActiveServices: true`，服务端会在 workspace lifecycle barrier 和 merge target lock 内先停止源 workspace 的服务，再重新检查并执行合并；停止后的服务不会自动恢复。目标 workspace 的后台服务可以继续运行，不会阻止合并，也不会被这次合并停止；目标活动写会话及 Git 状态检查仍然生效。
 
 ### Workspace 后台服务
 
