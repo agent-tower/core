@@ -313,6 +313,89 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
     await expect(session.close()).resolves.toBeUndefined();
   });
 
+  it('waits for a previous CLI turn cleanup to be acknowledged before closing a follow-up', async () => {
+    const createPty = () => {
+      const dataListeners = new Set<(data: string) => void>();
+      const exitListeners = new Set<(event: { exitCode: number }) => void>();
+      let exited = false;
+      return {
+        onData: (listener: (data: string) => void) => {
+          dataListeners.add(listener);
+          return { dispose: () => dataListeners.delete(listener) };
+        },
+        onExit: (listener: (event: { exitCode: number }) => void) => {
+          exitListeners.add(listener);
+          return { dispose: () => exitListeners.delete(listener) };
+        },
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(() => {
+          if (exited) return;
+          exited = true;
+          for (const listener of [...exitListeners]) listener({ exitCode: 0 });
+        }),
+        complete: () => {
+          for (const listener of [...dataListeners]) listener('{"type":"turn.completed"}\n');
+        },
+      };
+    };
+    const firstPty = createPty();
+    const secondPty = createPty();
+    vi.spyOn(executors, 'getExecutor').mockReturnValue({
+      spawn: vi.fn()
+        .mockResolvedValueOnce({ pid: 101, pty: firstPty })
+        .mockResolvedValueOnce({ pid: 102, pty: secondPty }),
+    } as never);
+
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    let cleanupStarted!: () => void;
+    const cleanupPending = new Promise<void>((resolve) => { cleanupStarted = resolve; });
+    const acknowledged: Array<{ type: string; launchClaimNumber?: number }> = [];
+    const sink: RuntimeDriverEventSink = {
+      stream: vi.fn(),
+      process: vi.fn(async (event) => {
+        if (event.type === 'tree_cleanup_completed' && event.launchClaimNumber === 1) {
+          cleanupStarted();
+          await cleanupGate;
+        }
+        acknowledged.push(event);
+      }),
+    };
+    const session = await new CliRuntimeDriver().open({
+      towerSessionId: 'tower-cli-follow-up-cleanup', agentType: AgentType.CODEX,
+      runtimeType: RuntimeType.CLI, variant: 'DEFAULT', workingDir: process.cwd(),
+      env: ExecutionEnv.default(process.cwd()),
+    });
+    try {
+      const first = await session.runTurn({
+        turnId: 'first', prompt: 'hello', msgStore: new MsgStore(), launchClaimNumber: 1,
+      }, sink);
+      firstPty.complete();
+      await first.completion;
+      await session.runTurn({
+        turnId: 'second', prompt: 'again', msgStore: new MsgStore(), launchClaimNumber: 2,
+      }, sink);
+      await cleanupPending;
+
+      const closing = session.close();
+      const closeState = await Promise.race([
+        closing.then(() => 'closed'),
+        new Promise<string>((resolve) => setImmediate(() => resolve('pending'))),
+      ]);
+      expect(closeState).toBe('pending');
+      releaseCleanup();
+      await closing;
+      expect(acknowledged).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'tree_cleanup_completed', launchClaimNumber: 1 }),
+        expect.objectContaining({ type: 'tree_cleanup_completed', launchClaimNumber: 2 }),
+      ]));
+    } finally {
+      releaseCleanup();
+      await session.close();
+    }
+  });
+
   it('keeps cleanup pending when the wrapper exits without tree evidence', async () => {
     const exitListeners: Array<(event: { exitCode: number; signal?: string | null }) => void> = [];
     const pty = {
