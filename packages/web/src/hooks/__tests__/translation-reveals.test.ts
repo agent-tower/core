@@ -40,3 +40,15 @@ it('recognizes an initially streaming source and a later content revision', () =
   events.update([{ ...history, revision: 2 }], [{ ...success, version: 'source:2' }], true)
   expect(events.claim('source:2')).toBe(true)
 })
+
+it('plays a paragraph that finishes after a later one through the listed presentation version', () => {
+  const events = new TranslationReveals()
+  const paragraphs = [{ id: 'p0', revision: 1 }, { id: 'p1', revision: 1 }]
+  const first = { id: 'p0', version: 'p0:1', state: 'RUNNING' }, second = { id: 'p1', version: 'p1:1', state: 'RUNNING' }
+  events.update(paragraphs, [first, second], true)
+  events.update(paragraphs, [first, { ...second, state: 'SUCCESS' }], true)
+  expect(events.claim('p1:1')).toBe(true)
+  events.update(paragraphs, [{ ...first, state: 'SUCCESS' }, { ...second, state: 'SUCCESS' }], true)
+  expect(events.claim('p0:1 p1:1')).toBe(true)
+  expect(events.claim('p0:1 p1:1')).toBe(false)
+})

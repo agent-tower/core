@@ -434,6 +434,26 @@ describe('RoomTimeline optimistic sending', () => {
     expect(scrollToBottomMock).not.toHaveBeenCalled();
   });
 
+  it('plays a landed translation from the height of the body it replaces', async () => {
+    const calls: { text: string | null; keyframes: Keyframe[] }[] = [];
+    Object.defineProperty(Element.prototype, 'animate', { configurable: true, value: function (this: Element, keyframes: Keyframe[]) { calls.push({ text: this.textContent, keyframes }); return { cancel: vi.fn() }; } });
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) { return { height: this.textContent?.length ?? 0 } as DOMRect; });
+    Object.assign(translationFixture, { claimReveal: () => true, enabled: true });
+    const render = async () => {
+      await act(async () => root.render(<I18nProvider><RoomTimeline teamRun={teamRun} messages={[{ ...createRoomMessage('Original body'), senderType: 'agent' }]} onSendMessage={vi.fn()} /></I18nProvider>));
+      await act(() => new Promise(resolve => setTimeout(resolve, 10)));
+    };
+    try {
+      translation({ state: 'RUNNING', overlayRevision: 8, translatedTextPreview: null, translatedTextTruncated: false }); await render();
+      expect(calls).toEqual([]);
+      translation({ translatedTextTruncated: false }); await render();
+      expect(calls.map(call => call.text)).toEqual(['Translated preview', 'Translated preview']);
+      expect(calls[1].keyframes).toEqual([{ height: '13px', clipPath: 'inset(0)' }, { height: '18px', clipPath: 'inset(0)' }]);
+    } finally {
+      rect.mockRestore(); delete (Element.prototype as { animate?: unknown }).animate; delete (translationFixture as { claimReveal?: unknown }).claimReveal;
+    }
+  });
+
   it('uses independent truncation flags: long original/short translation stays short until comparison is opened', async () => {
     const row = translation({ translatedTextPreview: 'Short translated body', translatedTextTruncated: false });
     translationFixture.loadFull.mockResolvedValue({ ...row, originalText: 'Full original\n\n', translatedText: 'Short translated body' });

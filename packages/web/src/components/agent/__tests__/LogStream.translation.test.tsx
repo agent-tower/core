@@ -316,3 +316,20 @@ it('consumes a new completion without animation when reduced motion is preferred
   expect(animate).not.toHaveBeenCalled()
   media.mockRestore(); delete (Element.prototype as unknown as { animate?: unknown }).animate
 })
+
+it('plays a paragraph that finishes after the paragraph below it', async () => {
+  const animate = vi.fn(() => ({ cancel: vi.fn() }))
+  Object.defineProperty(Element.prototype, 'animate', { configurable: true, value: animate })
+  const prefix = 'First paragraph\n\n'
+  const body: LogEntry = { ...log, content: prefix + 'Second paragraph', textBlock: { ...log.textBlock!, paragraphs: [{ end: prefix.length, translationEpoch: 1 }] } }
+  const first = { ...overlay, sourceId: 'p0', blockId: 'block-a:p0', originalText: prefix, translatedText: '第一段\n\n' }
+  const second = { ...overlay, sourceId: 'p1', blockId: 'block-a:p1', originalText: 'Second paragraph', translatedText: '第二段' }
+  const running = (item: SessionTranslationOverlay) => ({ ...item, state: 'RUNNING' as const, translatedText: null })
+  state.overlays = [running(first), running(second)]; await render([body])
+  state.overlays = [running(first), second]; await render([body])
+  expect(animate).toHaveBeenCalledTimes(1)
+  state.overlays = [first, second]; await render([body])
+  expect(container.querySelector('[data-markdown]')?.textContent).toBe('第一段\n\n第二段')
+  expect(animate).toHaveBeenCalledTimes(2)
+  delete (Element.prototype as unknown as { animate?: unknown }).animate
+})

@@ -30,11 +30,12 @@ export class TranslationReveals {
     }
   }
 
-  claim = (version: string) => {
-    if (this.consumed.has(version)) return false
-    this.consumed.add(version)
-    return this.eligible.has(version)
-  }
+  /** A presentation version may list several overlay versions; each one plays at most once. */
+  claim = (version: string) => version.split(' ').map(item => {
+    if (this.consumed.has(item)) return false
+    this.consumed.add(item)
+    return this.eligible.has(item)
+  }).includes(true)
 }
 
 export function useTranslationReveals(scope: string, sources: Source[], overlays: Overlay[], hasContent: boolean) {

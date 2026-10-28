@@ -3,6 +3,7 @@ import { Popover } from 'radix-ui'
 import { Copy, Languages, X } from 'lucide-react'
 import type { SessionTranslationOverlay } from '@agent-tower/shared'
 import { useQueryClient } from '@tanstack/react-query'
+import { MOTION } from '@/design-system'
 import { apiClient } from '@/lib/api-client'
 import { useI18n } from '@/lib/i18n'
 import { queryKeys } from '@/hooks/query-keys'
@@ -109,20 +110,96 @@ export function TranslationComparison({ original, children, onOpen, getOriginal,
   </Popover.Root>
 }
 
-/** Animate only a changed presentation version, never streaming deltas or initial history. */
-export function TranslationReveal({ version, claim, children }: { version: string | null; claim?: (version: string) => boolean; children: React.ReactNode }) {
+type RevealSnapshot = { texts: string[]; heights: number[] }
+const REVEAL_BLOCK_LIMIT = 200
+const REVEAL_STAGGER_MS = 30
+const REVEAL_MAX_DELAY_MS = 120
+const REVEAL_WAIT_MS = 1000
+
+function revealBlocks(node: HTMLElement, selector?: string) {
+  const root = selector ? node.querySelector(selector) : null
+  return [...(root ?? node).children].slice(0, REVEAL_BLOCK_LIMIT) as HTMLElement[]
+}
+
+function readReveal(node: HTMLElement, selector?: string): RevealSnapshot {
+  const blocks = revealBlocks(node, selector)
+  return { texts: blocks.map(block => block.textContent ?? ''), heights: blocks.map(block => block.getBoundingClientRect().height) }
+}
+
+/**
+ * Plays the blocks whose text was replaced since `before`. A streaming tail only
+ * grows, so it is not a replacement; blocks added together with one belong to
+ * the new version. Returns false while the DOM still shows the outgoing text.
+ */
+function playReveal(node: HTMLElement, before: RevealSnapshot, selector: string | undefined, running: Animation[]) {
+  const blocks = revealBlocks(node, selector)
+  const replaced = blocks.map((block, index) => before.texts[index] !== undefined && !(block.textContent ?? '').startsWith(before.texts[index]))
+  if (!replaced.includes(true)) return false
+  const heights = blocks.map(block => block.getBoundingClientRect().height)
+  let order = 0
+  blocks.forEach((block, index) => {
+    if (!replaced[index] && before.texts[index] !== undefined) return
+    running.push(block.animate([
+      { opacity: 0, transform: 'translateY(4px)', filter: 'blur(2px)' },
+      { opacity: 1, transform: 'none', filter: 'none' },
+    ], { duration: MOTION.enter, easing: MOTION.easeEnter, delay: Math.min(order++ * REVEAL_STAGGER_MS, REVEAL_MAX_DELAY_MS), fill: 'backwards' }))
+    // Gliding between both heights keeps the text below from jumping; a growing
+    // block clips its incoming lines instead of overlapping the next block.
+    const from = before.heights[index] ?? 0, to = heights[index]
+    if (Math.abs(to - from) < 1) return
+    const clip = to > from ? { clipPath: 'inset(0)' } : {}
+    running.push(block.animate([{ height: `${from}px`, ...clip }, { height: `${to}px`, ...clip }], { duration: MOTION.base, easing: MOTION.easeEnter }))
+  })
+  return true
+}
+
+/**
+ * Plays a changed presentation version in, never streaming deltas or initial
+ * history. Only replaced blocks (children of the `blocks` element) rise and fade
+ * in, and each one glides from its outgoing height to the new one. Without a
+ * `claim` nothing can play, so the body is not observed at all.
+ */
+export function TranslationReveal({ version, claim, blocks, children }: {
+  version: string | null; claim?: (version: string) => boolean; blocks?: string; children: React.ReactNode
+}) {
   const element = useRef<HTMLDivElement>(null)
   const previous = useRef(version)
+  const settled = useRef<RevealSnapshot | null>(null)
+  const waiting = useRef<RevealSnapshot | null>(null)
+  const running = useRef<Animation[]>([])
+  const active = claim !== undefined
+  // A remounted body replaces the DOM in the same commit as its version, so the
+  // outgoing text is only known from the last settled snapshot.
   useLayoutEffect(() => {
+    const node = element.current
+    if (!node || !active) return
+    settled.current = readReveal(node, blocks)
+    if (typeof MutationObserver === 'undefined') return
+    const observer = new MutationObserver(() => {
+      // Streamdown commits a changed body in a transition after its parent's.
+      const played = waiting.current !== null && playReveal(node, waiting.current, blocks, running.current)
+      settled.current = readReveal(node, blocks)
+      waiting.current = waiting.current && !played ? settled.current : null
+    })
+    observer.observe(node, { childList: true, subtree: true, characterData: true })
+    return () => observer.disconnect()
+  }, [blocks, active])
+  useLayoutEffect(() => {
+    const node = element.current
     const changed = previous.current !== version
     previous.current = version
     // Claim even on a row's initial mount: virtual remounts and reduced motion
     // must not defer a completion event until an unrelated later render.
     const fresh = version !== null && claim?.(version)
-    if (!changed || !fresh || !element.current?.animate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    const animation = element.current.animate([{ opacity: 0.55, transform: 'translateY(2px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 180, easing: 'ease-out' })
-    return () => animation.cancel()
-  }, [version, claim])
+    if (!changed) return
+    for (const animation of running.current.splice(0)) animation.cancel()
+    const before = settled.current
+    if (!fresh || !node?.animate || !before || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    if (playReveal(node, before, blocks, running.current)) return
+    waiting.current = before
+    const timer = setTimeout(() => { waiting.current = null }, REVEAL_WAIT_MS)
+    return () => { clearTimeout(timer); waiting.current = null }
+  }, [version, claim, blocks])
   return <div ref={element} data-translation-version={version ?? 'original'}>{children}</div>
 }
 

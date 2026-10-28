@@ -816,7 +816,7 @@ const AssistantMessage = memo(({ log, compact, workingDir, onOpenWorkspaceFile, 
   const displayed = presentation?.content ?? log.content
   const markdownProps = { workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }
   return <div className={`relative text-foreground min-w-0 ${overlays.length ? 'pr-8' : ''} ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
-    <TranslationReveal claim={context?.claimReveal} version={presentation?.version ?? null}><MarkdownMessage className="space-y-2" content={displayed} {...markdownProps} /></TranslationReveal>
+    <TranslationReveal claim={context?.enabled ? context.claimReveal : undefined} version={presentation?.version ?? null} blocks=".session-log-message-markdown"><MarkdownMessage className="space-y-2" content={displayed} {...markdownProps} /></TranslationReveal>
     {overlays.length > 0 && <div className="absolute bottom-0 right-0">
       <TranslationComparison key={`${log.id}:${log.textBlock?.sourceRevision}`} original={log.content}>
         <MarkdownMessage content={log.content} {...markdownProps} />

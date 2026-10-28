@@ -898,7 +898,7 @@ function RoomChatMessage({
         {pendingStatus === 'failed' && !delivery && <div className="text-xs"><p>{t('Acceptance unknown; check or retry the same submission.')}</p>{isPendingRoomMessage(message) && message.error && <p>{message.error}</p>}<button type="button" className="underline" onClick={onRetrySubmission}>{t('Retry original submission')}</button></div>}
       </> : undefined}
     >
-      <TranslationReveal claim={translations.claimReveal} version={overlay?.state === 'SUCCESS' ? `${overlay.sourceId}:${overlay.sourceRevision}` : null}>{overlay ? <RoomTranslationBody key={`${overlay.sourceId}:${overlay.sourceRevision}:${overlay.overlayRevision}`} overlay={overlay} translations={translations} enabled={translationEnabled} body={body} />
+      <TranslationReveal claim={translationEnabled ? translations.claimReveal : undefined} version={overlay?.state === 'SUCCESS' ? `${overlay.sourceId}:${overlay.sourceRevision}` : null} blocks=".team-room-message-markdown > div">{overlay ? <RoomTranslationBody key={`${overlay.sourceId}:${overlay.sourceRevision}:${overlay.overlayRevision}`} overlay={overlay} translations={translations} enabled={translationEnabled} body={body} />
         : <RoomMessageBody {...body} />}</TranslationReveal>
     </RoomMessageRow>
   )

@@ -48,7 +48,7 @@ Session 正文在安全的完整段落边界、真实语义边界或完成信号
 
 ## 页面和语言目录
 
-提交快照、响应未知的原 body/UUID、后续草稿与附件分别维护；恢复旧请求不能覆盖新输入。用户气泡只承载正文/附件，翻译状态、重试和实际发送对照位于对应气泡外。Agent 译文正文旁的图标可悬停、键盘聚焦或触摸打开原文浮层，浮层只展示/复制原文；正文复制当前展示版本。历史恢复不重播完成动画，减少动态效果设置仍生效。
+提交快照、响应未知的原 body/UUID、后续草稿与附件分别维护；恢复旧请求不能覆盖新输入。用户气泡只承载正文/附件，翻译状态、重试和实际发送对照位于对应气泡外。Agent 译文正文旁的图标可悬停、键盘聚焦或触摸打开原文浮层，浮层只展示/复制原文；正文复制当前展示版本。译文到达时只有被替换的段落原位上浮淡入，高度从原文平滑过渡到译文；会话正文由 Streamdown 在父组件之后提交，动画等新段落真正落到 DOM 才开始。多段译文的展示版本包含所有已显示段落，后完成的前段也会播放。开关关闭时不观察正文。历史恢复不重播完成动画，减少动态效果设置仍生效。
 
 目录由 [IANA Language Subtag Registry](https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry) 的未弃用 primary language 子标签与 [CLDR JSON 48.1](https://github.com/unicode-org/cldr-json/tree/48.1.0/cldr-json/cldr-core) 的地区/脚本变体生成，CLDR 使用 [Unicode 数据许可](https://www.unicode.org/license.txt)。生成入口为 `node scripts/update-translation-languages.mjs`，输出 `packages/web/src/lib/translation-languages.json`；生成时联网，UI 运行时不联网拉目录。更新后核对 registryDate、语言/locale 数量、常见地区变体与搜索控件，保留旧自定义值。目录不保证所选翻译服务支持全部语言。
 

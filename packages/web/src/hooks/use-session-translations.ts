@@ -77,18 +77,20 @@ export function indexSessionTranslations(overlays: SessionTranslationOverlay[]) 
 
 export function sessionTranslationPresentation(sessionId: string, log: LogEntry, index: ReturnType<typeof indexSessionTranslations>) {
   const overlays: SessionTranslationOverlay[] = []
-  let version: string | null = null
-  if (!isTranslationCandidate(log) || !log.textBlock) return { content: log.content, overlays, version }
+  const versions: string[] = []
+  if (!isTranslationCandidate(log) || !log.textBlock) return { content: log.content, overlays, version: null }
   const blocks = getTranslationTextBlocks(log.content, log.textBlock)
   const content = blocks.map(block => {
     const overlay = index.get(JSON.stringify([sessionId, block.turnId, block.blockId]))
     if (block.state !== 'SEALED' || !overlay || overlay.sourceRevision !== block.sourceRevision || overlay.originalText !== block.content) return block.content
     overlays.push(overlay)
     if (overlay.state !== 'SUCCESS' || overlay.translatedText === null) return block.content
-    version = `${overlay.sourceId}:${overlay.sourceRevision}`
+    versions.push(`${overlay.sourceId}:${overlay.sourceRevision}`)
     return overlay.translatedText
   }).join('')
-  return { content: blocks.length ? content : log.content, overlays, version }
+  // Every displayed paragraph is part of the version, so one finishing out of
+  // order still changes it and can play its own reveal.
+  return { content: blocks.length ? content : log.content, overlays, version: versions.length ? versions.join(' ') : null }
 }
 
 export function mergeTranslationSnapshot(previous: SessionTranslationOverlay[] | undefined, next: SessionTranslationOverlay[]) {
