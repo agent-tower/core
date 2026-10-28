@@ -259,6 +259,70 @@ describe('AcpProcessManager', () => {
     await manager.stop();
   }, 20_000);
 
+  it.each([
+    { label: 'small', imageChars: 1024 },
+    { label: 'over one MiB', imageChars: 1_530_224 },
+  ])('keeps Pi image results ($label) bounded and forwards the following response', async ({ imageChars }) => {
+    // Pi reports image data inside rawOutput.content, while the ACP content
+    // contains only a text description. Use the registered Pi definition so
+    // missing either the larger budget or the normalizer fails this regression.
+    const definition = getAcpAgentDefinition(AgentType.PI_CODING_AGENT);
+    const manager = managerFor([
+      "const send=update=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{sessionId:'pi-session',update}})+'\\n')",
+      "send({sessionUpdate:'tool_call',toolCallId:'pi-read',title:'read',kind:'read',status:'in_progress',rawInput:{path:'/tmp/preview.png'}})",
+      `const image='a'.repeat(${imageChars})`,
+      "const text={type:'text',text:'Read image file [image/png]'}",
+      "send({sessionUpdate:'tool_call_update',toolCallId:'pi-read',status:'completed',content:[{type:'content',content:text}],rawOutput:{content:[text,{type:'image',data:image,mimeType:'image/png'}]}})",
+      "process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{stopReason:'end_turn'}})+'\\n')",
+    ].join(';'), {
+      maxStdoutFrameBytes: definition.maxStdoutFrameBytes,
+      transformStdoutFrame: definition.transformStdoutFrame,
+    });
+
+    try {
+      const streams = await manager.start();
+      const reader = streams.output.getReader();
+      const decoder = new TextDecoder();
+      let output = '';
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          output += decoder.decode(chunk.value, { stream: true });
+        }
+        output += decoder.decode();
+      } finally {
+        reader.releaseLock();
+      }
+
+      const frames = output.trim().split('\n').map(line => JSON.parse(line));
+      expect(frames).toHaveLength(3);
+      expect(Buffer.byteLength(output, 'utf8')).toBeLessThan(64 * 1024);
+      expect(frames[0].params.update.rawInput).toEqual({ path: '/tmp/preview.png' });
+      const update = frames[1].params.update;
+      expect(update).toMatchObject({ toolCallId: 'pi-read', status: 'completed' });
+      expect(update.content).toEqual([
+        { type: 'content', content: { type: 'text', text: 'Read image file [image/png]' } },
+      ]);
+      if (imageChars > 1024 * 1024) {
+        expect(update.rawOutput).toMatchObject({
+          _truncated: true,
+          preview: expect.stringContaining('[TRUNCATED]'),
+        });
+        expect(update.rawOutput).not.toHaveProperty('content');
+      } else {
+        expect(update.rawOutput).toEqual({ content: [
+          { type: 'text', text: 'Read image file [image/png]' },
+          { type: 'image', data: 'a'.repeat(imageChars), mimeType: 'image/png' },
+        ] });
+      }
+      expect(frames[2]).toEqual({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } });
+      expect(manager.getOutputError()).toBeUndefined();
+    } finally {
+      await manager.stop();
+    }
+  }, 20_000);
+
   it('terminates the detached adapter process on stop', async () => {
     const manager = managerFor("process.on('SIGTERM',()=>process.exit(0));process.stdout.write('{}\\n');setInterval(()=>{},1000)");
     const streams = await manager.start();

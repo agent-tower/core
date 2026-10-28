@@ -8,6 +8,7 @@ import { buildMcpConfigResponse } from '../../../services/mcp-config.service.js'
 import { AgentRuntimeError } from '../../errors.js';
 import { isExecutableFile, resolveBundledPiExecutable } from './executable-resolution.js';
 import { createManagedDirectory } from './managed-directory.js';
+import { acpMaxStdoutFrameBytes, normalizeAcpToolFrame } from './tool-frame-normalizer.js';
 import type { AcpAgentDefinition, AcpAgentProfile } from './types.js';
 
 const require = createRequire(import.meta.url);
@@ -15,6 +16,8 @@ const require = createRequire(import.meta.url);
 export const piCodingAgentAcpAgentDefinition: AcpAgentDefinition = {
   agentType: AgentType.PI_CODING_AGENT,
   displayName: 'Pi Coding Agent',
+  maxStdoutFrameBytes: acpMaxStdoutFrameBytes,
+  transformStdoutFrame: normalizeAcpToolFrame,
 
   projectProvider(provider, inheritedEnvironment) {
     const environment = { ...inheritedEnvironment };

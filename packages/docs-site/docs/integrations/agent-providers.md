@@ -152,6 +152,8 @@ Claude Code 仍可以通过 `CLAUDE_PATH`/`CLAUDE_CODE_EXECUTABLE` 显式覆盖�
 
 每个 Pi 会话使用隔离的 `PI_CODING_AGENT_DIR`；Agent Tower 会在其中生成 `settings.json`、`mcp.json` 和需要时的 `models.json`，通过 Pi settings 加载随 Agent Tower 发布的 `pi-mcp-adapter`。这个方案不会改写用户或项目的 settings/MCP 配置；受管目录权限为 `0700`、文件权限为 `0600`，并在进程结束后清理。`pi-acp` 仍会按上游约定在 `~/.pi/pi-acp` 维护 ACP session 映射，供 session 恢复使用。
 
+Pi 读取图片时会把 base64 数据放在工具结果中回传。Agent Tower 为 Pi 提供 64 MiB 的单条 ACP 消息接收上限，并将过大的工具结果裁剪为带 `[TRUNCATED]` 标记的摘要，保留文件路径、工具状态和文本说明，避免较大的图片触发默认 1 MiB 限制而中断会话。裁剪只作用于 Tower 接收和展示的工具日志，不改变原图或 Pi 提供给模型的图片内容；超过接收上限的消息仍会被拒绝。
+
 ## 为什么要按任务选择 Provider
 
 不同任务适合不同成本和能力组合。
