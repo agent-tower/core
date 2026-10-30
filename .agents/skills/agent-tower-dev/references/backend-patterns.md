@@ -90,7 +90,7 @@ Workspace Setup 的进度由容器共享的 `WorkspaceSetupProgressStore` 在事
 
 - MCP 是 REST 客户端，不直接访问 Prisma。入口为 `mcp/index.ts`，`mcp/http-client.ts` 处理 HTTP 和结构化 `AgentTowerApiError`，普通工具在 `mcp/tools/`，TeamRun room/queue 工具目前仍集中在 `mcp/server.ts`。
 - 区分全局、workspace-context 和 TeamRun invocation 工具。`mcp/context.ts` 用 cwd 和注入的 Session 解析 workspace；同一主目录可能对应多个 workspace，不要只靠路径猜测身份。
-- 托管 MCP 配置由 `services/mcp-config.service.ts` 生成并使用 session/invocation credential；独立 MCP 可用 internal token。工具参数不能替代经过后端验证的调用身份，TeamRun 还检查 membership、capability 和消息可见性。
+- 托管 MCP 配置由 `services/mcp-config.service.ts` 生成并使用 session/invocation credential；Codex CLI 在每次 exec/resume/app-server 启动时通过参数以独立 `agent-tower-<身份短摘要>` server 名动态注册完整配置，仅在本次启动中禁用已声明的 `agent-tower` / `agent-tower-dev` 旧别名。ACP 通过 session 的 `mcpServers` 传入完整配置，两者均不依赖用户全局配置。其他 CLI 仍按各自配置入口注册。独立 MCP 可用 internal token。工具参数不能替代经过后端验证的调用身份，TeamRun 还检查 membership、capability 和消息可见性。
 - Provider 由 `services/provider-config.service.ts` 持久化，连接解析和 CLI/ACP 投影见 pipeline reference；不要新增第二套配置存储。`routes/profiles.ts` 为兼容入口，新功能先查 Provider 模型。
 
 ## 按改动验证

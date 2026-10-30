@@ -7,7 +7,7 @@ description: 让外部 agent 直接操作 Agent Tower。
 
 Agent Tower 内置 MCP server，让外部 AI agent 可以直接读取任务板、启动 workspace session、管理 workspace 后台服务、查看 diff，以及继续与已有 session 交互。
 
-如果你要在 TeamRun 中使用 Team Room、私聊或 WorkRequest 控制工具，还需要确保每个 Agent CLI 都配置了 Agent Tower MCP server。具体见 [团队模式](../guide/team-mode.md)。
+如果你要在 TeamRun 中使用 Team Room、私聊或 WorkRequest 控制工具，需要确保每个 Agent 都能访问 Agent Tower MCP server。Tower 会为自己启动的 Codex CLI 和 ACP 会话动态提供配置；其他 CLI 仍需手动配置。具体见 [团队模式](../guide/team-mode.md)。
 
 ## 架构
 
@@ -42,6 +42,14 @@ pnpm --filter @agent-tower/server dev
 ```
 
 ## 配置
+
+### Tower 托管会话
+
+由 Agent Tower 启动的 Codex CLI 和 ACP 会话会自动获得完整的 Tower MCP 配置，包括当前运行环境的启动入口、后端地址和会话凭据，无需提前配置全局 MCP。Codex CLI 的新建、续接和原生 app-server 启动均使用这份动态配置。
+
+Codex CLI 使用带会话身份后缀的独立 MCP server 名（`agent-tower-…`），避免旧地址、禁用状态或工具筛选影响内置工具。Codex 在当前工作区实际加载的用户配置及可信项目配置中的 `agent-tower`、`agent-tower-dev` 旧别名，仅在本次启动中禁用，避免工具重复；其他 MCP 保持原配置。探测和缓存按目标工作区隔离，项目配置变更后重新查询有效配置。Tower 不会把这份配置写入用户或项目文件。
+
+以下手动配置面向在 Tower 外部运行的 MCP 客户端，以及仍需自行配置的其他 CLI。
 
 ### 推荐方式
 

@@ -2,12 +2,15 @@ import { describe, expect, it, afterAll, afterEach, beforeEach, vi } from 'vites
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { parse as parseToml } from 'smol-toml';
 import {
+  buildAgentTowerMcpConfigOverrides,
   buildAgentTowerMcpEnvConfigOverrides,
   getCodexDeclaredMcpServerNames,
   queryCodexMcpServerNames,
   detectDeclaredMcpServers,
   getCachedCodexMcpServerNames,
+  getCodexMcpServerNamesForLaunch,
   resetCodexMcpServerCache,
   waitForCodexMcpServerCacheRefresh,
   CODEX_HTTP_ONLY_OPENAI_PROVIDER_ID,
@@ -725,6 +728,7 @@ function createAsyncProbeCodex(
   const script = [
     '#!/bin/sh',
     `printf '1\\n' >> "${countFile}"`,
+    `pwd >> "${path.join(binDir, 'probe-cwds')}"`,
     `sleep ${delaySeconds}`,
     'cat <<\'FAKE_EOF\'',
     stdout,
@@ -740,6 +744,35 @@ function probeCount(binDir: string): number {
   const file = path.join(binDir, 'probe-count');
   if (!fs.existsSync(file)) return 0;
   return fs.readFileSync(file, 'utf-8').trim().split('\n').filter(Boolean).length;
+}
+
+function createWorkspaceProbeCodex(name: string, options: { ignoreProject?: boolean; delayMs?: number } = {}): string {
+  const binDir = path.join(tmpDir, `workspace-probe-${name}`);
+  fs.mkdirSync(binDir, { recursive: true });
+  const script = `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+fs.appendFileSync(${JSON.stringify(path.join(binDir, 'probe-count'))}, '1\\n');
+fs.appendFileSync(${JSON.stringify(path.join(binDir, 'probe-cwds'))}, process.cwd() + '\\n');
+setTimeout(() => {
+  const files = [path.join(process.env.CODEX_HOME, 'config.toml')];
+  if (!${Boolean(options.ignoreProject)}) {
+    for (let dir = process.cwd(); ; dir = path.dirname(dir)) {
+      files.push(path.join(dir, '.codex', 'config.toml'));
+      if (path.dirname(dir) === dir) break;
+    }
+  }
+  const names = new Set();
+  for (const file of files) {
+    try {
+      for (const match of fs.readFileSync(file, 'utf8').matchAll(/^\\[mcp_servers\\.([a-zA-Z0-9_-]+)\\]/gm)) names.add(match[1]);
+    } catch {}
+  }
+  process.stdout.write(JSON.stringify([...names].map(name => ({ name }))));
+}, ${options.delayMs ?? 0});
+`;
+  fs.writeFileSync(path.join(binDir, 'codex'), script, { mode: 0o755 });
+  return binDir;
 }
 
 describe('getCachedCodexMcpServerNames', () => {
@@ -829,6 +862,142 @@ describe('getCachedCodexMcpServerNames', () => {
     expect(initial).toEqual(new Set(['agent-tower']));
     await waitForCodexMcpServerCacheRefresh();
     expect(probeCount(binDir)).toBe(1);
+  });
+
+  it('awaits effective workspace and ancestor declarations on the first launch without blocking the event loop', async () => {
+    const binDir = createWorkspaceProbeCodex('workspace-fallback', { delayMs: 100 });
+    const home = path.join(tmpDir, 'workspace-fallback-home');
+    const project = path.join(tmpDir, 'workspace-fallback-project');
+    const workingDir = path.join(project, 'packages', 'app');
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(project, '.codex'), { recursive: true });
+    fs.mkdirSync(path.join(workingDir, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'config.toml'), '[mcp_servers.global-tool]\ncommand="global-mcp"');
+    fs.writeFileSync(path.join(project, '.codex', 'config.toml'), '[mcp_servers.agent-tower]\nurl="https://old.example/mcp"');
+    const sessionEnv = ExecutionEnv.default(workingDir).merge({
+      AGENT_TOWER_AGENT_CREDENTIAL: 'project-session-credential',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42001',
+      AGENT_TOWER_SESSION_ID: 'project-fallback-session',
+    });
+    const generatedName = buildAgentTowerMcpConfigOverrides(sessionEnv, new Set())
+      .find(arg => /^mcp_servers\.agent-tower-[a-f0-9]{8}=/.test(arg))!
+      .split('=')[0]!.slice('mcp_servers.'.length);
+    fs.writeFileSync(path.join(workingDir, '.codex', 'config.toml'), [
+      '[mcp_servers.agent-tower-dev]', 'command="old-dev-mcp"',
+      `[mcp_servers.${generatedName}]`, 'url="https://old-name.example/mcp"',
+    ].join('\n'));
+    const environment = { ...process.env, PATH: `${binDir}:${savedPath}`, CODEX_HOME: home };
+    const probe = { program: 'codex', args: [] };
+    const expected = new Set(['global-tool', 'agent-tower', 'agent-tower-dev', generatedName]);
+
+    let eventLoopAdvanced = false;
+    const tick = new Promise<void>(resolve => setTimeout(() => { eventLoopAdvanced = true; resolve(); }, 0));
+    const initial = await getCodexMcpServerNamesForLaunch([], undefined, probe, environment, workingDir);
+    expect(eventLoopAdvanced).toBe(true);
+    await tick;
+    expect(initial).toEqual(expected);
+    const overrides = buildAgentTowerMcpConfigOverrides(sessionEnv, initial);
+    expect(overrides).toContain('mcp_servers.agent-tower.enabled=false');
+    expect(overrides).toContain('mcp_servers.agent-tower-dev.enabled=false');
+    expect(overrides.some(arg => arg.startsWith(`mcp_servers.${generatedName}-2=`))).toBe(true);
+    await waitForCodexMcpServerCacheRefresh();
+
+    expect(getCachedCodexMcpServerNames([], undefined, probe, environment, workingDir)).toEqual(expected);
+    expect(fs.readFileSync(path.join(binDir, 'probe-cwds'), 'utf8').trim()).toBe(fs.realpathSync(workingDir));
+  });
+
+  it('isolates cached probes for workspaces sharing the same executable and CODEX_HOME', async () => {
+    const binDir = createWorkspaceProbeCodex('workspace-isolation');
+    const home = path.join(tmpDir, 'workspace-isolation-home');
+    fs.mkdirSync(home, { recursive: true });
+    const environment = { ...process.env, PATH: `${binDir}:${savedPath}`, CODEX_HOME: home };
+    const probe = { program: 'codex', args: [] };
+    const workspaces = ['first', 'second'].map(name => {
+      const workspace = path.join(tmpDir, `isolated-${name}`);
+      fs.mkdirSync(path.join(workspace, '.codex'), { recursive: true });
+      fs.writeFileSync(path.join(workspace, '.codex', 'config.toml'), `[mcp_servers.${name}-tool]\ncommand="${name}-mcp"`);
+      return workspace;
+    });
+
+    const [first, second] = await Promise.all(workspaces.map(workspace =>
+      getCodexMcpServerNamesForLaunch([], undefined, probe, environment, workspace),
+    ));
+    expect(first).toEqual(new Set(['first-tool']));
+    expect(second).toEqual(new Set(['second-tool']));
+
+    expect(probeCount(binDir)).toBe(2);
+    expect(new Set(fs.readFileSync(path.join(binDir, 'probe-cwds'), 'utf8').trim().split('\n'))).toEqual(new Set(workspaces.map(workspace => fs.realpathSync(workspace))));
+    expect(getCachedCodexMcpServerNames([], undefined, probe, environment, workspaces[0])).toEqual(new Set(['first-tool']));
+    expect(getCachedCodexMcpServerNames([], undefined, probe, environment, workspaces[1])).toEqual(new Set(['second-tool']));
+  });
+
+  it.each(['workspace', 'ancestor'] as const)('invalidates the cache when a %s config is created, changed or removed', async scope => {
+    const binDir = createWorkspaceProbeCodex(`workspace-config-change-${scope}`);
+    const home = path.join(tmpDir, `project-config-change-home-${scope}`);
+    const project = path.join(tmpDir, `project-config-change-${scope}`);
+    const workingDir = path.join(project, 'nested', 'app');
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(workingDir, { recursive: true });
+    const environment = { ...process.env, PATH: `${binDir}:${savedPath}`, CODEX_HOME: home };
+    const probe = { program: 'codex', args: [] };
+    const configPath = path.join(scope === 'workspace' ? workingDir : project, '.codex', 'config.toml');
+    const lookup = () => getCodexMcpServerNamesForLaunch([], undefined, probe, environment, workingDir);
+
+    expect(await lookup()).toEqual(new Set());
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, '[mcp_servers.agent-tower]\ncommand="old-mcp"');
+    expect(await lookup()).toEqual(new Set(['agent-tower']));
+    fs.writeFileSync(configPath, '[mcp_servers.agent-tower-dev]\ncommand="another-mcp"');
+    expect(await lookup()).toEqual(new Set(['agent-tower-dev']));
+    fs.unlinkSync(configPath);
+    expect(await lookup()).toEqual(new Set());
+
+    expect(probeCount(binDir)).toBeGreaterThanOrEqual(3);
+  });
+
+  it('does not fabricate disabled aliases from a project ignored by the CLI trust rules', async () => {
+    const binDir = createWorkspaceProbeCodex('untrusted-project', { ignoreProject: true });
+    const home = path.join(tmpDir, 'untrusted-project-home');
+    const workingDir = path.join(tmpDir, 'untrusted-project-workspace');
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(workingDir, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(workingDir, '.codex', 'config.toml'), '[mcp_servers.agent-tower]\ncommand="ignored-project-mcp"');
+    const environment = { ...process.env, PATH: `${binDir}:${savedPath}`, CODEX_HOME: home };
+    const names = await getCodexMcpServerNamesForLaunch([], undefined, { program: 'codex', args: [] }, environment, workingDir);
+    const sessionEnv = ExecutionEnv.default(workingDir).merge({
+      AGENT_TOWER_AGENT_CREDENTIAL: 'untrusted-session-credential',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42001',
+      AGENT_TOWER_SESSION_ID: 'untrusted-project-session',
+    });
+
+    expect(names).toEqual(new Set());
+    const overrides = buildAgentTowerMcpConfigOverrides(sessionEnv, names);
+    expect(overrides).not.toContain('mcp_servers.agent-tower.enabled=false');
+    expect(managedMcpServer(overrides).enabled).toBe(true);
+  });
+
+  it('waits for its shared refresh when a launch cache expires', async () => {
+    const name = 'launch-expired-cache';
+    const binDir = createAsyncProbeCodex(name, '[{"name":"previous-tool"}]');
+    const home = path.join(tmpDir, 'launch-expired-home');
+    fs.mkdirSync(home, { recursive: true });
+    const environment = { ...process.env, PATH: `${binDir}:${savedPath}`, CODEX_HOME: home };
+    const probe = { program: 'codex', args: [] };
+    const date = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      expect(await getCodexMcpServerNamesForLaunch([], undefined, probe, environment, tmpDir)).toEqual(new Set(['previous-tool']));
+      createAsyncProbeCodex(name, '[{"name":"current-tool"}]', { delayMs: 50 });
+      date.mockReturnValue(1_030_001);
+      const results = await Promise.all(Array.from({ length: 3 }, () =>
+        getCodexMcpServerNamesForLaunch([], undefined, probe, environment, tmpDir),
+      ));
+
+      expect(results).toEqual(Array.from({ length: 3 }, () => new Set(['current-tool'])));
+      expect(probeCount(binDir)).toBe(2);
+    } finally {
+      await waitForCodexMcpServerCacheRefresh();
+      date.mockRestore();
+    }
   });
 });
 
@@ -1233,4 +1402,273 @@ describe('buildAgentTowerMcpEnvConfigOverrides', () => {
       'mcp_servers.agent-tower-dev.env.AGENT_TOWER_INTERNAL_TOKEN="internal-token"',
     ]);
   });
+});
+
+type ManagedMcpServer = {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  enabled: boolean;
+};
+
+function managedMcpServer(args: string[]): ManagedMcpServer {
+  const assignment = args.find(arg => /^mcp_servers\.agent-tower-[a-f0-9]{8}(?:-\d+)?=/.test(arg));
+  expect(assignment).toBeDefined();
+  const parsed = parseToml(assignment!) as unknown as { mcp_servers: Record<string, ManagedMcpServer> };
+  const name = Object.keys(parsed.mcp_servers)[0]!;
+  const server = parsed.mcp_servers[name]!;
+  server.env = {};
+  for (const arg of args.filter(arg => arg.startsWith(`mcp_servers.${name}.env.`))) {
+    const projected = parseToml(arg) as unknown as { mcp_servers: Record<string, { env: Record<string, string> }> };
+    Object.assign(server.env, projected.mcp_servers[name]!.env);
+  }
+  return server;
+}
+
+describe('managed Codex CLI MCP registration', () => {
+  beforeEach(() => {
+    for (const key of [
+      ...AGENT_TOWER_MCP_IDENTITY_ENV_KEYS, ...AGENT_TOWER_MCP_SERVICE_ENV_KEYS,
+      'AGENT_TOWER_MCP_ENTRY', 'AGENT_TOWER_DESKTOP_RUNTIME_MODE', 'AGENT_TOWER_NODE_RUNTIME',
+      'AGENT_TOWER_DESKTOP_NODE', 'ELECTRON_RUN_AS_NODE',
+    ]) vi.stubEnv(key, undefined);
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('registers the source MCP without user configuration and scopes its environment to the current session', () => {
+    vi.stubEnv('AGENT_TOWER_AGENT_CREDENTIAL', 'parent-agent-secret');
+    vi.stubEnv('AGENT_TOWER_INTERNAL_TOKEN', 'parent-internal-secret');
+    vi.stubEnv('AGENT_TOWER_SESSION_ID', 'parent-session');
+    vi.stubEnv('AGENT_TOWER_TEAM_RUN_ID', 'parent-team');
+    const env = ExecutionEnv.default(tmpDir).merge({
+      AGENT_TOWER_AGENT_CREDENTIAL: 'current-agent-credential',
+      AGENT_TOWER_INTERNAL_TOKEN: 'must-not-forward-internal',
+      AGENT_TOWER_URL: 'http://127.0.0.1:42001',
+      AGENT_TOWER_PORT: '42001',
+      AGENT_TOWER_SESSION_ID: 'current-session',
+      AGENT_TOWER_INVOCATION_ID: 'current-invocation',
+      AGENT_TOWER_TEAM_RUN_ID: 'current-team',
+      AGENT_TOWER_MEMBER_ID: 'current-member',
+      OPENAI_API_KEY: 'provider-secret',
+    });
+
+    const args = buildAgentTowerMcpConfigOverrides(env, new Set());
+    const server = managedMcpServer(args);
+
+    expect(server).toEqual({
+      command: process.execPath,
+      args: ['--import', expect.stringMatching(/[\\/]tsx[\\/]dist[\\/]loader\.mjs$/), path.resolve('packages/server/src/mcp/index.ts')],
+      enabled: true,
+      env: {
+        AGENT_TOWER_URL: 'http://127.0.0.1:42001',
+        AGENT_TOWER_PORT: '42001',
+        AGENT_TOWER_AGENT_CREDENTIAL: 'current-agent-credential',
+        AGENT_TOWER_SESSION_ID: 'current-session',
+        AGENT_TOWER_INVOCATION_ID: 'current-invocation',
+        AGENT_TOWER_TEAM_RUN_ID: 'current-team',
+        AGENT_TOWER_MEMBER_ID: 'current-member',
+      },
+    });
+    expect(args.join(' ')).not.toMatch(/parent-|must-not-forward-internal|provider-secret/);
+    const registration = args.find(arg => /^mcp_servers\.agent-tower-[a-f0-9]{8}=/.test(arg))!;
+    expect(registration).not.toContain('current-agent-credential');
+    expect(registration).not.toContain('env');
+    expect(args.some(arg => arg.startsWith('mcp_servers.agent-tower.env.'))).toBe(false);
+  });
+
+  it('uses a distinct backend and credential for each session without inheriting a previous team identity', () => {
+    vi.stubEnv('AGENT_TOWER_TEAM_RUN_ID', 'stale-parent-team');
+    const first = ExecutionEnv.default(tmpDir).merge({
+      AGENT_TOWER_AGENT_CREDENTIAL: 'first-credential', AGENT_TOWER_PORT: '42001',
+      AGENT_TOWER_SESSION_ID: 'first-session', AGENT_TOWER_TEAM_RUN_ID: 'first-team',
+    });
+    const second = ExecutionEnv.default(tmpDir).merge({
+      AGENT_TOWER_AGENT_CREDENTIAL: 'second-credential', AGENT_TOWER_URL: 'http://127.0.0.1:42002',
+      AGENT_TOWER_SESSION_ID: 'second-session',
+    });
+
+    const firstServer = managedMcpServer(buildAgentTowerMcpConfigOverrides(first, new Set()));
+    const secondServer = managedMcpServer(buildAgentTowerMcpConfigOverrides(second, new Set()));
+
+    expect(firstServer.env.AGENT_TOWER_URL).toBe('http://127.0.0.1:42001');
+    expect(firstServer.env.AGENT_TOWER_TEAM_RUN_ID).toBe('first-team');
+    expect(secondServer.env).toEqual({
+      AGENT_TOWER_URL: 'http://127.0.0.1:42002',
+      AGENT_TOWER_AGENT_CREDENTIAL: 'second-credential',
+      AGENT_TOWER_SESSION_ID: 'second-session',
+    });
+  });
+
+  it.each(['workspace', 'packaged'] as const)('uses the trusted %s runtime entry and keeps its Node environment', mode => {
+    const entry = path.join(tmpDir, `${mode} install`, 'dist', 'mcp', 'index.js');
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, '');
+    vi.stubEnv('AGENT_TOWER_MCP_ENTRY', entry);
+    vi.stubEnv('AGENT_TOWER_DESKTOP_RUNTIME_MODE', mode);
+    vi.stubEnv('AGENT_TOWER_NODE_RUNTIME', 'C:\\Program Files\\Agent Tower\\node.exe');
+    vi.stubEnv('ELECTRON_RUN_AS_NODE', '1');
+    const env = ExecutionEnv.default(tmpDir).merge({
+      AGENT_TOWER_URL: 'http://127.0.0.1:12580',
+      AGENT_TOWER_INTERNAL_TOKEN: 'trusted-internal-token',
+    });
+
+    const server = managedMcpServer(buildAgentTowerMcpConfigOverrides(env, new Set()));
+
+    expect(server.command).toBe(mode === 'packaged' ? 'C:\\Program Files\\Agent Tower\\node.exe' : process.execPath);
+    expect(server.args).toEqual([entry]);
+    expect(server.env).toEqual({
+      AGENT_TOWER_URL: 'http://127.0.0.1:12580',
+      AGENT_TOWER_INTERNAL_TOKEN: 'trusted-internal-token',
+      ...(mode === 'packaged' ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+    });
+  });
+
+  it('disables declared Tower endpoints without sharing credentials and leaves unrelated MCP servers alone', () => {
+    const env = ExecutionEnv.default(tmpDir).merge({
+      AGENT_TOWER_URL: 'http://127.0.0.1:42001',
+      AGENT_TOWER_AGENT_CREDENTIAL: 'session-credential',
+      AGENT_TOWER_INTERNAL_TOKEN: 'must-not-forward-internal',
+      AGENT_TOWER_SESSION_ID: 'session',
+    });
+    const args = buildAgentTowerMcpConfigOverrides(env, new Set(['agent-tower', 'agent-tower-dev', 'other-server']));
+
+    expect(managedMcpServer(args).env.AGENT_TOWER_AGENT_CREDENTIAL).toBe('session-credential');
+    expect(args).toContain('mcp_servers.agent-tower.enabled=false');
+    expect(args).toContain('mcp_servers.agent-tower-dev.enabled=false');
+    expect(args.some(arg => /^mcp_servers\.(agent-tower|agent-tower-dev)\.env\./.test(arg))).toBe(false);
+    expect(args.join(' ')).not.toContain('must-not-forward-internal');
+    expect(args.some(arg => arg.includes('other-server'))).toBe(false);
+  });
+
+  it('does not register MCP from credentials belonging to a parent process', () => {
+    vi.stubEnv('AGENT_TOWER_AGENT_CREDENTIAL', 'parent-agent-secret');
+    vi.stubEnv('AGENT_TOWER_INTERNAL_TOKEN', 'parent-internal-secret');
+    const env = ExecutionEnv.default(tmpDir).set('AGENT_TOWER_SESSION_ID', 'session');
+
+    expect(buildAgentTowerMcpConfigOverrides(env, new Set())).toEqual([]);
+    expect(buildAgentTowerMcpConfigOverrides(env, new Set(['agent-tower']))).toEqual([
+      '-c', 'mcp_servers.agent-tower.env.AGENT_TOWER_SESSION_ID="session"',
+    ]);
+  });
+
+  it('chooses an unused managed server name without changing an existing server at the generated name', () => {
+    const env = ExecutionEnv.default(tmpDir).merge({
+      AGENT_TOWER_URL: 'http://127.0.0.1:42001',
+      AGENT_TOWER_AGENT_CREDENTIAL: 'session-credential',
+      AGENT_TOWER_SESSION_ID: 'session-with-existing-server',
+    });
+    const initial = buildAgentTowerMcpConfigOverrides(env, new Set());
+    const assignment = initial.find(arg => /^mcp_servers\.agent-tower-[a-f0-9]{8}=/.test(arg))!;
+    const existingName = assignment.slice('mcp_servers.'.length, assignment.indexOf('='));
+
+    const args = buildAgentTowerMcpConfigOverrides(env, new Set([existingName, `${existingName}-2`]));
+
+    expect(args.some(arg => arg.startsWith(`mcp_servers.${existingName}-3=`))).toBe(true);
+    expect(args.some(arg => arg.startsWith(`mcp_servers.${existingName}.`))).toBe(false);
+    expect(args.some(arg => arg.startsWith(`mcp_servers.${existingName}-2.`))).toBe(false);
+    expect(managedMcpServer(args).env.AGENT_TOWER_AGENT_CREDENTIAL).toBe('session-credential');
+  });
+
+  it.each(['FULL_ACCESS', 'ASK', 'AUTO_SANDBOX'] as const)(
+    'disables project-level Tower aliases on the first new and resumed %s launch',
+    async executionPermission => {
+      const home = path.join(tmpDir, `project-launch-home-${executionPermission}`);
+      const workingDir = path.join(tmpDir, `project-launch-workspace-${executionPermission}`);
+      fs.mkdirSync(home, { recursive: true });
+      fs.mkdirSync(path.join(workingDir, '.codex'), { recursive: true });
+      const projectConfig = '[mcp_servers.agent-tower]\nurl="https://old-project.example/mcp"\n[mcp_servers.agent-tower-dev]\ncommand="old-dev-mcp"\n[mcp_servers.project-tool]\ncommand="project-mcp"';
+      const configPath = path.join(workingDir, '.codex', 'config.toml');
+      fs.writeFileSync(configPath, projectConfig);
+      vi.stubEnv('CODEX_HOME', home);
+      const binDir = createWorkspaceProbeCodex(`project-launch-${executionPermission}`, { delayMs: 50 });
+      const executable = path.join(binDir, 'codex');
+      const refresh = vi.spyOn(codexAskCapabilities, 'refreshCodexCliSupport').mockResolvedValue({ supported: true, executable });
+      const support = vi.spyOn(codexAskCapabilities, 'cachedCodexCliSupport').mockReturnValue({ supported: true, executable });
+      const executor = new CodexExecutor({ executionPermission, cmd: { baseCommandOverride: executable } });
+      const stdin = vi.spyOn(executor as any, 'spawnWithStdin').mockResolvedValue({});
+      const duplex = vi.spyOn(executor as any, 'spawnWithDuplex').mockResolvedValue({});
+      try {
+        const config = {
+          workingDir, prompt: 'task',
+          env: ExecutionEnv.default(workingDir).merge({
+            AGENT_TOWER_URL: 'http://127.0.0.1:42001',
+            AGENT_TOWER_AGENT_CREDENTIAL: 'project-bound-credential',
+            AGENT_TOWER_SESSION_ID: 'project-launch-session',
+          }),
+        };
+        await executor.spawn(config);
+        await executor.spawnFollowUp(config, 'native-thread');
+        const spawn = executionPermission === 'FULL_ACCESS' ? stdin : duplex;
+        expect(spawn).toHaveBeenCalledTimes(2);
+        for (const [, parts] of spawn.mock.calls as unknown as [unknown, { args: string[] }][]) {
+          expect(parts.args).toContain('mcp_servers.agent-tower.enabled=false');
+          expect(parts.args).toContain('mcp_servers.agent-tower-dev.enabled=false');
+          expect(parts.args.some(arg => arg.includes('mcp_servers.project-tool'))).toBe(false);
+          expect(managedMcpServer(parts.args).env.AGENT_TOWER_SESSION_ID).toBe('project-launch-session');
+        }
+        await waitForCodexMcpServerCacheRefresh();
+        expect(fs.readFileSync(path.join(binDir, 'probe-cwds'), 'utf8').trim()).toBe(fs.realpathSync(workingDir));
+        expect(fs.readFileSync(configPath, 'utf8')).toBe(projectConfig);
+        expect(fs.readdirSync(home)).toEqual([]);
+      } finally {
+        await waitForCodexMcpServerCacheRefresh();
+        stdin.mockRestore(); duplex.mockRestore(); refresh.mockRestore(); support.mockRestore();
+      }
+    },
+  );
+
+  it.each(['FULL_ACCESS', 'ASK', 'AUTO_SANDBOX'] as const)(
+    'isolates managed MCP from stale user settings on new and resumed %s launches without writing user config',
+    async executionPermission => {
+      const home = path.join(tmpDir, `managed-codex-home-${executionPermission}`);
+      fs.mkdirSync(home, { recursive: true });
+      const userConfig = '[mcp_servers.agent-tower]\nurl="https://stale.example/mcp"\nenabled=false\ndisabled_tools=["get_task_handoff"]\n[mcp_servers.other-server]\ncommand="other-mcp"';
+      fs.writeFileSync(path.join(home, 'config.toml'), userConfig);
+      vi.stubEnv('CODEX_HOME', home);
+      const refresh = vi.spyOn(codexAskCapabilities, 'refreshCodexCliSupport').mockResolvedValue({ supported: true, executable: '/verified/codex' });
+      const support = vi.spyOn(codexAskCapabilities, 'cachedCodexCliSupport').mockReturnValue({ supported: true, executable: '/verified/codex' });
+      const executor = new CodexExecutor({
+        executionPermission,
+        settings: userConfig,
+        cmd: { baseCommandOverride: '/verified/codex', env: { AGENT_TOWER_DESKTOP_NODE: '/profile/node' } },
+      });
+      const stdin = vi.spyOn(executor as any, 'spawnWithStdin').mockResolvedValue({});
+      const duplex = vi.spyOn(executor as any, 'spawnWithDuplex').mockResolvedValue({});
+      try {
+        const config = {
+          workingDir: tmpDir, prompt: 'task',
+          env: ExecutionEnv.default(tmpDir).merge({
+            AGENT_TOWER_URL: 'http://127.0.0.1:42001',
+            AGENT_TOWER_AGENT_CREDENTIAL: 'bound-session-credential',
+            AGENT_TOWER_SESSION_ID: 'current-session',
+          }),
+        };
+        await executor.spawn(config);
+        await executor.spawnFollowUp(config, 'native-thread');
+        const spawn = executionPermission === 'FULL_ACCESS' ? stdin : duplex;
+        expect(spawn).toHaveBeenCalledTimes(2);
+        const serverNames = new Set((spawn.mock.calls as unknown as [unknown, { args: string[] }][]).map(([, parts]) =>
+          parts.args.find(arg => /^mcp_servers\.agent-tower-[a-f0-9]{8}(?:-\d+)?=/.test(arg))?.split('=')[0],
+        ));
+        expect(serverNames.size).toBe(1);
+        for (const [, parts] of spawn.mock.calls as unknown as [unknown, { args: string[] }][]) {
+          const server = managedMcpServer(parts.args);
+          expect(server.command).toBe('/profile/node');
+          expect(server.enabled).toBe(true);
+          expect(server.env.AGENT_TOWER_AGENT_CREDENTIAL).toBe('bound-session-credential');
+          expect(server.env.AGENT_TOWER_SESSION_ID).toBe('current-session');
+          expect(server).not.toHaveProperty('url');
+          expect(server).not.toHaveProperty('disabled_tools');
+          expect(parts.args).toContain('mcp_servers.other-server.command="other-mcp"');
+          expect(parts.args.findIndex(arg => /^mcp_servers\.agent-tower-[a-f0-9]{8}(?:-\d+)?=/.test(arg)))
+            .toBeGreaterThan(parts.args.indexOf('mcp_servers.agent-tower.enabled=false'));
+        }
+        expect(fs.readdirSync(home)).toEqual(['config.toml']);
+        expect(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).toBe(userConfig);
+      } finally {
+        await waitForCodexMcpServerCacheRefresh();
+        stdin.mockRestore(); duplex.mockRestore(); refresh.mockRestore(); support.mockRestore();
+      }
+    },
+  );
 });

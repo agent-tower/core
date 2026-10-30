@@ -17,9 +17,9 @@ description: 使用 TeamRun、Team Room 和多个 agent 协作完成任务。
 
 ## Agent MCP 前置要求
 
-每个 TeamRun 成员背后的 Agent CLI 都必须能访问 Agent Tower MCP server。否则 Agent 只能完成普通代码任务，无法可靠使用 Team Room、私聊、WorkRequest 控制等 room 工具。
+每个 TeamRun 成员背后的 Agent 都必须能访问 Agent Tower MCP server。否则 Agent 只能完成普通代码任务，无法可靠使用 Team Room、私聊、WorkRequest 控制等 room 工具。
 
-生产和普通本地使用推荐统一配置正式 MCP server：
+Agent Tower 会为自己启动的 Codex CLI 和 ACP 会话动态提供完整 MCP 配置，无需用户在全局客户端配置中注册。其他 CLI 仍需配置 Agent Tower MCP server，推荐使用正式名称 `agent-tower`：
 
 ```json
 {
@@ -51,7 +51,11 @@ Team Room 和私聊相关工具依赖这些受信任身份变量：
 
 ## Codex CLI
 
-Codex 使用 `~/.codex/config.toml` 中的 `mcp_servers` 配置。普通使用建议把 Agent Tower MCP server 命名为 `agent-tower`：
+由 Agent Tower 启动的 Codex CLI 会在新建、续接和原生 app-server 启动时动态注册 MCP，使用当前 Tower 的启动入口、后端地址和会话凭据。这同时适用于普通任务和 TeamRun，无需修改 `~/.codex/config.toml`。
+
+托管 MCP 使用带会话身份后缀的独立名称（`agent-tower-…`），避免继承旧地址、禁用状态或工具筛选。若已配置 `agent-tower` 或 `agent-tower-dev`，这些旧别名仅在本次启动中禁用，避免工具重复；其他 MCP 保持原配置。动态配置不写入用户或项目文件。
+
+如果在 Agent Tower 外部手动运行 Codex 并访问 Tower，则仍需在 `~/.codex/config.toml` 的 `mcp_servers` 中配置，例如：
 
 ```toml
 [mcp_servers.agent-tower]
@@ -61,7 +65,7 @@ command = "agent-tower-mcp"
 AGENT_TOWER_URL = "http://127.0.0.1:12580"
 ```
 
-当 Codex 由 TeamRun 启动时，Agent Tower 会在 Codex CLI 参数中注入 TeamRun identity env。用户不需要把 `AGENT_TOWER_MEMBER_ID` 或 `AGENT_TOWER_INVOCATION_ID` 写进全局配置。
+外部客户端的认证配置见 [MCP 集成](../integrations/mcp.md)。当 Codex 由 TeamRun 启动时，Agent Tower 会同时注入 TeamRun 身份；用户不需要把 `AGENT_TOWER_MEMBER_ID` 或 `AGENT_TOWER_INVOCATION_ID` 写进全局配置。
 
 ## Cursor Agent CLI
 

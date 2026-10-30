@@ -79,4 +79,6 @@ pnpm desktop:package:acceptance
 
 打包桌面模式下，这份配置指向 bundled runtime，不要求用户额外安装全局 `agent-tower-mcp`。当前 UI 只负责展示和复制配置，不会自动写入 Claude、Codex、Cursor 等第三方客户端配置文件。
 
+桌面端自己启动的 Codex CLI 和 ACP 会话会动态获得当前桌面后端的 MCP 配置，无需复制到全局配置文件。Codex CLI 使用独立的托管 MCP 名称，旧 `agent-tower`、`agent-tower-dev` 别名仅在本次启动中禁用，避免工具重复。该配置只作用于托管会话；独立运行的外部客户端仍需自行配置。
+
 如果启用了访问密码，复制出的 MCP 配置会包含 `AGENT_TOWER_INTERNAL_TOKEN` env。它是 MCP 调后端所需的内部凭证，不要把真实值提交到共享配置中。

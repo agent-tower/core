@@ -7,13 +7,18 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execFile, execFileSync } from 'child_process';
+import { createHash } from 'node:crypto';
 import { parse as parseToml } from 'smol-toml';
 import { ExecutorConfigurationError } from './start-error.js';
 import { AgentType } from '../types/index.js';
 import { which } from '../utils/index.js';
+import { buildWindowsCmdShimCommandLine } from '../utils/process-launch.js';
 import { hasCodexBuiltinProviderAliasCollision } from '../utils/codex-provider-config.js';
 import type { ExecutionPermissionMode } from '@agent-tower/shared';
 import { cachedCodexCliSupport, refreshCodexCliSupport } from '../services/codex-cli-capabilities.service.js';
+import { buildMcpConfigResponse } from '../services/mcp-config.service.js';
+import { AGENT_API_CREDENTIAL_ENV } from '../utils/agent-api-credential.js';
+import { INTERNAL_API_TOKEN_ENV } from '../utils/internal-api-token.js';
 import type { CodexCliStart } from '../runtime/codex-cli-control.js';
 import {
   BaseExecutor,
@@ -126,17 +131,21 @@ interface CodexMcpCacheEntry {
 
 const codexMcpCache = new Map<string, CodexMcpCacheEntry>();
 
-function resolveCodexExecutableForCache(program = 'codex', env: NodeJS.ProcessEnv = process.env): string {
-  if (path.isAbsolute(program)) return path.resolve(program);
-  const pathValue = env.PATH ?? '';
+function resolveCodexExecutableForCache(
+  program = 'codex',
+  env: NodeJS.ProcessEnv = process.env,
+  workingDir = process.cwd(),
+): string {
+  if (path.isAbsolute(program) || /[\\/]/.test(program)) return path.resolve(workingDir, program);
+  const pathValue = env.PATH ?? env.Path ?? env.path ?? '';
   const candidates = pathValue.split(path.delimiter).filter(Boolean);
-  const extensions = process.platform === 'win32'
+  const extensions = process.platform === 'win32' && !path.extname(program)
     ? (env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';')
     : [''];
 
   for (const dir of candidates) {
     for (const extension of extensions) {
-      const candidate = path.join(dir, `${program}${extension}`);
+      const candidate = path.resolve(workingDir, dir, `${program}${extension}`);
       try {
         if (fs.statSync(candidate).isFile()) return path.resolve(candidate);
       } catch {
@@ -144,15 +153,32 @@ function resolveCodexExecutableForCache(program = 'codex', env: NodeJS.ProcessEn
       }
     }
   }
-  return 'codex';
+  return program;
 }
 
 function getConfigFingerprint(configPath: string): string {
   try {
     const stats = fs.statSync(configPath);
-    return `${configPath}:${stats.mtimeMs}:${stats.size}`;
+    return `${configPath}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
   } catch {
     return `${configPath}:missing`;
+  }
+}
+
+function resolveCodexWorkingDir(workingDir = process.cwd()): string {
+  const resolved = path.resolve(workingDir);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function getProjectConfigFingerprints(workingDir: string): string[] {
+  const fingerprints: string[] = [];
+  for (let directory = workingDir; ; directory = path.dirname(directory)) {
+    fingerprints.push(getConfigFingerprint(path.join(directory, '.codex', 'config.toml')));
+    if (path.dirname(directory) === directory) return fingerprints;
   }
 }
 
@@ -180,17 +206,21 @@ function getCodexMcpCacheKey(
   configOverrideArgs: string[],
   fallbackConfigPath?: string,
   env: NodeJS.ProcessEnv = process.env,
+  workingDir = process.cwd(),
 ): string {
   const configPath = getCodexConfigPathForEnv(env, fallbackConfigPath);
   return JSON.stringify({
     executable,
-    path: env.PATH ?? '',
+    path: env.PATH ?? env.Path ?? env.path ?? '',
     pathext: env.PATHEXT ?? '',
     codexHome: env.CODEX_HOME ?? '',
     home: env.HOME ?? '',
     userProfile: env.USERPROFILE ?? '',
     xdgConfigHome: env.XDG_CONFIG_HOME ?? '',
     config: getConfigFingerprint(configPath),
+    workingDir,
+    // Track candidate files, but leave project roots and trust rules to Codex.
+    projectConfigs: getProjectConfigFingerprints(workingDir),
     probeArgs,
     overrides: configOverrideArgs,
   });
@@ -215,6 +245,7 @@ function refreshCodexMcpServerCache(
   probeArgs: string[],
   configOverrideArgs: string[],
   fallbackConfigPath?: string,
+  workingDir?: string,
 ): void {
   const existing = codexMcpCache.get(key);
   if (existing?.refreshPromise) return;
@@ -227,7 +258,7 @@ function refreshCodexMcpServerCache(
 
   // A real async child process is required here. Moving execFileSync into a
   // timer still blocks the Node event loop and delays every PTY/Socket stream.
-  const refreshPromise = queryCodexMcpServerNamesAsync(executable, env, probeArgs)
+  const refreshPromise = queryCodexMcpServerNamesAsync(executable, env, probeArgs, workingDir)
     .then((result) => {
       if (result !== null) entry.names = result;
       else if (entry.names.size === 0) entry.names = getFallbackMcpServerNames(configOverrideArgs, fallbackConfigPath);
@@ -244,24 +275,21 @@ function refreshCodexMcpServerCache(
   entry.refreshPromise = refreshPromise;
 }
 
-/**
- * Return MCP names without waiting for `codex mcp list --json`.
- * The probe is process-level, keyed by executable/config inputs, and uses a
- * single-flight background refresh for concurrent sessions.
- */
-export function getCachedCodexMcpServerNames(
+function getCodexMcpServerCacheEntry(
   configOverrideArgs: string[] = [],
   fallbackConfigPath?: string,
   probeCommand?: CommandParts,
   environment?: NodeJS.ProcessEnv,
-): Set<string> {
+  workingDir?: string,
+): CodexMcpCacheEntry {
   const probeArgs = probeCommand
     ? [...probeCommand.args]
     : [...configOverrideArgs];
   const env = { ...(environment ?? process.env) };
   const configPath = getCodexConfigPathForEnv(env, fallbackConfigPath);
-  const executable = resolveCodexExecutableForCache(probeCommand?.program, env);
-  const key = getCodexMcpCacheKey(executable, probeArgs, configOverrideArgs, configPath, env);
+  const cwd = resolveCodexWorkingDir(workingDir);
+  const executable = resolveCodexExecutableForCache(probeCommand?.program, env, cwd);
+  const key = getCodexMcpCacheKey(executable, probeArgs, configOverrideArgs, configPath, env, cwd);
   const existing = codexMcpCache.get(key);
   const now = Date.now();
   if (!existing) {
@@ -270,14 +298,44 @@ export function getCachedCodexMcpServerNames(
       refreshedAt: 0,
     };
     codexMcpCache.set(key, entry);
-    refreshCodexMcpServerCache(key, executable, env, probeArgs, configOverrideArgs, configPath);
-    return new Set(entry.names);
+    refreshCodexMcpServerCache(key, executable, env, probeArgs, configOverrideArgs, configPath, cwd);
+    return entry;
   }
 
   if (!existing.refreshPromise && now - existing.refreshedAt >= CODEX_MCP_CACHE_RETRY_MS) {
-    refreshCodexMcpServerCache(key, executable, env, probeArgs, configOverrideArgs, configPath);
+    refreshCodexMcpServerCache(key, executable, env, probeArgs, configOverrideArgs, configPath, cwd);
   }
-  return new Set(existing.names);
+  return existing;
+}
+
+/** Return a snapshot immediately while a single-flight CLI probe refreshes it. */
+export function getCachedCodexMcpServerNames(
+  configOverrideArgs: string[] = [],
+  fallbackConfigPath?: string,
+  probeCommand?: CommandParts,
+  environment?: NodeJS.ProcessEnv,
+  workingDir?: string,
+): Set<string> {
+  return new Set(getCodexMcpServerCacheEntry(
+    configOverrideArgs, fallbackConfigPath, probeCommand, environment, workingDir,
+  ).names);
+}
+
+/** Wait asynchronously for effective project config before constructing launch overrides. */
+export async function getCodexMcpServerNamesForLaunch(
+  configOverrideArgs: string[] = [],
+  fallbackConfigPath?: string,
+  probeCommand?: CommandParts,
+  environment?: NodeJS.ProcessEnv,
+  workingDir?: string,
+): Promise<Set<string>> {
+  const entry = getCodexMcpServerCacheEntry(
+    configOverrideArgs, fallbackConfigPath, probeCommand, environment, workingDir,
+  );
+  // Parsing project files ourselves could disable MCPs ignored by Codex's trust
+  // rules and create invalid transport-less entries. Await this key's CLI probe.
+  await entry.refreshPromise;
+  return new Set(entry.names);
 }
 
 /** Test-only reset hook; no production caller should need to clear this cache. */
@@ -312,14 +370,24 @@ function queryCodexMcpServerNamesAsync(
   executable: string,
   env: NodeJS.ProcessEnv,
   probeArgs: string[] = [],
+  workingDir?: string,
 ): Promise<Set<string> | null> {
   const args = [...probeArgs, 'mcp', 'list', '--json'];
+  // npm exposes Codex as a .cmd shim on Windows. execFile cannot execute batch
+  // files directly; use the same controlled cmd.exe invocation as the PTY path.
+  const isWindowsShim = process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable);
+  const command = isWindowsShim ? env.ComSpec || env.COMSPEC || 'cmd.exe' : executable;
+  const commandArgs = isWindowsShim
+    ? ['/d', '/s', '/c', `"${buildWindowsCmdShimCommandLine(executable, args)}"`]
+    : args;
   return new Promise((resolve) => {
-    execFile(executable, args, {
+    execFile(command, commandArgs, {
       timeout: CODEX_MCP_LIST_TIMEOUT_MS,
       encoding: 'utf-8',
       env,
+      cwd: workingDir,
       windowsHide: true,
+      ...(isWindowsShim ? { windowsVerbatimArguments: true } : {}),
     }, (error, stdout) => {
       if (error) {
         resolve(null);
@@ -379,6 +447,54 @@ export function buildAgentTowerMcpEnvConfigOverrides(
     }
   }
 
+  return args;
+}
+
+/** Register this Tower's MCP without merging stale user transport or tool filters. */
+export function buildAgentTowerMcpConfigOverrides(
+  env: ExecutorSpawnConfig['env'],
+  declaredMcpServers: Set<string>,
+): string[] {
+  const credential = env.get(AGENT_API_CREDENTIAL_ENV)?.trim()
+    || env.get(INTERNAL_API_TOKEN_ENV)?.trim();
+  if (!credential) return buildAgentTowerMcpEnvConfigOverrides(env, declaredMcpServers);
+
+  const managed = buildMcpConfigResponse({ env: {
+    ...env.getFullEnv(),
+    // These trusted server runtime paths are intentionally absent from child env.
+    AGENT_TOWER_DESKTOP_RUNTIME_MODE: process.env.AGENT_TOWER_DESKTOP_RUNTIME_MODE,
+    AGENT_TOWER_NODE_RUNTIME: process.env.AGENT_TOWER_NODE_RUNTIME,
+    AGENT_TOWER_MCP_ENTRY: process.env.AGENT_TOWER_MCP_ENTRY,
+    ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE,
+  } });
+
+  // Codex deep-merges CLI overrides with config.toml, even for inline tables.
+  // Use a session-stable name so an old HTTP URL or tool allowlist cannot leak in.
+  const identity = env.get('AGENT_TOWER_SESSION_ID') || credential;
+  const baseName = `agent-tower-${createHash('sha256').update(identity).digest('hex').slice(0, 8)}`;
+  let serverName = baseName;
+  for (let suffix = 2; declaredMcpServers.has(serverName); suffix++) {
+    serverName = `${baseName}-${suffix}`;
+  }
+
+  const args: string[] = [];
+  for (const name of AGENT_TOWER_MCP_SERVER_NAMES) {
+    if (declaredMcpServers.has(name)) args.push('-c', `mcp_servers.${name}.enabled=false`);
+  }
+  args.push('-c', `mcp_servers.${serverName}=${toTomlLiteral({
+    command: managed.command,
+    args: managed.args,
+    enabled: true,
+  })}`);
+  const mcpEnv = { ...managed.env };
+  for (const key of AGENT_TOWER_MCP_IDENTITY_ENV_KEYS) {
+    const value = env.get(key);
+    if (value) mcpEnv[key] = value;
+  }
+  // Keep credentials in individual overrides, which spawn logging redacts.
+  for (const [key, value] of Object.entries(mcpEnv)) {
+    args.push('-c', `mcp_servers.${serverName}.env.${key}=${toTomlLiteral(value)}`);
+  }
   return args;
 }
 
@@ -644,14 +760,15 @@ export class CodexExecutor extends BaseExecutor {
     const probeCommand = commandBuilder.buildInitial();
     const probeEnv = config.env.withProfile(this.cmdOverrides).getFullEnv();
     const explicitConfigPath = getExplicitMcpConfigPath(this.getDefaultMcpConfigPath());
-    const declaredMcpServers = getCachedCodexMcpServerNames(
+    const declaredMcpServers = await getCodexMcpServerNamesForLaunch(
       configOverrideArgs,
       explicitConfigPath,
       probeCommand,
       probeEnv,
+      config.workingDir,
     );
 
-    commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env, declaredMcpServers));
+    commandBuilder.extendParams(buildAgentTowerMcpConfigOverrides(config.env.withProfile(this.cmdOverrides), declaredMcpServers));
 
     // Codex 使用 exec 子命令进行非交互式执行
     commandBuilder.extendParams(['exec', '--json', '--skip-git-repo-check']);
@@ -689,14 +806,15 @@ export class CodexExecutor extends BaseExecutor {
     const probeCommand = commandBuilder.buildInitial();
     const probeEnv = config.env.withProfile(this.cmdOverrides).getFullEnv();
     const explicitConfigPath = getExplicitMcpConfigPath(this.getDefaultMcpConfigPath());
-    const declaredMcpServers = getCachedCodexMcpServerNames(
+    const declaredMcpServers = await getCodexMcpServerNamesForLaunch(
       configOverrideArgs,
       explicitConfigPath,
       probeCommand,
       probeEnv,
+      config.workingDir,
     );
 
-    commandBuilder.extendParams(buildAgentTowerMcpEnvConfigOverrides(config.env, declaredMcpServers));
+    commandBuilder.extendParams(buildAgentTowerMcpConfigOverrides(config.env.withProfile(this.cmdOverrides), declaredMcpServers));
 
     // Codex 使用 exec resume 命令继续会话（支持 JSON 输出）
     const additionalArgs = ['exec', 'resume', '--json', '--skip-git-repo-check'];
@@ -748,8 +866,11 @@ export class CodexExecutor extends BaseExecutor {
     if (this.config.model) args.push('-c', `model=${toTomlLiteral(this.config.model)}`);
     if (this.config.liveSearch) args.push('-c', 'web_search=live');
     const explicitPath = getExplicitMcpConfigPath(this.getDefaultMcpConfigPath());
-    const names = getCachedCodexMcpServerNames(args, explicitPath, { program: support.executable, args }, config.env.withProfile(this.cmdOverrides).getFullEnv());
-    args.push(...buildAgentTowerMcpEnvConfigOverrides(config.env, names), 'app-server', '--listen', 'stdio://');
+    const names = await getCodexMcpServerNamesForLaunch(
+      args, explicitPath, { program: support.executable, args },
+      config.env.withProfile(this.cmdOverrides).getFullEnv(), config.workingDir,
+    );
+    args.push(...buildAgentTowerMcpConfigOverrides(config.env.withProfile(this.cmdOverrides), names), 'app-server', '--listen', 'stdio://');
     const { textPrompt, imagePaths } = await extractImagePaths(this.combinePrompt(config.prompt));
     const input: CodexCliStart = { cwd: config.workingDir, ...(resumeThreadId ? { resumeThreadId } : {}), input: [
       { type: 'text', text: textPrompt, text_elements: [] }, ...imagePaths.map(image => ({ type: 'localImage' as const, path: image })),
