@@ -7,7 +7,7 @@ description: 让外部 agent 直接操作 Agent Tower。
 
 Agent Tower 内置 MCP server，让外部 AI agent 可以直接读取任务板、启动 workspace session、管理 workspace 后台服务、查看 diff，以及继续与已有 session 交互。
 
-如果你要在 TeamRun 中使用 Team Room、私聊或 WorkRequest 控制工具，需要确保每个 Agent 都能访问 Agent Tower MCP server。Tower 会为自己启动的 Codex CLI 和 ACP 会话动态提供配置；其他 CLI 仍需手动配置。具体见 [团队模式](../guide/team-mode.md)。
+如果你要在 TeamRun 中使用 Team Room、私聊或 WorkRequest 控制工具，需要确保每个 Agent 都能访问 Agent Tower MCP server。Tower 会为自己启动的 Claude Code CLI、Codex CLI 和 ACP 会话动态提供配置；其他 CLI 仍需手动配置。具体见 [团队模式](../guide/team-mode.md)。
 
 ## 架构
 
@@ -45,7 +45,9 @@ pnpm --filter @agent-tower/server dev
 
 ### Tower 托管会话
 
-由 Agent Tower 启动的 Codex CLI 和 ACP 会话会自动获得完整的 Tower MCP 配置，包括当前运行环境的启动入口、后端地址和会话凭据，无需提前配置全局 MCP。Codex CLI 的新建、续接和原生 app-server 启动均使用这份动态配置。
+由 Agent Tower 启动的 Claude Code CLI、Codex CLI 和 ACP 会话会自动获得完整的 Tower MCP 配置，包括当前运行环境的启动入口、后端地址和会话凭据，无需提前配置全局 MCP。Codex CLI 的新建、续接和原生 app-server 启动均使用这份动态配置。
+
+Claude Code CLI 在新建和续接会话时通过 `--mcp-config` 注入，覆盖普通任务、独立对话和 TeamRun；工具调用遵循当前的 ASK 或 FULL_ACCESS 权限模式。托管 server 使用带会话身份后缀的名称（`agent-tower-…`），隔离旧配置的地址和项目禁用状态。旧 `agent-tower`、`agent-tower-dev` 的工具仅在本次启动中通过 `--disallowedTools` 过滤；旧 server 仍可能被 Claude 加载或显示连接状态。其他 MCP 继续按 Claude 原有配置加载，Tower 不启用 `--strict-mcp-config`，也不把动态配置写入用户或项目文件。
 
 Codex CLI 使用带会话身份后缀的独立 MCP server 名（`agent-tower-…`），避免旧地址、禁用状态或工具筛选影响内置工具。Codex 在当前工作区实际加载的用户配置及可信项目配置中的 `agent-tower`、`agent-tower-dev` 旧别名，仅在本次启动中禁用，避免工具重复；其他 MCP 保持原配置。探测和缓存按目标工作区隔离，项目配置变更后重新查询有效配置。Tower 不会把这份配置写入用户或项目文件。
 

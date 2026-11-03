@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { createHash } from 'node:crypto';
 import { AgentType } from '../types/index.js';
 import {
   BaseExecutor,
@@ -22,7 +23,11 @@ import {
 import { which } from '../utils/index.js';
 import { parsePromptWithImages, buildUserMessageNDJSON } from './image-utils.js';
 import { cachedClaudeCliAskSupport, refreshClaudeCliAskSupport } from '../services/claude-cli-capabilities.service.js';
-import { ExecutorConfigurationError } from './start-error.js';
+import { ExecutorConfigurationError, markPreChildProcessFailure } from './start-error.js';
+import { AGENT_TOWER_MCP_IDENTITY_ENV_KEYS } from './execution-env.js';
+import { buildMcpConfigResponse } from '../services/mcp-config.service.js';
+import { AGENT_API_CREDENTIAL_ENV } from '../utils/agent-api-credential.js';
+import { INTERNAL_API_TOKEN_ENV } from '../utils/internal-api-token.js';
 
 /**
  * Claude Code 权限模式
@@ -259,6 +264,49 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     return this.buildCommandBuilder();
   }
 
+  private buildCommandBuilderForSpawn(config: ExecutorSpawnConfig): CommandBuilder {
+    const builder = this.buildCommandBuilderForStreamJson();
+    const env = config.env.withProfile(this.cmdOverrides);
+    // Only register MCP for an explicitly authenticated Tower launch, never
+    // using credentials inherited from the server's parent process.
+    const credential = env.get(AGENT_API_CREDENTIAL_ENV)?.trim() || env.get(INTERNAL_API_TOKEN_ENV)?.trim();
+    if (!credential) return builder;
+
+    let managed: ReturnType<typeof buildMcpConfigResponse>;
+    try {
+      managed = buildMcpConfigResponse({ env: {
+        ...env.getFullEnv(),
+        // Trusted runtime paths are intentionally filtered out of the Agent env.
+        AGENT_TOWER_DESKTOP_RUNTIME_MODE: process.env.AGENT_TOWER_DESKTOP_RUNTIME_MODE,
+        AGENT_TOWER_NODE_RUNTIME: process.env.AGENT_TOWER_NODE_RUNTIME,
+        AGENT_TOWER_MCP_ENTRY: process.env.AGENT_TOWER_MCP_ENTRY,
+        ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE,
+      } });
+    } catch (error) {
+      // Neither spawn transport has been entered; the launch claim can be
+      // resolved without waiting for process cleanup evidence.
+      throw markPreChildProcessFailure(error);
+    }
+    const mcpEnv = { ...managed.env };
+    for (const key of AGENT_TOWER_MCP_IDENTITY_ENV_KEYS) {
+      const value = env.get(key);
+      if (value) mcpEnv[key] = value;
+    }
+    // A dynamic config replaces a same-name server, but Claude still honors
+    // project-level disabledMcpServers. Isolate the managed name from old aliases.
+    const identity = env.get('AGENT_TOWER_SESSION_ID') || credential;
+    const serverName = `${managed.serverName}-${createHash('sha256').update(identity).digest('hex').slice(0, 8)}`;
+    // Append after Provider overrides. Keep other servers and filter only the
+    // legacy Tower tools; this does not rewrite the user's MCP configuration.
+    builder.extendParams([
+      '--mcp-config', JSON.stringify({ mcpServers: {
+        [serverName]: { type: 'stdio', command: managed.command, args: managed.args, env: mcpEnv },
+      } }),
+      '--disallowedTools', 'mcp__agent-tower__*', 'mcp__agent-tower-dev__*',
+    ]);
+    return builder;
+  }
+
   /**
    * 启动新会话
    */
@@ -270,7 +318,7 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     console.log('[ClaudeCodeExecutor] spawn - prompt length:', prompt.length);
     const parsedPrompt = await parsePromptWithImages(prompt);
 
-    const commandBuilder = this.buildCommandBuilderForStreamJson();
+    const commandBuilder = this.buildCommandBuilderForSpawn(config);
     const commandParts = commandBuilder.buildInitial();
     if (verifiedExecutable) commandParts.program = verifiedExecutable;
     const userMessage = buildUserMessageNDJSON(parsedPrompt.contentBlocks);
@@ -297,7 +345,7 @@ export class ClaudeCodeExecutor extends BaseExecutor {
     console.log('[ClaudeCodeExecutor] spawnFollowUp - prompt length:', prompt.length);
     const parsedPrompt = await parsePromptWithImages(prompt);
 
-    const commandBuilder = this.buildCommandBuilderForStreamJson();
+    const commandBuilder = this.buildCommandBuilderForSpawn(config);
     const additionalArgs = ['--resume', sessionId];
     if (resetToMessageId) {
       additionalArgs.push('--resume-session-at', resetToMessageId);

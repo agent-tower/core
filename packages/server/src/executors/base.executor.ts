@@ -71,7 +71,15 @@ function summarizeStdinForLog(stdinData: string): string {
 function redactArgsForLog(args: string[]): string {
   const redacted: string[] = [];
   let redactNext = false;
+  let redactMcpConfigs = false;
   for (const arg of args) {
+    // --mcp-config accepts multiple JSON strings/files, including the
+    // --mcp-config=<json> form. Every value can contain MCP credentials.
+    if (redactMcpConfigs && !arg.startsWith('-')) {
+      redacted.push('<redacted>');
+      continue;
+    }
+    redactMcpConfigs = false;
     if (redactNext) {
       redacted.push('<redacted>');
       redactNext = false;
@@ -80,6 +88,11 @@ function redactArgsForLog(args: string[]): string {
 
     const equalsIndex = arg.indexOf('=');
     const key = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
+    if (key === '--mcp-config') {
+      redacted.push(equalsIndex === -1 ? key : `${key}=<redacted>`);
+      redactMcpConfigs = true;
+      continue;
+    }
     if (equalsIndex !== -1 && /(?:^|[._-])(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH)(?:[._-]|$)/i.test(key)) {
       redacted.push(`${key}=<redacted>`);
       continue;

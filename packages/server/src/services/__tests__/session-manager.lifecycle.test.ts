@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { PrismaClient } from '@prisma/client';
 import { AgentType, SessionPurpose, SessionStatus, TaskStatus } from '../../types/index.js';
 import { EventBus } from '../../core/event-bus.js';
-import type { EarlyPtyEvent } from '../../executors/base.executor.js';
+import type { EarlyPtyEvent, SpawnedChild } from '../../executors/base.executor.js';
 import { RuntimeType, type RuntimeCapabilities } from '@agent-tower/shared';
 import type {
   DriverSession,
@@ -1361,6 +1361,71 @@ describe('SessionManager session status vs real process state', () => {
       where: { sessionId: session.id, cleanupState: 'QUARANTINED' },
     })).toBe(0);
     await manager.destroyAll();
+  });
+
+  it.each([
+    ['start', 'entry'], ['startFollowUp', 'entry'],
+    ['start', 'backend'], ['startFollowUp', 'backend'],
+  ] as const)('resolves a Claude MCP %s failure with missing %s and permits cleanup and retry', async (method, missing) => {
+    const { ClaudeCodeExecutor } = await import('../../executors/claude-code.executor.js');
+    // Exercise the real configuration builder and CLI Driver; only substitute
+    // the PTY transport after configuration succeeds.
+    class TestClaudeExecutor extends ClaudeCodeExecutor {
+      protected override async spawnWithStdin(): Promise<SpawnedChild> { return spawnMock(); }
+    }
+    const executor = new TestClaudeExecutor({ executionPermission: 'FULL_ACCESS' });
+    const provider = {
+      id: 'claude-mcp-recovery', name: 'Claude MCP recovery', agentType: AgentType.CLAUDE_CODE,
+      runtimeType: RuntimeType.CLI, executionPermission: 'FULL_ACCESS' as const,
+      config: {}, env: {}, isDefault: false,
+    };
+    getProviderByIdMock.mockReturnValue(provider);
+    getExecutorByProviderMock.mockReturnValue(executor);
+    const { workspace, session } = await createSessionFixture({ providerId: provider.id, agentType: AgentType.CLAUDE_CODE });
+    const resumeSource = await prisma.session.create({ data: {
+      workspaceId: workspace.id, agentType: AgentType.CLAUDE_CODE, prompt: 'previous turn',
+      status: SessionStatus.COMPLETED, externalSessionId: 'previous-claude-session',
+    } });
+    const entry = path.join(serverRoot, 'src', 'mcp', 'index.ts');
+    const manager = new SessionManager(new EventBus());
+    const pty = new ControlledPty();
+    spawnMock.mockReset();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+    vi.stubEnv('AGENT_TOWER_DESKTOP_RUNTIME_MODE', undefined);
+    vi.stubEnv('AGENT_TOWER_MCP_ENTRY', missing === 'entry' ? path.join(testDir, 'missing-mcp.js') : entry);
+    vi.stubEnv('AGENT_TOWER_URL', missing === 'backend' ? undefined : 'http://127.0.0.1:12580');
+    vi.stubEnv('AGENT_TOWER_PORT', undefined);
+    try {
+      const starting = method === 'start' ? manager.start(session.id) : manager.startFollowUp(session.id, resumeSource.id);
+      await expect(starting).rejects.toThrow(missing === 'entry'
+        ? 'Agent Tower MCP entry not found'
+        : 'AGENT_TOWER_URL or AGENT_TOWER_PORT is required');
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(await prisma.executionProcess.count({ where: { sessionId: session.id } })).toBe(0);
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+        status: SessionStatus.CANCELLED, runtimeLaunchState: 'SAFE_PRE_CHILD_FAILURE',
+        runtimeLaunchClaimCount: 1, runtimeLaunchResolvedCount: 1, runtimeLaunchProcessCount: 0,
+      });
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(true);
+      await expect(manager.stop(session.id)).resolves.toMatchObject({ id: session.id });
+
+      vi.stubEnv('AGENT_TOWER_MCP_ENTRY', entry);
+      vi.stubEnv('AGENT_TOWER_URL', 'http://127.0.0.1:12580');
+      await expect(manager.sendMessage(session.id, 'retry after correcting MCP configuration')).resolves.toMatchObject({ id: session.id });
+      expect(spawnMock).toHaveBeenCalledOnce();
+      await expect(prisma.session.findUniqueOrThrow({ where: { id: session.id } })).resolves.toMatchObject({
+        status: SessionStatus.RUNNING, runtimeLaunchState: 'PROCESS_RECORDED',
+        runtimeLaunchClaimCount: 2, runtimeLaunchResolvedCount: 2, runtimeLaunchProcessCount: 1,
+      });
+      await manager.stop(session.id);
+      expect(pty.killed).toBe(true);
+      expect(await manager.isRuntimeCleanupConfirmed(session.id)).toBe(true);
+      expect(await prisma.executionProcess.findMany({ where: { sessionId: session.id } }))
+        .toMatchObject([{ launchClaimNumber: 2, cleanupState: 'CONFIRMED' }]);
+    } finally {
+      vi.unstubAllEnvs();
+      await manager.destroyAll();
+    }
   });
 
   it.each(['start', 'startFollowUp'] as const)(

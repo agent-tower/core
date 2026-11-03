@@ -19,7 +19,7 @@ description: 使用 TeamRun、Team Room 和多个 agent 协作完成任务。
 
 每个 TeamRun 成员背后的 Agent 都必须能访问 Agent Tower MCP server。否则 Agent 只能完成普通代码任务，无法可靠使用 Team Room、私聊、WorkRequest 控制等 room 工具。
 
-Agent Tower 会为自己启动的 Codex CLI 和 ACP 会话动态提供完整 MCP 配置，无需用户在全局客户端配置中注册。其他 CLI 仍需配置 Agent Tower MCP server，推荐使用正式名称 `agent-tower`：
+Agent Tower 会为自己启动的 Claude Code CLI、Codex CLI 和 ACP 会话动态提供完整 MCP 配置，无需用户在全局客户端配置中注册。其他 CLI 仍需配置 Agent Tower MCP server，推荐使用正式名称 `agent-tower`：
 
 ```json
 {
@@ -48,6 +48,12 @@ Team Room 和私聊相关工具依赖这些受信任身份变量：
 `AGENT_TOWER_AGENT_CREDENTIAL` 是 Agent Tower 为托管 Agent/MCP 签发的临时凭据，只绑定当前 session/invocation。应用级 `AGENT_TOWER_INTERNAL_TOKEN` 不会暴露给托管 Agent；它只用于可信内部进程或手动配置的 MCP 客户端，不要把真实 token 提交到仓库。
 
 安全边界：`memberId` 和 `invocationId` 不能通过提示词、tool args 或手工参数显式传给 MCP 工具。它们必须由 Agent Tower 启动器注入到 Agent/MCP 运行环境中。这样 room 工具才能按当前成员身份过滤私聊内容，并防止 Agent 冒充其他成员。
+
+## Claude Code CLI
+
+Tower 在新建和续接 Claude Code CLI 会话时自动注入内置 MCP，包括当前 TeamRun、成员、invocation 和 session 身份。用户无需修改 `~/.claude.json` 或项目 `.mcp.json`。
+
+内置 MCP 使用带会话后缀的名称（`agent-tower-…`）。旧 `agent-tower`、`agent-tower-dev` 的工具在本次启动中过滤，团队工具使用当前 Tower 的配置；其他 MCP 继续加载。ASK 和 FULL_ACCESS 沿用现有权限规则，完整行为见 [MCP 集成](../integrations/mcp.md)。
 
 ## Codex CLI
 

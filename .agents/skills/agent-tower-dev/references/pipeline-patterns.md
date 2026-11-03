@@ -98,6 +98,7 @@ Agent 专属配置使用结构化解析：Codex TOML、Claude JSON 及现有标�
 
 - CLI 扩展实现 `BaseExecutor` 的身份、命令与可用性入口，通过 `CommandBuilder`、`ExecutionEnv` 和现有 PTY wrapper 启动；follow-up、slash commands、MCP 路径按 Agent 能力扩展。保留 Windows ConPTY、stdin 临时文件权限与清理、日志脱敏。
 - 托管 Codex CLI 在 `exec`、`exec resume` 和原生 app-server 启动时，通过 `buildAgentTowerMcpConfigOverrides()` 与 `services/mcp-config.service.ts` 动态注册完整 stdio 配置；使用本次有效环境中的凭据、后端地址与当前 Tower 的 Node/MCP 入口，不依赖用户预先声明 MCP，也不写全局配置。Codex 会深合并 CLI 参数与文件配置，整表覆盖不能清除旧 URL、工具过滤等字段，因此托管 server 使用 `agent-tower-<身份短摘要>` 独立名称，并仅在本次启动中禁用已声明的 `agent-tower` / `agent-tower-dev` 旧别名，避免工具重复；其他 MCP 保持原配置。凭据和身份按独立 dotted `-c` 参数传入，保留日志脱敏。无 Tower 凭据的独立调用不自动注册。ACP 继续通过 session new/load/resume 的 `mcpServers` 提供完整配置；其他 CLI 不据此假设已有自动注册。
+- 托管 Claude Code CLI 的新建/续接共用 `ClaudeCodeExecutor.buildCommandBuilderForSpawn()`，在 Provider 参数之后通过 `--mcp-config` 提供完整 stdio 配置和当前身份；覆盖 stdin 与 ASK duplex。Claude 会完整替换同名配置，但仍读取项目的 `disabledMcpServers`，因此托管 server 同样使用稳定的会话后缀。仅在本次启动中用 `--disallowedTools` 过滤 `agent-tower` / `agent-tower-dev` 旧别名工具；旧 server 仍可能连接，这不同于 Codex 的禁用 server。保留其他 MCP，不默认加 strict，不写用户配置；没有显式 Tower 凭据时不注入。`BaseExecutor` 日志须遮蔽所有 variadic MCP 配置值，包括等号形式；生成配置时使用可信 server runtime 路径，不从 Provider 接收 Tower 身份或入口。
 - 三条托管 Codex CLI 启动路径使用 `getCodexMcpServerNamesForLaunch()`，在目标 `config.workingDir` 异步查询 `codex mcp list --json`；冷缓存或需要刷新时等待当前缓存项的有界 single-flight 查询，不阻塞 Node 事件循环。Windows npm 的 `.cmd/.bat` 入口沿用 `process-launch.ts` 的受控 `cmd.exe` 参数构造，并设置 `windowsVerbatimArguments`；原生可执行文件直接启动，探测保留 Provider 环境与目标工作目录。有效项目层级及信任规则由 Codex 决定，不把未信任项目文件中的声明当作已加载的 server。缓存按规范化工作目录、执行器及 Provider 覆盖、用户配置和各级 `.codex/config.toml` 指纹隔离，配置增删改触发重新查询；失败保留已有名称或全局 fallback。同步 `getCachedCodexMcpServerNames()` 仍供无需等待的读取使用，不代替启动前的有效配置查询。
 - CLI 的可选 `SpawnedChild.duplex` 通过 `cli-duplex-channel.ts` 与 wrapper 的 `pipe-duplex` mode 保持真实 stdin、独立 stdout/stderr、串行写入/ACK 和 EOF；私有 IPC 配置不传给 Agent。PTY 继续负责 wrapper 的 launch identity、started 屏障和整树 cleanup。Duplex 不能通过 `writeInput` 注入控制帧；普通 CLI 的 PTY/pipe-file 路径保留。
 - Duplex 根退出即启动整树清理，输出完成独立等待两条原生流结束及服务端 reader 的消费 ACK（早期缓存也要实际重放后才 ACK）。正常 PTY exit 不能先 finish/unsubscribe Parser；传输超时是失败，不合成成功 EOF。逻辑 result 后的 cleanup grace 也必须保留 duplex reader；显式停止、`cancelTurn()` 及 `abandonTurn()` 替换都须走 Driver 的同一 stop owner，在卸载 reader 前关闭通道解除消费等待。取消结果先于通道关闭确定，避免同步 disconnect 改写取消原因；新轮仍等待原 owner 的真实整树清理及持久事件确认。
@@ -169,7 +170,7 @@ pnpm exec vitest run packages/server/src/pipeline/__tests__/agent-pipeline.test.
 pnpm exec vitest run packages/server/src/services/__tests__/provider-config.service.test.ts packages/server/src/executors/__tests__/providers.test.ts packages/server/src/runtime/__tests__/acp-driver.test.ts packages/server/src/runtime/__tests__/acp-agent-definitions.test.ts packages/shared/src/__tests__/agent-runtime-support.test.ts
 
 # 托管 MCP 启动配置
-pnpm exec vitest run packages/server/src/services/mcp-config.service.test.ts packages/server/src/executors/__tests__/codex.executor.test.ts
+pnpm exec vitest run packages/server/src/services/mcp-config.service.test.ts packages/server/src/executors/__tests__/codex.executor.test.ts packages/server/src/executors/__tests__/claude-code-mcp.test.ts
 ```
 
 生命周期改动重点验证 early data/exit、启动失败、停止与重发并发、取消/权限失效、旧连接迟到事件、清理失败重试和 snapshot restore。Provider 改动验证有效连接、继承环境冲突和脱敏；用户可见行为变化同步 `packages/docs-site/docs/guide/sessions.md`、`packages/docs-site/docs/integrations/agent-providers.md` 或对应 API 文档。

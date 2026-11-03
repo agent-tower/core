@@ -542,6 +542,27 @@ describe('BaseExecutor.spawnWithStdin', () => {
     expect(logs).toContain('mcp_servers.agent-tower.env.AGENT_TOWER_INTERNAL_TOKEN=<redacted>');
   });
 
+  it.each(['separate', 'equals'])('redacts all variadic MCP configs in the %s argument form', async form => {
+    const stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    spawnMock.mockReturnValueOnce({
+      pid: 12345,
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+      kill: vi.fn(),
+    });
+    const towerConfig = JSON.stringify({ mcpServers: { tower: { env: { AGENT_TOWER_AGENT_CREDENTIAL: 'private-tower-credential' } } } });
+    const otherConfig = JSON.stringify({ mcpServers: { other: { env: { API_KEY: 'private-other-key' } } } });
+    const args = form === 'equals' ? [`--mcp-config=${towerConfig}`] : ['--mcp-config', towerConfig];
+    args.push(otherConfig, '--output-format=stream-json');
+    await new TestExecutor().spawnForTest({ program: 'mock-agent', args }, 'hello');
+
+    const logs = stdoutWriteSpy.mock.calls.map(([line]) => String(line)).join('\n');
+    expect(logs).not.toContain('private-tower-credential');
+    expect(logs).not.toContain('private-other-key');
+    expect(logs).toContain('<redacted>');
+    expect(logs).toContain('--output-format=stream-json');
+  });
+
   it('uses bundled node runtime for the stdin PTY wrapper while sanitizing agent env', async () => {
     const originalEnv = snapshotEnv(envKeysToRestore);
     process.env.DATABASE_URL = 'file:/prod/database-url.db';
