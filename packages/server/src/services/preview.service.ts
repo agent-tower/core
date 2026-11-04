@@ -4,7 +4,6 @@ import { prisma } from '../utils/index.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 
 const DEFAULT_SCHEME = 'http';
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const CONNECTION_TIMEOUT_MS = 1500;
 
 export interface NormalizedPreviewTarget {
@@ -43,7 +42,12 @@ function parsePort(url: URL): number {
   return port;
 }
 
-function ensureLoopbackTarget(url: URL): void {
+/**
+ * Preview targets are fetched by the Agent Tower server itself, so any
+ * http(s) address the server can reach is allowed: loopback ports, LAN hosts,
+ * Docker service names, or other machines on the server's network.
+ */
+function ensureSupportedTarget(url: URL): void {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new ServiceError('Preview target must use http or https', 'INVALID_PREVIEW_TARGET', 400);
   }
@@ -52,14 +56,12 @@ function ensureLoopbackTarget(url: URL): void {
     throw new ServiceError('Preview target must not include credentials', 'INVALID_PREVIEW_TARGET', 400);
   }
 
-  const hostname = url.hostname.toLowerCase();
-  if (hostname === '0.0.0.0') {
-    url.hostname = '127.0.0.1';
-    return;
+  if (!url.hostname) {
+    throw new ServiceError('Preview target must include a host', 'INVALID_PREVIEW_TARGET', 400);
   }
 
-  if (!LOOPBACK_HOSTS.has(hostname)) {
-    throw new ServiceError('Preview target host must be localhost, 127.0.0.1, or ::1', 'INVALID_PREVIEW_TARGET', 400);
+  if (url.hostname.toLowerCase() === '0.0.0.0' || url.hostname === '[::]') {
+    url.hostname = '127.0.0.1';
   }
 }
 
@@ -76,7 +78,7 @@ export function normalizePreviewTarget(input: string): NormalizedPreviewTarget {
     throw new ServiceError('Preview target is not a valid URL', 'INVALID_PREVIEW_TARGET', 400);
   }
 
-  ensureLoopbackTarget(url);
+  ensureSupportedTarget(url);
   parsePort(url);
 
   url.hash = '';

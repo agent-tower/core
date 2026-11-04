@@ -12,6 +12,7 @@ import {
   buildPreviewProxyUrl,
   previewLocationToTarget,
   resolvePreviewNavigation,
+  type PreviewEntry,
 } from '@/lib/preview-navigation'
 import { agentVisualizationUrl } from '@/lib/message-intent'
 
@@ -49,6 +50,7 @@ interface PreviewBridgeMessage {
   source?: unknown
   type?: unknown
   href?: unknown
+  path?: unknown
   newTab?: unknown
 }
 
@@ -56,16 +58,20 @@ const PREVIEW_BRIDGE_SOURCE = 'agent-tower-preview'
 const PREVIEW_HOST_SOURCE = 'agent-tower-preview-host'
 
 function formatHint() {
-  return '3000, localhost:3000, http://127.0.0.1:5173'
+  return '3000, localhost:3000, http://192.168.1.20:8080'
 }
 
 function getOrigin(value: string | null | undefined): string | null {
   if (!value) return null
   try {
-    return new URL(value).origin
+    return new URL(value, window.location.href).origin
   } catch {
     return null
   }
+}
+
+function sessionEntry(session: { kind: PreviewEntry['kind']; viewUrl: string } | null | undefined): PreviewEntry | null {
+  return session ? { kind: session.kind, viewUrl: session.viewUrl } : null
 }
 
 export function PreviewPanel(props: PreviewPanelProps) {
@@ -103,7 +109,8 @@ function PreviewPanelContent({
     iframeSrc: null,
     isFrameLoading: false,
   })
-  const sessionOrigin = getOrigin(previewSession?.viewUrl)
+  const sessionOrigin = previewSession ? `${previewSession.kind}:${getOrigin(previewSession.viewUrl) ?? ''}` : null
+  const entry = sessionEntry(previewSession)
   const browser = status && browserState.target !== status.target
     ? {
         target: status.target,
@@ -134,13 +141,14 @@ function PreviewPanelContent({
     const originChanged = sessionOriginRef.current !== sessionOrigin
     sessionOriginRef.current = sessionOrigin
 
+    const activeEntry = sessionEntry(previewSession)
     setBrowser((current) => {
       const requestedNavigation = navigationRequest?.source.kind === 'web'
         && handledNavigationRequestRef.current !== navigationRequest.id
         ? resolvePreviewNavigation(
             navigationRequest.source.url,
             previewSession.target,
-            previewSession.viewUrl,
+            activeEntry,
           )
         : null
       if (
@@ -154,13 +162,13 @@ function PreviewPanelContent({
         iframeSrc = requestedNavigation.url
       } else if (!iframeSrc || current.target !== previewSession.target || originChanged) {
         const pendingPath = pendingPathRef.current
-        if (pendingPath) {
-          iframeSrc = buildPreviewProxyUrl(previewSession.viewUrl, pendingPath)
+        if (pendingPath && activeEntry) {
+          iframeSrc = buildPreviewProxyUrl(activeEntry, pendingPath)
         } else {
           const navigation = resolvePreviewNavigation(
             current.address || previewSession.target,
             previewSession.target,
-            previewSession.viewUrl,
+            activeEntry,
           )
           iframeSrc = navigation?.kind === 'proxy' ? navigation.url : previewSession.viewUrl
         }
@@ -192,7 +200,7 @@ function PreviewPanelContent({
     const navigation = resolvePreviewNavigation(
       value,
       status?.target ?? null,
-      previewSession?.viewUrl ?? null,
+      sessionEntry(previewSession),
     )
     if (!navigation || !workspaceId) return
     setVisualization(null)
@@ -238,7 +246,7 @@ function PreviewPanelContent({
       const message = err instanceof Error ? err.message : t('Failed to save preview target')
       toast.error(message)
     }
-  }, [previewSession?.viewUrl, readOnly, status?.target, t, updateConfig, workspaceId])
+  }, [previewSession, readOnly, status?.target, t, updateConfig, workspaceId])
 
   useEffect(() => {
     if (!navigationRequest) return
@@ -272,13 +280,8 @@ function PreviewPanelContent({
       const message = event.data
       if (!message || message.source !== PREVIEW_BRIDGE_SOURCE) return
 
-      if (message.type === 'location' && typeof message.href === 'string') {
-        const nextAddress = previewLocationToTarget(
-          status?.target ?? null,
-          previewSession?.viewUrl ?? null,
-          message.href,
-          window.location.href,
-        )
+      if (message.type === 'location' && typeof message.path === 'string') {
+        const nextAddress = previewLocationToTarget(status?.target ?? null, message.path)
         if (nextAddress && document.activeElement !== addressInputRef.current) {
           patchBrowserState({
             target: status?.target ?? browser.target,
@@ -289,14 +292,17 @@ function PreviewPanelContent({
         return
       }
 
-      if (message.type === 'navigate-loopback' && typeof message.href === 'string') {
+      if (
+        (message.type === 'navigate-target' || message.type === 'navigate-loopback')
+        && typeof message.href === 'string'
+      ) {
         void navigateToAddress(message.href, message.newTab === true)
       }
     }
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [browser.target, navigateToAddress, patchBrowserState, previewSession?.viewUrl, status?.target, visualization])
+  }, [browser.target, navigateToAddress, patchBrowserState, status?.target, visualization])
 
   const postPreviewAction = (action: 'back' | 'forward' | 'reload' | 'stop') => {
     iframeRef.current?.contentWindow?.postMessage({ source: PREVIEW_HOST_SOURCE, action }, '*')
@@ -337,11 +343,11 @@ function PreviewPanelContent({
       window.open(visualization.iframeSrc, '_blank', 'noopener,noreferrer')
       return
     }
-    if (!previewSession?.viewUrl) return
+    if (!entry || !previewSession) return
     const navigation = resolvePreviewNavigation(
       browser.address || previewSession.target,
       previewSession.target,
-      previewSession.viewUrl,
+      entry,
     )
     const url = navigation?.kind === 'proxy' ? navigation.url : previewSession.viewUrl
     window.open(url, '_blank', 'noopener,noreferrer')
@@ -433,10 +439,14 @@ function PreviewPanelContent({
                   ? `${t('Proxying')} ${status.target}`
                   : status?.configured
                     ? `${t('Preview target is not reachable')}${status.error ? `: ${status.error}` : ''}`
-                    : t('Enter a local preview URL on the Agent Tower machine.')}
+                    : t('Enter a URL the Agent Tower server can reach.')}
           </span>
           <span className="shrink-0 text-muted-foreground">
-            {isVisualizationMode ? t('Session file') : t('Loopback only')}
+            {isVisualizationMode
+              ? t('Session file')
+              : previewSession?.kind === 'gateway'
+                ? t('Direct gateway')
+                : t('Via Agent Tower')}
           </span>
         </div>
       </div>
@@ -468,7 +478,7 @@ function PreviewPanelContent({
               ? status.ready && isSessionOpening
                 ? t('Checking preview target...')
                 : t('Start the preview server, then refresh.')
-              : t('Configure a local preview target to display it here.')}
+              : t('Configure a preview target the Agent Tower server can reach to display it here.')}
           </div>
         )}
       </div>

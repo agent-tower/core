@@ -73,21 +73,26 @@ Workspace 支持：
 
 ## 预览代理
 
-Workspace 面板提供 Preview 标签页。你可以配置本机预览服务地址，例如：
+Workspace 面板提供 Preview 标签页。你可以配置任何 Agent Tower 服务器能访问到的 HTTP/HTTPS 地址，例如：
 
 ```text
 127.0.0.1:5173
+192.168.1.20:8080
+http://api:4000/docs
 ```
 
-Preview 提供地址栏、后退、前进、刷新和新窗口等浏览器操作。地址栏可以输入路径、完整的 localhost URL 或另一个本地端口；同端口切换页面不会改写 workspace 配置，切换端口时会更新预览目标并继续打开指定路径。
+Preview 提供地址栏、后退、前进、刷新和新窗口等浏览器操作。地址栏可以输入路径、完整 URL 或另一个端口；同一服务内切换页面不会改写 workspace 配置，切换到其他服务时会更新预览目标并继续打开指定路径。
 
-Session Log 或 Team Room 消息中的 localhost 链接也会打开对应 workspace 的 Preview。桌面端自动展开右侧 Preview，移动端自动切换到 Workspace/Preview；普通外部链接仍按原方式打开。
+Session Log 或 Team Room 消息中的 localhost、局域网地址、Docker 服务名等"只有服务器能访问"的链接也会打开对应 workspace 的 Preview。桌面端自动展开右侧 Preview，移动端自动切换到 Workspace/Preview；普通外部链接仍按原方式打开。
 
-后端会为打开的 Preview 创建一个独立根路径网关，并转发普通 HTTP、WebSocket、Cookie、表单和浏览器存储所需的能力。页面跳转 `/login` 或读取 `/assets` 时仍然停留在预览根目录，不会落到 Agent Tower 自身路由。目标应用自己的登录 Cookie 会与外层 Agent Tower 隔离，因此本地和远程 Preview 都可以完成登录并保持会话。
+预览始终由 Agent Tower 服务器代为访问目标，因此无论你在本机、局域网、Cloudflare tunnel、HTTPS 反向代理还是 Docker 环境中打开 Agent Tower，都能看到同一套预览内容：
 
-本机和局域网客户端通过 Agent Tower 主机的网关端口访问；从 HTTPS 或 Cloudflare tunnel 打开时，后端按需创建一条独立的预览 Quick Tunnel。同一 workspace 的多个页面复用同一入口，全部关闭或失联并空闲 10 分钟后自动回收。用户不需要让手机直接连接电脑的 loopback 地址。
+- **同源代理**：浏览器只要能打开 Agent Tower，就能通过 `/view/:workspaceId/` 打开预览。预览页内注册一个 Service Worker，把页面发出的 `/assets`、`/api`、ES module import 等请求透明转发到目标服务，同时把页面地址虚拟化为目标自己的根路径，React Router、Vue Router 等 history 路由无需配置 base path。不支持 Service Worker 时自动降级为服务端改写加兜底重定向。
+- **直连网关**：从 `http://` 页面打开时，后端会额外在 Agent Tower 主机上为该 workspace 开一个独立端口的根路径网关，预览页拥有独立 origin。浏览器会先探测该端口是否可达，不可达（反向代理、防火墙、另一网络）时自动改用同源代理。
 
-预览目标只允许 `localhost`、`127.0.0.1`、`::1` 等 loopback 地址，不能指向任意外部主机。Preview 面向已登录用户主动打开的可信本地开发服务；为保证应用可以完整运行，预览页拥有脚本和同源能力，不要打开不可信的本地页面。
+两种入口都转发 HTTP、WebSocket、Cookie、表单和流式响应。目标应用自己的登录 Cookie 与外层 Agent Tower 隔离，同源预览的 `localStorage`/`sessionStorage` 也按 workspace 隔离，不会覆盖 Agent Tower 自身的数据。
+
+Preview 面向已登录用户主动打开的可信开发服务；为保证应用可以完整运行，预览页拥有脚本和同源能力，不要打开不可信的页面。
 
 ## 后台服务
 

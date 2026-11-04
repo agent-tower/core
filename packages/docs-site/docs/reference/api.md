@@ -298,13 +298,13 @@ Agent Tower 关闭时停止托管服务；启动时将遗留的期望运行记�
 | --- | --- | --- |
 | `GET` | `/api/previews/:workspaceId/status` | 获取 workspace 预览代理状态 |
 | `PUT` | `/api/previews/:workspaceId/config` | 配置 workspace 预览目标 |
-| `POST` | `/api/previews/:workspaceId/sessions` | 打开本地或远程独立预览会话 |
-| `POST` | `/api/previews/:workspaceId/sessions/:sessionId/heartbeat` | 续租预览会话并刷新入口凭证 |
+| `POST` | `/api/previews/:workspaceId/sessions` | 打开预览会话，返回 `kind: 'gateway' \| 'same-origin'` 与对应入口 `viewUrl` |
+| `POST` | `/api/previews/:workspaceId/sessions/:sessionId/heartbeat` | 续租直连网关会话并刷新入口凭证（同源会话无需续租） |
 | `DELETE` | `/api/previews/:workspaceId/sessions/:sessionId` | 释放预览会话 |
-| `ANY` | `/view/:workspaceId` | 兼容旧客户端的同源代理入口 |
-| `ANY` | `/view/:workspaceId/*` | 兼容旧客户端的同源代理子路径 |
+| `ANY` | `/view/:workspaceId` | 同源代理入口 |
+| `ANY` | `/view/:workspaceId/*` | 同源代理子路径（含 Service Worker 脚本 `__agent_tower_preview_sw.js`） |
 
-预览目标只允许 loopback HTTP/HTTPS 地址。新客户端通过 session API 获取独立根路径 gateway URL；远程 session 会按 workspace 复用独立 Quick Tunnel。session API 使用现有 access password/tunnel session，gateway URL 使用短期 bootstrap token 换取独立 HttpOnly Cookie，并支持 HTTP 与 WebSocket 转发。`/view/:workspaceId` 仅用于兼容。
+预览目标允许任何 Agent Tower 服务器可访问的 HTTP/HTTPS 地址。session API 的 `mode` 为 `local` 时返回独立根路径 gateway URL（短期 bootstrap token 换取独立 HttpOnly Cookie）；`mode` 为 `remote`、请求经 Cloudflare tunnel 或设置了 `AGENT_TOWER_PREVIEW_FORCE_SAME_ORIGIN=true` 时返回同源入口 `/view/:workspaceId/`，复用现有 access password/tunnel session。两种入口都支持 HTTP 与 WebSocket 转发。
 
 
 ## 会话正文翻译（服务端入口）

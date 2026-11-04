@@ -655,7 +655,7 @@ export interface Workspace {
   status: WorkspaceStatus
   /** AI 生成的 commit message（合并时使用） */
   commitMessage?: string | null
-  /** Preview 代理目标（仅允许 loopback 地址） */
+  /** Preview 代理目标（Agent Tower 服务器可访问的 http/https 地址） */
   previewTarget?: string | null
   /** 自动休眠时间 */
   hibernatedAt?: string | null
@@ -769,13 +769,26 @@ export interface WorkspaceBackgroundServiceInputResponse {
   byteLength: number
 }
 
+/**
+ * 客户端请求的预览入口偏好：
+ * - `local`：浏览器可以直接连接 Agent Tower 主机上的独立网关端口
+ * - `remote`：浏览器只能访问 Agent Tower 自身的地址（tunnel / HTTPS / 反向代理 / Docker）
+ */
 export type PreviewSessionMode = 'local' | 'remote'
+
+/**
+ * 实际使用的预览入口类型：
+ * - `gateway`：独立端口上的根路径网关，预览页拥有独立 origin
+ * - `same-origin`：与 Agent Tower 同源的 `/view/:workspaceId/` 路径代理，
+ *   浏览器能打开 Agent Tower 就能打开预览
+ */
+export type PreviewEntryKind = 'gateway' | 'same-origin'
 
 export interface PreviewStatus {
   configured: boolean
   ready: boolean
   target: string | null
-  /** Legacy same-origin URL retained for old clients during the gateway migration. */
+  /** 同源路径代理入口（`/view/:workspaceId/`） */
   viewUrl: string | null
   error: string | null
 }
@@ -784,6 +797,7 @@ export interface PreviewSession {
   id: string
   target: string
   mode: PreviewSessionMode
+  kind: PreviewEntryKind
   viewUrl: string
   expiresAt: string
 }

@@ -21,6 +21,7 @@ import {
 } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 import { accessAuthHook } from './middleware/access-auth.js';
+import { previewFallbackHook } from './middleware/preview-fallback.js';
 import { writeErrorLog } from './utils/error-log.js';
 import { initializeDatabaseRuntime } from './utils/index.js';
 import { runStartupDataMigrations } from './services/database-maintenance.service.js';
@@ -67,6 +68,9 @@ export async function buildApp() {
   await app.register(multipart, {
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   });
+
+  // 工作区预览代理兜底：把从 /view/:workspaceId 逃逸出来的预览请求重定向回代理
+  app.addHook('onRequest', previewFallbackHook);
 
   // 隧道 token 认证钩子（仅拦截经 Cloudflare 隧道的请求）
   app.addHook('onRequest', tunnelAuthHook);

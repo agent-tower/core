@@ -1,8 +1,18 @@
+import type { PreviewEntryKind } from '@agent-tower/shared'
+
 export type PreviewNavigation =
   | { kind: 'proxy'; url: string }
   | { kind: 'target'; target: string; path: string | null }
 
+/** Where the preview iframe loads from: a dedicated gateway origin or the same-origin `/view/:id/` proxy. */
+export interface PreviewEntry {
+  kind: PreviewEntryKind
+  viewUrl: string
+}
+
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'])
+const PRIVATE_IPV4_PATTERN = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|127\.)/
+const PRIVATE_SUFFIX_PATTERN = /\.(local|internal|lan|home|home\.arpa|localhost)$/
 
 function withDefaultScheme(value: string): string {
   if (/^\d+$/.test(value)) return `http://127.0.0.1:${value}`
@@ -52,40 +62,46 @@ function targetNavigation(value: string, requested: URL | null): PreviewNavigati
   }
 }
 
-export function buildPreviewProxyUrl(viewUrl: string, suffix: string): string {
-  try {
-    const base = new URL(viewUrl)
-    const bootstrapToken = base.searchParams.get('__agent_tower_preview_token')
-    const requested = new URL(suffix.startsWith('/') ? suffix : `/${suffix}`, 'http://preview.local')
-    base.pathname = requested.pathname
-    base.search = requested.search
-    base.hash = requested.hash
-    if (bootstrapToken) base.searchParams.set('__agent_tower_preview_token', bootstrapToken)
-    return base.toString()
-  } catch {
-    // Legacy relative /view URLs remain supported during the migration.
+function normalizeSuffix(suffix: string): string {
+  return suffix.startsWith('/') ? suffix : `/${suffix}`
+}
+
+export function buildPreviewProxyUrl(entry: PreviewEntry, suffix: string): string {
+  const requested = new URL(normalizeSuffix(suffix), 'http://preview.local')
+
+  if (entry.kind === 'gateway') {
+    try {
+      const base = new URL(entry.viewUrl)
+      const bootstrapToken = base.searchParams.get('__agent_tower_preview_token')
+      base.pathname = requested.pathname
+      base.search = requested.search
+      base.hash = requested.hash
+      if (bootstrapToken) base.searchParams.set('__agent_tower_preview_token', bootstrapToken)
+      return base.toString()
+    } catch {
+      // Fall through to prefix joining for malformed gateway URLs.
+    }
   }
 
-  const base = viewUrl.endsWith('/') ? viewUrl : `${viewUrl}/`
-  const next = suffix.startsWith('/') ? suffix.slice(1) : suffix
-  return `${base}${next}`
+  const base = entry.viewUrl.endsWith('/') ? entry.viewUrl.slice(0, -1) : entry.viewUrl
+  return `${base}${requested.pathname}${requested.search}${requested.hash}`
 }
 
 export function resolvePreviewNavigation(
   input: string,
   currentTarget: string | null,
-  viewUrl: string | null,
+  entry: PreviewEntry | null,
 ): PreviewNavigation | null {
   const value = input.trim()
   if (!value) return null
 
   if (value.startsWith('/')) {
-    return viewUrl ? { kind: 'proxy', url: buildPreviewProxyUrl(viewUrl, value) } : null
+    return entry ? { kind: 'proxy', url: buildPreviewProxyUrl(entry, value) } : null
   }
 
   const requested = parsePreviewTarget(value)
   if (!requested) return targetNavigation(value, null)
-  if (!currentTarget || !viewUrl) return targetNavigation(value, requested)
+  if (!currentTarget || !entry) return targetNavigation(value, requested)
 
   const current = parsePreviewTarget(currentTarget)
   if (!current || !hasSameEndpoint(requested, current)) {
@@ -100,47 +116,45 @@ export function resolvePreviewNavigation(
   const suffixPath = requested.pathname.slice(basePath.length) || '/'
   return {
     kind: 'proxy',
-    url: buildPreviewProxyUrl(viewUrl, `${suffixPath}${requested.search}${requested.hash}`),
+    url: buildPreviewProxyUrl(entry, `${suffixPath}${requested.search}${requested.hash}`),
   }
 }
 
-export function previewLocationToTarget(
-  target: string | null,
-  viewUrl: string | null,
-  locationHref: string,
-  baseHref: string,
-): string | null {
-  if (!target || !viewUrl) return null
+/**
+ * Convert the target-relative path reported by the preview bridge
+ * (`/settings?tab=team#members`) into the full target URL shown in the address bar.
+ */
+export function previewLocationToTarget(target: string | null, path: string): string | null {
+  if (!target) return null
+  const targetUrl = parsePreviewTarget(target)
+  if (!targetUrl) return null
 
   try {
-    const targetUrl = new URL(target)
-    const proxyBase = new URL(viewUrl, baseHref)
-    const location = new URL(locationHref, baseHref)
-    const normalizedProxyPath = proxyBase.pathname === '/'
-      ? ''
-      : proxyBase.pathname.endsWith('/')
-        ? proxyBase.pathname.slice(0, -1)
-        : proxyBase.pathname
-
-    if (location.origin !== proxyBase.origin) return location.toString()
-    if (
-      normalizedProxyPath
-      && location.pathname !== normalizedProxyPath
-      && !location.pathname.startsWith(`${normalizedProxyPath}/`)
-    ) return location.toString()
-
-    const suffix = location.pathname.slice(normalizedProxyPath.length) || '/'
+    const requested = new URL(normalizeSuffix(path), 'http://preview.local')
     const basePath = normalizePath(targetUrl.pathname)
-    targetUrl.pathname = `${basePath}${suffix}`.replace(/\/{2,}/g, '/') || '/'
-    targetUrl.search = location.search
-    targetUrl.hash = location.hash
+    targetUrl.pathname = `${basePath}${requested.pathname}`.replace(/\/{2,}/g, '/') || '/'
+    targetUrl.search = requested.search
+    targetUrl.hash = requested.hash
     return targetUrl.toString()
   } catch {
     return null
   }
 }
 
-export function isLoopbackPreviewUrl(value: string): boolean {
+/**
+ * Addresses that only make sense from the Agent Tower server's point of view:
+ * loopback, private networks, single-label hosts (Docker services) and local
+ * TLDs. Links like these open inside the workspace preview instead of the
+ * viewer's own browser, which may be on another machine entirely.
+ */
+export function isServerReachablePreviewUrl(value: string): boolean {
   const url = parsePreviewTarget(value)
-  return Boolean(url && LOOPBACK_HOSTS.has(url.hostname.toLowerCase()))
+  if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) return false
+  const hostname = url.hostname.toLowerCase()
+  if (LOOPBACK_HOSTS.has(hostname)) return true
+  const bare = hostname.replace(/^\[|\]$/g, '')
+  if (PRIVATE_IPV4_PATTERN.test(bare)) return true
+  if (bare.includes(':')) return /^(fc|fd|fe[89ab])/i.test(bare)
+  if (!bare.includes('.')) return true
+  return PRIVATE_SUFFIX_PATTERN.test(bare)
 }

@@ -12,6 +12,17 @@ import {
   INTERNAL_API_TOKEN_ENV,
   INTERNAL_API_TOKEN_HEADER,
 } from '../../utils/internal-api-token.js';
+import {
+  PREVIEW_BOOT_PARAM,
+  PREVIEW_DESTINATION_HEADER,
+  PREVIEW_MODE_PARAM,
+  PREVIEW_SERVICE_WORKER_HEADER,
+  PREVIEW_TARGET_HEADER,
+} from '../../services/preview-bridge.js';
+
+// preview-cookies.ts reaches the Prisma client through the access auth service,
+// so it must be imported after the test database URL is configured below.
+let PREVIEW_CONTEXT_COOKIE_NAME: string;
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-preview-routes-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -249,6 +260,8 @@ describe('previewRoutes access auth integration', () => {
       },
     );
 
+    const cookieModule = await import('../../services/preview-cookies.js');
+    PREVIEW_CONTEXT_COOKIE_NAME = cookieModule.PREVIEW_CONTEXT_COOKIE_NAME;
     const middlewareModule = await import('../../middleware/access-auth.js');
     const routesModule = await import('../previews.js');
     const serviceModule = await import('../../services/access-auth.service.js');
@@ -330,8 +343,6 @@ describe('previewRoutes access auth integration', () => {
         body: JSON.stringify({ value: 42 }),
         ok: true,
       });
-      expect(postResponse.headers['access-control-allow-origin']).toBe('*');
-      expect(postResponse.headers['access-control-allow-credentials']).toBeUndefined();
 
       const headersResponse = await fixture.app.inject({
         method: 'GET',
@@ -346,12 +357,12 @@ describe('previewRoutes access auth integration', () => {
       expect(headersResponse.json()).toEqual({
         cookie: 'preview-session=abc',
         origin: fixture.targetUrl,
-        referer: `${fixture.targetUrl}/request-headers`,
+        referer: `${fixture.targetUrl}/dashboard`,
         cfRay: null,
         cfConnectingIp: null,
         forwarded: null,
         xForwardedFor: null,
-        xForwardedHost: new URL(fixture.targetUrl).host,
+        xForwardedHost: 'tower.local',
         xForwardedProto: 'http',
         xRealIp: null,
       });
@@ -368,8 +379,125 @@ describe('previewRoutes access auth integration', () => {
         headers: { cookie },
       });
       expect(String(cookieResponse.headers['set-cookie']))
-        .toContain('preview-session=abc; Path=/view/workspace-1/');
+        .toContain('preview-session=abc; Path=/; HttpOnly; SameSite=Lax');
       expect(String(cookieResponse.headers['set-cookie'])).not.toContain('Domain=');
+
+      // A browser navigation first receives the service worker bootstrap page.
+      const bootstrapResponse = await fixture.app.inject({
+        method: 'GET',
+        url: '/view/workspace-1/',
+        headers: { cookie, accept: 'text/html,*/*', 'sec-fetch-dest': 'iframe' },
+      });
+      expect(bootstrapResponse.statusCode).toBe(200);
+      expect(bootstrapResponse.body).toContain('navigator.serviceWorker.register');
+      expect(bootstrapResponse.body).toContain('/view/workspace-1/__agent_tower_preview_sw.js');
+      expect(bootstrapResponse.body).not.toContain('Login');
+
+      const workerResponse = await fixture.app.inject({
+        method: 'GET',
+        url: '/view/workspace-1/__agent_tower_preview_sw.js',
+        headers: { cookie },
+      });
+      expect(workerResponse.statusCode).toBe(200);
+      expect(workerResponse.headers['content-type']).toContain('javascript');
+      expect(workerResponse.body).toContain("self.addEventListener('fetch'");
+
+      // Worker-controlled navigations get the untouched document plus the bridge.
+      const workerDocument = await fixture.app.inject({
+        method: 'GET',
+        url: `/view/workspace-1/?${PREVIEW_BOOT_PARAM}=1`,
+        headers: {
+          cookie,
+          accept: 'text/html,*/*',
+          [PREVIEW_SERVICE_WORKER_HEADER]: 'navigate',
+          [PREVIEW_DESTINATION_HEADER]: 'iframe',
+        },
+      });
+      expect(workerDocument.statusCode).toBe(200);
+      expect(workerDocument.headers['x-frame-options']).toBeUndefined();
+      expect(String(workerDocument.headers['content-security-policy'])).toContain('sandbox');
+      expect(workerDocument.headers[PREVIEW_TARGET_HEADER]).toBe(fixture.targetUrl);
+      expect(String(workerDocument.headers['set-cookie'])).toContain(`${PREVIEW_CONTEXT_COOKIE_NAME}=workspace-1`);
+      expect(workerDocument.body).toContain('data-agent-tower-preview-bridge');
+      expect(workerDocument.body).toContain('"serviceWorker":true');
+      expect(workerDocument.body).toContain('src="/assets/app.js"');
+      expect(workerDocument.body).toContain('href="/login"');
+      expect(workerDocument.body.indexOf('data-agent-tower-preview-bridge'))
+        .toBeLessThan(workerDocument.body.indexOf('<a href="/login">'));
+
+      // Plain mode (no worker support) rewrites static references instead.
+      const plainDocument = await fixture.app.inject({
+        method: 'GET',
+        url: `/view/workspace-1/?${PREVIEW_MODE_PARAM}=plain`,
+        headers: { cookie, accept: 'text/html,*/*', 'sec-fetch-dest': 'document' },
+      });
+      expect(plainDocument.statusCode).toBe(200);
+      expect(plainDocument.headers['content-security-policy']).toBeUndefined();
+      expect(plainDocument.body).toContain('src="/view/workspace-1/assets/app.js"');
+      expect(plainDocument.body).toContain('href="/view/workspace-1/login"');
+      expect(plainDocument.body).toContain('"serviceWorker":false');
+
+      // Internal query parameters never reach the target.
+      const echoWithParams = await fixture.app.inject({
+        method: 'GET',
+        url: `/view/workspace-1/api/echo?${PREVIEW_BOOT_PARAM}=1`,
+        headers: { cookie },
+      });
+      expect(echoWithParams.statusCode).toBe(200);
+
+      const redirectResponse = await fixture.app.inject({
+        method: 'GET',
+        url: '/view/workspace-1/login-redirect',
+        headers: { cookie },
+      });
+      expect(redirectResponse.statusCode).toBe(302);
+      expect(redirectResponse.headers.location).toBe('/view/workspace-1/login');
+
+      const absoluteRedirectResponse = await fixture.app.inject({
+        method: 'GET',
+        url: '/view/workspace-1/absolute-login-redirect',
+        headers: { cookie },
+      });
+      expect(absoluteRedirectResponse.headers.location).toBe('/view/workspace-1/login');
+
+      // Browsers that only reach Agent Tower itself get the same-origin entry.
+      const remoteSession = await fixture.app.inject({
+        method: 'POST',
+        url: '/api/previews/workspace-1/sessions',
+        headers: { cookie },
+        payload: { mode: 'remote', localHostname: 'tower.example.com' },
+      });
+      expect(remoteSession.statusCode).toBe(200);
+      expect(remoteSession.json()).toMatchObject({
+        id: 'same-origin',
+        kind: 'same-origin',
+        mode: 'remote',
+        target: fixture.targetUrl,
+        viewUrl: '/view/workspace-1/',
+      });
+
+      const tunnelSession = await fixture.app.inject({
+        method: 'POST',
+        url: '/api/previews/workspace-1/sessions',
+        headers: { cookie, 'cf-ray': 'ray', 'cf-connecting-ip': '203.0.113.10' },
+        payload: { mode: 'local', localHostname: 'tower.example.com' },
+      });
+      expect(tunnelSession.json()).toMatchObject({ kind: 'same-origin' });
+
+      const heartbeat = await fixture.app.inject({
+        method: 'POST',
+        url: '/api/previews/workspace-1/sessions/same-origin/heartbeat',
+        headers: { cookie },
+      });
+      expect(heartbeat.statusCode).toBe(200);
+      expect(heartbeat.json()).toMatchObject({ kind: 'same-origin', viewUrl: '/view/workspace-1/' });
+
+      const release = await fixture.app.inject({
+        method: 'DELETE',
+        url: '/api/previews/workspace-1/sessions/same-origin',
+        headers: { cookie },
+      });
+      expect(release.statusCode).toBe(204);
     } finally {
       await fixture.close();
     }
@@ -398,6 +526,7 @@ describe('previewRoutes access auth integration', () => {
         viewUrl: string;
       };
       expect(session.mode).toBe('local');
+      expect((session as { kind?: string }).kind).toBe('gateway');
       expect(session.target).toBe(fixture.targetUrl);
 
       const initialUrl = new URL(session.viewUrl);
@@ -416,7 +545,7 @@ describe('previewRoutes access auth integration', () => {
       expect(repeatedBootstrapResponse.headers.get('location')).toBe('/');
 
       const htmlResponse = await fetch(`${previewOrigin}/`, {
-        headers: { cookie: gatewayCookie ?? '' },
+        headers: { cookie: gatewayCookie ?? '', accept: 'text/html,*/*', 'sec-fetch-dest': 'iframe' },
       });
       const html = await htmlResponse.text();
       expect(htmlResponse.status).toBe(200);

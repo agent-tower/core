@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { localImageUrl, resolveMessageResource, workspaceImageUrl } from '@/lib/message-resource'
 import { agentArtifactDownloadUrl, resolveMessageIntent } from '@/lib/message-intent'
-import { isLoopbackPreviewUrl } from '@/lib/preview-navigation'
+import { isServerReachablePreviewUrl } from '@/lib/preview-navigation'
 
 export type OpenPreviewUrlHandler = (url: string) => void
 export type OpenVisualizationHandler = (file: string) => void
@@ -91,7 +91,7 @@ const MarkdownLink = ({
     )
   }
 
-  if (onOpenPreviewUrl && isLoopbackPreviewUrl(href)) {
+  if (onOpenPreviewUrl && isServerReachablePreviewUrl(href)) {
     const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
       onClick?.(event)
       if (event.defaultPrevented) return

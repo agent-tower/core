@@ -185,8 +185,9 @@ TeamRun 支持 `AUTO` 和 `CONFIRM` 两种模式。成员通过 Team Room 公开
 
 ## 预览代理
 
-Workspace 可以配置一个本机 loopback 预览目标，例如 `127.0.0.1:5173`。后端为活跃 workspace 创建独立的根路径预览网关。本机和局域网客户端连接 Agent Tower 主机上的网关端口；远程客户端按需获得一条指向该网关的独立 Cloudflare Quick Tunnel。
+Workspace 可以配置一个 Agent Tower 服务器能访问的预览目标，例如 `127.0.0.1:5173` 或 `192.168.1.20:8080`。目标始终由服务器代为访问，浏览器通过两种入口之一查看：
 
-每个预览地址直接占用 URL 根目录，因此 `/login`、`/assets`、SPA History、HTTP、WebSocket 和流式响应无需挂载到 `/view/...` 子路径，也不再依赖通用 HTML/CSS/JS 路径重写。代理只处理 frame 限制、同目标绝对 redirect、Cookie domain/base path 和一个用于工具栏同步及心跳的小型 bridge。外层 Agent Tower 的 access/tunnel Cookie 不会转发给目标服务；目标自己的登录 Cookie 会按 workspace 隔离，远程跨站 iframe 使用浏览器分区 Cookie。
+- **同源代理（`/view/:workspaceId/`）**：所有环境的通用入口，复用 Agent Tower 自身的地址与 access/tunnel 认证。首次打开时先返回一个 bootstrap 页面注册作用域为 `/view/:workspaceId/` 的 Service Worker，再重新导航；Worker 把受控页面发出的同源根路径请求、指向目标自身的绝对地址请求改写到代理前缀并带上标记头，服务端据此跳过改写直接转发。注入的 bridge 脚本在嵌入模式下用 `history.replaceState` 把页面地址虚拟化为目标根路径（SPA 路由无需 base path），接管 WebSocket、链接点击、表单提交、工具栏命令，并把 `localStorage`/`sessionStorage` 按 workspace 命名空间隔离。无法使用 Worker 时降级为 plain 模式：服务端改写静态 HTML/CSS 引用，bridge 改写 fetch/XHR/EventSource。逃逸出前缀的请求（Referer 位于 `/view/...`，或带预览上下文 Cookie 的嵌入导航）由全局 onRequest 钩子 307 重定向回代理。
+- **直连网关**：`http://` 页面在服务器主机上按 workspace 获得一个独立端口的根路径网关，预览页拥有独立 origin，无需任何改写。客户端先用 `no-cors` 探测该端口，不可达时自动改用同源代理。网关入口由已登录会话签发短期 bootstrap token 换取网关自己的 HttpOnly Cookie，客户端续租，空闲 10 分钟后回收。
 
-预览入口由已登录的 Agent Tower 会话签发短期 bootstrap token，再换取网关自己的 HttpOnly Cookie。客户端在 Preview 打开期间续租；最后一个会话关闭或失联后，网关和独立 Quick Tunnel 在 10 分钟空闲期结束时回收。预览目标仍只允许 `localhost`、`127.0.0.1` 或 `::1`，避免把 Agent Tower 变成任意外部代理。兼容 `/view/:workspaceId` 路径暂时保留给旧客户端。
+两种入口都转发 HTTP、WebSocket 与流式响应，剥离 frame 限制，改写同目标 redirect 与 Cookie；外层 Agent Tower 的 access/tunnel Cookie 不会转发给目标服务，目标自己的登录 Cookie 会按 workspace 隔离。Docker 等无法暴露动态端口的部署通过 `AGENT_TOWER_PREVIEW_FORCE_SAME_ORIGIN=true` 固定使用同源代理，不再需要额外的 Cloudflare Quick Tunnel。

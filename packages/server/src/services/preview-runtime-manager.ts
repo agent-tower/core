@@ -1,48 +1,44 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import http, { type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { Tunnel } from 'cloudflared';
-import {
-  AccessAuthService,
-  isAccessAuthCookieName,
-} from './access-auth.service.js';
+import { AccessAuthService } from './access-auth.service.js';
 import type { NormalizedPreviewTarget } from './preview.service.js';
-import { TUNNEL_SESSION_COOKIE_NAME } from '../utils/tunnel-cookie.js';
-import { ensureCloudflaredBinary } from './cloudflared-runtime.js';
-import { stopCloudflaredTunnel, trackCloudflaredTunnel, waitForTunnelBinary, type ManagedCloudflaredTunnel } from './cloudflared-process.js';
+import { buildPreviewBridgeScript, injectPreviewBridge } from './preview-bridge.js';
+import {
+  filterTargetCookieHeader,
+  parseCookieHeader,
+  previewCookieScopeName,
+  rewriteTargetCookie,
+} from './preview-cookies.js';
+import { classifyPreviewRequest, firstHeaderValue, requestProtocol } from './preview-proxy.js';
 import { writeErrorLog } from '../utils/error-log.js';
 
+export { rewriteTargetCookie } from './preview-cookies.js';
+
+/**
+ * Dedicated-origin preview gateways.
+ *
+ * Each workspace preview opened from a browser that can reach extra ports on
+ * the Agent Tower host gets its own root-path HTTP server. The previewed app
+ * then owns the whole URL space (`/login`, `/assets`, SPA history, cookies)
+ * without any rewriting. Browsers that cannot reach those ports use the
+ * same-origin `/view/:workspaceId/` proxy instead (see preview-proxy.ts).
+ */
+
 export const PREVIEW_GATEWAY_TOKEN_PARAM = '__agent_tower_preview_token';
-export const PREVIEW_BRIDGE_PATH = '/__agent_tower_preview_bridge.js';
 export const PREVIEW_HEARTBEAT_PATH = '/__agent_tower_preview_heartbeat';
 
 const DEFAULT_IDLE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_LEASE_TTL_MS = 3 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 30 * 1000;
-const TUNNEL_STARTUP_TIMEOUT_MS = 30 * 1000;
 const PREVIEW_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
-const QUICK_TUNNEL_OPTIONS = { '--no-autoupdate': true } as const;
 
 type ProxyRequestOptions = http.RequestOptions & { rejectUnauthorized?: boolean };
-type PreviewMode = 'local' | 'remote';
-
-interface PreviewTunnel extends ManagedCloudflaredTunnel {
-  stop(): boolean;
-  on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
-  on(event: 'error', listener: (error: Error) => void): this;
-  once(event: 'url', listener: (url: string) => void): this;
-  once(event: 'error', listener: (error: Error) => void): this;
-  once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
-  off(event: 'url', listener: (url: string) => void): this;
-  off(event: 'error', listener: (error: Error) => void): this;
-  off(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
-}
 
 interface PreviewLease {
   id: string;
-  mode: PreviewMode;
   localHostname: string;
   expiresAtMs: number;
 }
@@ -58,14 +54,8 @@ interface PreviewRuntime {
   accessGeneration: number;
   leases: Map<string, PreviewLease>;
   lastActivityAtMs: number;
-  tunnelLastActivityAtMs: number;
   activeConnections: number;
-  activeRemoteConnections: number;
   sockets: Set<Duplex>;
-  tunnel: PreviewTunnel | null;
-  tunnelUrl: string | null;
-  tunnelStartPromise: Promise<string> | null;
-  tunnelStartController: AbortController | null;
   stopped: boolean;
 }
 
@@ -73,7 +63,6 @@ export interface PreviewGatewaySession {
   id: string;
   workspaceId: string;
   target: string;
-  mode: PreviewMode;
   viewBaseUrl: string;
   expiresAt: string;
 }
@@ -84,72 +73,10 @@ export interface PreviewRuntimeManagerOptions {
   sweepIntervalMs?: number;
   listenHost?: string;
   now?: () => number;
-  createTunnel?: (targetUrl: string) => PreviewTunnel;
-  ensureTunnelBinary?: () => Promise<void>;
 }
-
-const PREVIEW_BRIDGE_SCRIPT = `(() => {
-  const previewSource = 'agent-tower-preview';
-  const hostSource = 'agent-tower-preview-host';
-  const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
-  const post = (message) => {
-    if (window.parent !== window) window.parent.postMessage({ source: previewSource, ...message }, '*');
-  };
-  const sendLocation = () => post({ type: 'location', href: window.location.href, title: document.title });
-  const scheduleLocation = () => window.setTimeout(sendLocation, 0);
-
-  const nativePushState = History.prototype.pushState;
-  const nativeReplaceState = History.prototype.replaceState;
-  History.prototype.pushState = function(...args) {
-    const result = nativePushState.apply(this, args);
-    scheduleLocation();
-    return result;
-  };
-  History.prototype.replaceState = function(...args) {
-    const result = nativeReplaceState.apply(this, args);
-    scheduleLocation();
-    return result;
-  };
-
-  window.addEventListener('popstate', scheduleLocation);
-  window.addEventListener('hashchange', scheduleLocation);
-  window.addEventListener('pageshow', scheduleLocation);
-  document.addEventListener('click', (event) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
-    if (!anchor || anchor.hasAttribute('download')) return;
-    let url;
-    try { url = new URL(anchor.href, window.location.href); } catch { return; }
-    if (!loopbackHosts.has(url.hostname.toLowerCase()) || url.origin === window.location.origin) return;
-    event.preventDefault();
-    post({ type: 'navigate-loopback', href: url.toString(), newTab: anchor.target === '_blank' });
-  }, true);
-
-  window.addEventListener('message', (event) => {
-    const message = event.data;
-    if (!message || message.source !== hostSource) return;
-    if (message.action === 'back') window.history.back();
-    else if (message.action === 'forward') window.history.forward();
-    else if (message.action === 'reload') window.location.reload();
-    else if (message.action === 'stop') window.stop();
-  });
-
-  const heartbeat = () => fetch(${JSON.stringify(PREVIEW_HEARTBEAT_PATH)}, {
-    credentials: 'include',
-    cache: 'no-store',
-  }).catch(() => {});
-  window.setInterval(heartbeat, 30000);
-  heartbeat();
-  sendLocation();
-})();`;
 
 function nowIso(value: number): string {
   return new Date(value).toISOString();
-}
-
-function cookieNameForWorkspace(workspaceId: string): string {
-  const suffix = createHash('sha256').update(workspaceId).digest('hex').slice(0, 16);
-  return `agent-tower-preview-${suffix}`;
 }
 
 function newSecret(): string {
@@ -160,46 +87,6 @@ function safeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
-}
-
-function parseCookies(header?: string): Map<string, string> {
-  const cookies = new Map<string, string>();
-  if (!header) return cookies;
-
-  for (const part of header.split(';')) {
-    const [rawName, ...rawValue] = part.trim().split('=');
-    if (!rawName) continue;
-    try {
-      cookies.set(rawName, decodeURIComponent(rawValue.join('=')));
-    } catch {
-      cookies.set(rawName, rawValue.join('='));
-    }
-  }
-  return cookies;
-}
-
-function firstHeaderValue(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function requestProtocol(headers: IncomingHttpHeaders): 'http' | 'https' {
-  const forwarded = firstHeaderValue(headers['x-forwarded-proto']);
-  if (forwarded?.split(',')[0]?.trim().toLowerCase() === 'https') return 'https';
-
-  const cfVisitor = firstHeaderValue(headers['cf-visitor']);
-  if (cfVisitor) {
-    try {
-      if ((JSON.parse(cfVisitor) as { scheme?: unknown }).scheme === 'https') return 'https';
-    } catch {
-      // Ignore malformed Cloudflare metadata.
-    }
-  }
-  return 'http';
-}
-
-function isRemoteGatewayRequest(headers: IncomingHttpHeaders): boolean {
-  return Boolean(headers['cf-connecting-ip'] || headers['cf-ray'])
-    || requestProtocol(headers) === 'https';
 }
 
 function requestOrigin(headers: IncomingHttpHeaders): string {
@@ -231,48 +118,6 @@ function removeQueryParameter(rawUrl: string, parameter: string): string {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-function scopedTargetCookieName(runtimeCookieName: string, targetCookieName: string): string {
-  return `${runtimeCookieName}-target-${Buffer.from(targetCookieName).toString('base64url')}`;
-}
-
-function isInternalCookieName(name: string): boolean {
-  return name === TUNNEL_SESSION_COOKIE_NAME || isAccessAuthCookieName(name);
-}
-
-function unscopedTargetCookieName(runtimeCookieName: string, cookieName: string): string | null {
-  const prefix = `${runtimeCookieName}-target-`;
-  if (!cookieName.startsWith(prefix)) return null;
-
-  try {
-    const targetCookieName = Buffer.from(cookieName.slice(prefix.length), 'base64url').toString('utf8');
-    return isInternalCookieName(targetCookieName) ? targetCookieName : null;
-  } catch {
-    return null;
-  }
-}
-
-function filterCookieHeader(cookieHeader: string | undefined, runtimeCookieName: string): string | undefined {
-  if (!cookieHeader) return undefined;
-
-  const cookies: string[] = [];
-  for (const rawPart of cookieHeader.split(';')) {
-    const part = rawPart.trim();
-    if (!part) continue;
-    const separator = part.indexOf('=');
-    const name = separator === -1 ? part : part.slice(0, separator);
-    if (!name || name === runtimeCookieName) continue;
-
-    const targetName = unscopedTargetCookieName(runtimeCookieName, name);
-    if (targetName) {
-      cookies.push(`${targetName}${separator === -1 ? '' : part.slice(separator)}`);
-      continue;
-    }
-    if (isInternalCookieName(name)) continue;
-    cookies.push(part);
-  }
-  return cookies.length > 0 ? cookies.join('; ') : undefined;
-}
-
 function joinTargetPath(target: NormalizedPreviewTarget, requestUrl: string): string {
   const parsed = new URL(requestUrl, 'http://preview.local');
   const suffix = parsed.pathname.startsWith('/') ? parsed.pathname : `/${parsed.pathname}`;
@@ -299,7 +144,7 @@ function rewriteRequestHeaders(
     if (key.toLowerCase().startsWith('cf-')) delete next[key];
   }
 
-  const cookie = filterCookieHeader(headers.cookie, runtime.cookieName);
+  const cookie = filterTargetCookieHeader(headers.cookie, runtime.cookieName);
   if (cookie) next.cookie = cookie;
   else delete next.cookie;
 
@@ -334,47 +179,6 @@ function rewriteLocation(
   } catch {
     return value;
   }
-}
-
-export function rewriteTargetCookie(
-  value: string,
-  target: NormalizedPreviewTarget,
-  runtimeCookieName: string,
-  secureGateway: boolean,
-): string {
-  let next = value.replace(/;\s*domain=[^;]*/gi, '');
-  const separator = next.indexOf('=');
-  if (separator > 0) {
-    const cookieName = next.slice(0, separator).trim();
-    if (isInternalCookieName(cookieName)) {
-      next = `${scopedTargetCookieName(runtimeCookieName, cookieName)}${next.slice(separator)}`;
-    }
-  }
-  if (target.basePath && /;\s*path=/i.test(next)) {
-    next = next.replace(/;\s*path=([^;]*)/i, (_match, rawPath: string) => {
-      const path = rawPath.trim();
-      if (path === target.basePath) return '; Path=/';
-      if (path.startsWith(`${target.basePath}/`)) {
-        return `; Path=${path.slice(target.basePath.length) || '/'}`;
-      }
-      return `; Path=${path || '/'}`;
-    });
-  }
-  if (secureGateway) {
-    next = next
-      .replace(/;\s*secure(?=;|$)/gi, '')
-      .replace(/;\s*samesite=[^;]*/gi, '')
-      .replace(/;\s*partitioned(?=;|$)/gi, '');
-    return `${next}; Secure; SameSite=None; Partitioned`;
-  }
-
-  next = next
-    .replace(/;\s*secure(?=;|$)/gi, '')
-    .replace(/;\s*partitioned(?=;|$)/gi, '');
-  if (/;\s*samesite=none(?=;|$)/i.test(next)) {
-    next = next.replace(/;\s*samesite=none(?=;|$)/i, '; SameSite=Lax');
-  }
-  return next;
 }
 
 function rewriteResponseHeaders(
@@ -422,12 +226,16 @@ function isHtmlResponse(headers: IncomingHttpHeaders): boolean {
   return contentType.includes('text/html');
 }
 
-function injectBridgeScript(body: string): string {
-  if (body.includes('data-agent-tower-preview-bridge')) return body;
-  const script = `<script data-agent-tower-preview-bridge src="${PREVIEW_BRIDGE_PATH}"></script>`;
-  const head = /<head(?:\s[^>]*)?>/i;
-  if (head.test(body)) return body.replace(head, (match) => `${match}${script}`);
-  return `${script}${body}`;
+function gatewayBridgeTag(runtime: PreviewRuntime): string {
+  return buildPreviewBridgeScript({
+    mode: 'gateway',
+    prefix: '',
+    workspaceId: runtime.workspaceId,
+    targetOrigin: runtime.target.origin,
+    targetBasePath: runtime.target.basePath,
+    serviceWorker: false,
+    heartbeatPath: PREVIEW_HEARTBEAT_PATH,
+  });
 }
 
 function writeUnauthorized(response: ServerResponse): void {
@@ -493,8 +301,6 @@ export class PreviewRuntimeManager {
   private readonly leaseTtlMs: number;
   private readonly listenHost: string;
   private readonly now: () => number;
-  private readonly createTunnel: (targetUrl: string) => PreviewTunnel;
-  private readonly ensureTunnelBinary: () => Promise<void>;
   private readonly sweepTimer: NodeJS.Timeout;
 
   constructor(options: PreviewRuntimeManagerOptions = {}) {
@@ -502,10 +308,6 @@ export class PreviewRuntimeManager {
     this.leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
     this.listenHost = options.listenHost ?? process.env.AGENT_TOWER_HOST ?? '0.0.0.0';
     this.now = options.now ?? (() => Date.now());
-    this.createTunnel = options.createTunnel
-      ?? ((targetUrl) => Tunnel.quick(targetUrl, QUICK_TUNNEL_OPTIONS));
-    this.ensureTunnelBinary = options.ensureTunnelBinary
-      ?? (options.createTunnel ? async () => {} : ensureCloudflaredBinary);
     this.sweepTimer = setInterval(() => {
       void this.sweep().catch((error) => {
         writeErrorLog({ level: 'error', source: 'preview.cleanup', message: 'Failed to reclaim preview runtime', error });
@@ -517,7 +319,6 @@ export class PreviewRuntimeManager {
   async acquire(
     workspaceId: string,
     target: NormalizedPreviewTarget,
-    mode: PreviewMode,
     localHostname: string,
   ): Promise<PreviewGatewaySession> {
     const runtime = await this.ensureRuntime(workspaceId, target);
@@ -525,19 +326,12 @@ export class PreviewRuntimeManager {
     const now = this.now();
     const lease: PreviewLease = {
       id: randomBytes(16).toString('base64url'),
-      mode,
       localHostname,
       expiresAtMs: now + this.leaseTtlMs,
     };
     runtime.leases.set(lease.id, lease);
     runtime.lastActivityAtMs = now;
-    if (mode === 'remote') runtime.tunnelLastActivityAtMs = now;
-
-    const viewBaseUrl = mode === 'remote'
-      ? await this.ensureTunnel(runtime)
-      : `http://${formatHostname(localHostname)}:${runtime.port}`;
-    this.assertRuntimeActive(runtime);
-    return this.toSession(runtime, lease, viewBaseUrl);
+    return this.toSession(runtime, lease);
   }
 
   async heartbeat(workspaceId: string, leaseId: string): Promise<PreviewGatewaySession | null> {
@@ -548,12 +342,8 @@ export class PreviewRuntimeManager {
     const now = this.now();
     lease.expiresAtMs = now + this.leaseTtlMs;
     runtime.lastActivityAtMs = now;
-    if (lease.mode === 'remote') runtime.tunnelLastActivityAtMs = now;
-    const viewBaseUrl = lease.mode === 'remote'
-      ? await this.ensureTunnel(runtime)
-      : `http://${formatHostname(lease.localHostname)}:${runtime.port}`;
     this.assertRuntimeActive(runtime);
-    return this.toSession(runtime, lease, viewBaseUrl);
+    return this.toSession(runtime, lease);
   }
 
   release(workspaceId: string, leaseId: string): void {
@@ -563,7 +353,7 @@ export class PreviewRuntimeManager {
   async invalidate(workspaceId: string): Promise<void> {
     const runtime = this.runtimes.get(workspaceId);
     if (!runtime) return;
-    await this.stopRuntime(runtime);
+    await closeServer(runtime);
     if (this.runtimes.get(workspaceId) === runtime) this.runtimes.delete(workspaceId);
   }
 
@@ -575,17 +365,12 @@ export class PreviewRuntimeManager {
     if (failure) throw failure.reason;
   }
 
-  private toSession(
-    runtime: PreviewRuntime,
-    lease: PreviewLease,
-    viewBaseUrl: string,
-  ): PreviewGatewaySession {
+  private toSession(runtime: PreviewRuntime, lease: PreviewLease): PreviewGatewaySession {
     return {
       id: lease.id,
       workspaceId: runtime.workspaceId,
       target: runtime.target.target,
-      mode: lease.mode,
-      viewBaseUrl,
+      viewBaseUrl: `http://${formatHostname(lease.localHostname)}:${runtime.port}`,
       expiresAt: nowIso(lease.expiresAtMs),
     };
   }
@@ -619,19 +404,13 @@ export class PreviewRuntimeManager {
       server,
       port: 0,
       ready: Promise.resolve(0),
-      cookieName: cookieNameForWorkspace(workspaceId),
+      cookieName: previewCookieScopeName(workspaceId),
       accessSecret: newSecret(),
       accessGeneration: AccessAuthService.getSessionSecretGeneration(),
       leases: new Map<string, PreviewLease>(),
       lastActivityAtMs: this.now(),
-      tunnelLastActivityAtMs: this.now(),
       activeConnections: 0,
-      activeRemoteConnections: 0,
       sockets: new Set<Duplex>(),
-      tunnel: null,
-      tunnelUrl: null,
-      tunnelStartPromise: null,
-      tunnelStartController: null,
       stopped: false,
     } satisfies PreviewRuntime);
 
@@ -653,7 +432,7 @@ export class PreviewRuntimeManager {
       this.assertRuntimeActive(runtime);
       return runtime;
     } catch (error) {
-      await this.stopRuntime(runtime);
+      await closeServer(runtime);
       if (this.runtimes.get(workspaceId) === runtime) this.runtimes.delete(workspaceId);
       throw error;
     }
@@ -668,14 +447,12 @@ export class PreviewRuntimeManager {
 
   private hasGatewayCookie(runtime: PreviewRuntime, request: IncomingMessage): boolean {
     this.rotateAccessSecretIfNeeded(runtime);
-    const candidate = parseCookies(request.headers.cookie).get(runtime.cookieName);
+    const candidate = parseCookieHeader(request.headers.cookie).get(runtime.cookieName);
     return Boolean(candidate && safeEqual(candidate, runtime.accessSecret));
   }
 
-  private touchRuntime(runtime: PreviewRuntime, headers: IncomingHttpHeaders): void {
-    const now = this.now();
-    runtime.lastActivityAtMs = now;
-    if (isRemoteGatewayRequest(headers)) runtime.tunnelLastActivityAtMs = now;
+  private touchRuntime(runtime: PreviewRuntime): void {
+    runtime.lastActivityAtMs = this.now();
   }
 
   private async authorizeBootstrap(
@@ -690,7 +467,7 @@ export class PreviewRuntimeManager {
     }
 
     this.rotateAccessSecretIfNeeded(runtime);
-    this.touchRuntime(runtime, request.headers);
+    this.touchRuntime(runtime);
     response.setHeader('set-cookie', serializeGatewayCookie(runtime, request.headers));
     if (request.method === 'GET' || request.method === 'HEAD') {
       response.writeHead(302, {
@@ -724,15 +501,7 @@ export class PreviewRuntimeManager {
       return;
     }
 
-    this.touchRuntime(runtime, request.headers);
-    if (parsed.pathname === PREVIEW_BRIDGE_PATH) {
-      response.writeHead(200, {
-        'content-type': 'application/javascript; charset=utf-8',
-        'cache-control': 'no-store',
-      });
-      response.end(PREVIEW_BRIDGE_SCRIPT);
-      return;
-    }
+    this.touchRuntime(runtime);
     if (parsed.pathname === PREVIEW_HEARTBEAT_PATH) {
       response.writeHead(204, { 'cache-control': 'no-store' });
       response.end();
@@ -749,6 +518,7 @@ export class PreviewRuntimeManager {
   ): Promise<void> {
     const targetUrl = new URL(runtime.target.origin);
     const targetPath = joinTargetPath(runtime.target, request.url ?? '/');
+    const context = classifyPreviewRequest(request.method ?? 'GET', request.headers, new URL(request.url ?? '/', 'http://preview.local').search);
     const options: ProxyRequestOptions = {
       protocol: targetUrl.protocol,
       hostname: targetUrl.hostname,
@@ -765,6 +535,7 @@ export class PreviewRuntimeManager {
         const injectBridge = request.method !== 'HEAD'
           && proxyResponse.statusCode !== 204
           && proxyResponse.statusCode !== 304
+          && context.document
           && isHtmlResponse(proxyResponse.headers);
         const headers = rewriteResponseHeaders(
           proxyResponse.headers,
@@ -792,7 +563,7 @@ export class PreviewRuntimeManager {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         });
         proxyResponse.once('end', () => {
-          response.end(injectBridgeScript(Buffer.concat(chunks).toString('utf8')));
+          response.end(injectPreviewBridge(Buffer.concat(chunks), gatewayBridgeTag(runtime)));
           resolve();
         });
         proxyResponse.once('error', () => {
@@ -823,8 +594,7 @@ export class PreviewRuntimeManager {
       return;
     }
 
-    this.touchRuntime(runtime, request.headers);
-    const remoteConnection = isRemoteGatewayRequest(request.headers);
+    this.touchRuntime(runtime);
     const targetUrl = new URL(runtime.target.origin);
     const targetPath = joinTargetPath(runtime.target, request.url ?? '/');
     const headers = rewriteRequestHeaders(request.headers, runtime, targetPath);
@@ -844,23 +614,15 @@ export class PreviewRuntimeManager {
 
     proxyRequest.once('upgrade', (proxyResponse, proxySocket, proxyHead) => {
       runtime.activeConnections += 1;
-      if (remoteConnection) runtime.activeRemoteConnections += 1;
       runtime.sockets.add(proxySocket);
       const close = () => {
         runtime.activeConnections = Math.max(0, runtime.activeConnections - 1);
-        if (remoteConnection) {
-          runtime.activeRemoteConnections = Math.max(0, runtime.activeRemoteConnections - 1);
-        }
         runtime.sockets.delete(proxySocket);
-        this.touchRuntime(runtime, request.headers);
+        this.touchRuntime(runtime);
       };
       proxySocket.once('close', close);
-      proxySocket.on('data', () => {
-        this.touchRuntime(runtime, request.headers);
-      });
-      socket.on('data', () => {
-        this.touchRuntime(runtime, request.headers);
-      });
+      proxySocket.on('data', () => this.touchRuntime(runtime));
+      socket.on('data', () => this.touchRuntime(runtime));
 
       const headerLines = [
         `HTTP/1.1 ${proxyResponse.statusCode} ${proxyResponse.statusMessage}`,
@@ -890,100 +652,12 @@ export class PreviewRuntimeManager {
     }
   }
 
-  private async ensureTunnel(runtime: PreviewRuntime): Promise<string> {
-    this.assertRuntimeActive(runtime);
-    if (runtime.tunnel && runtime.tunnelUrl) return runtime.tunnelUrl;
-    if (runtime.tunnelStartPromise) return runtime.tunnelStartPromise;
-
-    if (runtime.tunnel) throw new Error('Previous preview tunnel cleanup must finish before starting');
-    const controller = new AbortController();
-    runtime.tunnelStartController = controller;
-    let startedTunnel: PreviewTunnel | null = null;
-    const startPromise = (async () => {
-      await waitForTunnelBinary(this.ensureTunnelBinary(), controller.signal);
-      this.assertRuntimeActive(runtime);
-      return new Promise<string>((resolve, reject) => {
-        const tunnel = this.createTunnel(`http://127.0.0.1:${runtime.port}`);
-        startedTunnel = tunnel;
-        trackCloudflaredTunnel(tunnel);
-        runtime.tunnel = tunnel;
-        let settled = false;
-        const timer = setTimeout(() => settle(reject, new Error('Preview tunnel startup timed out')), TUNNEL_STARTUP_TIMEOUT_MS);
-
-        const cleanup = () => {
-          clearTimeout(timer);
-          tunnel.off('url', onUrl);
-          tunnel.off('error', onError);
-          tunnel.off('exit', onExitBeforeReady);
-          controller.signal.removeEventListener('abort', onAbort);
-        };
-        const settle = <T>(done: (value: T) => void, value: T) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          done(value);
-        };
-        const onAbort = () => settle(reject, controller.signal.reason);
-        const onUrl = (url: string) => {
-          runtime.tunnelUrl = url.replace(/\/$/, '');
-          settle(resolve, runtime.tunnelUrl);
-        };
-        const onError = (error: Error) => settle(reject, error);
-        const onExitBeforeReady = (code: number | null, signal: NodeJS.Signals | null) => {
-          settle(reject, new Error(`Preview tunnel exited before ready (${code ?? signal ?? 'unknown'})`));
-        };
-
-        controller.signal.addEventListener('abort', onAbort, { once: true });
-        tunnel.once('url', onUrl);
-        tunnel.once('error', onError);
-        tunnel.once('exit', onExitBeforeReady);
-        tunnel.on('error', () => {
-          // The session heartbeat will recreate a failed tunnel when needed.
-        });
-        tunnel.on('exit', () => {
-          if (runtime.tunnel !== tunnel) return;
-          runtime.tunnel = null;
-          runtime.tunnelUrl = null;
-        });
-      });
-    })();
-    runtime.tunnelStartPromise = startPromise;
-
-    try {
-      const url = await startPromise;
-      controller.signal.throwIfAborted();
-      this.assertRuntimeActive(runtime);
-      return url;
-    } catch (error) {
-      if (startedTunnel) {
-        await stopCloudflaredTunnel(startedTunnel);
-        if (runtime.tunnel === startedTunnel) runtime.tunnel = null;
-      }
-      runtime.tunnelUrl = null;
-      throw error;
-    } finally {
-      if (runtime.tunnelStartPromise === startPromise) {
-        runtime.tunnelStartPromise = null;
-        runtime.tunnelStartController = null;
-      }
-    }
-  }
-
   private async sweep(): Promise<void> {
     const now = this.now();
     const expired: PreviewRuntime[] = [];
     for (const runtime of this.runtimes.values()) {
       for (const [leaseId, lease] of runtime.leases) {
         if (lease.expiresAtMs <= now) runtime.leases.delete(leaseId);
-      }
-      const hasRemoteLease = [...runtime.leases.values()].some((lease) => lease.mode === 'remote');
-      if (
-        runtime.tunnel
-        && !hasRemoteLease
-        && runtime.activeRemoteConnections === 0
-        && now - runtime.tunnelLastActivityAtMs >= this.idleTtlMs
-      ) {
-        await this.stopTunnel(runtime);
       }
       if (
         runtime.leases.size === 0
@@ -998,23 +672,5 @@ export class PreviewRuntimeManager {
       if (this.runtimes.get(runtime.workspaceId) !== runtime) return;
       await this.invalidate(runtime.workspaceId);
     }));
-  }
-
-  private async stopRuntime(runtime: PreviewRuntime): Promise<void> {
-    runtime.stopped = true;
-    const results = await Promise.allSettled([this.stopTunnel(runtime), closeServer(runtime)]);
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-    if (failure) throw failure.reason;
-  }
-
-  private async stopTunnel(runtime: PreviewRuntime): Promise<void> {
-    runtime.tunnelStartController?.abort(new Error('Preview tunnel startup cancelled'));
-    runtime.tunnelUrl = null;
-    await runtime.tunnelStartPromise?.catch(() => undefined);
-    const tunnel = runtime.tunnel;
-    if (tunnel) {
-      await stopCloudflaredTunnel(tunnel);
-      if (runtime.tunnel === tunnel) runtime.tunnel = null;
-    }
   }
 }

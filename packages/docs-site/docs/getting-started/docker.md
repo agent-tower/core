@@ -19,7 +19,7 @@ docker compose up -d --build
 http://localhost:12580
 ```
 
-Docker 默认通过按需 Cloudflare Quick Tunnel 打开 workspace Preview，因为动态预览网关端口位于容器内部。使用 Preview 时需要容器能够访问 Cloudflare；不使用 Preview 时不会创建额外隧道。
+Docker 默认通过与 Agent Tower 同源的 `/view/:workspaceId/` 代理打开 workspace Preview（`AGENT_TOWER_PREVIEW_FORCE_SAME_ORIGIN=true`），因为动态预览网关端口位于容器内部。预览不需要额外的网络访问或隧道，浏览器能打开 Agent Tower 就能打开预览。
 
 停止服务：
 
