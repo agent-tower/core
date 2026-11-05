@@ -106,24 +106,30 @@ describe('task handoff HTTP and persistence', () => {
     } finally { await app.close(); }
   });
 
-  it('binds managed Agents to their task even when workspaces use the same directory', async () => {
-    const other = await prisma.task.create({ data: { title: 'Other', projectId } });
+  it('lets managed Agents read any task note but edit only their own, even when workspaces share a directory', async () => {
+    const parent = await prisma.task.create({ data: { title: 'Parent', projectId, handoff: 'Parent progress' } });
+    const other = await prisma.task.create({ data: { title: 'Other', projectId, handoff: 'Other progress' } });
+    await prisma.task.update({ where: { id: taskId }, data: { parentTaskId: parent.id } });
     const workspace = await prisma.workspace.create({ data: { taskId, branchName: 'at/test', worktreePath: testDir, workspaceKind: 'MAIN_DIRECTORY' } });
     const session = await prisma.session.create({ data: { workspaceId: workspace.id, agentType: 'CODEX', prompt: 'work' } });
     const credential = createAgentApiCredential({ sessionId: session.id, invocationId: null });
     const headers = { 'x-agent-tower-agent-credential': credential };
     const app = await appForTest();
+    const write = (id: string, newString: string) => app.inject({ method: 'PATCH', url: `/api/tasks/${id}/handoff`, headers, payload: { oldString: '', newString } });
     try {
       expect((await app.inject({ url: `/api/tasks/${taskId}/handoff`, headers })).statusCode).toBe(200);
-      const write = await app.inject({ method: 'PATCH', url: `/api/tasks/${taskId}/handoff`, headers, payload: { oldString: '', newString: 'Agent note' } });
-      expect(write.statusCode).toBe(200);
-      for (const method of ['GET', 'PATCH'] as const) {
-        const response = await app.inject({ method, url: `/api/tasks/${other.id}/handoff`, headers, ...(method === 'PATCH' ? { payload: { oldString: '', newString: 'Forbidden' } } : {}) });
-        expect(response.statusCode).toBe(403);
-        expect(response.json().code).toBe('HANDOFF_ACCESS_DENIED');
+      expect((await write(taskId, 'Agent note')).statusCode).toBe(200);
+      for (const [id, content] of [[parent.id, 'Parent progress'], [other.id, 'Other progress']] as const) {
+        expect((await app.inject({ url: `/api/tasks/${id}/handoff`, headers })).json()).toEqual({ taskId: id, content });
+        await prisma.task.update({ where: { id }, data: { handoff: null } });
+        const denied = await write(id, 'Forbidden');
+        expect(denied.statusCode).toBe(403);
+        expect(denied.json().code).toBe('HANDOFF_ACCESS_DENIED');
+        expect((await prisma.task.findUniqueOrThrow({ where: { id } })).handoff).toBeNull();
       }
       await prisma.session.update({ where: { id: session.id }, data: { purpose: 'COMMIT_MSG' } });
-      expect((await app.inject({ url: `/api/tasks/${taskId}/handoff`, headers })).statusCode).toBe(403);
+      expect((await app.inject({ url: `/api/tasks/${taskId}/handoff`, headers })).json().content).toBe('Agent note');
+      expect((await app.inject({ method: 'PATCH', url: `/api/tasks/${taskId}/handoff`, headers, payload: { oldString: 'Agent note', newString: '' } })).statusCode).toBe(403);
     } finally { await app.close(); }
   });
 
@@ -151,24 +157,27 @@ describe('task handoff HTTP and persistence', () => {
     } finally { await app.close(); }
   });
 
-  it('requires the bound TeamRun invocation and an active member', async () => {
+  it('requires the bound TeamRun invocation and an active member to edit', async () => {
     const team = await prisma.teamRun.create({ data: { taskId, mode: 'SHARED' } });
     const member = await prisma.teamMember.create({ data: { teamRunId: team.id, name: 'Worker', aliases: '[]', providerId: 'test', rolePrompt: '', capabilities: '{}', workspacePolicy: 'shared', triggerPolicy: 'mention' } });
     const workspace = await prisma.workspace.create({ data: { taskId, branchName: 'at/team', worktreePath: testDir } });
     const session = await prisma.session.create({ data: { workspaceId: workspace.id, agentType: 'CODEX', prompt: 'work' } });
     const invocation = await prisma.agentInvocation.create({ data: { teamRunId: team.id, memberId: member.id, workRequestId: 'test-request', workspaceId: workspace.id, sessionId: session.id, status: 'RUNNING' } });
     const app = await appForTest();
-    const read = (invocationId: string | null) => app.inject({ url: `/api/tasks/${taskId}/handoff`, headers: {
+    let note = '';
+    const write = (invocationId: string | null) => app.inject({ method: 'PATCH', url: `/api/tasks/${taskId}/handoff`, headers: {
       'x-agent-tower-agent-credential': createAgentApiCredential({ sessionId: session.id, invocationId }),
-    } });
+    }, payload: { oldString: note, newString: `${note}+` } });
     try {
-      expect((await read(null)).statusCode).toBe(403);
-      expect((await read(invocation.id)).statusCode).toBe(200);
+      expect((await write(null)).statusCode).toBe(403);
+      expect((await write(invocation.id)).statusCode).toBe(200);
+      note = '+';
       await prisma.teamMember.update({ where: { id: member.id }, data: { membershipStatus: 'REMOVED' } });
-      expect((await read(invocation.id)).statusCode).toBe(403);
+      expect((await write(invocation.id)).statusCode).toBe(403);
       await prisma.teamMember.update({ where: { id: member.id }, data: { membershipStatus: 'ACTIVE' } });
       await prisma.agentInvocation.update({ where: { id: invocation.id }, data: { dispatchRevokedAt: new Date() } });
-      expect((await read(invocation.id)).statusCode).toBe(403);
+      expect((await write(invocation.id)).statusCode).toBe(403);
+      expect((await prisma.task.findUniqueOrThrow({ where: { id: taskId } })).handoff).toBe('+');
     } finally { await app.close(); }
   });
 });

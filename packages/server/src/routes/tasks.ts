@@ -165,7 +165,11 @@ export async function taskRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string } }>('/tasks/:id/handoff', async (request, reply) => {
-    try { return await handoffService.get(request.params.id, await handoffCaller(request)); }
+    try {
+      // Runs the browser owner/CSRF guard; any authenticated Agent may read any task's note.
+      await handoffCaller(request);
+      return await handoffService.get(request.params.id);
+    }
     catch (error) { return handleError(error, reply); }
   });
 

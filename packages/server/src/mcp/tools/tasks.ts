@@ -17,7 +17,7 @@ import {
 export function registerTaskTools(server: McpServer, client: AgentTowerClient) {
   server.tool(
     'get_task_handoff',
-    'Read the task handoff Markdown before continuing work or editing the note. It summarizes progress, decisions, verification, and next steps; detailed evidence stays in existing session history. An empty note returns content="". task_id is required.',
+    'Read the task handoff Markdown before continuing work or editing the note. It summarizes progress, decisions, verification, and next steps; detailed evidence stays in existing session history. Any task note can be read; only the current task note can be edited. An empty note returns content="". task_id is required.',
     GetTaskHandoffInput.shape,
     async ({ task_id }) => {
       try {

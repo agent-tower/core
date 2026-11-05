@@ -123,7 +123,7 @@ Codex CLI 使用带会话身份后缀的独立 MCP server 名（`agent-tower-…
 
 ### 交接笔记
 
-`get_task_handoff` 和 `update_task_handoff` 都要求传入 `task_id`。托管 Agent 只能访问当前任务的笔记；团队成员还需通过 Session/Invocation 和成员身份校验。任务元数据、列表与 `get_context` 不附带笔记正文，使用读取工具按需获取。
+`get_task_handoff` 和 `update_task_handoff` 都要求传入 `task_id`。托管 Agent 可以读取任意任务的笔记（例如子任务读取父任务的交接），但只能修改当前任务的笔记；团队成员修改时还需通过 Session/Invocation 和成员身份校验。任务元数据、列表与 `get_context` 不附带笔记正文，使用读取工具按需获取。
 
 先读取笔记，再像编辑文件一样提交改动：
 

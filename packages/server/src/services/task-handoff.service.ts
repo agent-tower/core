@@ -11,7 +11,8 @@ export type TaskHandoffCaller =
 export class TaskHandoffService {
   constructor(private readonly eventBus: EventBus) {}
 
-  private async authorize(taskId: string, caller: TaskHandoffCaller): Promise<void> {
+  /** Reads are open to every authenticated caller; managed Agents may only edit their own task's note. */
+  private async authorizeWrite(taskId: string, caller: TaskHandoffCaller): Promise<void> {
     if (caller.kind !== 'agent') return;
     const session = await prisma.session.findUnique({
       where: { id: caller.sessionId },
@@ -36,8 +37,7 @@ export class TaskHandoffService {
     }
   }
 
-  private async requireTask(taskId: string, caller: TaskHandoffCaller) {
-    await this.authorize(taskId, caller);
+  private async requireTask(taskId: string) {
     const task = await prisma.task.findFirst({
       where: { id: taskId, deletedAt: null },
       select: { id: true, handoff: true, projectId: true, status: true, project: { select: { name: true, archivedAt: true, repoDeletedAt: true } } },
@@ -46,13 +46,14 @@ export class TaskHandoffService {
     return task;
   }
 
-  async get(taskId: string, caller: TaskHandoffCaller): Promise<TaskHandoff> {
-    const task = await this.requireTask(taskId, caller);
+  async get(taskId: string): Promise<TaskHandoff> {
+    const task = await this.requireTask(taskId);
     return { taskId, content: task.handoff ?? '' };
   }
 
   async update(taskId: string, input: UpdateTaskHandoffInput, caller: TaskHandoffCaller): Promise<TaskHandoff> {
-    const task = await this.requireTask(taskId, caller);
+    await this.authorizeWrite(taskId, caller);
+    const task = await this.requireTask(taskId);
     ensureProjectIsMutable(task.project, 'edit the task handoff');
     const current = task.handoff ?? '';
     const { oldString, newString } = input;
