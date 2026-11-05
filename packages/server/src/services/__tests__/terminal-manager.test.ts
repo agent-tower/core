@@ -1,8 +1,21 @@
+import fs from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { EventBus } from '../../core/event-bus.js';
 import { TerminalManager } from '../terminal-manager.js';
 import type { UnixProcessIdentityAdapter } from '../../utils/unix-process-identity.js';
 import type { WindowsProcessTreeAdapter } from '../../runtime/acp/process-manager.js';
+import type { ProcessScopeRuntime } from '../../runtime/process-scope/process-scope.js';
+import { resolveScopeHelper } from '../../runtime/process-scope/scope-helper.js';
+
+function fakeScope(overrides: Partial<ProcessScopeRuntime> = {}): ProcessScopeRuntime {
+  return {
+    helper: { path: '/fake/agent-tower-scope', capabilities: { subreaper: true, pidfd: true, childrenFile: true } },
+    buildInvocation: (policy, command, args) => ({ command: '/fake/agent-tower-scope', args: ['--id', policy.id, '--grace', String(policy.graceMs), '--', command, ...args] }),
+    requestStop: vi.fn(() => true),
+    forceStop: vi.fn(() => true),
+    ...overrides,
+  };
+}
 
 vi.mock('../../utils/error-log.js', () => ({ writeErrorLog: vi.fn() }));
 
@@ -40,7 +53,7 @@ describe('TerminalManager process ownership', () => {
     };
     const manager = new TerminalManager(new EventBus(), {
       spawn: vi.fn(() => shell) as any, unixProcessAdapter: adapter,
-      platform: 'linux', gracefulTimeoutMs: 0, forceTimeoutMs: 30,
+      platform: 'linux', gracefulTimeoutMs: 0, forceTimeoutMs: 30, processScope: null,
     });
     const terminal = manager.create('socket');
     try {
@@ -51,6 +64,49 @@ describe('TerminalManager process ownership', () => {
       await manager.cleanupBySocket('socket');
       expect(manager.size).toBe(0);
     } finally { childAlive = false; await manager.destroyAll(); }
+  });
+
+  it('runs a supervised terminal under the scope helper and stops it through the supervisor', async () => {
+    const shell = new FakePty();
+    const scope = fakeScope({ requestStop: vi.fn(() => { shell.exit(); return true; }) });
+    const spawn = vi.fn(() => shell);
+    const adapter = { captureOwnedGroups: vi.fn(), captureDescendantGroups: vi.fn() } as unknown as UnixProcessIdentityAdapter;
+    const manager = new TerminalManager(new EventBus(), {
+      spawn: spawn as any, unixProcessAdapter: adapter, processScope: scope, platform: 'linux',
+      shell: { command: '/bin/sh', args: ['-l'] }, gracefulTimeoutMs: 10, forceTimeoutMs: 20,
+    });
+    const terminal = manager.create('socket');
+    try {
+      const [command, args, options] = spawn.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
+      expect(command).toBe('/fake/agent-tower-scope');
+      expect(args).toEqual(['--id', terminal.terminalId, '--grace', '10', '--', '/bin/sh', '-l']);
+      expect(options.env.AGENT_TOWER_PROCESS_IDENTITY).toBeUndefined();
+      await manager.destroy(terminal.terminalId);
+      expect(scope.requestStop).toHaveBeenCalledWith(shell.pid, 'SIGHUP');
+      expect(scope.forceStop).not.toHaveBeenCalled();
+      expect(adapter.captureOwnedGroups).not.toHaveBeenCalled();
+      expect(adapter.captureDescendantGroups).not.toHaveBeenCalled();
+      expect(manager.size).toBe(0);
+    } finally { shell.exit(); await manager.destroyAll(); }
+  });
+
+  it('escalates a lingering supervised terminal and keeps it retryable when it never exits', async () => {
+    const shell = new FakePty();
+    let exitOnForce = false;
+    const scope = fakeScope({ forceStop: vi.fn(() => { if (exitOnForce) shell.exit(); return true; }) });
+    const manager = new TerminalManager(new EventBus(), {
+      spawn: vi.fn(() => shell) as any, processScope: scope, platform: 'linux', gracefulTimeoutMs: 5, forceTimeoutMs: 10,
+    });
+    const terminal = manager.create('socket');
+    try {
+      await expect(manager.destroy(terminal.terminalId)).rejects.toThrow('process tree did not exit');
+      expect(scope.requestStop).toHaveBeenCalledWith(shell.pid, 'SIGHUP');
+      expect(scope.forceStop).toHaveBeenCalledWith(shell.pid);
+      expect(manager.has(terminal.terminalId)).toBe(true);
+      exitOnForce = true;
+      await manager.cleanupBySocket('socket');
+      expect(manager.size).toBe(0);
+    } finally { shell.exit(); await manager.destroyAll(); }
   });
 
   it('reclaims verified Windows descendants after the terminal root exits', async () => {
@@ -164,42 +220,54 @@ describe('TerminalManager process ownership', () => {
     } finally { alive = false; shell.exit(); await manager.destroyAll(); }
   });
 
-  it.skipIf(process.platform === 'win32').each(['foreground', 'background', 'markerless-background'])('reclaims a real %s child that ignores SIGHUP', async (mode) => {
-    const bus = new EventBus();
-    const manager = new TerminalManager(bus, {
-      shell: { command: '/bin/sh', args: [] }, gracefulTimeoutMs: 100,
-    });
-    const terminal = manager.create('real-terminal-test', { cwd: '/tmp' });
-    let childPid = 0;
-    let output = '';
-    bus.on('terminal:stdout', event => {
-      output += event.data;
-      const match = /TERMINAL_TEST_CHILD=(\d+)/.exec(output);
-      if (match) childPid = Number(match[1]);
-    });
-    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    try {
-      manager.write(terminal.terminalId, `${mode === 'markerless-background' ? 'env -i ' : ''}${quote(process.execPath)} -e ${quote("process.on('SIGHUP',()=>{});console.log('TERMINAL_TEST_CHILD='+process.pid);setInterval(()=>{},1000)")} ${mode !== 'foreground' ? '&' : ''}\r`);
-      await expect.poll(() => childPid, { timeout: 5000 }).toBeGreaterThan(0);
-      if (mode !== 'foreground') {
-        if (mode === 'markerless-background') {
-          // Establish ancestry while the shell is alive; after exit the job
-          // has neither its launch token nor a live parent to discover it by.
-          await new Promise((resolve) => setTimeout(resolve, 500));
+  const realBackends = [
+    { backend: 'supervised', options: {}, enabled: process.platform === 'linux' && resolveScopeHelper() !== null },
+    { backend: 'compat', options: { processScope: null }, enabled: process.platform !== 'win32' },
+  ] as const;
+  for (const { backend, options, enabled } of realBackends) {
+    it.skipIf(!enabled).each(['foreground', 'background', 'markerless-background'])(`reclaims a real %s child that ignores SIGHUP (${backend})`, async (mode) => {
+      const bus = new EventBus();
+      const manager = new TerminalManager(bus, {
+        shell: { command: '/bin/sh', args: [] }, gracefulTimeoutMs: 100, ...options,
+      });
+      const terminal = manager.create('real-terminal-test', { cwd: '/tmp' });
+      let childPid = 0;
+      let output = '';
+      bus.on('terminal:stdout', event => {
+        output += event.data;
+        const match = /TERMINAL_TEST_CHILD=(\d+)/.exec(output);
+        if (match) childPid = Number(match[1]);
+      });
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+      const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      try {
+        if (backend === 'supervised') {
+          // The PTY root is the supervisor, not the shell. Poll: right after
+          // spawn the child may not have exec'd the supervisor yet.
+          const rootCommand = () => { try { return fs.readFileSync(`/proc/${terminal.pid}/cmdline`, 'utf8').split('\0')[0]; } catch { return ''; } };
+          await expect.poll(rootCommand, { timeout: 5000 }).toBe(resolveScopeHelper()!.path);
         }
-        manager.write(terminal.terminalId, 'exit\r');
-        await expect.poll(() => manager.size, { timeout: 4000 }).toBe(0);
-      } else {
-        await Promise.all([manager.destroy(terminal.terminalId), manager.cleanupBySocket('real-terminal-test')]);
+        manager.write(terminal.terminalId, `${mode === 'markerless-background' ? 'env -i ' : ''}${quote(process.execPath)} -e ${quote("process.on('SIGHUP',()=>{});console.log('TERMINAL_TEST_CHILD='+process.pid);setInterval(()=>{},1000)")} ${mode !== 'foreground' ? '&' : ''}\r`);
+        await expect.poll(() => childPid, { timeout: 5000 }).toBeGreaterThan(0);
+        if (mode !== 'foreground') {
+          if (mode === 'markerless-background' && backend === 'compat') {
+            // Establish ancestry while the shell is alive; after exit the job
+            // has neither its launch token nor a live parent to discover it by.
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+          manager.write(terminal.terminalId, 'exit\r');
+          await expect.poll(() => manager.size, { timeout: 4000 }).toBe(0);
+        } else {
+          await Promise.all([manager.destroy(terminal.terminalId), manager.cleanupBySocket('real-terminal-test')]);
+        }
+        expect(manager.size).toBe(0);
+        await expect.poll(() => alive(childPid)).toBe(false);
+        await manager.destroyAll();
+        expect(() => manager.create('after-shutdown')).toThrow('stopped');
+      } finally {
+        for (const pid of [childPid, terminal.pid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+        await manager.destroyAll();
       }
-      expect(manager.size).toBe(0);
-      await expect.poll(() => alive(childPid)).toBe(false);
-      await manager.destroyAll();
-      expect(() => manager.create('after-shutdown')).toThrow('stopped');
-    } finally {
-      for (const pid of [childPid, terminal.pid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch {} }
-      await manager.destroyAll();
-    }
-  }, 10000);
+    }, 10000);
+  }
 });

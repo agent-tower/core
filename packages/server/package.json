@@ -1,6 +1,6 @@
 {
   "name": "@agent-tower/server",
-  "version": "0.7.4",
+  "version": "0.7.5-beta.1",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -12,7 +12,8 @@
     "postinstall": "node scripts/postinstall.js",
     "dev": "node scripts/dev.mjs",
     "test": "vitest run --root ../..",
-    "build": "pnpm run db:generate && tsc && node scripts/copy-build-assets.mjs",
+    "build": "pnpm run db:generate && tsc && node scripts/copy-build-assets.mjs && node scripts/build-scope-helper.mjs --if-possible",
+    "build:scope-helper": "node scripts/build-scope-helper.mjs",
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
     "db:generate": "prisma generate",

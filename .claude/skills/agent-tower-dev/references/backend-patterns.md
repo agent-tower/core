@@ -75,3 +75,12 @@ packages/server/src/
 - status/agentType 等用 `String` 类型，由应用层 TypeScript enum 控制（不用 Prisma enum）
 - UUID 主键：`id String @id @default(uuid())`
 - 修改 schema 后：`cd packages/server && npx prisma migrate dev --name <name>`
+
+## 进程域 (Process Scope)
+
+服务端启动的每个外部进程树都属于一个"进程域"：独立终端、`runOwnedCommand`/`spawnOwnedProcess`（git、CLI 安装与探测命令）。Linux 上进程域由 `prebuilds/linux-<arch>/agent-tower-scope` supervisor 托管（源码 `packages/server/native/scope-helper/`，构建 `node scripts/build-scope-helper.mjs`，支持 zig / cc / docker）：
+
+- supervisor 是 child subreaper，后代无论 `setsid`、清空环境、父进程先退出都留在域内；停止时它负责转发信号、超时升级，**域为空时才退出**，其退出事件就是清理确认。主进程不再采样 `/proc`。
+- 服务端接口在 `src/runtime/process-scope/`：`getDefaultProcessScopeRuntime()` 返回 supervisor 后端或 `null`（兼容后端：macOS/Windows、无 supervisor、`AGENT_TOWER_PROCESS_SCOPE=compat`）。`requestStop(pid, signal)` 转发优雅信号，`forceStop(pid)` 立即升级；**绝不能 SIGKILL supervisor 本身**，否则后代脱离域。
+- 新的启动点请走 `spawnOwnedProcess`/`runOwnedCommand` 或 `TerminalManager`，不要直接 `spawn` 长生命周期进程。测试里用 `processScope: null` / `scope: null` 固定兼容后端，用假 runtime 验证 supervised 路径。
+- 尚未迁移：CLI/ACP 会话与后台服务的 PTY wrapper（`process-launch.ts`）、`AcpProcessManager`、Windows Job Object。

@@ -7,6 +7,7 @@ import { createUnixProcessIdentityAdapter, PROCESS_IDENTITY_ENV, type UnixProces
 import { writeErrorLog } from '../utils/error-log.js';
 import { createWindowsProcessTreeAdapter, type WindowsProcessIdentity, type WindowsProcessTreeAdapter } from '../runtime/acp/process-manager.js';
 import { assertApplicationProcessStartAllowed } from '../runtime/application-process-cleanup.js';
+import { getDefaultProcessScopeRuntime, type ProcessScopeRuntime } from '../runtime/process-scope/process-scope.js';
 
 // ============================================================
 // Constants
@@ -62,6 +63,10 @@ interface ManagedTerminal {
   windowsCaptureTimer: ReturnType<typeof setInterval> | null;
   groupsCaptureTimer: ReturnType<typeof setInterval> | null;
   groupsCapture: Promise<void> | null;
+  /** Supervisor PID when the shell runs inside a process scope; null on the compatibility backend. */
+  scopePid: number | null;
+  exitPromise: Promise<void>;
+  resolveExit: () => void;
 }
 
 export interface TerminalManagerOptions {
@@ -72,6 +77,12 @@ export interface TerminalManagerOptions {
   windowsProcessAdapter?: WindowsProcessTreeAdapter;
   gracefulTimeoutMs?: number;
   forceTimeoutMs?: number;
+  /**
+   * Process scope backend. `undefined` selects the host default (the
+   * `agent-tower-scope` supervisor on Linux when available); `null` forces the
+   * compatibility backend that samples the process table.
+   */
+  processScope?: ProcessScopeRuntime | null;
 }
 
 export interface TerminalCreateOptions {
@@ -108,9 +119,13 @@ export class TerminalManager {
   private readonly shell: CommandInvocation;
   private readonly gracefulTimeoutMs: number;
   private readonly forceTimeoutMs: number;
+  private readonly processScope: ProcessScopeRuntime | null;
 
   constructor(private readonly eventBus: EventBus, options: TerminalManagerOptions = {}) {
     this.platform = options.platform ?? process.platform;
+    this.processScope = options.processScope === undefined
+      ? getDefaultProcessScopeRuntime(this.platform)
+      : options.processScope;
     this.unixProcessAdapter = options.unixProcessAdapter ?? createUnixProcessIdentityAdapter(this.platform);
     this.windowsProcessAdapter = options.windowsProcessAdapter ?? createWindowsProcessTreeAdapter();
     this.spawnPty = options.spawn ?? pty.spawn;
@@ -143,14 +158,26 @@ export class TerminalManager {
     const cwd = options.cwd || process.cwd();
 
     const ownershipToken = randomUUID();
+    const scope = this.processScope;
+    // Inside a scope the supervisor keeps every descendant attached to the
+    // terminal, so the shell runs under it and no environment marker is needed.
+    const invocation: CommandInvocation = scope
+      ? scope.buildInvocation(
+        { id: terminalId, graceMs: this.gracefulTimeoutMs, rootExitSignal: 'SIGHUP', stopOnParentDeath: true },
+        this.shell.command,
+        this.shell.args,
+      )
+      : this.shell;
+    const env = cleanInternalEnv(process.env) as Record<string, string>;
+    if (!scope) env[PROCESS_IDENTITY_ENV] = ownershipToken;
     let shell: IPty;
     try {
-      shell = this.spawnPty(this.shell.command, this.shell.args, {
+      shell = this.spawnPty(invocation.command, invocation.args, {
         name: 'xterm-256color',
         cols,
         rows,
         cwd,
-        env: { ...cleanInternalEnv(process.env), [PROCESS_IDENTITY_ENV]: ownershipToken } as Record<string, string>,
+        env,
       });
     } catch (error) {
       writeErrorLog({
@@ -162,12 +189,14 @@ export class TerminalManager {
           terminalId,
           socketId,
           cwd,
-          command: this.shell.command,
+          command: invocation.command,
         },
       });
       throw error;
     }
 
+    let resolveExit!: () => void;
+    const exitPromise = new Promise<void>((resolve) => { resolveExit = resolve; });
     const managed: ManagedTerminal = {
       pty: shell,
       socketId,
@@ -186,11 +215,15 @@ export class TerminalManager {
       windowsCaptureTimer: null,
       groupsCaptureTimer: null,
       groupsCapture: null,
+      scopePid: scope ? shell.pid : null,
+      exitPromise,
+      resolveExit,
     };
-    if (this.platform !== 'win32') managed.rootIdentity = this.captureTerminalRoot(managed).catch(() => null);
+    const compatUnix = !scope && this.platform !== 'win32';
+    if (compatUnix) managed.rootIdentity = this.captureTerminalRoot(managed).catch(() => null);
     this.terminals.set(terminalId, managed);
     this.recordOwnership(socketId, terminalId);
-    if (this.platform !== 'win32') {
+    if (compatUnix) {
       managed.groupsCaptureTimer = setInterval(() => {
         if (!managed.stopRequested && !managed.exited) void this.refreshGroups(managed, false).catch(() => undefined);
       }, 100);
@@ -212,7 +245,9 @@ export class TerminalManager {
       managed.cleanups.push(shell.onExit(({ exitCode }) => {
         managed.exited = true;
         managed.exitCode = exitCode;
-        // Shell exit alone does not establish that its jobs exited.
+        managed.resolveExit();
+        // On the compatibility backend a shell exit alone does not establish
+        // that its jobs exited; inside a scope the supervisor exits last.
         void this.destroy(terminalId).catch((error) => this.logCleanupFailure(terminalId, error));
       }));
     } catch (error) {
@@ -258,7 +293,9 @@ export class TerminalManager {
     terminal.stopRequested = true;
     if (terminal.stopping) return terminal.stopping;
     const stopping = (async () => {
-      if (this.platform === 'win32') {
+      if (terminal.scopePid !== null) {
+        await this.stopScope(terminal);
+      } else if (this.platform === 'win32') {
         let deadline: number | undefined;
         while (true) {
           await this.captureWindowsTree(terminal);
@@ -354,6 +391,34 @@ export class TerminalManager {
       await capture;
     } finally {
       if (terminal.windowsCapture === capture) terminal.windowsCapture = null;
+    }
+  }
+
+  /**
+   * The supervisor forwards SIGHUP to every member, escalates to SIGKILL after
+   * the grace period on its own, and exits once the scope is empty. Its exit
+   * (the PTY exit event) is the only confirmation needed; a supervisor that
+   * does not exit in time is asked to escalate, and failure stays retryable.
+   */
+  private async stopScope(terminal: ManagedTerminal): Promise<void> {
+    const scope = this.processScope;
+    const pid = terminal.scopePid;
+    if (!scope || pid === null || terminal.exited) return;
+    scope.requestStop(pid, 'SIGHUP');
+    if (await this.waitForExit(terminal, this.gracefulTimeoutMs + this.forceTimeoutMs)) return;
+    scope.forceStop(pid);
+    if (await this.waitForExit(terminal, this.forceTimeoutMs)) return;
+    throw new Error('Terminal process tree did not exit after forced termination');
+  }
+
+  private async waitForExit(terminal: ManagedTerminal, timeoutMs: number): Promise<boolean> {
+    if (terminal.exited) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });
+    try {
+      return await Promise.race([terminal.exitPromise.then(() => true), timedOut]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

@@ -164,6 +164,9 @@ packages/server/src/data/
 
 # Publish build output
 packages/server/publish/
+
+# Built process-scope supervisor binaries (node packages/server/scripts/build-scope-helper.mjs)
+packages/server/prebuilds/
 packages/desktop/runtime/
 packages/desktop/release/
 

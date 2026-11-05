@@ -37,8 +37,11 @@ npm pack ./packages/server/publish --json --pack-destination ./packages/server/p
 
 从 `pack-result.json` 读取 filename、version、integrity 和 files，后续检查、安装、发布和交付均复用**这一个 tarball**。不要额外运行 `npm pack --dry-run`，不要从目录再次发布，也不要为了交付重新打包。已有有效 tarball 时，安装/发布网络失败不触发重新打包；产物内容修改后则必须重新构建、打包和验证。
 
+构建前置条件：`build-publish.mjs` 要求 `packages/server/prebuilds/linux-x64` 与 `linux-arm64` 下都有进程域 supervisor `agent-tower-scope`（Linux 用户靠它避免整机进程表采样）。脚本会自动尝试构建，依次使用 `zig cc`（`brew install zig`，可交叉编译两种架构）、宿主 `cc`、Docker（alpine）。没有任何工具链时构建失败；面向单一已知主机的 beta 可用 `AGENT_TOWER_SCOPE_HELPER_TARGETS=linux-x64` 缩小要求；只有明确接受 Linux 退回兼容后端时才设置 `AGENT_TOWER_ALLOW_MISSING_SCOPE_HELPER=1`，两种情况都要在汇报中说明。
+
 包内容检查保留以下不变量：
 - CLI/MCP 入口、前端和 Prisma schema 齐全，版本正确，不夹带 `.env`、数据库或发布机运行数据。
+- `prebuilds/linux-x64/agent-tower-scope` 与 `prebuilds/linux-arm64/agent-tower-scope` 存在且可执行（`--probe` 输出 `"subreaper":true`）。
 - bundled `@prisma/client` 移除 generate/postinstall 和可选 prisma peer；普通 dependency 的 Prisma CLI 与 Client 精确同版本，由根 postinstall 唯一生成本机 Client。包内不含 `node_modules/prisma` 或预生成的 `node_modules/.prisma`。
 - Pi 的完整运行时依赖树和 node-pty 多平台 prebuilds 齐全；cloudflared 仅包含无 postinstall 的 JS wrapper，不含 `node_modules/cloudflared/bin`。
 

@@ -1,11 +1,17 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { accessSync, constants as fsConstants, statSync } from 'node:fs';
+import path from 'node:path';
+import type { Readable } from 'node:stream';
 import { ReferencedShutdownCoordinator } from '../runtime/shutdown-coordinator.js';
 import { assertApplicationProcessStartAllowed, registerApplicationProcessCleanup } from '../runtime/application-process-cleanup.js';
 import { createWindowsProcessTreeAdapter, type WindowsProcessIdentity, type WindowsProcessTreeAdapter } from '../runtime/acp/process-manager.js';
 import { createUnixProcessIdentityAdapter, PROCESS_IDENTITY_ENV, type UnixProcessIdentityAdapter } from './unix-process-identity.js';
+import { getDefaultProcessScopeRuntime, parseScopeStatusLine, type ProcessScopeRuntime } from '../runtime/process-scope/process-scope.js';
 
 export interface ChildProcessOwner { stop(): Promise<void> }
+
+const FORCE_EXIT_TIMEOUT_MS = 2_000;
 
 const activeOwners = new Set<ChildProcessOwner>();
 
@@ -143,6 +149,110 @@ export class OwnedChildProcess implements ChildProcessOwner {
   }
 }
 
+/**
+ * Owner for a command started inside a supervised process scope. The
+ * supervisor keeps every descendant attached, forwards the stop request,
+ * escalates after the grace period, and exits only when the scope is empty, so
+ * its exit event is the cleanup confirmation and no sampling timer exists.
+ */
+export class SupervisedChildProcess implements ChildProcessOwner {
+  private exited: boolean;
+  private stopping = false;
+  private readonly exitPromise: Promise<void>;
+  private readonly shutdown: ReferencedShutdownCoordinator;
+
+  constructor(
+    private readonly child: ChildProcess,
+    private readonly scope: ProcessScopeRuntime,
+    options: { graceMs?: number } = {},
+  ) {
+    this.exited = child.exitCode !== null && child.exitCode !== undefined
+      || child.signalCode !== null && child.signalCode !== undefined;
+    this.exitPromise = new Promise<void>((resolve) => {
+      if (this.exited) { resolve(); return; }
+      child.once('exit', () => { this.exited = true; resolve(); });
+      child.once('error', () => { if (!child.pid) { this.exited = true; resolve(); } });
+    });
+    const graceMs = options.graceMs ?? 2_000;
+    this.shutdown = new ReferencedShutdownCoordinator(async () => {
+      const pid = this.child.pid;
+      if (pid && !this.exited) {
+        this.scope.requestStop(pid, 'SIGTERM');
+        if (!await this.waitForExit(graceMs + FORCE_EXIT_TIMEOUT_MS)) {
+          this.scope.forceStop(pid);
+          if (!await this.waitForExit(FORCE_EXIT_TIMEOUT_MS)) throw new Error('Child process tree cleanup remains pending');
+        }
+      }
+      activeOwners.delete(this);
+      unregister();
+    });
+    const unregister = registerApplicationProcessCleanup(() => this.stop());
+    activeOwners.add(this);
+  }
+
+  stop(): Promise<void> {
+    this.stopping = true;
+    return this.shutdown.request();
+  }
+  ready(): Promise<void> { return Promise.resolve(); }
+  get stopRequested(): boolean { return this.stopping; }
+
+  private async waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.exited) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });
+    try {
+      return await Promise.race([this.exitPromise.then(() => true), timedOut]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Synchronous PATH lookup. A missing executable keeps surfacing as Node's own
+ * ENOENT spawn error instead of a supervisor exit status, so callers that
+ * detect absent tools keep working unchanged.
+ */
+function resolveExecutable(command: string, env: NodeJS.ProcessEnv, cwd?: string): string | null {
+  const isExecutableFile = (candidate: string) => {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  };
+  if (command.includes('/')) {
+    const resolved = path.resolve(cwd ?? process.cwd(), command);
+    return isExecutableFile(resolved) ? resolved : null;
+  }
+  for (const dir of (env.PATH ?? process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, command);
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Records the command's own exit from the supervisor's status lines (fd 3). */
+function readScopeStatus(child: OwnedCommandProcess): void {
+  const status = child.stdio[3] as Readable | null | undefined;
+  if (!status || typeof status.on !== 'function') return;
+  let buffer = '';
+  status.setEncoding('utf8');
+  status.on('data', (chunk: string) => {
+    buffer += chunk;
+    let newline: number;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const parsed = parseScopeStatusLine(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      if (parsed?.type === 'root-exit') child.commandResult = { code: parsed.code, signal: parsed.signal };
+    }
+  });
+  status.on('error', () => undefined);
+}
+
 const WINDOWS_COMMAND_WRAPPER = String.raw`
 const {spawn} = require('node:child_process');
 process.on('message', message => {
@@ -158,12 +268,46 @@ export type OwnedCommandProcess = ChildProcess & {
   commandResult?: { code: number | null; signal: NodeJS.Signals | null; error?: string };
 };
 
-/** Windows keeps a launch wrapper alive until its verified tree is reaped. */
-export function spawnOwnedProcess(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; graceMs?: number; platform?: NodeJS.Platform; windows?: WindowsProcessTreeAdapter }): OwnedCommandProcess {
+export interface SpawnOwnedProcessOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  graceMs?: number;
+  platform?: NodeJS.Platform;
+  windows?: WindowsProcessTreeAdapter;
+  /** `undefined` selects the host default scope backend; `null` forces the compatibility backend. */
+  scope?: ProcessScopeRuntime | null;
+}
+
+/**
+ * Linux runs the command inside a supervised scope. Windows keeps a launch
+ * wrapper alive until its verified tree is reaped. Other hosts sample the
+ * process table through OwnedChildProcess.
+ */
+export function spawnOwnedProcess(command: string, args: string[], options: SpawnOwnedProcessOptions): OwnedCommandProcess {
   assertApplicationProcessStartAllowed();
   const token = randomUUID();
   const platform = options.platform ?? process.platform;
   const isWindows = platform === 'win32';
+  const scope = isWindows ? null : options.scope === undefined ? getDefaultProcessScopeRuntime(platform) : options.scope;
+  const executable = scope ? resolveExecutable(command, options.env ?? process.env, options.cwd) : null;
+  if (scope && executable) {
+    const invocation = scope.buildInvocation(
+      { id: `command-${token}`, graceMs: options.graceMs ?? 2_000, rootExitSignal: 'SIGTERM', stopOnParentDeath: true, statusFd: 3 },
+      executable,
+      args,
+    );
+    const supervised = spawn(invocation.command, invocation.args, {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: false,
+    }) as OwnedCommandProcess;
+    readScopeStatus(supervised);
+    supervised.owner = new SupervisedChildProcess(supervised, scope, { graceMs: options.graceMs });
+    return supervised;
+  }
   const child = spawn(isWindows ? process.execPath : command, isWindows ? ['-e', WINDOWS_COMMAND_WRAPPER] : args, {
     cwd: options.cwd,
     env: { ...(options.env ?? process.env), [PROCESS_IDENTITY_ENV]: token },

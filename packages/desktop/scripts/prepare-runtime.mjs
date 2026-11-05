@@ -185,6 +185,24 @@ for (const platformDir of readdirSync(nodePtyPrebuildRoot, { withFileTypes: true
   }
 }
 
+// Process-scope supervisor (Linux only). Without it the packaged server falls
+// back to sampling the whole process table for every terminal and command.
+const scopeHelperSrc = path.join(monorepoRoot, 'packages/server/prebuilds');
+const scopeHelperDest = path.join(serverRuntimeDir, 'prebuilds');
+if (existsSync(scopeHelperSrc)) {
+  rmSync(scopeHelperDest, { recursive: true, force: true });
+  cpSync(scopeHelperSrc, scopeHelperDest, { recursive: true, dereference: true });
+}
+if (process.platform === 'linux') {
+  const scopeHelper = path.join(scopeHelperDest, `linux-${process.arch}`, 'agent-tower-scope');
+  requirePath(scopeHelper, 'process-scope supervisor (node packages/server/scripts/build-scope-helper.mjs)');
+  chmodSync(scopeHelper, 0o755);
+  const probe = spawnSync(scopeHelper, ['--probe'], { encoding: 'utf-8' });
+  if (probe.status !== 0) {
+    throw new Error(`process-scope supervisor probe failed: ${probe.stderr || probe.stdout}`);
+  }
+}
+
 cpSync(path.join(monorepoRoot, 'packages/web/dist'), webRuntimeDir, {
   recursive: true,
   dereference: true,

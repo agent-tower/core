@@ -58,6 +58,26 @@ cpSync(resolve(webDir, 'dist'), resolve(publishDir, 'dist/web'), { recursive: tr
 
 // 3. 复制 prisma schema
 cpSync(resolve(serverDir, 'prisma'), resolve(publishDir, 'prisma'), { recursive: true });
+
+// 3b. 进程域 supervisor：Linux 用户靠它避免整机进程表采样。两种架构都必须有
+// 预编译产物（zig cc 可交叉编译，docker 亦可），除非显式允许缺失后退回兼容后端。
+// AGENT_TOWER_SCOPE_HELPER_TARGETS=linux-x64 narrows the requirement (for example a beta
+// built for a single known host); the default covers every Linux npm install.
+const scopeHelperTargets = (process.env.AGENT_TOWER_SCOPE_HELPER_TARGETS || 'linux-x64,linux-arm64').split(',').map((t) => t.trim()).filter(Boolean);
+for (const target of scopeHelperTargets) {
+  const helper = resolve(serverDir, 'prebuilds', target, 'agent-tower-scope');
+  if (existsSync(helper)) continue;
+  execFileSync(process.execPath, [resolve(serverDir, 'scripts/build-scope-helper.mjs'), '--target', target, '--if-possible'], { stdio: 'inherit' });
+  if (existsSync(helper)) continue;
+  if (process.env.AGENT_TOWER_ALLOW_MISSING_SCOPE_HELPER === '1') {
+    console.warn(`WARNING: no scope supervisor for ${target}; Linux ${target} installs will use the compatibility backend`);
+    continue;
+  }
+  throw new Error(`Missing scope supervisor for ${target}. Install zig (cross-compiles) or docker, or set AGENT_TOWER_ALLOW_MISSING_SCOPE_HELPER=1 to publish without it.`);
+}
+if (existsSync(resolve(serverDir, 'prebuilds'))) {
+  cpSync(resolve(serverDir, 'prebuilds'), resolve(publishDir, 'prebuilds'), { recursive: true });
+}
 // 删除可能存在的数据库文件（不应发布）
 const dbFile = resolve(publishDir, 'prisma/data.db');
 if (existsSync(dbFile)) rmSync(dbFile);
@@ -284,6 +304,7 @@ const publishPkg = {
   main: './dist/index.js',
   files: [
     'dist/',
+    'prebuilds/',
     'prisma/',
     'scripts/',
     'vendor/',

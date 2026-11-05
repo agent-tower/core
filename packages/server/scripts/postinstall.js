@@ -159,9 +159,32 @@ function ensureVendoredPiLauncherExecutable() {
   }
 }
 
+/**
+ * 进程域 supervisor（prebuilds/<platform>-<arch>/agent-tower-scope）需要可执行位，
+ * 否则 Linux 上会退回到采样整张进程表的兼容后端。
+ */
+function ensureScopeHelperExecutable() {
+  if (process.platform === 'win32') return;
+  const prebuilds = join(packageRoot, 'prebuilds');
+  if (!existsSync(prebuilds)) return;
+  for (const target of readdirSync(prebuilds)) {
+    const helper = join(prebuilds, target, 'agent-tower-scope');
+    if (!existsSync(helper)) continue;
+    try {
+      if ((statSync(helper).mode & 0o111) === 0) {
+        chmodSync(helper, 0o755);
+        console.log(`[postinstall] 已修复 scope supervisor 权限: ${helper}`);
+      }
+    } catch (err) {
+      console.warn('[postinstall] 无法修复 scope supervisor 权限', helper, err.message);
+    }
+  }
+}
+
 generatePrismaClient();
 fixSpawnHelperPermissions();
 ensureVendoredPiLauncherExecutable();
+ensureScopeHelperExecutable();
 const claudePatch = await patchClaudeAgentAcp();
 if (claudePatch.changed) {
   console.log(`[postinstall] 已修复 Claude ACP 网关 context-window 探测: ${claudePatch.adapterPath}`);

@@ -85,6 +85,10 @@ export interface BranchDeleteResult {
 
 // ─── WorktreeManager ──────────────────────────────────────────────────────────
 
+// `git worktree add` checks out the whole tree; large repositories exceed the
+// default 30 s git timeout (observed: 343 MiB checkout aborted at 39 %).
+const WORKTREE_CREATE_TIMEOUT_MS = 180_000;
+
 export class WorktreeManager {
   private repoPath: string;
   private worktreeBaseDir: string;
@@ -256,7 +260,7 @@ export class WorktreeManager {
       if (startPoint) {
         args.push(startPoint);
       }
-      await execGit(this.repoPath, args);
+      await execGit(this.repoPath, args, { timeout: WORKTREE_CREATE_TIMEOUT_MS });
     } catch (err) {
       // Wrap with more context
       if (err instanceof GitError) {
@@ -348,7 +352,7 @@ export class WorktreeManager {
     // Create worktree from existing branch (no -b flag)
     await fs.mkdir(this.worktreeBaseDir, { recursive: true });
     try {
-      await execGit(this.repoPath, ['worktree', 'add', worktreePath, branchName]);
+      await execGit(this.repoPath, ['worktree', 'add', worktreePath, branchName], { timeout: WORKTREE_CREATE_TIMEOUT_MS });
     } catch (err) {
       if (err instanceof GitError) {
         throw new GitError(
