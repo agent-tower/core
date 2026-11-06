@@ -6,8 +6,10 @@ import {
   ControlWorkspaceServiceInput,
   GetWorkspaceServiceLogsInput,
   ListWorkspaceServicesInput,
+  ScheduleWakeupInput,
   SendWorkspaceServiceInput,
   StartWorkspaceServiceInput,
+  WaitForWorkspaceServiceInput,
 } from '../types.js';
 
 function errorResult(error: unknown) {
@@ -76,7 +78,15 @@ export function registerWorkspaceServiceTools(
           args: params.args,
           relativeCwd: params.relative_cwd,
         });
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        if (!params.wake_on_exit) {
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        const wakeup = await client.waitForWorkspaceService(workspaceId, params.service_name);
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ...result,
+          wakeup,
+          note: 'Finish your turn now. Agent Tower re-invokes this session with a system notification when the service exits.',
+        }, null, 2) }] };
       } catch (error) {
         return errorResult(error);
       }
@@ -145,6 +155,45 @@ export function registerWorkspaceServiceTools(
           params.action,
         );
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.tool(
+    'wait_for_workspace_service',
+    'Ask Agent Tower to re-invoke this session with a system notification when a workspace service exits. Returns immediately; finish your turn afterwards instead of polling the logs.',
+    WaitForWorkspaceServiceInput.shape,
+    async (params) => {
+      try {
+        await requireRunCommands(client, context, auth);
+        const wakeup = await client.waitForWorkspaceService(workspaceId, params.service_name);
+        return { content: [{ type: 'text', text: JSON.stringify({
+          wakeup,
+          note: 'Finish your turn now. You will be re-invoked when the service exits; the notification includes its exit code and last log lines.',
+        }, null, 2) }] };
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.tool(
+    'schedule_wakeup',
+    'Ask Agent Tower to re-invoke this session after a delay with a system notification. Use it instead of sleeping inside your turn; finish your turn after scheduling.',
+    ScheduleWakeupInput.shape,
+    async (params) => {
+      try {
+        const sessionId = process.env.AGENT_TOWER_SESSION_ID;
+        if (!sessionId) {
+          throw new AgentTowerApiError(400, 'SESSION_CONTEXT_REQUIRED', 'schedule_wakeup requires an Agent Tower session context');
+        }
+        const wakeup = await client.scheduleWakeup(sessionId, { delaySeconds: params.delay_seconds, reason: params.reason });
+        return { content: [{ type: 'text', text: JSON.stringify({
+          wakeup,
+          note: 'Finish your turn now. You will be re-invoked when the wake-up fires.',
+        }, null, 2) }] };
       } catch (error) {
         return errorResult(error);
       }

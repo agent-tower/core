@@ -15,7 +15,7 @@ function createServerMock() {
 }
 
 describe('workspace service MCP tools', () => {
-  it('registers exactly five tools only in workspace context and binds all calls to it', async () => {
+  it('registers the workspace service and wake-up tools only in workspace context and binds all calls to it', async () => {
     const withoutContext = createServerMock();
     registerWorkspaceServiceTools(withoutContext.server as any, {} as any, null);
     expect(withoutContext.handlers.size).toBe(0);
@@ -27,6 +27,8 @@ describe('workspace service MCP tools', () => {
       getWorkspaceServiceLogs: vi.fn(async () => ({ entries: [] })),
       sendWorkspaceServiceInput: vi.fn(),
       controlWorkspaceService: vi.fn(),
+      waitForWorkspaceService: vi.fn(async () => ({ id: 'wakeup-1', state: 'PENDING' })),
+      scheduleWakeup: vi.fn(async () => ({ id: 'wakeup-2', state: 'PENDING' })),
     };
     const auth = {
       resolveBoundTeamRunId: vi.fn(() => 'team-run-1'),
@@ -43,6 +45,8 @@ describe('workspace service MCP tools', () => {
       'get_workspace_service_logs',
       'send_workspace_service_input',
       'control_workspace_service',
+      'wait_for_workspace_service',
+      'schedule_wakeup',
     ]);
     await handlers.get('start_workspace_service')!({
       service_name: 'web',
@@ -73,6 +77,35 @@ describe('workspace service MCP tools', () => {
       afterSeq: 4,
       limit: 20,
     });
+    expect(client.waitForWorkspaceService).not.toHaveBeenCalled();
+
+    const started = await handlers.get('start_workspace_service')!({
+      service_name: 'route',
+      command: 'python3',
+      args: ['build.py'],
+      wake_on_exit: true,
+    });
+    expect(client.waitForWorkspaceService).toHaveBeenCalledWith('workspace-1', 'route');
+    expect(JSON.parse(started.content[0].text)).toMatchObject({ id: 'service-1', wakeup: { id: 'wakeup-1' } });
+
+    const waited = await handlers.get('wait_for_workspace_service')!({ service_name: 'route' });
+    expect(JSON.parse(waited.content[0].text)).toMatchObject({ wakeup: { id: 'wakeup-1' } });
+    expect(client.waitForWorkspaceService).toHaveBeenCalledTimes(2);
+
+    const previous = process.env.AGENT_TOWER_SESSION_ID;
+    process.env.AGENT_TOWER_SESSION_ID = 'session-1';
+    try {
+      const scheduled = await handlers.get('schedule_wakeup')!({ delay_seconds: 600, reason: 'check the router' });
+      expect(client.scheduleWakeup).toHaveBeenCalledWith('session-1', { delaySeconds: 600, reason: 'check the router' });
+      expect(JSON.parse(scheduled.content[0].text)).toMatchObject({ wakeup: { id: 'wakeup-2' } });
+      delete process.env.AGENT_TOWER_SESSION_ID;
+      const missing = await handlers.get('schedule_wakeup')!({ delay_seconds: 600, reason: 'check the router' });
+      expect(missing.isError).toBe(true);
+      expect(JSON.parse(missing.content[0].text)).toMatchObject({ code: 'SESSION_CONTEXT_REQUIRED' });
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_TOWER_SESSION_ID;
+      else process.env.AGENT_TOWER_SESSION_ID = previous;
+    }
   });
 
   it('preserves REST status and error code in MCP errors', async () => {

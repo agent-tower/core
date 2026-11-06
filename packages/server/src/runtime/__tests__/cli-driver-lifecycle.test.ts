@@ -135,7 +135,7 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
     expect(vi.mocked(sink.process).mock.calls.some(([event]) => event.type === 'tree_cleanup_completed')).toBe(true);
   });
 
-  it.each(['success', 'error_during_execution'])('finishes Claude %s before exit and waits for wrapper escalation on close', async (subtype) => {
+  it.each(['success', 'error_during_execution'])('keeps a Claude run alive after its %s result until exit and settles it from that result on close', async (subtype) => {
     vi.useFakeTimers();
     const dataListeners = new Set<(data: string) => void>();
     const exitListeners = new Set<(event: { exitCode: number; signal?: number }) => void>();
@@ -182,22 +182,26 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
       usage: { input_tokens: 2, cache_creation_input_tokens: 9780, cache_read_input_tokens: 8493 },
     };
     for (const listener of dataListeners) listener(JSON.stringify(terminalResult) + '\n');
+    // Claude Code print mode: the result ends the turn, not the run. Nothing is
+    // settled or stopped until the process exits or Tower decides it is hung.
+    let settled = false;
+    void turn.completion.then(() => { settled = true; }, () => { settled = true; });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(settled).toBe(false);
+    expect(pty.kill).not.toHaveBeenCalled();
     if (subtype === 'success') {
-      await expect(turn.completion).resolves.toEqual({});
       expect(store.getSnapshot().entries.at(-1)?.metadata?.tokenUsage?.totalTokens).toBe(18275);
     } else {
-      await expect(turn.completion).rejects.toMatchObject({ code: 'turn_failed' });
+      expect(store.getSnapshot().entries.at(-1)?.entryType).toBe('error_message');
     }
     expect(store.isFinished()).toBe(true);
-    expect(pty.kill).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(250);
-    expect(pty.kill).toHaveBeenCalled();
 
     const close = session.close();
     void close.catch(() => undefined);
     let closed = false;
     void close.then(() => { closed = true; }, () => undefined);
     await vi.advanceTimersByTimeAsync(2_000);
+    expect(pty.kill).toHaveBeenCalled();
     expect(closed).toBe(false);
     expect(vi.mocked(sink.process).mock.calls.map(([event]) => event.type)).toEqual(['started']);
     await vi.advanceTimersByTimeAsync(PTY_WRAPPER_FORCE_KILL_GRACE_MS);
@@ -205,7 +209,9 @@ describe('CliRuntimeDriver cleanup lifecycle', () => {
     expect(vi.mocked(sink.process).mock.calls.map(([event]) => event.type)).toEqual([
       'started', 'exited', 'tree_cleanup_completed',
     ]);
-    if (subtype !== 'success') {
+    if (subtype === 'success') {
+      await expect(turn.completion).resolves.toEqual({});
+    } else {
       await expect(turn.completion).rejects.toMatchObject({ code: 'turn_failed' });
     }
   });

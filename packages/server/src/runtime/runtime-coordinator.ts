@@ -5,6 +5,7 @@ import {
   type RuntimeStateDto,
   type RuntimeTurnState,
 } from '@agent-tower/shared';
+import type { RuntimeBackgroundTask } from '@agent-tower/shared';
 import type {
   DriverSession,
   RuntimeCoordinatorHost,
@@ -47,6 +48,8 @@ interface ManagedRuntimeSession {
   launchClaimNumber?: number;
   driverCloseCompleted?: boolean;
   error?: ReturnType<typeof toRuntimeError>;
+  /** Background work the live agent process still waits for after its last result. */
+  backgroundTasks?: RuntimeBackgroundTask[];
 }
 
 interface StartAdmissionRecord {
@@ -295,6 +298,7 @@ export class RuntimeCoordinator {
     this.invalidatePermissions(towerSessionId, session, active.id);
     session.activeTurn = undefined;
     session.turnState = 'IDLE';
+    session.backgroundTasks = undefined;
     this.touch(towerSessionId, session);
 
     const cancellation = (async () => {
@@ -758,6 +762,8 @@ export class RuntimeCoordinator {
         } else if (event.type === 'permission_invalidated') {
           session.pendingPermissions.delete(event.requestId);
           if (session.pendingPermissions.size === 0) session.turnState = 'RUNNING';
+        } else if (event.type === 'background_tasks_changed') {
+          session.backgroundTasks = event.tasks.length > 0 ? event.tasks : undefined;
         }
         this.emitStream(towerSessionId, session, active, event);
       },
@@ -804,6 +810,7 @@ export class RuntimeCoordinator {
     this.invalidatePermissions(towerSessionId, session, active.id);
     session.activeTurn = undefined;
     session.turnState = 'IDLE';
+    session.backgroundTasks = undefined;
     this.touch(towerSessionId, session);
   }
 
@@ -836,6 +843,7 @@ export class RuntimeCoordinator {
       ...(session.activeTurn ? { turnId: session.activeTurn.id } : {}),
       capabilities: session.driverSession.capabilities,
       pendingPermissions: [...session.pendingPermissions.values()],
+      ...(session.backgroundTasks ? { backgroundTasks: session.backgroundTasks } : {}),
       externalSessionId: session.driverSession.externalSessionId ?? null,
       lastActivityAt: session.lastActivityAt,
       ...(session.error ? { error: session.error } : {}),

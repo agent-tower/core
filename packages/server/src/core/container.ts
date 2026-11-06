@@ -13,6 +13,7 @@ import { TeamTaskInputService } from '../services/team-task-input.service.js';
 import { TeamRunService } from '../services/team-run.service.js';
 import { emitTeamRunInvalidated } from '../services/team-run-events.js';
 import { MessageDeliveryService } from '../services/message-delivery.service.js';
+import { SessionWakeupService } from '../services/session-wakeup.service.js';
 import { TaskService } from '../services/task.service.js';
 import { TranslationService } from '../services/translation.service.js';
 import { assertApplicationProcessStartAllowed, beginApplicationProcessShutdown, cleanupApplicationProcessOwners } from '../runtime/application-process-cleanup.js';
@@ -33,6 +34,7 @@ let translationSettingsService: TranslationSettingsService | null = null;
 let translationService: TranslationService | null = null;
 let teamTaskInputService: TeamTaskInputService | null = null;
 let messageDeliveryService: MessageDeliveryService | null = null;
+let sessionWakeupService: SessionWakeupService | null = null;
 const workspaceSetupProgressStore = new WorkspaceSetupProgressStore();
 
 export function getTeamTaskInputService(): TeamTaskInputService {
@@ -107,6 +109,30 @@ export function getWorkspaceBackgroundService(): WorkspaceBackgroundService {
     workspaceBackgroundService = new WorkspaceBackgroundService();
   }
   return workspaceBackgroundService;
+}
+
+export function getSessionWakeupService(): SessionWakeupService {
+  if (!sessionWakeupService) {
+    const backgroundService = getWorkspaceBackgroundService();
+    sessionWakeupService = new SessionWakeupService({
+      eventBus: getEventBus(),
+      sessions: getSessionManager(),
+      delivery: getMessageDeliveryService(),
+      services: {
+        findService: (workspaceId, name) => prisma.workspaceBackgroundService.findUnique({
+          where: { workspaceId_name: { workspaceId, name } },
+          select: { id: true, workspaceId: true, name: true, runtimeState: true, runtimeInstanceId: true, exitCode: true },
+        }),
+        readLogTail: async (workspaceId, name, lines) => {
+          const logs = await backgroundService.getLogs(workspaceId, name, { limit: lines });
+          return logs.entries.map((entry) => entry.data.replace(/\r?\n$/, ''));
+        },
+      },
+    });
+    const wakeups = sessionWakeupService;
+    backgroundService.onServiceExit((event) => wakeups.handleServiceExit(event));
+  }
+  return sessionWakeupService;
 }
 
 export async function getTerminalManager(): Promise<TerminalManager> {

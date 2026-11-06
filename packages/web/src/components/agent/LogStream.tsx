@@ -4,11 +4,12 @@ import { apiClient } from '@/lib/api-client'
 import { useOutgoingSubmissions } from '@/hooks/outgoing-submissions'
 import { OutgoingSubmissionBubble } from './OutgoingSubmissionBubble'
 import { createContext, useContext, useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
-import { getTranslationTextBlocks, type MessageDelivery } from '@agent-tower/shared'
+import { getTranslationTextBlocks, type MessageDelivery, type RuntimeBackgroundTask } from '@agent-tower/shared'
 import { indexSessionTranslations, sessionTranslationPresentation, useSessionTranslations } from '@/hooks/use-session-translations'
 import { useTranslationReveals } from '@/hooks/translation-reveals'
 import { useTranslationSettings } from '@/hooks/use-translation-settings'
 import { useMessageDeliveries } from '@/hooks/use-message-deliveries'
+import { useRuntimeState } from '@/hooks/use-sessions'
 import { MessageDeliveryAttachments, MessageDeliveryFeedback } from './MessageDeliveryStatus'
 import { TranslationComparison, TranslationReveal, TranslationStatus } from './TranslationComparison'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -464,8 +465,43 @@ function HistoricalDelivery({ id }: { id: string }) {
   return data ? <MessageDeliveryFeedback delivery={data} /> : null
 }
 const DeliveryContext = createContext<ReadonlyMap<string, MessageDelivery>>(new Map())
-const UserMessage = memo(({ content, deliveryId, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl }: { content: string; deliveryId?: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler }) => {
+const NO_BACKGROUND_TASKS: RuntimeBackgroundTask[] = []
+/** Background work the live agent process is still waiting for; drives the thinking indicator label. */
+const BackgroundWaitContext = createContext<RuntimeBackgroundTask[]>(NO_BACKGROUND_TASKS)
+/** A wake-up Agent Tower delivered on the agent's own request: shown as a system event, not as the person's words. */
+const SystemEventMessage = memo(({ content, compact }: { content: string; compact?: boolean }) => {
+  const { t } = useI18n()
+  const [isOpen, setIsOpen] = useState(false)
+  const summary = useMemo(() => {
+    const match = content.match(/<agent_tower_wakeup\s+kind="([^"]+)"(?:[^>]*service="([^"]*)")?/)
+    if (match?.[1] === 'service_exit') return t('后台服务 {name} 已退出', { name: match[2] || '' })
+    if (match?.[1] === 'timer') return t('定时唤醒已触发')
+    return t('系统唤醒')
+  }, [content, t])
+  return (
+    <div className={compact ? 'mb-4 mt-2' : 'mb-8 mt-4'} data-system-event>
+      <button
+        type="button"
+        onClick={() => setIsOpen((open) => !open)}
+        className="flex w-full items-center gap-2 rounded-lg border border-dashed border-border/70 bg-muted/40 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <span className="shrink-0 rounded-sm bg-foreground/[0.08] px-1.5 py-0.5 font-medium">{t('系统唤醒')}</span>
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+        <span className="flex size-4 shrink-0 items-center justify-center transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+          <ChevronRight size={14} strokeWidth={2} />
+        </span>
+      </button>
+      {isOpen && (
+        <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">{content}</pre>
+      )}
+    </div>
+  )
+})
+SystemEventMessage.displayName = 'SystemEventMessage'
+
+const UserMessage = memo(({ content, deliveryId, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, origin }: { content: string; deliveryId?: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler; origin?: 'SYSTEM_EVENT' }) => {
   const delivery = useContext(DeliveryContext).get(deliveryId ?? '')
+  if (origin === 'SYSTEM_EVENT') return <SystemEventMessage content={content} compact={compact} />
   return (
   <div className={compact ? 'flex justify-end mb-4 mt-2' : 'flex justify-end mb-8 mt-4'}>
     <div className="flex max-w-[85%] min-w-0 flex-col items-end">
@@ -873,7 +909,10 @@ const ThinkingIndicator = memo(({ activity }: { activity?: LogEntry['cursorActiv
   const lastOutputDuration = activity?.lastOutputAt == null
     ? null
     : formatActivityDuration(now - activity.lastOutputAt, t)
-  const label = t('正在思考')
+  const backgroundTasks = useContext(BackgroundWaitContext)
+  const label = backgroundTasks.length > 0
+    ? t('等待后台任务 ({count})', { count: backgroundTasks.length })
+    : t('正在思考')
 
   return (
     <Tooltip
@@ -886,6 +925,11 @@ const ThinkingIndicator = memo(({ activity }: { activity?: LogEntry['cursorActiv
               ? t('最后一次输出于 {duration}前', { duration: lastOutputDuration })
               : t('等待首次输出')}
           </span>
+          {backgroundTasks.map((task) => (
+            <span key={task.taskId} className="text-inverse-muted">
+              {task.description || task.taskType || task.taskId}
+            </span>
+          ))}
         </div>
       )}
     >
@@ -1060,11 +1104,13 @@ const SessionLogStream = forwardRef<LogStreamHandle, LogStreamProps & { sessionI
   const acknowledged = useMemo(() => [...deliveries.values()].map(item => item.clientSubmissionId), [deliveries])
   const outgoing = useOutgoingSubmissions(props.sessionId, acknowledged)
   const logs = useMemo(() => mergeDeliveryLogs(props.logs, [...deliveries.values()]), [props.logs, deliveries])
-  return <TranslationContext.Provider value={context}><DeliveryContext.Provider value={deliveries}>
+  const runtime = useRuntimeState(props.sessionId)
+  const backgroundTasks = runtime.data?.backgroundTasks?.length ? runtime.data.backgroundTasks : NO_BACKGROUND_TASKS
+  return <TranslationContext.Provider value={context}><DeliveryContext.Provider value={deliveries}><BackgroundWaitContext.Provider value={backgroundTasks}>
     <LogStreamView {...props} logs={logs} ref={ref} />
     {outgoing.filter(item => ![...deliveries.values()].some(delivery => delivery.clientSubmissionId === item.id)).map(item => <OutgoingSubmissionBubble key={item.id} item={item} />)}
     {pending.hasNextPage && <button type="button" className="text-xs underline" onClick={() => void pending.fetchNextPage()}>Load more</button>}
-  </DeliveryContext.Provider></TranslationContext.Provider>
+  </BackgroundWaitContext.Provider></DeliveryContext.Provider></TranslationContext.Provider>
 })
 
 export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(function LogStream(props, ref) {
@@ -1214,6 +1260,7 @@ const LogStreamView = forwardRef<LogStreamHandle, LogStreamProps>(
             <UserMessage
               content={row.log.content}
               deliveryId={row.log.deliveryId}
+              origin={row.log.origin}
               workingDir={workingDir}
               onOpenWorkspaceFile={onOpenWorkspaceFile}
               onOpenPreviewUrl={onOpenPreviewUrl}

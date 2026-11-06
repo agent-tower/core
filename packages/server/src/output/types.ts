@@ -95,6 +95,8 @@ export interface NormalizedEntry {
   content: string
   metadata?: {
     deliveryId?: string;
+    /** Set on user-role entries that Agent Tower produced itself (wake-ups) */
+    origin?: 'SYSTEM_EVENT'
     textBlock?: TextBlockLifecycle
     /** Recoverable ACP protocol identity, independent of canonical entry/block IDs. */
     acpTextIdentity?: { sessionId: string; streamId: string; messageId: string }

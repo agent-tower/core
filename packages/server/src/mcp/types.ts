@@ -118,9 +118,23 @@ export const StartWorkspaceServiceInput = z.object({
     .describe('Structured executable arguments.'),
   relative_cwd: z.string().max(1_024).optional()
     .describe('Directory relative to the current workspace. Defaults to ".".'),
+  wake_on_exit: z.boolean().optional()
+    .describe('When true, Agent Tower re-invokes this session with a system notification after the service exits. Finish your turn after starting it instead of polling.'),
 }).strict();
 
 export const ListWorkspaceServicesInput = z.object({}).strict();
+
+export const WaitForWorkspaceServiceInput = z.object({
+  service_name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/)
+    .describe('Name of an existing service in the current workspace.'),
+}).strict();
+
+export const ScheduleWakeupInput = z.object({
+  delay_seconds: z.number().int().min(30).max(24 * 60 * 60)
+    .describe('How long to wait before re-invoking this session, in seconds (30 to 86400).'),
+  reason: z.string().min(1).max(500)
+    .describe('What should be checked when the wake-up fires. It is included in the notification.'),
+}).strict();
 
 export const GetWorkspaceServiceLogsInput = z.object({
   service_name: z.string().min(1),

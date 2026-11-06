@@ -5,7 +5,7 @@ import { type LogEntry, LogType } from '@agent-tower/shared/log-adapter'
 export function mergeDeliveryLogs(logs: LogEntry[], deliveries: MessageDelivery[]): LogEntry[] {
   const known = new Set(logs.flatMap(log => log.deliveryId ? [log.deliveryId] : []))
   const missing = deliveries.filter(item => item.state !== 'CANCELLED' && !known.has(item.id))
-    .map((item): LogEntry => ({ id: `user:${item.id}`, deliveryId: item.id, timestamp: Date.parse(item.createdAt), type: LogType.User, content: item.originalText }))
+    .map((item): LogEntry => ({ id: `user:${item.id}`, deliveryId: item.id, timestamp: Date.parse(item.createdAt), type: LogType.User, content: item.originalText, ...(item.origin === 'SYSTEM_EVENT' ? { origin: 'SYSTEM_EVENT' as const } : {}) }))
   if (!missing.length) return logs
   return [...logs, ...missing].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
 }

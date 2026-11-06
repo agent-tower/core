@@ -16,6 +16,7 @@ import {
   createToolUse,
   createThinking,
   createErrorMessage,
+  createSystemMessage,
   createTokenUsageInfo,
 } from './types.js'
 import {
@@ -112,7 +113,41 @@ interface ClaudeCodeMessage {
   // result 统计字段
   duration_api_ms?: number
   num_turns?: number
+  // result 身份与来源（Claude Code 2.1.x）：origin 为 null 表示回应 stdin 投递的消息，
+  // task-notification 等非空 origin 表示 CLI 自行发起的回合
+  result_index?: number
+  uuid?: string
+  origin?: { kind?: string; [key: string]: unknown } | null
+  queued_turn_count?: number
+  terminal_reason?: string
+  // system/background_tasks_changed、task_started、task_updated、task_notification 字段
+  tasks?: Array<{ task_id?: string; run_id?: string; task_type?: string; description?: string }>
+  task_id?: string
+  task_type?: string
+  description?: string
+  is_backgrounded?: boolean
+  status?: string
+  summary?: string
+  patch?: { status?: string }
 }
+
+/** 进程在最后一个 result 之后仍在等待的后台任务 */
+export interface ClaudeBackgroundTask {
+  taskId: string
+  description?: string
+  taskType?: string
+}
+
+/** 一个顶层 result 结束了一个回合；delivery 回合回应 Tower 投递的消息，continuation 回合由 CLI 自行发起 */
+export interface ClaudeTurnBoundary {
+  kind: 'delivery' | 'continuation'
+  resultIndex?: number
+  origin: string | null
+  isFailure: boolean
+  queuedTurnCount?: number
+}
+
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'killed', 'stopped', 'cancelled'])
 
 /**
  * 工具名称到动作类型的映射
@@ -176,9 +211,16 @@ export class ClaudeCodeParser {
   // API 重试条目的 entry index（用于 replace 更新，避免刷屏）
   private apiRetryEntryIndex: number | null = null
   private apiRetryEntryId: string | null = null
-  private turnTerminal = false
+  // Tower 投递的消息是否已被其 result 关闭；之后的顶层 result 都是 CLI 自行发起的 continuation 回合
+  private deliveryClosed = false
+  private inTurn = false
+  private lastResultIdentity: string | null = null
+  private backgroundTasks = new Map<string, ClaudeBackgroundTask>()
   private turnCompletedListeners = new Set<() => void>()
   private turnFailedListeners = new Set<() => void>()
+  private turnStartedListeners = new Set<() => void>()
+  private turnBoundaryListeners = new Set<(boundary: ClaudeTurnBoundary) => void>()
+  private backgroundTaskListeners = new Set<(tasks: ClaudeBackgroundTask[]) => void>()
 
   constructor(msgStore: MsgStore, private readonly control?: { message(value: unknown): void; failed(error: unknown): void }) {
     this.msgStore = msgStore
@@ -192,6 +234,92 @@ export class ClaudeCodeParser {
   onTurnFailed(listener: () => void): () => void {
     this.turnFailedListeners.add(listener)
     return () => this.turnFailedListeners.delete(listener)
+  }
+
+  /** 新的模型回合开始（system/init，或 result 之后的首个输出） */
+  onTurnStarted(listener: () => void): () => void {
+    this.turnStartedListeners.add(listener)
+    return () => this.turnStartedListeners.delete(listener)
+  }
+
+  /** 每个顶层 result 触发一次，包含 delivery 回合和 CLI 自行发起的 continuation 回合 */
+  onTurnBoundary(listener: (boundary: ClaudeTurnBoundary) => void): () => void {
+    this.turnBoundaryListeners.add(listener)
+    return () => this.turnBoundaryListeners.delete(listener)
+  }
+
+  /** 进程仍在等待的后台任务集合发生变化 */
+  onBackgroundTasksChanged(listener: (tasks: ClaudeBackgroundTask[]) => void): () => void {
+    this.backgroundTaskListeners.add(listener)
+    return () => this.backgroundTaskListeners.delete(listener)
+  }
+
+  getBackgroundTasks(): ClaudeBackgroundTask[] {
+    return [...this.backgroundTasks.values()]
+  }
+
+  private markTurnStarted(): void {
+    if (this.inTurn) return
+    this.inTurn = true
+    for (const listener of [...this.turnStartedListeners]) listener()
+  }
+
+  private publishBackgroundTasks(): void {
+    const tasks = this.getBackgroundTasks()
+    for (const listener of [...this.backgroundTaskListeners]) listener(tasks)
+  }
+
+  private replaceBackgroundTasks(tasks: ClaudeCodeMessage['tasks']): void {
+    const next = new Map<string, ClaudeBackgroundTask>()
+    for (const task of Array.isArray(tasks) ? tasks : []) {
+      if (!task || typeof task.task_id !== 'string' || !task.task_id) continue
+      next.set(task.task_id, {
+        taskId: task.task_id,
+        ...(task.description ? { description: task.description } : {}),
+        ...(task.task_type ? { taskType: task.task_type } : {}),
+      })
+    }
+    const unchanged = next.size === this.backgroundTasks.size && [...next.keys()].every((id) => this.backgroundTasks.has(id))
+    this.backgroundTasks = next
+    if (!unchanged) this.publishBackgroundTasks()
+  }
+
+  private handleTaskStarted(msg: ClaudeCodeMessage): void {
+    if (!msg.task_id || msg.is_backgrounded === false) return
+    this.backgroundTasks.set(msg.task_id, {
+      taskId: msg.task_id,
+      ...(msg.description ? { description: msg.description } : {}),
+      ...(msg.task_type ? { taskType: msg.task_type } : {}),
+    })
+    this.publishBackgroundTasks()
+  }
+
+  private handleTaskUpdated(msg: ClaudeCodeMessage): void {
+    const status = msg.patch?.status ?? msg.status
+    if (!msg.task_id || !status || !TERMINAL_TASK_STATUSES.has(status)) return
+    if (this.backgroundTasks.delete(msg.task_id)) this.publishBackgroundTasks()
+  }
+
+  private handleTaskNotification(msg: ClaudeCodeMessage): void {
+    const summary = msg.summary?.trim()
+      || (msg.task_id ? `Background task ${msg.task_id} ${msg.status ?? 'finished'}` : '')
+    if (summary) {
+      const entry = createSystemMessage(summary)
+      const index = this.indexProvider.next()
+      this.msgStore.pushPatch(addNormalizedEntry(index, entry))
+    }
+    if (msg.task_id && this.backgroundTasks.delete(msg.task_id)) this.publishBackgroundTasks()
+  }
+
+  /** 同一帧重复到达（例如残缺行补发）时忽略；真实流中每个 result 都有唯一 uuid/result_index */
+  private isDuplicateResult(msg: ClaudeCodeMessage): boolean {
+    const identity = msg.uuid
+      ?? (msg.result_index != null ? `index:${msg.result_index}` : JSON.stringify([
+        msg.subtype, msg.result, msg.num_turns, msg.duration_api_ms, msg.is_error, msg.errors, msg.error,
+      ]))
+    if (identity === this.lastResultIdentity) return true
+    this.lastResultIdentity = identity
+    return false
   }
 
   /** 使用 MsgStore 共享的索引提供器 */
@@ -308,12 +436,24 @@ export class ClaudeCodeParser {
    * 处理系统消息
    */
   private handleSystemMessage(msg: ClaudeCodeMessage): void {
-    if (msg.subtype === 'init' && msg.session_id) {
-      this.msgStore.pushSessionId(msg.session_id)
-      const patch = setSessionId(msg.session_id)
-      this.msgStore.pushPatch(patch)
+    if (msg.subtype === 'init') {
+      if (msg.session_id) {
+        this.msgStore.pushSessionId(msg.session_id)
+        const patch = setSessionId(msg.session_id)
+        this.msgStore.pushPatch(patch)
+      }
+      // 每个回合（包括 CLI 因后台任务完成而自行发起的回合）都以 init 开始
+      this.markTurnStarted()
     } else if (msg.subtype === 'api_retry') {
       this.handleApiRetry(msg)
+    } else if (msg.subtype === 'background_tasks_changed') {
+      this.replaceBackgroundTasks(msg.tasks)
+    } else if (msg.subtype === 'task_started') {
+      this.handleTaskStarted(msg)
+    } else if (msg.subtype === 'task_updated') {
+      this.handleTaskUpdated(msg)
+    } else if (msg.subtype === 'task_notification') {
+      this.handleTaskNotification(msg)
     }
   }
 
@@ -353,6 +493,7 @@ export class ClaudeCodeParser {
    */
   private handleAssistantMessage(msg: ClaudeCodeMessage): void {
     if (!msg.message?.content) return
+    this.markTurnStarted()
     const messageId = msg.message.id || msg.message_id
     const historical = !!messageId && this.streamingMessages.has(messageId) && !!this.latestAssistantMessageId && messageId !== this.latestAssistantMessageId
     if (!historical) {
@@ -583,6 +724,7 @@ export class ClaudeCodeParser {
    * 这里如果再处理 Claude Code 回显的 user message 会导致重复
    */
   private handleUserMessage(msg: ClaudeCodeMessage): void {
+    this.markTurnStarted()
     // 用户文本已由 session.service.ts 主动写入 MsgStore，这里只消费
     // --replay-user-messages 回放的 tool_result block，用来关闭对应工具状态。
     for (const block of msg.message?.content ?? []) {
@@ -614,8 +756,13 @@ export class ClaudeCodeParser {
     }
 
     const isFailure = msg.is_error === true || msg.subtype?.startsWith('error_') === true
-    const isTerminal = msg.parent_tool_use_id == null && (msg.subtype === 'success' || isFailure)
-    if (isTerminal && this.turnTerminal) return
+    const isTopLevel = msg.parent_tool_use_id == null && (msg.subtype === 'success' || isFailure)
+    if (isTopLevel && this.isDuplicateResult(msg)) return
+    // origin 为 null（或旧版 CLI 未提供）的首个顶层 result 回应 Tower 投递的消息。
+    // 之前出现的非空 origin result（例如启动时的孤儿任务通知）是 CLI 内部的伪回合，
+    // 不能当作本次投递的结束；之后的顶层 result 是 CLI 自行发起的 continuation 回合。
+    const isDelivery = isTopLevel && !this.deliveryClosed && (msg.origin === undefined || msg.origin === null)
+    const isPseudoTurn = isTopLevel && !isDelivery && !this.deliveryClosed
 
     // 最终错误结果（如 API 重试全部失败后）
     if (isFailure) {
@@ -639,7 +786,7 @@ export class ClaudeCodeParser {
 
     // success result 中如果有 result 文本且之前没有 assistant 消息输出，显示该文本
     // 例如 "Unknown skill: testsdfs" 这类 Claude Code 直接返回的结果
-    if (msg.subtype === 'success' && msg.result && !msg.is_error) {
+    if (msg.subtype === 'success' && msg.result && !msg.is_error && !isPseudoTurn) {
       // 检查是否有过 assistant 消息（num_turns <= 0 或 duration_api_ms === 0 表示没有实际 API 调用）
       if (msg.duration_api_ms === 0 || msg.num_turns === 0) {
         const entry = createAssistantMessage(msg.result)
@@ -649,8 +796,8 @@ export class ClaudeCodeParser {
       }
     }
 
-    // 从 success result 中提取 token 用量
-    if (msg.subtype === 'success') {
+    // 从 success result 中提取 token 用量（伪回合没有模型调用，不展示）
+    if (msg.subtype === 'success' && !isPseudoTurn) {
       try {
         // 提取 context window 大小
         let modelContextWindow: number | undefined
@@ -697,13 +844,26 @@ export class ClaudeCodeParser {
     }
 
     // A message_stop can precede tool execution or another assistant message.
-    // Only the top-level final result terminates this runtime turn, after its
-    // messages and usage have been committed to the store.
-    if (isTerminal) {
+    // Only a top-level result ends a turn, after its messages and usage have
+    // been committed to the store. The delivery result notifies completion
+    // once; later top-level results are continuation boundaries of the same
+    // process, which stays alive while background work it started finishes.
+    if (isTopLevel && !isPseudoTurn) {
       this.flushAssistantText()
-      this.turnTerminal = true
-      const listeners = isFailure ? this.turnFailedListeners : this.turnCompletedListeners
-      for (const listener of [...listeners]) listener()
+      this.inTurn = false
+      if (isDelivery) {
+        this.deliveryClosed = true
+        const listeners = isFailure ? this.turnFailedListeners : this.turnCompletedListeners
+        for (const listener of [...listeners]) listener()
+      }
+      const boundary: ClaudeTurnBoundary = {
+        kind: isDelivery ? 'delivery' : 'continuation',
+        ...(msg.result_index != null ? { resultIndex: msg.result_index } : {}),
+        origin: msg.origin?.kind ?? null,
+        isFailure,
+        ...(msg.queued_turn_count != null ? { queuedTurnCount: msg.queued_turn_count } : {}),
+      }
+      for (const listener of [...this.turnBoundaryListeners]) listener(boundary)
     }
   }
 
@@ -758,6 +918,7 @@ export class ClaudeCodeParser {
   private handleStreamEvent(msg: ClaudeCodeMessage): void {
     const event = msg.event
     if (!event) return
+    this.markTurnStarted()
 
     switch (event.type) {
       case 'message_start': {

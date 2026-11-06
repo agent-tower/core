@@ -21,6 +21,7 @@ import { previewRoutes } from './previews.js';
 import { conversationRoutes } from './conversations.js';
 import { agentCliEnvironmentRoutes } from './agent-cli-environment.js';
 import { workspaceServiceRoutes } from './workspace-services.js';
+import { sessionWakeupRoutes } from './session-wakeups.js';
 import { translationRoutes } from './translations.js';
 
 export async function registerRoutes(app: FastifyInstance) {
@@ -38,6 +39,9 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // Workspace-owned long-running services
   await app.register(workspaceServiceRoutes, { prefix: '/api' });
+
+  // Agent-requested wake-ups (timers and workspace service exits)
+  await app.register(sessionWakeupRoutes, { prefix: '/api' });
 
   // 会话路由
   await app.register(sessionRoutes, { prefix: '/api' });

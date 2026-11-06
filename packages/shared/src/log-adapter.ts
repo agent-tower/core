@@ -19,6 +19,8 @@ export enum LogType {
 
 export interface LogEntry {
   deliveryId?: string
+  /** Set when a user-role entry was produced by Agent Tower itself (wake-ups), not typed by a person. */
+  origin?: 'SYSTEM_EVENT'
   textBlock?: TextBlockLifecycle
   id: string
   timestamp?: number
@@ -104,6 +106,8 @@ export interface NormalizedEntry {
   content: string
   metadata?: {
     deliveryId?: string
+    /** Set on user-role entries that Agent Tower produced itself (wake-ups) */
+    origin?: 'SYSTEM_EVENT'
     textBlock?: TextBlockLifecycle
     /** Recoverable ACP protocol identity, independent of canonical entry/block IDs. */
     acpTextIdentity?: { sessionId: string; streamId: string; messageId: string }
@@ -193,6 +197,7 @@ function convertNormalizedEntry(entry: NormalizedEntry): LogEntry | null {
         type: LogType.User,
         content: entry.content,
         ...(entry.metadata?.deliveryId ? { deliveryId: entry.metadata.deliveryId } : {}),
+        ...(entry.metadata?.origin === 'SYSTEM_EVENT' ? { origin: 'SYSTEM_EVENT' as const } : {}),
       }
 
     case 'assistant_message':

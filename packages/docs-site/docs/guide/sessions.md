@@ -41,7 +41,11 @@ ACP Runtime 会持久化 Agent 返回的 external session ID。内存连接仍�
 
 ## 停止与删除
 
-Claude Code CLI 在收到最终结果后结束当前回复，并自动回收本轮进程；回答完成后即可继续发送消息。工具调用或子 Agent 的中间结果不会提前结束整个回合。
+Claude Code CLI 的一个 `result` 只表示一个回合结束，不表示进程结束：进程可能继续存活，等待它自己启动的后台命令、后台子 Agent 或 Monitor 完成，然后自行再执行一个回合并输出新的 `result`。因此 Claude Code 会话在进程退出时才结束，Tower 不会因为收到 `result` 就回收进程。等待期间 Runtime 状态带有 `backgroundTasks`，界面显示"等待后台任务"。进程在最后一个 `result` 之后既无待处理后台任务又不退出，会在 30 秒（`AGENT_TOWER_CLAUDE_IDLE_EXIT_GRACE_MS`）后被视为卡死并停止；等待后台任务的总时长超过 2 小时（`AGENT_TOWER_CLAUDE_BACKGROUND_WAIT_MS`，0 表示不限）时也会被停止，该值同时作为 `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` 传给 CLI。等待中的会话收到后续消息时，旧进程先被停止（其后台任务随之取消），再以 resume 方式启动新进程。工具调用、子 Agent 的中间结果以及 CLI 启动时自带的系统提示（例如孤儿后台任务通知）的 `result` 都不会结束本次投递的回合。
+
+其他 CLI Agent（例如 Codex `exec`）在最终结果后由 Tower 回收本轮进程；回答完成后即可继续发送消息。
+
+Agent 可以通过 MCP 工具 `wait_for_workspace_service`、`start_workspace_service` 的 `wake_on_exit` 或 `schedule_wakeup` 请求唤醒：Tower 在服务退出或定时到达后，以 `SYSTEM_EVENT` 来源的消息重新调用会话。唤醒只在会话没有运行中的回合时投递，用户停止的会话不会被唤醒。
 
 一轮回复完成后，ACP 会话可能保留连接以便继续对话。显式停止 Session 会等待相关进程退出；删除独立对话或清理所属 workspace 时，也会停止这些空闲连接。
 

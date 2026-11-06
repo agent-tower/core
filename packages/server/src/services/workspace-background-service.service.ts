@@ -128,10 +128,26 @@ function parseCapabilities(value: string): Partial<TeamMemberCapabilities> {
   }
 }
 
+/** Published after a service process exit was persisted, for wake-ups and other observers. */
+export interface WorkspaceServiceExitEvent {
+  serviceId: string;
+  workspaceId: string;
+  name: string;
+  exitCode: number | null;
+  runtimeState: WorkspaceBackgroundServiceRuntimeState;
+  /** True when the exit was requested through stop/restart rather than reached by the process. */
+  stopped: boolean;
+  logTail: string[];
+}
+
+const EXIT_LOG_TAIL_LINES = 40;
+const EXIT_LOG_TAIL_CHARS = 8 * 1024;
+
 export class WorkspaceBackgroundService {
   private readonly locks = new Map<string, Promise<void>>();
   private stopping = false;
   private shutdownPromise?: Promise<void>;
+  private readonly exitListeners = new Set<(event: WorkspaceServiceExitEvent) => void | Promise<void>>();
 
   constructor(
     private readonly processManager = new WorkspaceBackgroundProcessManager(),
@@ -547,14 +563,21 @@ export class WorkspaceBackgroundService {
     return prisma.workspaceBackgroundService.findUniqueOrThrow({ where: { id: record.id } });
   }
 
+  /** Observe persisted service exits. Listener failures are logged, never propagated. */
+  onServiceExit(listener: (event: WorkspaceServiceExitEvent) => void | Promise<void>): () => void {
+    this.exitListeners.add(listener);
+    return () => { this.exitListeners.delete(listener); };
+  }
+
   private async handleProcessExit(event: WorkspaceBackgroundProcessExit): Promise<void> {
     const record = await prisma.workspaceBackgroundService.findUnique({ where: { id: event.serviceId } });
     if (!record || record.runtimeInstanceId !== event.runtimeInstanceId) return;
     const stopped = record.desiredState === 'STOPPED' || record.runtimeState === 'STOPPING';
-    await prisma.workspaceBackgroundService.updateMany({
+    const runtimeState: WorkspaceBackgroundServiceRuntimeState = stopped ? 'STOPPED' : event.exitCode === 0 ? 'EXITED' : 'FAILED';
+    const updated = await prisma.workspaceBackgroundService.updateMany({
       where: { id: record.id, runtimeInstanceId: event.runtimeInstanceId },
       data: {
-        runtimeState: stopped ? 'STOPPED' : event.exitCode === 0 ? 'EXITED' : 'FAILED',
+        runtimeState,
         runtimeInstanceId: null,
         pid: null,
         exitCode: event.exitCode,
@@ -562,6 +585,33 @@ export class WorkspaceBackgroundService {
         stoppedAt: new Date(),
       },
     });
+    if (updated.count !== 1 || this.exitListeners.size === 0) return;
+    let logTail: string[] = [];
+    try {
+      logTail = this.processManager.getLogs(record.id, {
+        runtimeInstanceId: event.runtimeInstanceId,
+        limit: EXIT_LOG_TAIL_LINES,
+        maxChars: EXIT_LOG_TAIL_CHARS,
+      }).entries.map((entry) => entry.data.replace(/\r?\n$/, ''));
+    } catch {
+      // The exit itself is what observers need; a missing log tail is acceptable.
+    }
+    const exitEvent: WorkspaceServiceExitEvent = {
+      serviceId: record.id,
+      workspaceId: record.workspaceId,
+      name: record.name,
+      exitCode: event.exitCode,
+      runtimeState,
+      stopped,
+      logTail,
+    };
+    for (const listener of [...this.exitListeners]) {
+      try {
+        await listener(exitEvent);
+      } catch (error) {
+        console.warn(`[WorkspaceBackgroundService] exit listener failed for ${record.name}:`, error instanceof Error ? error.message : error);
+      }
+    }
   }
 
   private validateStartInput(

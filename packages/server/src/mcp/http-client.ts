@@ -10,6 +10,7 @@ import type {
   WorkspaceBackgroundServiceInputResponse,
   WorkspaceBackgroundServiceLogsResponse,
   WorkspaceBackgroundServicesResponse,
+  SessionWakeupDto,
 } from '@agent-tower/shared';
 import {
   INTERNAL_API_INVOCATION_ID_HEADER,
@@ -237,6 +238,18 @@ export class AgentTowerClient {
       `/api/workspaces/${encodeURIComponent(workspaceId)}/services/${encodeURIComponent(serviceName)}/input`,
       { data },
     );
+  }
+
+  async waitForWorkspaceService(workspaceId: string, serviceName: string, input: { reason?: string } = {}): Promise<SessionWakeupDto> {
+    return this.request<SessionWakeupDto>(
+      'POST',
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/services/${encodeURIComponent(serviceName)}/wait`,
+      input,
+    );
+  }
+
+  async scheduleWakeup(sessionId: string, input: { delaySeconds: number; reason: string }): Promise<SessionWakeupDto> {
+    return this.request<SessionWakeupDto>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/wakeups`, input);
   }
 
   async controlWorkspaceService(

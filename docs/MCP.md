@@ -164,6 +164,17 @@ pnpm --filter @agent-tower/server dev
 |------|------|
 | `get_context` | 获取当前目录对应的 project/task/workspace 上下文，仅在 worktree 目录内可用 |
 
+### 4.7 Workspace 后台服务与唤醒（仅 workspace 上下文）
+
+| Tool | 说明 |
+|------|------|
+| `start_workspace_service` | 启动由 workspace 持有的长期进程（dev server、watcher、长时间计算）。`wake_on_exit: true` 时，服务退出后 Agent Tower 会用系统通知重新调用当前 session |
+| `list_workspace_services` / `get_workspace_service_logs` / `send_workspace_service_input` / `control_workspace_service` | 查看、读日志、写入 PTY、停止或重启服务 |
+| `wait_for_workspace_service` | 立即返回；服务退出后以系统通知（含退出码和最后日志）重新调用当前 session。替代在回合内轮询日志 |
+| `schedule_wakeup` | 延迟 30 秒到 24 小时后以系统通知重新调用当前 session，替代在回合内 sleep |
+
+唤醒以 `SYSTEM_EVENT` 来源的消息投递，走和用户消息相同的队列：session 正在运行时排队等待，用户显式停止的 session 不会被唤醒，每个 session 每天最多 24 次（`AGENT_TOWER_MAX_WAKEUPS_PER_DAY`）。通知正文以 `[SYSTEM NOTIFICATION - NOT USER INPUT]` 开头，不代表用户的任何确认。
+
 ## 5. 常见用法
 
 ### 5.1 让 agent 直接领取任务并开始执行

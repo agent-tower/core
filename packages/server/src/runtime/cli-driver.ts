@@ -33,6 +33,15 @@ import { ClaudeCliControl } from './claude-cli-control.js';
 import { CodexCliControl } from './codex-cli-control.js';
 import { AgentRuntimeError } from './errors.js';
 import { createCliParser } from './cli-parser.js';
+import { ClaudeCodeParser } from '../output/claude-code-parser.js';
+import {
+  CLAUDE_CLI_BACKGROUND_WAIT_CEILING_ENV,
+  ClaudeRunLifecycle,
+  resolveClaudeBackgroundWaitCeilingMs,
+} from './claude-run-lifecycle.js';
+import { createWarningMessage } from '../output/types.js';
+import { addNormalizedEntry } from '../output/utils/patch.js';
+import { writeErrorLog } from '../utils/error-log.js';
 import { getProviderRuntimeType, type Provider } from '../executors/providers.js';
 
 function assertCliProviderMatchesInput(provider: Provider | undefined, input: RuntimeOpenInput): void {
@@ -77,6 +86,13 @@ interface ActiveCliTurn {
   processEventSink?: RuntimeDriverEventSink;
   launchClaimNumber?: number;
   cleanups: Array<() => void>;
+  /**
+   * Claude Code print mode: a top-level result ends a turn, not the run. The
+   * process may stay alive to finish background work and take more turns, so
+   * the turn settles on process exit using the last logical outcome.
+   */
+  claudeLifecycle?: ClaudeRunLifecycle;
+  logicalOutcome?: 'completed' | 'failed';
 }
 
 export class CliRuntimeDriver implements RuntimeDriver {
@@ -158,6 +174,11 @@ class CliDriverSession implements DriverSession {
       executor = this.resolveExecutor(input);
     } catch (error) {
       throw markPreChildProcessFailure(error);
+    }
+    if (this.input.agentType === AgentType.CLAUDE_CODE && !this.input.env.has(CLAUDE_CLI_BACKGROUND_WAIT_CEILING_ENV)) {
+      // Keep the CLI's own background-wait cap aligned with the Tower ceiling
+      // (0 = wait without a cap on both sides).
+      this.input.env.set(CLAUDE_CLI_BACKGROUND_WAIT_CEILING_ENV, String(resolveClaudeBackgroundWaitCeilingMs()));
     }
     const spawnConfig = {
       workingDir: this.input.workingDir,
@@ -326,7 +347,11 @@ class CliDriverSession implements DriverSession {
     const closeError = new AgentRuntimeError('runtime_disposed', 'close', 'CLI runtime session was closed', true);
     for (const active of targets) {
       active.requestProcessStop?.();
-      this.settleFailure(active, closeError);
+      // A Claude run closed while waiting for background work already delivered
+      // its result; closing ends the run, it does not fail the delivered turn.
+      if (active.logicalOutcome === 'completed') this.settleSuccess(active, {});
+      else if (active.logicalOutcome === 'failed') this.settleFailure(active, new AgentRuntimeError('turn_failed', 'prompt', 'CLI agent reported a failed turn', true));
+      else this.settleFailure(active, closeError);
       await active.completion.catch(() => undefined);
       await this.waitForProcessExit(active);
       if (active.processEventFlush) await active.processEventFlush;
@@ -403,12 +428,22 @@ class CliDriverSession implements DriverSession {
     const onCompleted = () => {
       active.control?.close();
       if (spawnResult.inputMode !== 'raw') void active.duplex?.end().catch(() => active.requestProcessStop?.());
+      if (active.claudeLifecycle) {
+        // The run is not over: Claude may still be waiting for background work.
+        // Process exit settles the turn with this outcome.
+        active.logicalOutcome = 'completed';
+        return;
+      }
       this.settleSuccess(active, {});
       this.schedulePipelineCleanup(active);
     };
     const onFailed = () => {
       active.control?.close();
       if (spawnResult.inputMode !== 'raw') void active.duplex?.end().catch(() => active.requestProcessStop?.());
+      if (active.claudeLifecycle) {
+        active.logicalOutcome = 'failed';
+        return;
+      }
       this.settleFailure(
         active,
         new AgentRuntimeError('turn_failed', 'prompt', 'CLI agent reported a failed turn', true),
@@ -416,7 +451,23 @@ class CliDriverSession implements DriverSession {
       this.schedulePipelineCleanup(active);
     };
     const onExit = ({ exitCode }: { sessionId: string; exitCode?: number }) => {
-      if (typeof exitCode === 'number' && exitCode !== 0) {
+      active.claudeLifecycle?.onExit();
+      if (active.logicalOutcome === 'completed') {
+        if (typeof exitCode === 'number' && exitCode !== 0) {
+          writeErrorLog({
+            level: 'warn',
+            source: 'cliDriver.claudeRunExit',
+            message: `Claude process exited with code ${exitCode} after a completed turn`,
+            metadata: { sessionId: this.input.towerSessionId, exitCode },
+          });
+        }
+        this.settleSuccess(active, {});
+      } else if (active.logicalOutcome === 'failed') {
+        this.settleFailure(
+          active,
+          new AgentRuntimeError('turn_failed', 'prompt', 'CLI agent reported a failed turn', true),
+        );
+      } else if (typeof exitCode === 'number' && exitCode !== 0) {
         this.settleFailure(
           active,
           new AgentRuntimeError('process_exit', 'runtime', `CLI process exited with code ${exitCode}`, true),
@@ -529,6 +580,7 @@ class CliDriverSession implements DriverSession {
     }
     const parser = active.control instanceof CodexCliControl ? active.control : createCliParser(this.input.agentType as AgentType, this.input.workingDir, msgStore,
       active.control ? { message: message => active.control?.handle(message), failed: protocolFailed } : undefined);
+    if (parser instanceof ClaudeCodeParser) this.attachClaudeRunLifecycle(active, parser, msgStore, sink);
     const pipeline = new AgentPipeline(
       this.input.towerSessionId,
       spawnResult.pty,
@@ -538,7 +590,10 @@ class CliDriverSession implements DriverSession {
       earlyEvents,
       spawnResult.duplex,
       event => {
-        if ((event.type === 'disconnected' || event.type === 'eof') && !active.settled && spawnResult.inputMode !== 'raw') {
+        // After a Claude result the run may legitimately outlive the control
+        // channel (stdin was ended so background work can finish); the recorded
+        // logical outcome settles the turn on process exit instead.
+        if ((event.type === 'disconnected' || event.type === 'eof') && !active.settled && !active.logicalOutcome && spawnResult.inputMode !== 'raw') {
           protocolFailed(new AgentRuntimeError('control_disconnected', 'runtime', 'Native control channel ended before its result', false));
         }
       },
@@ -548,6 +603,54 @@ class CliDriverSession implements DriverSession {
     admissionSignal?.addEventListener('abort', abort, { once: true });
     active.cleanups.push(() => admissionSignal?.removeEventListener('abort', abort));
     if (!pipeline.isAlive) this.cleanupTurnResources(active);
+  }
+
+  /**
+   * Supervise a Claude Code process after its spawn. The parser reports turn
+   * starts, top-level results and the pending background work; the lifecycle
+   * decides when a lingering process is hung or has exceeded the wait ceiling.
+   */
+  private attachClaudeRunLifecycle(
+    active: ActiveCliTurn,
+    parser: ClaudeCodeParser,
+    msgStore: RuntimeRunTurnInput['msgStore'],
+    sink: RuntimeDriverEventSink,
+  ): void {
+    const lifecycle = new ClaudeRunLifecycle({
+      stop: (reason, detail) => {
+        writeErrorLog({
+          level: 'warn',
+          source: 'cliDriver.claudeRunLifecycle',
+          message: `Stopping Claude process: ${detail}`,
+          metadata: { sessionId: this.input.towerSessionId, turnId: active.turnId, reason },
+        });
+        try {
+          const entry = createWarningMessage(`Agent Tower stopped the run: ${detail}.`, reason);
+          msgStore.pushPatch(addNormalizedEntry(msgStore.entryIndex.next(), entry));
+        } catch {
+          // The stop itself is what matters; a failed warning entry is not.
+        }
+        // The delivered turn keeps its own outcome; the stop only ends the run.
+        // Settle before stopping: the stop path disposes the pipeline, so no
+        // further exit event reaches this turn. Tree cleanup is still confirmed
+        // through the raw exit handoff and the process event barrier.
+        if (active.logicalOutcome === 'failed') {
+          this.settleFailure(active, new AgentRuntimeError('turn_failed', 'prompt', 'CLI agent reported a failed turn', true));
+        } else {
+          this.settleSuccess(active, {});
+        }
+        active.requestProcessStop?.();
+        this.cleanupTurnResources(active);
+      },
+      publishTasks: (tasks) => sink.stream({ type: 'background_tasks_changed', tasks }),
+    });
+    active.claudeLifecycle = lifecycle;
+    active.cleanups.push(
+      parser.onTurnStarted(() => lifecycle.onTurnStarted()),
+      parser.onTurnBoundary(() => lifecycle.onTurnResult()),
+      parser.onBackgroundTasksChanged((tasks) => lifecycle.onTasksChanged(tasks)),
+      () => lifecycle.dispose(),
+    );
   }
 
   private async flushProcessEvents(

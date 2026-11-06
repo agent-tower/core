@@ -353,10 +353,37 @@ model WorkspaceBackgroundService {
   stoppedAt         DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+  wakeups           SessionWakeup[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId, desiredState])
   @@index([desiredState, runtimeState])
+}
+
+// Agent 请求的唤醒：定时器或工作区服务退出时，以系统事件消息重新调用会话
+// SessionWakeupKind: TIMER, SERVICE_EXIT
+// SessionWakeupState: PENDING, READY, FIRED, CANCELLED
+model SessionWakeup {
+  id          String    @id @default(uuid())
+  sessionId   String
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  kind        String
+  reason      String    @default("")
+  serviceId   String?
+  service     WorkspaceBackgroundService? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  serviceName String?
+  fireAt      DateTime?
+  state       String    @default("PENDING")
+  payload     String    @default("{}")
+  deliveryId  String?
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  firedAt     DateTime?
+
+  @@index([sessionId, state])
+  @@index([state, fireAt])
+  @@index([serviceId, state])
 }
 
 // 工作区审查/测试记录
@@ -435,6 +462,7 @@ model Session {
   initialDeliveryId String? @unique
   deliveries MessageDelivery[]
   conversationTurns ConversationTurn[]
+  wakeups SessionWakeup[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 

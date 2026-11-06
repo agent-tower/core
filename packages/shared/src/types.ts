@@ -133,6 +133,29 @@ export interface RuntimeErrorDto {
   retryable: boolean
 }
 
+/** A wake-up the agent requested: Agent Tower re-invokes the session with a system notification. */
+export type SessionWakeupKind = 'TIMER' | 'SERVICE_EXIT'
+export type SessionWakeupState = 'PENDING' | 'READY' | 'FIRED' | 'CANCELLED'
+export interface SessionWakeupDto {
+  id: string
+  sessionId: string
+  kind: SessionWakeupKind
+  reason: string
+  serviceName: string | null
+  fireAt: string | null
+  state: SessionWakeupState
+  lastError: string | null
+  createdAt: string
+  firedAt: string | null
+}
+
+/** Background work the agent process is still waiting for after its last result (Claude Code print mode). */
+export interface RuntimeBackgroundTask {
+  taskId: string
+  description?: string
+  taskType?: string
+}
+
 export interface RuntimeStateDto {
   sessionId: string
   runtimeType: RuntimeType
@@ -142,6 +165,8 @@ export interface RuntimeStateDto {
   turnId?: string
   capabilities: RuntimeCapabilities
   pendingPermissions: RuntimePermissionRequest[]
+  /** Present while the agent process stays alive to wait for background work it started. */
+  backgroundTasks?: RuntimeBackgroundTask[]
   externalSessionId?: string | null
   agentInfo?: { name: string; version?: string }
   lastActivityAt?: string

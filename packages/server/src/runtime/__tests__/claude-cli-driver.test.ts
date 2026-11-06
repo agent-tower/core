@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AgentType, RuntimeType } from '@agent-tower/shared';
+import { AgentType, RuntimeType, type RuntimeStateDto } from '@agent-tower/shared';
 import * as executors from '../../executors/index.js';
 import { BaseExecutor, type ExecutorSpawnConfig } from '../../executors/base.executor.js';
 import { CommandBuilder } from '../../executors/command-builder.js';
@@ -30,12 +30,12 @@ async function setupFixture(agentType: AgentType, mode = 'normal', rejectCleanup
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tower-cli-control-test-'));
   const executor = new FixtureExecutor(agentType, mode);
   vi.spyOn(executors, 'getExecutor').mockReturnValue(executor);
-  const events: RuntimeTurnEventEnvelope[] = []; const processes: RuntimeProcessEvent[] = [];
+  const events: RuntimeTurnEventEnvelope[] = []; const processes: RuntimeProcessEvent[] = []; const states: RuntimeStateDto[] = [];
   const coordinator = new RuntimeCoordinator({ get: () => new CliRuntimeDriver() }, {
-    onTurnEvent: e => events.push(e), onRuntimeState: () => {}, onProcessEvent: async e => { processes.push(e); if (e.type === 'started') await startGate; if (e.type === 'tree_cleanup_completed' && rejectCleanup?.value) throw new Error('persistence failed'); },
+    onTurnEvent: e => events.push(e), onRuntimeState: s => states.push(s), onProcessEvent: async e => { processes.push(e); if (e.type === 'started') await startGate; if (e.type === 'tree_cleanup_completed' && rejectCleanup?.value) throw new Error('persistence failed'); },
   });
   const input = { towerSessionId: 'tower', agentType, runtimeType: RuntimeType.CLI, variant: 'DEFAULT', workingDir: dir, env: ExecutionEnv.default(dir), executionPermission: 'ASK' as const, msgStore: new MsgStore(), prompt: 'task' };
-  return { dir, events, processes, coordinator, input, executor, cleanup: async () => { await coordinator.destroyAll(); await rm(dir, { recursive: true, force: true }); } };
+  return { dir, events, processes, states, coordinator, input, executor, cleanup: async () => { await coordinator.destroyAll(); await rm(dir, { recursive: true, force: true }); } };
 }
 async function waitUntil(test: () => boolean) { const deadline = Date.now() + 5000; while (!test() && Date.now() < deadline) await new Promise(r => setTimeout(r, 10)); expect(test()).toBe(true); }
 function isAlive(pid: number): boolean {
@@ -253,4 +253,81 @@ describe('Codex CLI auto-review through the owned driver', () => {
       await waitUntil(() => h.processes.filter(event => event.type === 'tree_cleanup_completed').length === 2);
     } finally { await h.cleanup(); }
   }, 15_000);
+});
+
+describe('Claude Code print-mode run lifetime through the owned wrapper', () => {
+  const snapshotText = (h: Awaited<ReturnType<typeof setupFixture>>) => JSON.stringify(h.input.msgStore.getSnapshot());
+  const withEnv = async (values: Record<string, string>, run: () => Promise<void>) => {
+    const previous = new Map(Object.keys(values).map(key => [key, process.env[key]] as const));
+    Object.assign(process.env, values);
+    try { await run(); }
+    finally { for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+  };
+
+  it('keeps the process after its result while background work runs, shows the continuation turn and ends on exit', async () => {
+    const h = await setupFixture(AgentType.CLAUDE_CODE, 'background');
+    try {
+      const handle = await h.coordinator.startTurn(h.input);
+      await waitUntil(() => snapshotText(h).includes('WAITING'));
+      await waitUntil(() => h.states.some(s => s.backgroundTasks?.some(task => task.taskId === 'bg-1')));
+      expect(h.coordinator.getState('tower').turnState).toBe('RUNNING');
+      expect(h.events.some(e => e.event.type === 'completed')).toBe(false);
+      await handle.completion;
+      await waitUntil(() => h.processes.some(e => e.type === 'tree_cleanup_completed'));
+      const contents = h.input.msgStore.getSnapshot().entries.map(entry => entry.content);
+      expect(contents).toContain('FINISHED');
+      expect(contents).toContain('Background command "sleep in background" completed (exit code 0)');
+      expect(snapshotText(h)).not.toContain('Agent Tower stopped the run');
+      const exited = h.processes.find((e): e is Extract<RuntimeProcessEvent, { type: 'exited' }> => e.type === 'exited');
+      expect(exited?.exitCode).toBe(0);
+      expect(h.coordinator.getState('tower')).toMatchObject({ turnState: 'IDLE' });
+      expect(h.coordinator.getState('tower').backgroundTasks).toBeUndefined();
+      expect(h.events.filter(e => e.event.type === 'completed')).toHaveLength(1);
+    } finally { await h.cleanup(); }
+  }, 15_000);
+
+  it('stops a run that exceeds the background wait ceiling and still completes the delivered turn', async () => {
+    await withEnv({ AGENT_TOWER_CLAUDE_BACKGROUND_WAIT_MS: '1500' }, async () => {
+      const h = await setupFixture(AgentType.CLAUDE_CODE, 'background-hang');
+      try {
+        const handle = await h.coordinator.startTurn(h.input);
+        await waitUntil(() => h.states.some(s => s.backgroundTasks?.length === 1));
+        await handle.completion;
+        await waitUntil(() => h.processes.some(e => e.type === 'tree_cleanup_completed'));
+        expect(snapshotText(h)).toContain('Agent Tower stopped the run');
+        expect(h.events.filter(e => e.event.type === 'completed')).toHaveLength(1);
+      } finally { await h.cleanup(); }
+    });
+  }, 15_000);
+
+  it('stops a process that lingers after its result with nothing pending', async () => {
+    await withEnv({ AGENT_TOWER_CLAUDE_IDLE_EXIT_GRACE_MS: '500' }, async () => {
+      const h = await setupFixture(AgentType.CLAUDE_CODE, 'idle-hang');
+      try {
+        const handle = await h.coordinator.startTurn(h.input);
+        await handle.completion;
+        await waitUntil(() => h.processes.some(e => e.type === 'tree_cleanup_completed'));
+        expect(snapshotText(h)).toContain('did not exit within');
+      } finally { await h.cleanup(); }
+    });
+  }, 15_000);
+
+  it('lets a follow-up supersede a run that is still waiting for background work', async () => {
+    const h = await setupFixture(AgentType.CLAUDE_CODE, 'background-hang');
+    try {
+      const first = await h.coordinator.startTurn(h.input);
+      await waitUntil(() => h.states.some(s => s.backgroundTasks?.length === 1));
+      const firstPid = (h.processes.find(e => e.type === 'started') as { pid: number }).pid;
+      expect(await h.coordinator.abandonTurn('tower')).toBe(true);
+      await first.completion.catch(() => undefined);
+      h.executor.mode = 'result';
+      const second = await h.coordinator.startTurn({ ...h.input, prompt: 'again' });
+      await second.completion;
+      await waitUntil(() => h.processes.filter(e => e.type === 'tree_cleanup_completed').length === 2);
+      await waitUntil(() => !isAlive(firstPid));
+      // The abandoned run reports no completion; only the replacement turn does.
+      expect(h.events.filter(e => e.event.type === 'completed')).toHaveLength(1);
+      expect(h.coordinator.getState('tower').backgroundTasks).toBeUndefined();
+    } finally { await h.cleanup(); }
+  }, 20_000);
 });

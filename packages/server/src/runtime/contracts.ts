@@ -2,6 +2,7 @@ import type {
   AgentType,
   ExecutionPermissionMode,
   Provider,
+  RuntimeBackgroundTask,
   RuntimeCapabilities,
   RuntimeErrorDto,
   RuntimePermissionRequest,
@@ -19,7 +20,9 @@ export type RuntimeStreamEvent =
   | { type: 'permission_invalidated'; requestId: string }
   | { type: 'text_block'; entry: import('../output/types.js').NormalizedEntry }
   | { type: 'progress' }
-  | { type: 'execution_permission_applied'; mode: ExecutionPermissionMode };
+  | { type: 'execution_permission_applied'; mode: ExecutionPermissionMode }
+  /** The agent process reported the background work it is still waiting for (empty = nothing pending). */
+  | { type: 'background_tasks_changed'; tasks: RuntimeBackgroundTask[] };
 
 export type RuntimeTerminalEvent =
   | { type: 'completed'; outcome?: RuntimeTurnOutcome }

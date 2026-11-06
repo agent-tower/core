@@ -193,6 +193,8 @@ export interface SendMessageOptions extends InputSubmissionObserver {
   deliveryId?: string;
   /** User message was already appended while claiming a queued turn. */
   userEntryId?: string;
+  /** The message was produced by Agent Tower (a wake-up), not typed by a person. */
+  origin?: 'SYSTEM_EVENT';
 }
 
 export class SessionManager {
@@ -908,7 +910,7 @@ export class SessionManager {
       }
       await this.waitForPendingAutoCommit(id);
 
-      const userEntryId = this.appendUserMessageEntry(session, options.originalText ?? message, options.userEntryId, options.deliveryId);
+      const userEntryId = this.appendUserMessageEntry(session, options.originalText ?? message, options.userEntryId, options.deliveryId, options.origin);
 
       const agentSessionId = session.externalSessionId
         ?? this.resolveAgentSessionId(id, session.logSnapshot);
@@ -2514,6 +2516,7 @@ export class SessionManager {
     message: string,
     entryId?: string,
     deliveryId?: string,
+    origin?: 'SYSTEM_EVENT',
   ): string {
     const sessionId = session.id;
     const isNewStore = !sessionMsgStoreManager.has(sessionId);
@@ -2550,6 +2553,7 @@ export class SessionManager {
 
     const userEntry = createUserMessage(message, entryId);
     if (deliveryId) userEntry.metadata = { ...userEntry.metadata, deliveryId };
+    if (origin) userEntry.metadata = { ...userEntry.metadata, origin };
     const userIndex = msgStore.entryIndex.next();
     const userPatch = addNormalizedEntry(userIndex, userEntry);
     if (DEBUG_SNAPSHOT) {

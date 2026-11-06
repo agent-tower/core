@@ -14,6 +14,15 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     if (mode === 'eof') { process.exit(0); return; }
     if (mode === 'tail') { process.stdout.end(JSON.stringify({ type: 'result', subtype: 'success', result: 'done' })); return; }
     if (mode === 'result' || mode === 'delayed-tail') { send({ type: 'result', subtype: 'success', result: 'done' }); return; }
+    if (mode === 'background' || mode === 'background-hang') {
+      // Claude Code 2.1.x: a result ends the turn, then the process stays alive for background work.
+      send({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'WAITING' }] } });
+      send({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-1', task_type: 'local_bash', description: 'sleep in background' }] });
+      send({ type: 'system', subtype: 'task_started', task_id: 'bg-1', task_type: 'local_bash', description: 'sleep in background', is_backgrounded: true });
+      send({ type: 'result', subtype: 'success', result: 'WAITING', result_index: 0, origin: null, num_turns: 1, uuid: 'result-0' });
+      return;
+    }
+    if (mode === 'idle-hang') { send({ type: 'result', subtype: 'success', result: 'done', result_index: 0, origin: null, uuid: 'result-0' }); return; }
     if (mode === 'cancel-pending' || mode === 'cancel-running') {
       const descendant = require('node:child_process').spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(() => {}, 1000);'], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
       descendant.once('message', () => {
@@ -40,5 +49,17 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 }).on('close', () => {
   if (mode === 'delayed-tail') {
     setTimeout(() => process.stdout.write(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'tail after logical completion' }] } }) + '\n', () => process.exit(0)), 400);
+  } else if (mode === 'background') {
+    // stdin closed after the result: finish the background task, take one more turn, then exit by itself.
+    setTimeout(() => {
+      send({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'completed', summary: 'Background command "sleep in background" completed (exit code 0)' });
+      send({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
+      send({ type: 'system', subtype: 'init', session_id: 'native-session', permissionMode: 'default' });
+      send({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'FINISHED' }] } });
+      process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', result: 'FINISHED', result_index: 1, origin: { kind: 'task-notification' }, num_turns: 1, uuid: 'result-1' }) + '\n', () => process.exit(0));
+    }, 600);
+  } else if (mode === 'background-hang' || mode === 'idle-hang') {
+    // Never exits on its own; Tower's lifecycle must stop it.
+    setInterval(() => {}, 1000);
   } else process.exit(0);
 });

@@ -1594,6 +1594,8 @@ describe('SessionManager session status vs real process state', () => {
       expect(checkpoint).toHaveBeenCalledWith(session.id);
       feed({ type: 'stream_event', event: { type: 'content_block_start', index: 2, content_block: { type: 'text', text: 'B after tool' } } });
       feed({ type: 'result', subtype: 'success', num_turns: 1 });
+      // A Claude run ends when its process exits, not at the result.
+      pty.emitExit(0);
       await completed;
       const row = await prisma.session.findUniqueOrThrow({ where: { id: session.id } });
       expect(JSON.parse(row.logSnapshot!).entries.at(-1)).toMatchObject({ content: 'B after tool', metadata: { textBlock: { state: 'SEALED', sealedReason: 'TURN_END' } } });
@@ -1759,6 +1761,84 @@ describe('SessionManager session status vs real process state', () => {
     const snapshot = JSON.parse(persisted?.logSnapshot ?? '{}');
     expect(snapshot.entries.map((entry: { content: string }) => entry.content))
       .toContain('fast logical completion');
+  });
+
+  it('keeps a Claude Code session running after its result while background work is pending and completes on exit', async () => {
+    const { session } = await createSessionFixture({ agentType: AgentType.CLAUDE_CODE });
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    const states: Array<{ backgroundTasks?: Array<{ taskId: string }> }> = [];
+    eventBus.on('session:runtime_state_changed', ({ state }) => states.push(state));
+    try {
+    await manager.start(session.id);
+    const line = (message: Record<string, unknown>) => pty.emitData(JSON.stringify(message) + '\n');
+    line({ type: 'system', subtype: 'init', session_id: 'claude-native' });
+    line({ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'WAITING for the router' }] } });
+    line({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-1', task_type: 'local_bash', description: 'router watch' }] });
+    line({ type: 'result', subtype: 'success', result: 'WAITING for the router', num_turns: 1, result_index: 0, uuid: 'r0', origin: null });
+
+    await vi.waitFor(() => {
+      expect(states.some((state) => state.backgroundTasks?.some((task) => task.taskId === 'bg-1'))).toBe(true);
+    }, { timeout: 2000 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(manager.hasActiveTurn(session.id)).toBe(true);
+    expect(pty.killed).toBe(false);
+    expect((await prisma.session.findUnique({ where: { id: session.id } }))?.status).toBe(SessionStatus.RUNNING);
+
+    line({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'completed', summary: 'Background command "router watch" completed (exit code 0)' });
+    line({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
+    line({ type: 'system', subtype: 'init', session_id: 'claude-native' });
+    line({ type: 'assistant', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'FINISHED routing' }] } });
+    line({ type: 'result', subtype: 'success', result: 'FINISHED routing', num_turns: 1, result_index: 1, uuid: 'r1', origin: { kind: 'task-notification' } });
+    pty.emitExit(0);
+
+    const payload = await completed;
+    expect(payload.status).toBe(SessionStatus.COMPLETED);
+    await vi.waitFor(() => expect(manager.hasActiveTurn(session.id)).toBe(false), { timeout: 2000 });
+    const persisted = await prisma.session.findUnique({ where: { id: session.id } });
+    expect(persisted?.status).toBe(SessionStatus.COMPLETED);
+    const contents = (JSON.parse(persisted?.logSnapshot ?? '{}').entries as Array<{ content: string }>).map((entry) => entry.content);
+    expect(contents).toContain('FINISHED routing');
+    expect(contents).toContain('Background command "router watch" completed (exit code 0)');
+    } finally {
+      await manager.destroyAll();
+    }
+  });
+
+  it('stops a waiting Claude Code run when a follow-up arrives and tags wake-up messages as system events', async () => {
+    const { session } = await createSessionFixture({ agentType: AgentType.CLAUDE_CODE });
+    const first = new ControlledPty();
+    const second = new ControlledPty();
+    second.pid = 4343;
+    spawnMock.mockResolvedValueOnce(spawnResultFor(first)).mockResolvedValueOnce(spawnResultFor(second));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    try {
+    await manager.start(session.id);
+    const line = (pty: ControlledPty, message: Record<string, unknown>) => pty.emitData(JSON.stringify(message) + '\n');
+    line(first, { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-1', description: 'watch' }] });
+    line(first, { type: 'result', subtype: 'success', result: 'WAITING', num_turns: 1, result_index: 0, uuid: 'r0', origin: null });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(first.killed).toBe(false);
+
+    await manager.sendMessage(session.id, 'wake-up text', undefined, undefined, { origin: 'SYSTEM_EVENT' });
+    expect(first.killed).toBe(true);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    line(second, { type: 'result', subtype: 'success', result: 'done', result_index: 0, uuid: 'r0', origin: null });
+    second.emitExit(0);
+    await completed;
+    const persisted = await prisma.session.findUnique({ where: { id: session.id } });
+    const entries = JSON.parse(persisted?.logSnapshot ?? '{}').entries as Array<{ entryType: string; content: string; metadata?: { origin?: string } }>;
+    const wakeup = entries.find((entry) => entry.content === 'wake-up text');
+    expect(wakeup).toMatchObject({ entryType: 'user_message', metadata: { origin: 'SYSTEM_EVENT' } });
+    } finally {
+      await manager.destroyAll();
+    }
   });
 
   it('waits for the completed generation auto-commit before starting an immediate follow-up', async () => {
@@ -2016,7 +2096,7 @@ describe('SessionManager session status vs real process state', () => {
     await manager.destroyAll();
   });
 
-  it.each(['success', 'error_during_execution'])('persists Claude final %s and automatically reclaims the CLI process', async (subtype) => {
+  it.each(['success', 'error_during_execution'])('persists Claude final %s and reclaims a CLI process that lingers after its result', async (subtype) => {
     const { task, session } = await createSessionFixture({ agentType: AgentType.CLAUDE_CODE });
     const pty = new ControlledPty();
     spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
@@ -2024,6 +2104,9 @@ describe('SessionManager session status vs real process state', () => {
     const manager = new SessionManager(eventBus);
     const completed = waitForEvent(eventBus, 'session:completed');
     const expectedStatus = subtype === 'success' ? SessionStatus.COMPLETED : SessionStatus.FAILED;
+    // The process reports no background work and never exits: Tower treats it as hung after the idle grace.
+    const previousGrace = process.env.AGENT_TOWER_CLAUDE_IDLE_EXIT_GRACE_MS;
+    process.env.AGENT_TOWER_CLAUDE_IDLE_EXIT_GRACE_MS = '200';
     try {
       await manager.start(session.id);
       pty.emitData(JSON.stringify({
@@ -2059,7 +2142,10 @@ describe('SessionManager session status vs real process state', () => {
         }));
         expect((await prisma.task.findUniqueOrThrow({ where: { id: task.id } })).status).not.toBe('IN_REVIEW');
       }
+      expect(snapshot.entries).toContainEqual(expect.objectContaining({ entryType: 'warning_message' }));
     } finally {
+      if (previousGrace === undefined) delete process.env.AGENT_TOWER_CLAUDE_IDLE_EXIT_GRACE_MS;
+      else process.env.AGENT_TOWER_CLAUDE_IDLE_EXIT_GRACE_MS = previousGrace;
       await manager.destroyAll();
     }
   });

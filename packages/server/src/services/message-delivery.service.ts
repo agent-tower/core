@@ -19,7 +19,7 @@ import { readTeamDeliveryIntent, verifyPublishedTeamDelivery } from './team-room
 import { ConflictAdmission, ConflictAdmissionGate, type ConflictAdmissionBudget } from './conflict-admission.js';
 import { assertConflictAdmissionFreshness, conflictIntentIdentity, recoverConflictResolutionContext, resolveConflictInstructions } from './conflict-resolution-context.js';
 
-const SESSION_DELIVERY_ORIGINS = ['TASK_INITIAL', 'TASK_FOLLOWUP', 'CONVERSATION'];
+const SESSION_DELIVERY_ORIGINS = ['TASK_INITIAL', 'TASK_FOLLOWUP', 'SYSTEM_EVENT', 'CONVERSATION'];
 function requireSessionDelivery(row: Row): asserts row is Row & { sessionId: string } {
   if (!SESSION_DELIVERY_ORIGINS.includes(row.origin) || !row.sessionId || row.taskId || row.teamRunId || row.taskInputSnapshotId) throw new ServiceError('Delivery destination is not enabled', 'DELIVERY_DESTINATION_DISABLED', 409);
 }
@@ -29,9 +29,9 @@ const ready = ['READY', 'WAITING_PREDECESSOR'];
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 const conflict = () => new ServiceError('Submission changed; refresh before continuing', 'DELIVERY_CONFLICT', 409);
 type Tx = Prisma.TransactionClient;
-type Intent = { providerId?: string; retryTask?: boolean; systemAction?: 'resolve_conflicts' };
+type Intent = { providerId?: string; retryTask?: boolean; systemAction?: 'resolve_conflicts'; systemEvent?: boolean };
 type DispatchClaim = InputSubmissionObserver & { settle: () => Promise<void> };
-type SessionSubmission = { sessionId: string; clientSubmissionId?: string; message?: string; providerId?: string; attachmentIds?: string[]; initial?: boolean; systemAction?: 'resolve_conflicts'; resolutionContextToken?: string; conflictActor?: string };
+type SessionSubmission = { sessionId: string; clientSubmissionId?: string; message?: string; providerId?: string; attachmentIds?: string[]; initial?: boolean; systemAction?: 'resolve_conflicts'; resolutionContextToken?: string; conflictActor?: string; /** Produced by Agent Tower (wake-up), not by a person; skips translation. */ systemEvent?: boolean };
 type Compensation = { generation: number; attempts: number; nextAttemptAt: number };
 type ConflictSubmissions = { active: Set<ConflictAdmission>; uncertain: boolean; revision: number };
 
@@ -73,7 +73,7 @@ export class MessageDeliveryService {
     requireSessionDelivery(row);
     if ((row.origin === 'CONVERSATION') !== !!conversationId) throw conflict();
     const purpose = conversationId ? { origin: 'CONVERSATION' as const, destination: { kind: 'CONVERSATION' as const, sessionId: row.sessionId, conversationId }, conversationId }
-      : { origin: row.origin as 'TASK_INITIAL' | 'TASK_FOLLOWUP', destination: { kind: 'SESSION' as const, sessionId: row.sessionId }, conversationId: null };
+      : { origin: row.origin as 'TASK_INITIAL' | 'TASK_FOLLOWUP' | 'SYSTEM_EVENT', destination: { kind: 'SESSION' as const, sessionId: row.sessionId }, conversationId: null };
     return { ...purpose, id: row.id, clientSubmissionId: row.clientSubmissionId, sessionId: row.sessionId,
       channelKey: row.channelKey, sequence: row.sequence, originalText: row.originalText,
       attachmentIds: JSON.parse(row.attachmentIds), state: row.state as MessageDelivery['state'], sentMode: row.sentMode as MessageDelivery['sentMode'],
@@ -228,7 +228,7 @@ export class MessageDeliveryService {
       throw new ServiceError('Too many pending messages; resolve an earlier submission first', 'DELIVERY_QUEUE_FULL', 429);
     }
     const tail = await tx.messageDelivery.aggregate({ where: { channelKey }, _max: { sequence: true } });
-    const translate = config.enabled && !input.intent?.systemAction;
+    const translate = config.enabled && !input.intent?.systemAction && !input.intent?.systemEvent;
     await input.beforeCreate?.();
     input.createGuard?.();
     return tx.messageDelivery.create({ data: { clientSubmissionId: input.clientSubmissionId, requestFingerprint: input.fingerprint, sessionId: session.id,
@@ -242,10 +242,12 @@ export class MessageDeliveryService {
     await this.settings.getPublic();
     const id = input.clientSubmissionId ?? randomUUID();
     // Fingerprint the caller's intent, not mutable destination fields. Initial prompt is frozen at first submission.
-    const requestFields = ['session', input.sessionId, !!input.initial, input.message ?? null, input.providerId ?? null, input.attachmentIds ?? [], input.systemAction ?? null];
+    // Keep fingerprints of ordinary submissions identical to earlier releases so a retry across an upgrade is not a conflict.
+    const requestFields = ['session', input.sessionId, !!input.initial, input.message ?? null, input.providerId ?? null, input.attachmentIds ?? [], input.systemAction ?? null, ...(input.systemEvent ? ['systemEvent'] : [])];
     const fingerprint = sha(JSON.stringify(requestFields));
     const row = await this.transaction(async tx => {
       const session = await this.assertSession(input.sessionId, tx);
+      if (input.systemEvent && session.conversationId) throw new ServiceError('System events can only wake workspace sessions', 'DELIVERY_DESTINATION_DISABLED', 409);
       // Authorization is checked by the Route before this lookup. Signature/expiry must
       // not strand an already accepted UUID after a process restart or key rotation.
       const existing = await tx.messageDelivery.findUnique({ where: { clientSubmissionId: id } });
@@ -262,9 +264,9 @@ export class MessageDeliveryService {
       const intent = session.inputIntent ? JSON.parse(session.inputIntent) : {};
       const parts = await splitAttachmentReferences(input.initial ? session.prompt : input.message ?? '', tx);
       const attachmentIds = [...new Set([...(input.initial ? intent.attachmentIds ?? [] : input.attachmentIds ?? []), ...parts.attachmentIds])] as string[];
-      const row = await this.insert(tx, { clientSubmissionId: id, fingerprint, sessionId: session.id, origin: session.conversationId ? 'CONVERSATION' : input.initial ? 'TASK_INITIAL' : 'TASK_FOLLOWUP',
+      const row = await this.insert(tx, { clientSubmissionId: id, fingerprint, sessionId: session.id, origin: session.conversationId ? 'CONVERSATION' : input.initial ? 'TASK_INITIAL' : input.systemEvent ? 'SYSTEM_EVENT' : 'TASK_FOLLOWUP',
         text: parts.text, attachmentIds,
-        intent: { providerId: input.providerId, retryTask: input.initial ? intent.retryTask : false } });
+        intent: { providerId: input.providerId, retryTask: input.initial ? intent.retryTask : false, ...(input.systemEvent ? { systemEvent: true } : {}) } });
       if (input.initial) await tx.session.update({ where: { id: session.id }, data: { initialDeliveryId: row.id } });
       return row;
     });
@@ -473,7 +475,7 @@ export class MessageDeliveryService {
         const message = await appendAttachmentMarkdownContext(row.acceptedText!, JSON.parse(row.attachmentIds), true);
         const originalText = await appendAttachmentMarkdownContext(row.originalText, JSON.parse(row.attachmentIds), true);
         if (row.origin === 'TASK_INITIAL' && session.runtimeLaunchClaimCount === 0) await this.sessions.start(row.sessionId, { ...observer, prompt: message, originalText, deliveryId: row.id });
-        else await this.sessions.sendMessage(row.sessionId, message, intent.providerId, undefined, { ...observer, originalText, deliveryId: row.id, userEntryId: `user:${row.id}` });
+        else await this.sessions.sendMessage(row.sessionId, message, intent.providerId, undefined, { ...observer, originalText, deliveryId: row.id, userEntryId: `user:${row.id}`, ...(intent.systemEvent ? { origin: 'SYSTEM_EVENT' as const } : {}) });
         await observer.settle();
       } catch { await observer.settle(); }
     }

@@ -19,6 +19,8 @@ describe('Claude Code logical turn lifecycle', () => {
       usage: { input_tokens: 2, cache_creation_input_tokens: 9780, cache_read_input_tokens: 8493 },
     }
     feed(parser, result)
+    // A duplicated frame is ignored; a later distinct top-level result is a continuation turn of the
+    // same process, which reports its error without notifying the delivery twice.
     feed(parser, result)
     feed(parser, { type: 'result', subtype: 'error_during_execution', is_error: true })
     parser.finish(1)
@@ -28,7 +30,8 @@ describe('Claude Code logical turn lifecycle', () => {
       { entryType: 'assistant_message', content: 'Unknown skill: demo' },
       { entryType: 'token_usage_info', metadata: { tokenUsage: { totalTokens: 18275 } } },
     ])
-    expect(store.getSnapshot().entries).toHaveLength(2)
+    expect(store.getSnapshot().entries).toHaveLength(3)
+    expect(store.getSnapshot().entries[2]).toMatchObject({ entryType: 'error_message' })
     expect(failed).not.toHaveBeenCalled()
   })
 

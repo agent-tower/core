@@ -237,7 +237,7 @@ export type ConversationDeliveryDestination = { kind: 'CONVERSATION'; conversati
 export type TeamRoomDeliveryDestination = { kind: 'TEAM_ROOM'; taskId: string; teamRunId: string };
 export type PendingTeamRoomDeliveryDestination = { kind: 'TEAM_ROOM_PENDING'; taskId: string; plannedTeamRunId: string };
 export type SessionMessageDelivery = MessageDeliveryCommon & (
-  | { origin: 'TASK_INITIAL' | 'TASK_FOLLOWUP'; destination: SessionDeliveryDestination; sessionId: string; conversationId: null }
+  | { origin: 'TASK_INITIAL' | 'TASK_FOLLOWUP' | 'SYSTEM_EVENT'; destination: SessionDeliveryDestination; sessionId: string; conversationId: null }
   | { origin: 'CONVERSATION'; destination: ConversationDeliveryDestination; sessionId: string; conversationId: string }
 );
 export type TeamMessageDelivery = MessageDeliveryCommon & { sessionId?: never; conversationId?: never } & (
@@ -247,7 +247,7 @@ export type TeamMessageDelivery = MessageDeliveryCommon & { sessionId?: never; c
 );
 export type MessageDelivery = SessionMessageDelivery | TeamMessageDelivery;
 export function isSessionMessageDelivery(delivery: MessageDelivery): delivery is SessionMessageDelivery {
-  return delivery.origin === 'TASK_INITIAL' || delivery.origin === 'TASK_FOLLOWUP' || delivery.origin === 'CONVERSATION';
+  return delivery.origin === 'TASK_INITIAL' || delivery.origin === 'TASK_FOLLOWUP' || delivery.origin === 'SYSTEM_EVENT' || delivery.origin === 'CONVERSATION';
 }
 /** HTTP 202 is durable acceptance; SENT confirms publication, never member execution. */
 type SubmissionFor<D extends MessageDelivery> = D extends MessageDelivery ? { operationId: string; state: MessageDeliveryState; destination: D['destination']; delivery: D } & (
