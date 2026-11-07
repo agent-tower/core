@@ -1,6 +1,7 @@
 import { assertTaskInputSnapshot } from '../services/team-task-input.js';
 import { readTeamDeliveryIntent, verifyPublishedTeamDelivery } from '../services/team-room-delivery.js';
 import pkg, { type Prisma } from '@prisma/client';
+import { SESSION_MESSAGE_DELIVERY_ORIGINS, TEAM_MESSAGE_DELIVERY_ORIGINS } from '@agent-tower/shared';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -17,6 +18,10 @@ const additions = [
   ['Session', 'initialDeliveryId'],
   ['RoomMessage', 'deliveryId'],
 ] as const;
+const sqlList = (values: readonly string[]) => values.map(value => `'${value.replaceAll("'", "''")}'`).join(',');
+const SESSION_DELIVERY_ORIGINS_SQL = sqlList(SESSION_MESSAGE_DELIVERY_ORIGINS);
+const TEAM_DELIVERY_ORIGINS_SQL = sqlList(TEAM_MESSAGE_DELIVERY_ORIGINS);
+const ALL_DELIVERY_ORIGINS_SQL = sqlList([...SESSION_MESSAGE_DELIVERY_ORIGINS, ...TEAM_MESSAGE_DELIVERY_ORIGINS]);
 
 // Nullable UNIQUE additions need preparation. Other changes remain
 // owned by the bundled Prisma schema sync; this is not a migration runner.
@@ -189,16 +194,16 @@ async function checkTeamFacts(db: Prisma.TransactionClient) {
   if (await hasTable(db,'MessageDelivery')) {
     const names = new Set((await columns(db,'MessageDelivery')).map(c=>c.name));
     const present = ['taskId','teamRunId','taskInputSnapshotId'].filter(n=>names.has(n));
-    const legacyBad = await db.$queryRawUnsafe<Array<{id:string}>>(`SELECT id FROM MessageDelivery WHERE origin NOT IN ('TASK_INITIAL','TASK_FOLLOWUP','CONVERSATION','TEAM_USER','TEAM_INITIAL') OR (origin IN ('TASK_INITIAL','TASK_FOLLOWUP','CONVERSATION') AND (sessionId IS NULL${present.map(n=>` OR ${quote(n)} IS NOT NULL`).join('')})) LIMIT 1`);
+    const legacyBad = await db.$queryRawUnsafe<Array<{id:string}>>(`SELECT id FROM MessageDelivery WHERE origin NOT IN (${ALL_DELIVERY_ORIGINS_SQL}) OR (origin IN (${SESSION_DELIVERY_ORIGINS_SQL}) AND (sessionId IS NULL${present.map(n=>` OR ${quote(n)} IS NOT NULL`).join('')})) LIMIT 1`);
     if (legacyBad.length) incompatible('MessageDelivery origin/destination shape is invalid');
-    const badLegacyScope = await db.$queryRawUnsafe<Array<{id:string}>>(`SELECT d.id FROM MessageDelivery d LEFT JOIN Session s ON s.id=d.sessionId WHERE d.origin IN ('TASK_INITIAL','TASK_FOLLOWUP','CONVERSATION') AND (s.id IS NULL OR (d.origin='CONVERSATION' AND (s.conversationId IS NULL OR d.channelKey<>'conversation:' || s.conversationId)) OR (d.origin<>'CONVERSATION' AND (s.conversationId IS NOT NULL OR d.channelKey<>'session:' || s.id))) LIMIT 1`);
+    const badLegacyScope = await db.$queryRawUnsafe<Array<{id:string}>>(`SELECT d.id FROM MessageDelivery d LEFT JOIN Session s ON s.id=d.sessionId WHERE d.origin IN (${SESSION_DELIVERY_ORIGINS_SQL}) AND (s.id IS NULL OR (d.origin='CONVERSATION' AND (s.conversationId IS NULL OR d.channelKey<>'conversation:' || s.conversationId)) OR (d.origin<>'CONVERSATION' AND (s.conversationId IS NOT NULL OR d.channelKey<>'session:' || s.id))) LIMIT 1`);
     if (badLegacyScope.length) incompatible('MessageDelivery session origin/scope is invalid');
     if (!names.has('taskId') || !names.has('teamRunId')) {
-      const teams = await db.$queryRawUnsafe<Array<{id:string}>>("SELECT id FROM MessageDelivery WHERE origin IN ('TEAM_USER','TEAM_INITIAL') LIMIT 1");
+      const teams = await db.$queryRawUnsafe<Array<{id:string}>>(`SELECT id FROM MessageDelivery WHERE origin IN (${TEAM_DELIVERY_ORIGINS_SQL}) LIMIT 1`);
       if (teams.length) incompatible('MessageDelivery team destination is invalid');
     }
     if (names.has('taskId') && names.has('teamRunId')) {
-      const bad = await db.$queryRawUnsafe<Array<{id:string}>>(`SELECT d.id FROM MessageDelivery d LEFT JOIN TeamRun t ON t.id=d.teamRunId WHERE d.origin IN ('TEAM_USER','TEAM_INITIAL') AND (d.sessionId IS NOT NULL OR d.taskId IS NULL OR d.channelKey <> 'task:' || d.taskId || ':team-room' OR (d.origin='TEAM_USER' AND d.teamRunId IS NULL) OR (d.teamRunId IS NOT NULL AND (t.id IS NULL OR t.taskId<>d.taskId))) LIMIT 1`);
+      const bad = await db.$queryRawUnsafe<Array<{id:string}>>(`SELECT d.id FROM MessageDelivery d LEFT JOIN TeamRun t ON t.id=d.teamRunId WHERE d.origin IN (${TEAM_DELIVERY_ORIGINS_SQL}) AND (d.sessionId IS NOT NULL OR d.taskId IS NULL OR d.channelKey <> 'task:' || d.taskId || ':team-room' OR (d.origin='TEAM_USER' AND d.teamRunId IS NULL) OR (d.teamRunId IS NOT NULL AND (t.id IS NULL OR t.taskId<>d.taskId))) LIMIT 1`);
       if (bad.length) incompatible('MessageDelivery team destination is invalid');
     }
   }

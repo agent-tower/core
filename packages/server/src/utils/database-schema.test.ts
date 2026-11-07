@@ -154,6 +154,29 @@ describe('P3 startup schema barrier (isolated SQLite and real bundled Prisma)', 
     expect(await db.messageDelivery.findUnique({ where: { id: 'delivery' }, include: { receipt: true, actions: true } })).toEqual(delivery);
   }, 20_000);
 
+  it('accepts valid SYSTEM_EVENT deliveries during repeated startup sync', async () => {
+    await sync();
+    const delivery = await db.messageDelivery.create({ data: {
+      id: 'system-event-delivery', clientSubmissionId: 'system-event-submission', requestFingerprint: 'system-event-fingerprint',
+      sessionId: 'session-WORKSPACE-0', channelKey: 'session:session-WORKSPACE-0', sequence: 1, origin: 'SYSTEM_EVENT',
+      originalText: 'wake-up', sourceHash: 'system-event-hash', enableEpoch: 0, requiresTranslation: false,
+      state: 'READY', sentMode: 'ORIGINAL', acceptedText: 'wake-up', intent: JSON.stringify({ systemEvent: true }),
+    } });
+    await expect(sync()).resolves.toBeUndefined();
+    expect(await db.messageDelivery.findUnique({ where: { id: delivery.id } })).toEqual(delivery);
+  }, 20_000);
+
+  it('still rejects SYSTEM_EVENT deliveries with a conversation destination', async () => {
+    await sync();
+    await db.messageDelivery.create({ data: {
+      id: 'invalid-system-event', clientSubmissionId: 'invalid-system-event-submission', requestFingerprint: 'invalid-system-event-fingerprint',
+      sessionId: 'session-WORKSPACE-0', channelKey: 'conversation:conversation-0', sequence: 1, origin: 'SYSTEM_EVENT',
+      originalText: 'wake-up', sourceHash: 'invalid-system-event-hash', enableEpoch: 0, requiresTranslation: false,
+      state: 'READY', sentMode: 'ORIGINAL', acceptedText: 'wake-up', intent: JSON.stringify({ systemEvent: true }),
+    } });
+    await expect(sync()).rejects.toThrow('MessageDelivery session origin/scope is invalid');
+  }, 20_000);
+
   for (const phase of ['one-column', 'prepared', 'pushed']) it(`resumes after ${phase} interruption and preserves non-null IDs`, async () => {
     if (phase === 'one-column') await sql('ALTER TABLE Session ADD COLUMN creationSubmissionId TEXT');
     else await prepareP3Database(dbPath);

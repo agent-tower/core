@@ -217,6 +217,9 @@ export type TranslationInvalidatedPayload = SessionTranslationInvalidatedPayload
 
 export type MessageDeliveryState = 'WAITING_TRANSLATION' | 'WAITING_TASK_INPUT' | 'READY' | 'WAITING_PREDECESSOR' | 'ACCEPTED' | 'DISPATCHING' | 'SENT' | 'TRANSLATION_FAILED' | 'PAUSED_DISABLED' | 'DELIVERY_FAILED' | 'DELIVERY_UNKNOWN' | 'CANCELLED';
 export type MessageDeliveryAction = 'retry_translation' | 'send_original' | 'retry_delivery' | 'cancel' | 'confirm_not_sent' | 'end_unknown';
+/** Persisted delivery origins shared by the writer, API DTOs and startup checks. */
+export const SESSION_MESSAGE_DELIVERY_ORIGINS = ['TASK_INITIAL', 'TASK_FOLLOWUP', 'SYSTEM_EVENT', 'CONVERSATION'] as const;
+export const TEAM_MESSAGE_DELIVERY_ORIGINS = ['TEAM_USER', 'TEAM_INITIAL'] as const;
 interface MessageDeliveryCommon {
   id: string;
   clientSubmissionId: string;
@@ -251,7 +254,7 @@ export type TeamMessageDelivery = MessageDeliveryCommon & { sessionId?: never; c
 );
 export type MessageDelivery = SessionMessageDelivery | TeamMessageDelivery;
 export function isSessionMessageDelivery(delivery: MessageDelivery): delivery is SessionMessageDelivery {
-  return delivery.origin === 'TASK_INITIAL' || delivery.origin === 'TASK_FOLLOWUP' || delivery.origin === 'SYSTEM_EVENT' || delivery.origin === 'CONVERSATION';
+  return (SESSION_MESSAGE_DELIVERY_ORIGINS as readonly string[]).includes(delivery.origin);
 }
 /** HTTP 202 is durable acceptance; SENT confirms publication, never member execution. */
 type SubmissionFor<D extends MessageDelivery> = D extends MessageDelivery ? { operationId: string; state: MessageDeliveryState; destination: D['destination']; delivery: D } & (

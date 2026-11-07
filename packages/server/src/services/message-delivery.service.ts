@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import type { Prisma, PrismaClient, MessageDelivery as Row } from '@prisma/client';
-import type { MessageDelivery, SessionMessageDelivery, MessageDeliveryAction, MessageDeliveryPage, SessionMessageDeliverySubmission, MessageDeliverySubmission, TeamMessageDelivery, MessageDeliveryInvalidatedPayload, StructuredMention } from '@agent-tower/shared';
+import { SESSION_MESSAGE_DELIVERY_ORIGINS, TEAM_MESSAGE_DELIVERY_ORIGINS, type MessageDelivery, type SessionMessageDelivery, type MessageDeliveryAction, type MessageDeliveryPage, type SessionMessageDeliverySubmission, type MessageDeliverySubmission, type TeamMessageDelivery, type MessageDeliveryInvalidatedPayload, type StructuredMention } from '@agent-tower/shared';
 import { ServiceError, ValidationError } from '../errors.js';
 import { getProviderById } from '../executors/index.js';
 import { getProviderRuntimeType } from '../executors/providers.js';
@@ -19,11 +19,11 @@ import { readTeamDeliveryIntent, verifyPublishedTeamDelivery } from './team-room
 import { ConflictAdmission, ConflictAdmissionGate, type ConflictAdmissionBudget } from './conflict-admission.js';
 import { assertConflictAdmissionFreshness, conflictIntentIdentity, recoverConflictResolutionContext, resolveConflictInstructions } from './conflict-resolution-context.js';
 
-const SESSION_DELIVERY_ORIGINS = ['TASK_INITIAL', 'TASK_FOLLOWUP', 'SYSTEM_EVENT', 'CONVERSATION'];
+const SESSION_DELIVERY_ORIGINS: string[] = [...SESSION_MESSAGE_DELIVERY_ORIGINS];
 function requireSessionDelivery(row: Row): asserts row is Row & { sessionId: string } {
   if (!SESSION_DELIVERY_ORIGINS.includes(row.origin) || !row.sessionId || row.taskId || row.teamRunId || row.taskInputSnapshotId) throw new ServiceError('Delivery destination is not enabled', 'DELIVERY_DESTINATION_DISABLED', 409);
 }
-const ENABLED_DELIVERY_ORIGINS = [...SESSION_DELIVERY_ORIGINS, 'TEAM_USER', 'TEAM_INITIAL'];
+const ENABLED_DELIVERY_ORIGINS = [...SESSION_DELIVERY_ORIGINS, ...TEAM_MESSAGE_DELIVERY_ORIGINS];
 const terminal = ['SENT', 'CANCELLED'];
 const ready = ['READY', 'WAITING_PREDECESSOR'];
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
