@@ -137,7 +137,7 @@ ACP 帧和工具输出保持有界：帧预算统一取 Definition 的 `maxStdou
 
 MsgStore 的 patch `seq` 单调递增，restore 后继续计数；淘汰旧 patch 时折叠入 base snapshot。使用导出的 `sessionMsgStoreManager`。改 `NormalizedEntry` 时同时检查 `shared/log-adapter.ts`、前端日志/Todo/Token 与 `useNormalizedLogs` 的 seq-gap/reconnect 恢复。
 
-`MsgStore.textBlocks` 在规范化提交处维护每轮/每子流的 assistant 正文身份及 OPEN/SEALED/ABORTED 生命周期，Parser/Projector 负责真实语义切换和显式完成信号。Coordinator 的共同 MsgStore listener 转发规范化 patch，并按 seq 忽略 Driver 重复转发；生命周期专用 metadata patch 不刷新 runtime 活跃时间或 TeamRun 心跳。原文摘要修订复用 blockId 并升 sourceRevision；ACP load 回放保留既有身份，回放新增历史不获得翻译 admission 标记。Claude CLI 的 parent_tool_use_id 和 ACP 的 _meta.claudeCode.parentToolUseId 隔离子流；没有协议 chunk ID 时不按内容去重 delta。
+`MsgStore.textBlocks` 在规范化提交处维护每轮/每子流的 assistant 正文身份及 OPEN/SEALED/ABORTED 生命周期，Parser/Projector 负责真实语义切换和显式完成信号。`system_message` 保留原类型，每次完整文本提交直接封口为 SEALED，与 assistant 共用翻译资格和检查点；系统文本修订复用 blockId 并推进版本，不补翻静态历史。Coordinator 的共同 MsgStore listener 转发规范化 patch，并按 seq 忽略 Driver 重复转发；生命周期专用 metadata patch 不刷新 runtime 活跃时间或 TeamRun 心跳。原文摘要修订复用 blockId 并升 sourceRevision；ACP load 回放保留既有身份，回放新增历史不获得翻译 admission 标记。Claude CLI 的 parent_tool_use_id 和 ACP 的 _meta.claudeCode.parentToolUseId 隔离子流；没有协议 chunk ID 时不按内容去重 delta。
 
 ACP 的 `metadata.acpTextIdentity` 持久保存原生 session/message 和子流，角色由 entryType 区分，与 canonical entry/block ID 独立；连续段及跨轮复用 ID 按出现次序关联。load 的 main `user_message_chunk` 结束所有投影子流的段，child 的用户边界只结束自身段；用户原文仍由本地日志负责，不因回放重复新增。reconciler 先为完整回放预留精确协议 occurrence 和旧 acp-message/thought ID，再执行内容兜底，避免更早的新增历史抢占后续已知身份。兜底游标按原生 session/子流隔离，只由语义匹配推进，精确关联不推进该游标（新增历史可能位于本地列表末尾）；保留真正的 ID 漂移恢复，不跨子流按相同内容关联。load 修订保留原 block 身份、升版本并去掉 admission 标记，不补翻历史。
 

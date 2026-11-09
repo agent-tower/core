@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient, type TranslationSource as SourceRow, type TranslationAttempt as AttemptRow } from '@prisma/client';
 import { sessionMsgStoreManager } from '../output/msg-store.js';
-import type { NormalizedConversation } from '../output/types.js';
-import { getTranslationTextBlocks, type TranslationTextBlock, TEAM_RUN_TRANSLATION_MAX_MESSAGE_IDS, TEAM_RUN_TRANSLATION_PREVIEW_LENGTH, type TeamRunTranslationOverlay, type TeamRunTranslationOverlaySummary, type TranslationInvalidatedPayload, type SessionTranslationOverlay, type TranslationBlockState, type TranslationDirection, type TranslationSettingsDraft } from '@agent-tower/shared';
+import type { NormalizedConversation, NormalizedEntry } from '../output/types.js';
+import { getTranslationTextBlocks, isTranslatableMessageType, type TranslationSemanticType, type TranslationTextBlock, TEAM_RUN_TRANSLATION_MAX_MESSAGE_IDS, TEAM_RUN_TRANSLATION_PREVIEW_LENGTH, type TeamRunTranslationOverlay, type TeamRunTranslationOverlaySummary, type TranslationInvalidatedPayload, type SessionTranslationOverlay, type TranslationBlockState, type TranslationDirection, type TranslationSettingsDraft } from '@agent-tower/shared';
 import { ServiceError } from '../errors.js';
 import { TranslationSettingsService, type TranslationExecutionConfig } from './translation-settings.service.js';
 import { TranslationClient, TranslationError } from './translation-client.js';
@@ -16,7 +16,7 @@ const ACTIVE = ['PENDING', 'RUNNING', 'RETRY_WAIT'];
 const RETRYABLE = ['FAILED', 'CANCELLED', 'INTERRUPTED', 'QUEUE_FULL', 'PAUSED_DISABLED'];
 type Db = Prisma.TransactionClient;
 type SourceInput =
-  | { kind: 'SESSION_BLOCK'; sessionId: string; turnId: string; blockId: string; semanticType: 'assistant_message'; text: string; state: TranslationBlockState; sourceRevision?: number; enableEpoch?: number }
+  | { kind: 'SESSION_BLOCK'; sessionId: string; turnId: string; blockId: string; semanticType: TranslationSemanticType; text: string; state: TranslationBlockState; sourceRevision?: number; enableEpoch?: number }
   | { kind: 'ROOM_MESSAGE'; messageId: string }
   | { kind: 'USER_DELIVERY'; deliveryId: string }
   | { kind: 'TASK_INPUT'; snapshotId: string };
@@ -25,12 +25,18 @@ const DEFAULT_LIMITS: Limits = { sources: 512, displaySources: 384, laneSources:
 interface Handle { generation: number; controller: AbortController; done: Promise<void> }
 type RoomOverlayRow = TeamRunTranslationOverlay & { originalTextTruncated: number | bigint; translatedTextTruncated: number | bigint };
 
+function sessionTextBlock(entry: NormalizedEntry) {
+  const block = entry.metadata?.textBlock;
+  return isTranslatableMessageType(entry.entryType) && block?.semanticType === entry.entryType ? block : undefined;
+}
+
 function snapshotBlocks(snapshot: NormalizedConversation | null): Map<string, TranslationTextBlock> | null {
   if (!snapshot) return null;
   const blocks = new Map<string, TranslationTextBlock>();
   for (const entry of snapshot.entries ?? []) {
-    if (entry.entryType !== 'assistant_message' || !entry.metadata?.textBlock) continue;
-    for (const block of getTranslationTextBlocks(entry.content, entry.metadata.textBlock)) {
+    const lifecycle = sessionTextBlock(entry);
+    if (!lifecycle) continue;
+    for (const block of getTranslationTextBlocks(entry.content, lifecycle)) {
       blocks.set(JSON.stringify([block.turnId, block.blockId]), block);
     }
   }
@@ -232,7 +238,7 @@ export class TranslationService {
   /** Identity and lane are derived here, never accepted as untrusted scope/source keys. */
   private async resolve(input: SourceInput, tx: Db) {
     if (input.kind === 'SESSION_BLOCK') {
-      if (input.semanticType !== 'assistant_message' || !input.turnId || !input.blockId) throw new ServiceError('Only assistant message bodies are eligible', 'INELIGIBLE_SOURCE', 400);
+      if (!isTranslatableMessageType(input.semanticType) || !input.turnId || !input.blockId) throw new ServiceError('Only assistant and system message bodies are eligible', 'INELIGIBLE_SOURCE', 400);
       const session = await this.readableSession(input.sessionId, tx);
       return { scopeType: session.conversationId ? 'CONVERSATION' : 'SESSION', scopeId: session.conversationId ?? session.id, laneKey: session.conversationId ? `conversation:${session.conversationId}` : `session:${session.id}`, sourceKind: input.kind, sourceKey: JSON.stringify([session.id, input.turnId, input.blockId]), sessionId: session.id, turnId: input.turnId, blockId: input.blockId, messageId: null, direction: 'DISPLAY', originalText: input.text, blockState: input.state };
     }
@@ -279,8 +285,10 @@ export class TranslationService {
         const blocks = snapshotBlocks(snapshot);
         if (blocks && !blocks.has(JSON.stringify([source.turnId, source.blockId]))) {
           const parentId = source.blockId?.replace(/:p\d+$/, '');
-          return snapshot?.entries.some(entry => entry.metadata?.textBlock?.turnId === source.turnId
-            && entry.metadata.textBlock.blockId === parentId) ? 'STALE' : 'DELETED';
+          return snapshot?.entries.some(entry => {
+            const block = sessionTextBlock(entry);
+            return block?.turnId === source.turnId && block?.blockId === parentId;
+          }) ? 'STALE' : 'DELETED';
         }
         return this.matchesSnapshot(source, blocks) ? 'CURRENT' : 'STALE';
       }
@@ -337,8 +345,10 @@ export class TranslationService {
     const blocks = snapshotBlocks(snapshot)!;
     // A revised parent may have fewer/different paragraph boundaries. Cancel old
     // sources without tombstoning identities that a later revision can reuse.
-    const parents = new Map(snapshot.entries.flatMap(entry => entry.metadata?.textBlock
-      ? [[JSON.stringify([entry.metadata.textBlock.turnId, entry.metadata.textBlock.blockId]), entry.metadata.textBlock] as const] : []));
+    const parents = new Map(snapshot.entries.flatMap(entry => {
+      const block = sessionTextBlock(entry);
+      return block ? [[JSON.stringify([block.turnId, block.blockId]), block] as const] : [];
+    }));
     for (const row of known) {
       if (row.deletedAt || !row.blockId || blocks.has(JSON.stringify([row.turnId, row.blockId]))) continue;
       const parent = parents.get(JSON.stringify([row.turnId, row.blockId.replace(/:p\d+$/, '')]));
@@ -348,7 +358,7 @@ export class TranslationService {
       if (block.translationEpoch === undefined) continue;
       const old = versions.get(JSON.stringify([block.turnId, block.blockId]));
       if (old?.deletedAt || old && old.sourceRevision === block.sourceRevision && old.sourceHash === createHash('sha256').update(block.content).digest('hex') && old.blockState === block.state) continue;
-      await this.registerSource({ kind: 'SESSION_BLOCK', sessionId, turnId: block.turnId, blockId: block.blockId, semanticType: 'assistant_message', text: block.content, state: block.state, sourceRevision: block.sourceRevision, enableEpoch: block.translationEpoch });
+      await this.registerSource({ kind: 'SESSION_BLOCK', sessionId, turnId: block.turnId, blockId: block.blockId, semanticType: block.semanticType, text: block.content, state: block.state, sourceRevision: block.sourceRevision, enableEpoch: block.translationEpoch });
     }
   }
 

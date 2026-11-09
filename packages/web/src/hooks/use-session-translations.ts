@@ -60,6 +60,7 @@ function epoch(socket: Socket, sessionId: string) { return subscriptions.get(soc
 function accessDenied(error: unknown) { return error instanceof ApiError && [401, 403, 404].includes(error.status) }
 
 export function isTranslationCandidate(log: LogEntry) {
+  if (log.type === LogType.Info) return !log.tokenUsage && log.textBlock?.semanticType === 'system_message'
   return log.type === LogType.Assistant && log.title !== 'Thinking' && !log.content.startsWith('Thinking:')
     && log.textBlock?.semanticType === 'assistant_message'
 }

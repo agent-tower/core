@@ -269,6 +269,7 @@ function convertNormalizedEntry(entry: NormalizedEntry): LogEntry | null {
         timestamp: entry.timestamp,
         type: LogType.Info,
         content: entry.content,
+        ...(entry.metadata?.textBlock ? { textBlock: entry.metadata.textBlock } : {}),
       }
 
     case 'loading':

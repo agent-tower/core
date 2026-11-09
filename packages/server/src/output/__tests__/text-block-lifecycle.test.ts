@@ -7,7 +7,7 @@ import { GeminiParser } from '../gemini-parser.js';
 import { AcpProjector } from '../../runtime/acp/projector.js';
 import { CodexCliProjector } from '../../runtime/codex-cli-projector.js';
 import { addNormalizedEntry, replaceNormalizedEntry, updateEntryContent } from '../utils/patch.js';
-import { createAssistantMessage, createToolUse } from '../types.js';
+import { createAssistantMessage, createSystemMessage, createToolUse } from '../types.js';
 import type { NormalizedEntry } from '../types.js';
 import { getTranslationTextBlocks } from '@agent-tower/shared';
 
@@ -24,7 +24,53 @@ const bodies = (store: MsgStore) => store.getSnapshot().entries.filter(e => e.en
 
 // Shapes verified against Claude stream-json, Codex exec/app-server v2,
 // Gemini CLI 0.27.0 nonInteractiveCli/core output types, ACP SDK 1.4.0.
-describe('canonical assistant block lifecycle protocol fixtures', () => {
+describe('canonical message block lifecycle protocol fixtures', () => {
+  it('admits Claude task summaries immediately as complete system blocks and preserves assistant boundaries', () => {
+    const { store, sealed } = setup(); const parser = new ClaudeCodeParser(store);
+    feed(parser, { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Checking the documents.' } } });
+    const summary = 'None of the questions could be answered. '.repeat(10) + '\n\nAll four datasheet URLs failed.';
+    feed(parser, { type: 'system', subtype: 'task_notification', task_id: 'task-1', status: 'completed', summary });
+    const notification = store.getSnapshot().entries[1];
+    expect(notification).toMatchObject({ entryType: 'system_message', content: summary,
+      metadata: { textBlock: { semanticType: 'system_message', state: 'SEALED', sealedReason: 'EXPLICIT', translationEpoch: 7, sourceRevision: 1 } } });
+    expect(notification.metadata!.textBlock!.paragraphs).toBeUndefined();
+    expect(sealed.map(entry => entry.content)).toEqual(['Checking the documents.', summary]);
+    expect(bodies(store)[0].metadata!.textBlock).toMatchObject({ semanticType: 'assistant_message', sealedReason: 'TYPE_SWITCH' });
+    store.textBlocks.end(true);
+    expect(store.getSnapshot().entries[1]).toEqual(notification);
+  });
+
+  it('versions corrected system text without delaying translation until the turn ends', () => {
+    const { store, sealed } = setup();
+    store.pushPatch(addNormalizedEntry(0, createSystemMessage('Task completed.')));
+    const initial = store.getSnapshot().entries[0];
+    store.pushPatch(updateEntryContent(0, 'Task completed with a detailed report.'));
+    const revised = store.getSnapshot().entries[0];
+    expect(revised).toMatchObject({ id: initial.id, entryType: 'system_message', metadata: { textBlock: {
+      blockId: initial.metadata!.textBlock!.blockId, semanticType: 'system_message', sourceRevision: 2, state: 'SEALED', translationEpoch: 7,
+    } } });
+    store.pushPatch(replaceNormalizedEntry(0, createSystemMessage(revised.content)));
+    expect(sealed).toHaveLength(2);
+    expect(store.getSnapshot().entries[0].metadata!.textBlock).toEqual(revised.metadata!.textBlock);
+  });
+
+  it('does not admit disabled system messages or restored unmarked system history', () => {
+    const { store } = setup(); store.textBlocks.admission = () => undefined;
+    store.pushPatch(addNormalizedEntry(0, createSystemMessage('Received while translation was disabled.')));
+    expect(store.getSnapshot().entries[0].metadata!.textBlock).toMatchObject({ state: 'SEALED', semanticType: 'system_message' });
+    expect(store.getSnapshot().entries[0].metadata!.textBlock!.translationEpoch).toBeUndefined();
+    store.textBlocks.admission = () => 8;
+    store.textBlocks.end();
+    expect(store.getSnapshot().entries[0].metadata!.textBlock!.translationEpoch).toBeUndefined();
+
+    const restored = new MsgStore();
+    restored.restoreFromSnapshot({ ...store.getSnapshot(), entries: [createSystemMessage('Historical report.')] });
+    restored.textBlocks.admission = () => 8; restored.textBlocks.begin('new-turn');
+    restored.pushPatch(addNormalizedEntry(1, createSystemMessage('New report.')));
+    expect(restored.getSnapshot().entries[0].metadata?.textBlock).toBeUndefined();
+    expect(restored.getSnapshot().entries[1].metadata!.textBlock).toMatchObject({ state: 'SEALED', translationEpoch: 8 });
+  });
+
   it('seals paragraph sources during streaming without splitting the provider entry or retranslating its prefix', () => {
     const { store } = setup();
     const events = vi.fn(); store.onTextBlock(events);

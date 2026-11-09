@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { TextBlockLifecycle } from '@agent-tower/shared';
+import { isTranslatableMessageType, type TextBlockLifecycle } from '@agent-tower/shared';
 import type { MsgStore } from './msg-store.js';
 import type { JsonPatch, NormalizedEntry } from './types.js';
 import { findTranslationParagraphEnds } from '../services/translation-protection.js';
@@ -79,18 +79,22 @@ export class TextBlockTracker {
       else if (previous && match[2] === 'content') entry = { ...previous, content: op.value as string };
       else continue;
       if (!entry || typeof entry.content !== 'string') continue;
-      if (entry.entryType !== 'assistant_message') {
+      if (!isTranslatableMessageType(entry.entryType)) {
         // Updating an existing tool/thinking node does not move the stream cursor.
         if (previous?.entryType !== entry.entryType && !['user_message', 'token_usage_info', 'loading', 'next_action'].includes(entry.entryType)) this.boundary();
         this.entries.set(index, entry);
         continue;
       }
+      const systemMessage = entry.entryType === 'system_message';
+      // System notifications retain their existing semantic boundary and arrive complete.
+      if (systemMessage && previous?.entryType !== entry.entryType) this.boundary();
       let block = previous?.metadata?.textBlock;
+      if (block?.semanticType !== entry.entryType) block = undefined;
       const contentChanged = previous?.content !== entry.content;
       if (!block) {
         const current = this.active.get(this.stream);
         if (!this.reconciling && current !== undefined && current !== index) this.seal(current, 'EXPLICIT');
-        block = { turnId: this.turn.id, runtimeGeneration: this.turn.generation, streamId: this.stream, blockId: randomUUID(), semanticType: 'assistant_message', sourceRevision: 1, state: 'OPEN' };
+        block = { turnId: this.turn.id, runtimeGeneration: this.turn.generation, streamId: this.stream, blockId: randomUUID(), semanticType: entry.entryType, sourceRevision: 1, state: 'OPEN' };
         this.changed.add(index);
       } else if (contentChanged && block.state !== 'OPEN') {
         const { sealedReason: _reason, paragraphs: _paragraphs, ...open } = block;
@@ -106,7 +110,7 @@ export class TextBlockTracker {
       let epoch: number | undefined;
       try { epoch = this.admission(); } catch { /* Translation configuration is an optional observer. */ }
       if (contentChanged && epoch !== undefined && block.translationEpoch !== epoch) block = { ...block, translationEpoch: epoch };
-      if (contentChanged && epoch !== undefined && !this.cancelling) {
+      if (!systemMessage && contentChanged && epoch !== undefined && !this.cancelling) {
         const start = block.paragraphs?.at(-1)?.end ?? 0;
         const appending = previous && entry.content.startsWith(previous.content);
         const appended = appending ? entry.content.slice(previous.content.length) : entry.content;
@@ -120,6 +124,10 @@ export class TextBlockTracker {
             this.changed.add(index);
           }
         }
+      }
+      if (systemMessage && block.state === 'OPEN') {
+        block = { ...block, state: 'SEALED', sealedReason: 'EXPLICIT' };
+        this.changed.add(index);
       }
       entry = { ...entry, id: previous?.id ?? randomUUID(), timestamp: previous?.timestamp ?? entry.timestamp, metadata: { ...entry.metadata, textBlock: block } };
       this.entries.set(index, entry);

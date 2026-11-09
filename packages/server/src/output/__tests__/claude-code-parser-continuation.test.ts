@@ -58,7 +58,8 @@ describe('Claude Code print-mode run: delivery result, continuation turns and ba
     expect(parser.getBackgroundTasks()).toEqual([])
     feed(parser, { type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'completed', summary: 'Background command "wait for router" completed (exit code 0)' })
     feed(parser, { type: 'system', subtype: 'background_tasks_changed', tasks: [] })
-    expect(tasks).toEqual([['b1'], [], []])
+    // task_started republishes the existing task; task_updated removes it once.
+    expect(tasks).toEqual([['b1'], ['b1'], []])
     expect(store.getSnapshot().entries.at(-1)).toMatchObject({ entryType: 'system_message', content: 'Background command "wait for router" completed (exit code 0)' })
   })
 

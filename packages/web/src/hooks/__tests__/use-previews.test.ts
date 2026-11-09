@@ -12,8 +12,10 @@ const { apiMock } = vi.hoisted(() => ({
 vi.mock('@/lib/api-client', () => ({
   apiClient: apiMock,
   ApiError: class ApiError extends Error {
-    constructor(public status: number, message: string) {
+    status: number
+    constructor(status: number, message: string) {
       super(message)
+      this.status = status
     }
   },
 }))
@@ -80,7 +82,7 @@ describe('preview session entry selection', () => {
   })
 
   it('treats any HTTP answer from the gateway as reachable and remembers failures briefly', async () => {
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
       throw new TypeError('Failed to fetch')
     })
     let now = 0

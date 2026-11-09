@@ -7,7 +7,7 @@ import type { SessionTranslationOverlay } from '@agent-tower/shared'
 import { LogType, type LogEntry } from '@agent-tower/shared/log-adapter'
 import { ClientEvents, ServerEvents } from '@agent-tower/shared/socket'
 import { apiClient, ApiError } from '@/lib/api-client'
-import { matchingTranslation, mergeTranslationSnapshot, readSessionTranslations, useSessionTranslations } from '../use-session-translations'
+import { isTranslationCandidate, matchingTranslation, mergeTranslationSnapshot, readSessionTranslations, useSessionTranslations } from '../use-session-translations'
 
 const socket = vi.hoisted(() => ({ connected: true, handlers: new Map<string, Set<(...args: never[]) => void>>(), emit: vi.fn(), on: vi.fn(), off: vi.fn() }))
 vi.mock('@/lib/socket/manager', () => ({ socketManager: { connect: () => socket, getSocket: () => socket } }))
@@ -41,6 +41,22 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); container.remove(); client.clear() })
 
 describe('Session translation read model', () => {
+  it('loads translations for a session containing only system text and keeps generic Info ineligible', async () => {
+    const system: LogEntry = { ...log, type: LogType.Info, textBlock: { ...log.textBlock!, semanticType: 'system_message' } }
+    await render(<Consumer name="system" sessionId="s1" logs={[system]} />)
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toBe('translation')
+    for (const item of [
+      { ...system, textBlock: undefined },
+      { ...system, textBlock: log.textBlock },
+      { ...system, type: LogType.Assistant },
+      { ...system, tokenUsage: { totalTokens: 100 } },
+    ]) expect(isTranslationCandidate(item)).toBe(false)
+    expect(matchingTranslation('s1', { ...system, content: 'revised' }, [overlay])).toBeUndefined()
+    expect(matchingTranslation('s1', { ...system, textBlock: { ...system.textBlock!, state: 'OPEN' } }, [overlay])).toBeUndefined()
+    expect(matchingTranslation('s2', system, [overlay])).toBeUndefined()
+  })
+
   it('matches actual Session, runtime turn, block, revision and exact body; excludes open/thinking/tools', () => {
     expect(matchingTranslation('s1', log, [overlay])).toEqual(overlay)
     expect(matchingTranslation('s2', log, [overlay])).toBeUndefined()

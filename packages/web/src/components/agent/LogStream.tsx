@@ -87,6 +87,7 @@ function isToolFailure(log: LogEntry): boolean {
 }
 
 function isThinkingLog(log: LogEntry): boolean {
+  if (log.textBlock?.semanticType === 'system_message') return false
   return log.title === 'Thinking' || log.content.startsWith('Thinking:')
 }
 
@@ -842,26 +843,28 @@ const AgentText = memo(({ content, compact }: { content: string; compact?: boole
 ))
 AgentText.displayName = 'AgentText'
 
-// 5. Assistant Message — Streamdown 渲染 markdown
+// 5. Translatable messages — assistant markdown and system plain text
 const TranslationContext = createContext<{ sessionId: string; overlays: ReturnType<typeof indexSessionTranslations>; enabled: boolean; claimReveal: (version: string) => boolean } | null>(null)
 
-const AssistantMessage = memo(({ log, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }: { log: LogEntry; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler; onOpenVisualization?: OpenVisualizationHandler; downloadSessionId?: string }) => {
+const TranslatableMessage = memo(({ log, compact, plainText, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }: { log: LogEntry; compact?: boolean; plainText?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler; onOpenVisualization?: OpenVisualizationHandler; downloadSessionId?: string }) => {
   const context = useContext(TranslationContext)
   const presentation = context ? sessionTranslationPresentation(context.sessionId, log, context.overlays) : undefined
   const overlays = presentation?.overlays.filter(overlay => overlay.state !== 'NOT_REQUIRED') ?? []
   const displayed = presentation?.content ?? log.content
   const markdownProps = { workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, onOpenVisualization, downloadSessionId }
   return <div className={`relative text-foreground min-w-0 ${overlays.length ? 'pr-8' : ''} ${compact ? 'text-[13px] leading-5' : 'text-sm leading-6'}`}>
-    <TranslationReveal claim={context?.enabled ? context.claimReveal : undefined} version={presentation?.version ?? null} blocks=".session-log-message-markdown"><MarkdownMessage className="space-y-2" content={displayed} {...markdownProps} /></TranslationReveal>
+    <TranslationReveal claim={context?.enabled ? context.claimReveal : undefined} version={presentation?.version ?? null} blocks={plainText ? undefined : '.session-log-message-markdown'}>
+      {plainText ? <AgentText content={displayed} compact={compact} /> : <MarkdownMessage className="space-y-2" content={displayed} {...markdownProps} />}
+    </TranslationReveal>
     {overlays.length > 0 && <div className="absolute bottom-0 right-0">
       <TranslationComparison key={`${log.id}:${log.textBlock?.sourceRevision}`} original={log.content}>
-        <MarkdownMessage content={log.content} {...markdownProps} />
+        {plainText ? <AgentText content={log.content} compact={compact} /> : <MarkdownMessage content={log.content} {...markdownProps} />}
         {overlays.map(overlay => <TranslationStatus key={overlay.sourceId} overlay={overlay} enabled={context?.enabled ?? false} />)}
       </TranslationComparison>
     </div>}
   </div>
 })
-AssistantMessage.displayName = 'AssistantMessage'
+TranslatableMessage.displayName = 'TranslatableMessage'
 
 // 6. Error Message — 红色提示条
 const ErrorMessage = memo(({ content }: { content: string }) => (
@@ -1047,7 +1050,7 @@ function renderItem(
   if (shouldSkipProjectedLog(log)) return null
 
   // 先识别 Thinking 类型（通过 title 或 content 前缀）
-  if (log.title === 'Thinking' || log.content.startsWith('Thinking:')) {
+  if (isThinkingLog(log)) {
     return <ThinkingBlock content={log.content} isOpenDefault={true} />
   }
 
@@ -1062,11 +1065,12 @@ function renderItem(
       return <ToolBlock type={log.type} title="Action" content={log.content} />
 
     case LogType.Assistant:
-      return <AssistantMessage log={log} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} onOpenVisualization={onOpenVisualization} downloadSessionId={downloadSessionId} />
+      return <TranslatableMessage log={log} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} onOpenVisualization={onOpenVisualization} downloadSessionId={downloadSessionId} />
 
     case LogType.Info:
-            // 跳过 token_usage_info 条目的文本渲染（已由 TokenUsageIndicator 聚合展示）
-            if (log.tokenUsage) return null
+      // 跳过 token_usage_info 条目的文本渲染（已由 TokenUsageIndicator 聚合展示）
+      if (log.tokenUsage) return null
+      if (log.textBlock?.semanticType === 'system_message') return <TranslatableMessage log={log} compact={compact} plainText />
       return <AgentText content={log.content} compact={compact} />
 
     case LogType.Error:

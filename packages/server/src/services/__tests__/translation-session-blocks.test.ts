@@ -11,7 +11,8 @@ import { TranslationClient } from '../translation-client.js';
 import { TranslationQueue } from '../translation-queue.js';
 import { sessionMsgStoreManager } from '../../output/msg-store.js';
 import { GeminiParser } from '../../output/gemini-parser.js';
-import { createAssistantMessage } from '../../output/types.js';
+import { ClaudeCodeParser } from '../../output/claude-code-parser.js';
+import { createAssistantMessage, createSystemMessage } from '../../output/types.js';
 import { addNormalizedEntry, updateEntryContent } from '../../output/utils/patch.js';
 import { reconcileAcpHistoryEntries } from '../../runtime/acp/history-reconciler.js';
 import { AcpProjector } from '../../runtime/acp/projector.js';
@@ -77,6 +78,35 @@ describe('durable Session block overlays', () => {
     return store;
   }
   async function overlays() { return (await service.listSessionOverlays(sessionId)).items; }
+
+  it('translates task notification summaries before turn end, versions revisions, and restores their overlays', async () => {
+    const msgStore = store();
+    const parser = new ClaudeCodeParser(msgStore);
+    const summary = 'None of the questions could be answered. All datasheet requests failed.';
+    parser.processData(JSON.stringify({ type: 'system', subtype: 'task_notification', task_id: 'task-report', status: 'completed', summary }) + '\n');
+    const entry = msgStore.getSnapshot().entries[0];
+    expect(entry).toMatchObject({ entryType: 'system_message', content: summary, metadata: { textBlock: { semanticType: 'system_message', state: 'SEALED' } } });
+    await until(async () => payloads.length === 1);
+    expect(payloads[0]).toBe(summary); release[0]();
+    await until(async () => (await overlays())[0]?.state === 'SUCCESS');
+    const original = (await overlays())[0];
+    expect(original.translatedText).toBe('Translated ' + summary);
+
+    const revised = 'The local datasheets answered all questions.';
+    msgStore.pushPatch(updateEntryContent(0, revised));
+    expect((await overlays()).some(row => row.translatedText?.includes(summary))).toBe(false);
+    await until(async () => payloads.length === 2); release[1]();
+    await until(async () => (await overlays())[0]?.state === 'SUCCESS');
+    const next = (await overlays())[0];
+    expect(next).toMatchObject({ sourceId: original.sourceId, blockId: original.blockId, sourceRevision: 2, originalText: revised, translatedText: 'Translated ' + revised });
+    expect(msgStore.getSnapshot().entries[0]).toMatchObject({ id: entry.id, entryType: 'system_message', content: revised });
+
+    await persist; await service.shutdown(); sessionMsgStoreManager.delete(sessionId);
+    service = make(); await service.start(); await service.syncSessionCheckpoint(sessionId);
+    expect((await overlays())[0]).toEqual(next);
+    expect(payloads).toHaveLength(2); expect(await db.translationSource.count()).toBe(1);
+    expect(await db.translationAttempt.count()).toBe(2);
+  });
 
   it('publishes each paragraph while the final answer is still streaming and recovers without duplicate requests', async () => {
     const msgStore = store();
@@ -230,7 +260,7 @@ describe('durable Session block overlays', () => {
     expect(replay).toBeUndefined();
     sessionMsgStoreManager.delete(sessionId);
     const staticConversation = await db.conversation.create({ data: { title: 'Static', directoryName: 'static', workingDir: dir } });
-    await db.session.create({ data: { conversationId: staticConversation.id, context: 'CONVERSATION', agentType: 'CODEX', prompt: 'old', logSnapshot: JSON.stringify({ entries: [createAssistantMessage('Static history secret')] }) } });
+    await db.session.create({ data: { conversationId: staticConversation.id, context: 'CONVERSATION', agentType: 'CODEX', prompt: 'old', logSnapshot: JSON.stringify({ entries: [createAssistantMessage('Static history secret'), createSystemMessage('Static notification secret')] }) } });
     service = make(); await service.start(); await pause(25);
     expect(payloads).toHaveLength(1); expect((await overlays())[0]).toEqual(previous);
     expect(await db.translationSource.count()).toBe(1);
@@ -317,10 +347,13 @@ describe('durable Session block overlays', () => {
     expect(await db.translationSource.findMany({ orderBy: { originalText: 'asc' } })).toEqual(sources);
   });
 
-  it('recovers a SEALED checkpoint whose observer failed before registration; repeated recovery creates one source', async () => {
+  it.each([
+    { kind: 'assistant', createMessage: createAssistantMessage },
+    { kind: 'system', createMessage: createSystemMessage },
+  ])('recovers a SEALED $kind checkpoint whose observer failed before registration', async ({ createMessage }) => {
     const msgStore = sessionMsgStoreManager.getOrCreate(sessionId);
     msgStore.textBlocks.admission = service.getAdmissionEpoch; msgStore.textBlocks.begin('crash-turn');
-    msgStore.pushPatch(addNormalizedEntry(0, createAssistantMessage('Durable unregistered body'))); msgStore.textBlocks.complete(0);
+    msgStore.pushPatch(addNormalizedEntry(0, createMessage('Durable unregistered body'))); msgStore.textBlocks.complete(0);
     await db.session.update({ where: { id: sessionId }, data: { logSnapshot: JSON.stringify(msgStore.getSnapshot()) } });
     await service.shutdown(); sessionMsgStoreManager.delete(sessionId);
     service = make(); await service.start(); await service.syncSessionCheckpoint(sessionId);
@@ -347,7 +380,9 @@ describe('durable Session block overlays', () => {
   it('disabled and internal output never obtains admission markers or new sources', async () => {
     const { id: _id, revision, enableEpoch: _epoch, credentialRevision: _credential, keyConfigured: _key, ...fields } = await settings.getPublic();
     await settings.save({ ...fields, expectedRevision: revision, enabled: false, apiKey: { action: 'keep' } });
-    const msgStore = store(); msgStore.pushPatch(addNormalizedEntry(0, createAssistantMessage('Disabled body'))); msgStore.textBlocks.end();
+    const msgStore = store(); msgStore.pushPatch(addNormalizedEntry(0, createAssistantMessage('Disabled body')));
+    msgStore.pushPatch(addNormalizedEntry(1, createSystemMessage('Disabled notification'))); msgStore.textBlocks.end();
+    expect(msgStore.getSnapshot().entries.every(entry => entry.metadata?.textBlock?.translationEpoch === undefined)).toBe(true);
     await persist; await service.syncSessionCheckpoint(sessionId); expect(await db.translationSource.count()).toBe(0); expect(payloads).toHaveLength(0);
     await db.session.update({ where: { id: sessionId }, data: { purpose: 'COMMIT_MESSAGE' } });
     await expect(service.listSessionOverlays(sessionId)).rejects.toMatchObject({ code: 'NOT_FOUND' });

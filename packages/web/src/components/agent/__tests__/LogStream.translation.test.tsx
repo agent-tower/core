@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MessageDelivery, SessionMessageDelivery, SessionTranslationOverlay } from '@agent-tower/shared'
-import { LogType, type LogEntry } from '@agent-tower/shared/log-adapter'
+import { LogType, normalizedEntryToLogEntry, type LogEntry } from '@agent-tower/shared/log-adapter'
 import { apiClient, ApiError } from '@/lib/api-client'
 import { LogStream } from '../LogStream'
 import { mergeDeliveryLogs } from '@/lib/delivery-logs'
@@ -104,6 +104,60 @@ describe('User delivery translation indicator', () => {
     state.enabled = false; await render([])
     act(() => button('Actual sent text').click()); await flush()
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(item.actualSentText)
+  })
+})
+
+describe('System translation display', () => {
+  function systemMessage(content = original) {
+    return normalizedEntryToLogEntry({ id: 'system-a', timestamp: 1, entryType: 'system_message', content,
+      metadata: { textBlock: { ...log.textBlock!, semanticType: 'system_message' } },
+    })!
+  }
+
+  it.each([
+    { label: 'long report', content: original },
+    { label: 'report starting with Thinking:', content: 'Thinking: **Task report**\nNone of the questions could be answered.' },
+  ])('translates a $label as plain text and preserves original comparison', async ({ content }) => {
+    const system = systemMessage(content)
+    expect(system.type).toBe(LogType.Info)
+    expect(system.textBlock?.semanticType).toBe('system_message')
+    state.overlays = [{ ...overlay, originalText: content, translatedText: '**任务报告**\n问题均未得到解答。' }]
+    await render([system])
+    expect(container.textContent).toContain('**任务报告**\n问题均未得到解答。')
+    expect(container.textContent).not.toContain(content)
+    expect(container.querySelector('[data-markdown]')).toBeNull()
+    act(() => button('Original').click()); await flush()
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(content)
+    expect(document.querySelector('[role="dialog"] [data-markdown]')).toBeNull()
+    act(() => button('Copy original').click()); await flush()
+    expect(clipboard).toHaveBeenLastCalledWith(content)
+    state.enabled = false; await render([system])
+    expect(container.textContent).toContain('**任务报告**\n问题均未得到解答。')
+  })
+
+  it('shows and retries a failed system translation, then rejects the old result after the source changes', async () => {
+    const system = systemMessage()
+    state.overlays = [{ ...overlay, state: 'FAILED', translatedText: null, errorCode: 'TIMEOUT' }]
+    await render([system])
+    expect(container.textContent).toContain(original)
+    act(() => button('Original').click()); await flush()
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('The translation request timed out. Try again.')
+    act(() => button('Retry translation').click()); await flush()
+    expect(apiClient.post).toHaveBeenCalledWith('/sessions/actual-session/translations/source-a/retry', { expectedRevision: 4 })
+    state.overlays = [overlay]; await render([system])
+    expect(container.textContent).toContain(translated)
+    await render([{ ...system, content: 'Corrected task report', textBlock: { ...system.textBlock!, sourceRevision: 5 } }])
+    expect(container.textContent).toContain('Corrected task report')
+    expect(container.textContent).not.toContain(translated)
+    expect(container.querySelector('[aria-haspopup="dialog"]')).toBeNull()
+  })
+
+  it('leaves legacy and generic Info text without translation metadata unchanged', async () => {
+    await render([{ ...systemMessage(), textBlock: undefined }, { id: 'info', type: LogType.Info, content: 'Runtime status' }])
+    expect(container.textContent).toContain(original)
+    expect(container.textContent).toContain('Runtime status')
+    expect(container.textContent).not.toContain(translated)
+    expect(container.querySelector('[aria-haspopup="dialog"]')).toBeNull()
   })
 })
 

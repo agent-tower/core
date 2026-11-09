@@ -53,14 +53,14 @@ describe('TranslationService isolated SQLite behavior', () => {
   function make(fetchImpl: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     return response(body.messages.at(-1).content.split('\n').slice(1).join('\n').replace(/Hello/g, '你好'));
-  }, limits = {}) {
+  }, limits = {}, clientTimeoutMs = 300) {
     // A fetch transport settles its own request when AbortSignal closes it, as Node fetch does.
     const transport: typeof fetch = (url, init) => new Promise<Response>((resolve, reject) => {
       const abort = () => reject(new DOMException('Aborted', 'AbortError'));
       init?.signal?.addEventListener('abort', abort, { once: true });
       void fetchImpl(url, init).then(resolve, reject).finally(() => init?.signal?.removeEventListener('abort', abort));
     });
-    const service = new TranslationService(db, settings, { client: new TranslationClient({ fetchImpl: transport, timeoutMs: 300 }), limits: { tickMs: 10, retryDelays: [20, 30], ...limits } });
+    const service = new TranslationService(db, settings, { client: new TranslationClient({ fetchImpl: transport, timeoutMs: clientTimeoutMs }), limits: { tickMs: 10, retryDelays: [20, 30], ...limits } });
     services.push(service);
     return service;
   }
@@ -70,7 +70,7 @@ describe('TranslationService isolated SQLite behavior', () => {
   }
   const row = (id: string) => db.translationSource.findUniqueOrThrow({ where: { id } });
 
-  it('is off by default; enabling does not replay paused sources, and OPEN/thinking never leave the process', async () => {
+  it('is off by default; enabling does not replay paused sources, and OPEN/thinking/tools never leave the process', async () => {
     let calls = 0;
     const service = make(async () => { calls++; return response('translated'); });
     await service.start();
@@ -79,7 +79,9 @@ describe('TranslationService isolated SQLite behavior', () => {
     expect((await settings.getPublic()).enabled).toBe(false);
     await enable();
     const open = await service.registerSource({ ...source(sessionId, 'Open prose', 'open'), state: 'OPEN' });
-    await expect(service.registerSource({ ...source(sessionId), semanticType: 'thinking' } as never)).rejects.toMatchObject({ code: 'INELIGIBLE_SOURCE' });
+    for (const semanticType of ['thinking', 'tool_use']) {
+      await expect(service.registerSource({ ...source(sessionId), semanticType } as never)).rejects.toMatchObject({ code: 'INELIGIBLE_SOURCE' });
+    }
     await sleep(40);
     expect(calls).toBe(0);
     expect((await row(open.id)).jobState).toBe('OPEN');
@@ -425,12 +427,13 @@ describe('TranslationService isolated SQLite behavior', () => {
       ids.push((await db.session.create({ data: { conversationId: conversation.id, context: 'CONVERSATION', agentType: 'CODEX', prompt: 'test' } })).id);
     }
     const requests: string[] = []; const releases: Array<() => void> = [];
+    // Keep intentionally held requests alive while inspecting repeated queue pumps.
     const service = make(async (_url, init) => {
       const body = JSON.parse(String(init?.body)).messages.at(-1).content;
       requests.push(body);
       await new Promise<void>(resolve => releases.push(resolve));
       return response(body.split('\n').slice(1).join('\n'));
-    }, { tickMs: 10 });
+    }, { tickMs: 10 }, 30_000);
     try {
       for (let lane = 0; lane < 3; lane++) for (let index = 0; index < (lane === 2 ? 1 : 64); index++) {
         await service.registerSource(source(ids[lane], `Hello ${['alpha', 'beta', 'gamma'][lane]} message ${index}`, `block-${index}`));

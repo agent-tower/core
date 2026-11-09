@@ -3,6 +3,10 @@ export type TranslationDirection = 'SEND' | 'DISPLAY';
 export type TranslationScopeType = 'SESSION' | 'CONVERSATION' | 'TEAM_RUN' | 'TASK';
 export type TranslationSourceKind = 'SESSION_BLOCK' | 'ROOM_MESSAGE' | 'USER_DELIVERY' | 'TASK_INPUT';
 export type TranslationBlockState = 'OPEN' | 'SEALED' | 'ABORTED';
+export type TranslationSemanticType = 'assistant_message' | 'system_message';
+export function isTranslatableMessageType(value: unknown): value is TranslationSemanticType {
+  return value === 'assistant_message' || value === 'system_message';
+}
 export type TranslationJobState =
   | 'OPEN' | 'PENDING' | 'RUNNING' | 'RETRY_WAIT' | 'SUCCESS' | 'NOT_REQUIRED'
   | 'FAILED' | 'CANCELLED' | 'SUPERSEDED' | 'INTERRUPTED' | 'QUEUE_FULL' | 'PAUSED_DISABLED';
@@ -119,7 +123,7 @@ export interface TextBlockLifecycle {
   runtimeGeneration: string;
   streamId: string;
   blockId: string;
-  semanticType: 'assistant_message';
+  semanticType: TranslationSemanticType;
   sourceRevision: number;
   state: TranslationBlockState;
   sealedReason?: 'TYPE_SWITCH' | 'EXPLICIT' | 'TURN_END';
