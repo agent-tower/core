@@ -6,6 +6,7 @@ import type { SessionWakeupService } from '../services/session-wakeup.service.js
 import { INTERNAL_API_SESSION_ID_HEADER } from '../utils/internal-api-token.js';
 
 const sessionParamsSchema = z.object({ id: z.string().min(1) });
+const wakeupParamsSchema = z.object({ id: z.string().min(1), wakeupId: z.string().min(1) });
 const serviceParamsSchema = z.object({ workspaceId: z.string().min(1), name: z.string().min(1) });
 const timerSchema = z.object({
   delaySeconds: z.number().int().min(1),
@@ -78,6 +79,21 @@ export async function sessionWakeupRoutes(app: FastifyInstance, options: Session
         if (sessionId !== id) throw new ServiceError('Wake-ups are visible to their own session only', 'WAKEUP_SESSION_MISMATCH', 403);
       }
       return await service().listForSession(id);
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  // Cancel one pending wake-up: a person from the session view, or the Agent for its own session.
+  app.delete('/sessions/:id/wakeups/:wakeupId', async (request, reply) => {
+    try {
+      const { id, wakeupId } = wakeupParamsSchema.parse(request.params);
+      const kind = (request as CallerRequest).agentTowerAuthKind;
+      if (kind !== 'browser' && kind !== 'internal') {
+        const sessionId = requireAgentSession(request as CallerRequest);
+        if (sessionId !== id) throw new ServiceError('Wake-ups can only be cancelled by their own session', 'WAKEUP_SESSION_MISMATCH', 403);
+      }
+      return await service().cancelById(id, wakeupId);
     } catch (error) {
       return handleError(error, reply);
     }

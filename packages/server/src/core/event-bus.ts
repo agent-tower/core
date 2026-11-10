@@ -2,6 +2,7 @@ import type {
   SessionPermissionInvalidatedPayload,
   SessionPermissionRequestedPayload,
   SessionRuntimeStateChangedPayload,
+  SessionWakeupsChangedPayload,
   TeamRunInvalidatedPayload,
   WorkspaceGitChangedPayload,
   WorkspaceSetupProgressPayload,
@@ -24,6 +25,8 @@ type EventMap = {
   'session:permission_requested': SessionPermissionRequestedPayload;
   'session:permission_invalidated': SessionPermissionInvalidatedPayload;
   'session:runtime_state_changed': SessionRuntimeStateChangedPayload;
+  /** A wake-up of this session was scheduled, released, fired or cancelled. */
+  'session:wakeups_changed': SessionWakeupsChangedPayload;
   'task:updated': { taskId: string; projectId: string; status: string; priority?: number };
   'task:deleted': { taskId: string; projectId: string };
   // Standalone terminal events

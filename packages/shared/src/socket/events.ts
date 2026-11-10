@@ -32,6 +32,8 @@ export const ServerEvents = {
   SESSION_PERMISSION_REQUESTED: 'session:permission_requested',
   SESSION_PERMISSION_INVALIDATED: 'session:permission_invalidated',
   SESSION_RUNTIME_STATE_CHANGED: 'session:runtime_state_changed',
+  /** The session's pending wake-ups changed (scheduled, released, fired or cancelled). */
+  SESSION_WAKEUPS_CHANGED: 'session:wakeups_changed',
   TASK_UPDATED: 'task:updated',
   TASK_DELETED: 'task:deleted',
   AGENT_STATUS_CHANGED: 'agent:status_changed',
@@ -114,6 +116,10 @@ export interface SessionPermissionInvalidatedPayload {
 export interface SessionRuntimeStateChangedPayload {
   sessionId: string;
   state: RuntimeStateDto;
+}
+
+export interface SessionWakeupsChangedPayload {
+  sessionId: string;
 }
 
 export interface SessionSubscribedPayload {

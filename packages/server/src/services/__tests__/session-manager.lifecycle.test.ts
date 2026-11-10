@@ -2033,6 +2033,57 @@ describe('SessionManager session status vs real process state', () => {
     });
   });
 
+  it('keeps the task in progress while a wake-up or a queued message will resume the session', async () => {
+    const { task, session } = await createSessionFixture();
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    vi.spyOn(manager as any, 'autoCommitChanges').mockResolvedValue(undefined);
+    vi.spyOn((manager as any).teamReconciler, 'handleSessionExit').mockResolvedValue(false);
+    vi.spyOn(manager as any, 'triggerCommitMessageGeneration').mockImplementation(() => {});
+    const taskStatuses: string[] = [];
+    eventBus.on('task:updated', ({ status }) => taskStatuses.push(status));
+    const taskStatus = async () => (await prisma.task.findUniqueOrThrow({ where: { id: task.id } })).status;
+    const finalized = () => vi.waitFor(() => expect((manager as any).sessionFinalizations.has(session.id)).toBe(false));
+
+    await manager.start(session.id);
+    expect(await taskStatus()).toBe(TaskStatus.IN_PROGRESS);
+    // During its run the agent asked Agent Tower to wake it later, then ended the run.
+    const wakeup = await prisma.sessionWakeup.create({
+      data: { sessionId: session.id, kind: 'TIMER', reason: 'check the build', fireAt: new Date(Date.now() + 3_600_000), state: 'PENDING' },
+    });
+    const completed = waitForEvent(eventBus, 'session:completed');
+    pty.emitData(JSON.stringify({ type: 'turn.completed' }) + '\n');
+    await completed;
+    await finalized();
+    expect(await taskStatus()).toBe(TaskStatus.IN_PROGRESS);
+
+    // The wake-up is gone but a follow-up message is queued: still not ready for review.
+    await prisma.sessionWakeup.update({ where: { id: wakeup.id }, data: { state: 'CANCELLED' } });
+    const delivery = await prisma.messageDelivery.create({
+      data: {
+        clientSubmissionId: 'queued-follow-up', requestFingerprint: 'fp', sessionId: session.id,
+        channelKey: `session:${session.id}`, sequence: 1, origin: 'TASK_FOLLOWUP', originalText: 'one more thing',
+        sourceHash: 'hash', enableEpoch: 0, requiresTranslation: false, state: 'READY',
+      },
+    });
+    eventBus.emit('session:wakeups_changed', { sessionId: session.id });
+    await manager.reconcileTaskReview(session.id);
+    expect(await taskStatus()).toBe(TaskStatus.IN_PROGRESS);
+
+    // The queued message failed and now waits for the person: nothing will resume
+    // the session on its own, so the task moves to review exactly once.
+    await prisma.messageDelivery.update({ where: { id: delivery.id }, data: { state: 'DELIVERY_FAILED' } });
+    eventBus.emit('message-delivery:invalidated', { sessionId: session.id, operationId: delivery.id, deliveryRevision: 2 });
+    eventBus.emit('session:wakeups_changed', { sessionId: session.id });
+    await vi.waitFor(async () => expect(await taskStatus()).toBe(TaskStatus.IN_REVIEW));
+    await manager.reconcileTaskReview(session.id);
+    expect(taskStatuses.filter((status) => status === TaskStatus.IN_REVIEW)).toHaveLength(1);
+    await manager.destroyAll();
+  });
+
   it('holds reconciliation while valid follow-up provider validation is delayed', async () => {
     const provider = {
       id: 'delayed-provider',

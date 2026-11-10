@@ -239,6 +239,9 @@ export class SocketGateway {
     const onRuntimeStateChanged = (payload: SessionRuntimeStateChangedPayload) => {
       emitToCurrentSockets(ServerEvents.SESSION_RUNTIME_STATE_CHANGED, payload);
     };
+    const onWakeupsChanged = ({ sessionId }: { sessionId: string }) => {
+      emitToCurrentSockets(ServerEvents.SESSION_WAKEUPS_CHANGED, { sessionId });
+    };
     const onTask = ({ taskId, projectId, status, priority }: { taskId: string; projectId: string; status: string; priority?: number }) => {
       emitToCurrentSockets(ServerEvents.TASK_UPDATED, { taskId, projectId, status, ...(priority === undefined ? {} : { priority }) });
     };
@@ -297,6 +300,7 @@ export class SocketGateway {
     this.eventBus.on('session:permission_requested', onPermissionRequested);
     this.eventBus.on('session:permission_invalidated', onPermissionInvalidated);
     this.eventBus.on('session:runtime_state_changed', onRuntimeStateChanged);
+    this.eventBus.on('session:wakeups_changed', onWakeupsChanged);
     this.eventBus.on('task:updated', onTask);
     this.eventBus.on('task:deleted', onTaskDeleted);
     this.eventBus.on('workspace:commit_message_updated', onWorkspaceCommitMessageUpdated);
@@ -317,6 +321,7 @@ export class SocketGateway {
       () => this.eventBus.off('session:permission_requested', onPermissionRequested),
       () => this.eventBus.off('session:permission_invalidated', onPermissionInvalidated),
       () => this.eventBus.off('session:runtime_state_changed', onRuntimeStateChanged),
+      () => this.eventBus.off('session:wakeups_changed', onWakeupsChanged),
       () => this.eventBus.off('task:updated', onTask),
       () => this.eventBus.off('task:deleted', onTaskDeleted),
       () => this.eventBus.off('workspace:commit_message_updated', onWorkspaceCommitMessageUpdated),

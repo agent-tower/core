@@ -68,6 +68,7 @@ export const queryKeys = {
     all: ['sessions'] as const,
     detail: (id: string) => ['sessions', 'detail', id] as const,
     runtime: (id: string) => ['sessions', 'runtime', id] as const,
+    wakeups: (id: string) => ['sessions', 'wakeups', id] as const,
   },
 
   conversations: {

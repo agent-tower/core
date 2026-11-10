@@ -175,6 +175,8 @@ pnpm --filter @agent-tower/server dev
 
 唤醒以 `SYSTEM_EVENT` 来源的消息投递，走和用户消息相同的队列：session 正在运行时排队等待，用户显式停止的 session 不会被唤醒，每个 session 每天最多 24 次（`AGENT_TOWER_MAX_WAKEUPS_PER_DAY`）。通知正文以 `[SYSTEM NOTIFICATION - NOT USER INPUT]` 开头，不代表用户的任何确认。
 
+有待触发的唤醒（PENDING / READY）时任务保持 IN_PROGRESS，不会自动进入 IN_REVIEW；任务被人移出 IN_PROGRESS 后，其唤醒以 `TASK_NOT_IN_PROGRESS` 取消。用户可在会话视图取消单个唤醒（`DELETE /api/sessions/:id/wakeups/:wakeupId`）。服务退出未被及时感知（例如 Tower 重启）时，等待超过 15 秒的 `SERVICE_EXIT` 唤醒会按持久化的服务状态释放。
+
 ## 5. 常见用法
 
 ### 5.1 让 agent 直接领取任务并开始执行

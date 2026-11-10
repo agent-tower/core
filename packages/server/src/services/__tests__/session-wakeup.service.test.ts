@@ -18,6 +18,11 @@ let SessionWakeupService: typeof import('../session-wakeup.service.js').SessionW
 let buildWakeupMessage: typeof import('../session-wakeup.service.js').buildWakeupMessage;
 
 type Submission = { sessionId: string; message: string; systemEvent: true; clientSubmissionId: string };
+type WakeupServiceInstance = InstanceType<typeof SessionWakeupService>;
+
+// A pump re-runs itself when asked while busy; stop every instance after each
+// test so a trailing pump cannot deliver the next test's rows through old fakes.
+const created: WakeupServiceInstance[] = [];
 
 function fakes() {
   const submissions: Submission[] = [];
@@ -42,12 +47,13 @@ function fakes() {
     maxPerSessionPerDay: 3,
     now: () => now.value,
   });
+  created.push(service);
   return { service, submissions, eventBus, services, now, setActiveTurn: (value: boolean) => { activeTurn = value; }, setQueueFull: (value: boolean) => { queueFull = value; } };
 }
 
 async function fixture() {
   const project = await db.project.create({ data: { name: 'wakeup project', repoPath: dir } });
-  const task = await db.task.create({ data: { projectId: project.id, title: 'wakeup task' } });
+  const task = await db.task.create({ data: { projectId: project.id, title: 'wakeup task', status: 'IN_PROGRESS' } });
   const workspace = await db.workspace.create({ data: { taskId: task.id, branchName: 'wakeup', worktreePath: dir } });
   const session = await db.session.create({ data: { workspaceId: workspace.id, agentType: 'CLAUDE_CODE', variant: 'DEFAULT', prompt: 'go', status: 'COMPLETED' } });
   const serviceRow = await db.workspaceBackgroundService.create({ data: { workspaceId: workspace.id, name: 'route', command: 'python3', desiredState: 'RUNNING', runtimeState: 'RUNNING', runtimeInstanceId: 'rt-1', pid: 100 } });
@@ -64,7 +70,13 @@ describe('SessionWakeupService', () => {
     await db.sessionWakeup.deleteMany();
     await db.project.deleteMany();
   });
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    for (const service of created.splice(0)) {
+      service.stop();
+      await (service as unknown as { pumping?: Promise<void> }).pumping;
+    }
+  });
   afterAll(async () => { await db.$disconnect(); fs.rmSync(dir, { recursive: true, force: true }); });
 
   it('fires a timer wake-up once its time comes and delivers a system event to an idle session', async () => {
@@ -165,6 +177,83 @@ describe('SessionWakeupService', () => {
         expect(await db.sessionWakeup.count({ where: { sessionId: session.id, state: 'CANCELLED' } })).toBe(8);
       });
     } finally { f.service.stop(); }
+  });
+
+  it('cancels instead of reopening a task that a person moved out of IN_PROGRESS', async () => {
+    const { session, task } = await fixture();
+    const f = fakes();
+    const changed: string[] = [];
+    f.eventBus.on('session:wakeups_changed', ({ sessionId }) => changed.push(sessionId));
+
+    // Durable path: the task was moved while no listener was running.
+    const timer = await f.service.scheduleTimer({ sessionId: session.id, delaySeconds: 60, reason: 'check' });
+    await db.task.update({ where: { id: task.id }, data: { status: 'DONE' } });
+    f.now.value = new Date('2026-11-06T00:02:00Z');
+    await f.service.pump();
+    expect(f.submissions).toHaveLength(0);
+    expect(await db.sessionWakeup.findUniqueOrThrow({ where: { id: timer.id } })).toMatchObject({ state: 'CANCELLED', lastError: 'TASK_NOT_IN_PROGRESS' });
+
+    // Live path: task:updated cancels right away, but only if the task is still out of IN_PROGRESS.
+    await db.task.update({ where: { id: task.id }, data: { status: 'IN_PROGRESS' } });
+    const second = await f.service.scheduleTimer({ sessionId: session.id, delaySeconds: 600, reason: 'later' });
+    f.service.start();
+    try {
+      f.eventBus.emit('task:updated', { taskId: task.id, projectId: task.projectId, status: 'IN_REVIEW' });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The task row still says IN_PROGRESS (stale event): keep the wake-up.
+      expect((await db.sessionWakeup.findUniqueOrThrow({ where: { id: second.id } })).state).toBe('PENDING');
+      await db.task.update({ where: { id: task.id }, data: { status: 'IN_REVIEW' } });
+      f.eventBus.emit('task:updated', { taskId: task.id, projectId: task.projectId, status: 'IN_REVIEW' });
+      await vi.waitFor(async () => {
+        expect(await db.sessionWakeup.findUniqueOrThrow({ where: { id: second.id } })).toMatchObject({ state: 'CANCELLED', lastError: 'TASK_NOT_IN_PROGRESS' });
+      });
+    } finally { f.service.stop(); }
+    expect(changed.filter((id) => id === session.id).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('lets a person cancel one pending wake-up and reports one that already fired', async () => {
+    const { session } = await fixture();
+    const f = fakes();
+    const changed: string[] = [];
+    f.eventBus.on('session:wakeups_changed', ({ sessionId }) => changed.push(sessionId));
+    const keep = await f.service.scheduleTimer({ sessionId: session.id, delaySeconds: 60, reason: 'keep' });
+    const drop = await f.service.scheduleTimer({ sessionId: session.id, delaySeconds: 3600, reason: 'drop' });
+    changed.length = 0;
+    await expect(f.service.cancelById(session.id, drop.id)).resolves.toMatchObject({ id: drop.id, state: 'CANCELLED', lastError: 'USER_CANCELLED' });
+    expect(changed).toEqual([session.id]);
+    // Cancelling twice is harmless and does not notify again.
+    await expect(f.service.cancelById(session.id, drop.id)).resolves.toMatchObject({ state: 'CANCELLED' });
+    expect(changed).toEqual([session.id]);
+    await expect(f.service.cancelById('other-session', keep.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    f.now.value = new Date('2026-11-06T00:02:00Z');
+    await f.service.pump();
+    expect(f.submissions).toHaveLength(1);
+    await expect(f.service.cancelById(session.id, keep.id)).rejects.toMatchObject({ code: 'WAKEUP_ALREADY_FIRED' });
+  });
+
+  it('releases a service wait whose exit was never pushed, after a grace period', async () => {
+    const { session, workspace, serviceRow } = await fixture();
+    const f = fakes();
+    f.services.set(`${workspace.id}:route`, { id: serviceRow.id, workspaceId: workspace.id, name: 'route', runtimeState: 'RUNNING', runtimeInstanceId: 'rt-1', exitCode: null });
+    const wakeup = await f.service.waitForService({ sessionId: session.id, workspaceId: workspace.id, serviceName: 'route', reason: 'routing' });
+    await db.sessionWakeup.update({ where: { id: wakeup.id }, data: { createdAt: new Date('2026-11-05T23:59:00Z') } });
+    // Agent Tower restarted: startup reconcile marked the service STOPPED without an exit push.
+    await db.workspaceBackgroundService.update({
+      where: { id: serviceRow.id },
+      data: { desiredState: 'STOPPED', runtimeState: 'STOPPED', runtimeInstanceId: null, pid: null, exitCode: 0, stoppedAt: new Date('2026-11-05T23:59:55Z') },
+    });
+    await f.service.pump();
+    expect((await db.sessionWakeup.findUniqueOrThrow({ where: { id: wakeup.id } })).state).toBe('PENDING');
+    f.now.value = new Date('2026-11-06T00:00:30Z');
+    await f.service.pump();
+    expect(f.submissions).toHaveLength(1);
+    const message = f.submissions[0]!.message;
+    expect(message).toContain('runtime_state="STOPPED"');
+    // A STOPPED record may carry an older run's exit code; it is not reported as this exit.
+    expect(message).toContain('exit_code="unknown"');
+    expect(message).toContain('was stopped before it finished');
+    expect(message).toContain('did not observe this exit');
+    expect((await db.sessionWakeup.findUniqueOrThrow({ where: { id: wakeup.id } })).state).toBe('FIRED');
   });
 
   it('rejects wake-ups for conversation sessions and unknown sessions', async () => {

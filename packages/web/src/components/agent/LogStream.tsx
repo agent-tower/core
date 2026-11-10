@@ -4,18 +4,19 @@ import { apiClient } from '@/lib/api-client'
 import { useOutgoingSubmissions } from '@/hooks/outgoing-submissions'
 import { OutgoingSubmissionBubble } from './OutgoingSubmissionBubble'
 import { createContext, useContext, useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
-import { getTranslationTextBlocks, type MessageDelivery, type RuntimeBackgroundTask } from '@agent-tower/shared'
+import { getTranslationTextBlocks, type MessageDelivery, type RuntimeBackgroundTask, type SessionWakeupDto } from '@agent-tower/shared'
 import { indexSessionTranslations, sessionTranslationPresentation, useSessionTranslations } from '@/hooks/use-session-translations'
 import { useTranslationReveals } from '@/hooks/translation-reveals'
 import { useTranslationSettings } from '@/hooks/use-translation-settings'
 import { useMessageDeliveries } from '@/hooks/use-message-deliveries'
 import { useRuntimeState } from '@/hooks/use-sessions'
+import { useCancelSessionWakeup, usePendingSessionWakeups } from '@/hooks/use-session-wakeups'
 import { MessageDeliveryAttachments, MessageDeliveryFeedback } from './MessageDeliveryStatus'
 import { TranslationComparison, TranslationReveal, TranslationStatus } from './TranslationComparison'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { shouldAdjustScrollPositionOnItemSizeChange } from './scrollAnchoring'
 import { type LogEntry, LogType, type ToolStatus } from '@agent-tower/shared/log-adapter'
-import { ChevronRight, ChevronDown } from 'lucide-react'
+import { ChevronRight, ChevronDown, X } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { Tooltip } from '@/components/ui/tooltip'
 import { Notice } from '@/design-system'
@@ -499,6 +500,59 @@ const SystemEventMessage = memo(({ content, compact }: { content: string; compac
   )
 })
 SystemEventMessage.displayName = 'SystemEventMessage'
+
+function formatWakeupTime(iso: string): string {
+  const at = new Date(iso)
+  const sameDay = at.toDateString() === new Date().toDateString()
+  return sameDay
+    ? at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : at.toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ * Wake-ups Agent Tower still owes this session. The agent may have ended its
+ * run, but it is not done: the task stays in progress until these fire or are
+ * cancelled here.
+ */
+function PendingWakeups({ sessionId }: { sessionId: string }) {
+  const { t } = useI18n()
+  const { pending } = usePendingSessionWakeups(sessionId)
+  const cancel = useCancelSessionWakeup(sessionId)
+  if (pending.length === 0) return null
+  const describe = (wakeup: SessionWakeupDto) => {
+    if (wakeup.state === 'READY') return t('当前回合结束后唤醒')
+    if (wakeup.kind === 'SERVICE_EXIT') return t('后台服务 {name} 退出后唤醒', { name: wakeup.serviceName ?? '' })
+    return wakeup.fireAt ? t('{time} 定时唤醒', { time: formatWakeupTime(wakeup.fireAt) }) : t('定时唤醒')
+  }
+  return (
+    <div className="mb-8 mt-4 rounded-lg border border-dashed border-border/70 bg-muted/40 px-3 py-2 text-xs text-muted-foreground" data-pending-wakeups>
+      <Tooltip align="start" content={t('Agent 已安排唤醒，任务会保持进行中，直到唤醒触发或被取消')}>
+        <span tabIndex={0} className="inline-flex cursor-help rounded-sm bg-foreground/[0.08] px-1.5 py-0.5 font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+          {t('等待唤醒 ({count})', { count: pending.length })}
+        </span>
+      </Tooltip>
+      <ul className="mt-1.5 flex flex-col gap-1">
+        {pending.map((wakeup) => (
+          <li key={wakeup.id} className="flex min-w-0 items-center gap-2" data-wakeup-id={wakeup.id}>
+            <span className="shrink-0 text-foreground/80">{describe(wakeup)}</span>
+            {wakeup.reason && <span className="min-w-0 flex-1 truncate" title={wakeup.reason}>{wakeup.reason}</span>}
+            <button
+              type="button"
+              className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-50"
+              disabled={cancel.isPending}
+              onClick={() => cancel.mutate(wakeup.id)}
+              aria-label={t('取消唤醒')}
+            >
+              <X size={12} strokeWidth={2} />
+              {t('取消')}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {cancel.isError && <p className="mt-1 text-destructive">{t('取消唤醒失败，请重试')}</p>}
+    </div>
+  )
+}
 
 const UserMessage = memo(({ content, deliveryId, compact, workingDir, onOpenWorkspaceFile, onOpenPreviewUrl, origin }: { content: string; deliveryId?: string; compact?: boolean; workingDir?: string; onOpenWorkspaceFile?: (path: string, line?: number, column?: number) => void; onOpenPreviewUrl?: OpenPreviewUrlHandler; origin?: 'SYSTEM_EVENT' }) => {
   const delivery = useContext(DeliveryContext).get(deliveryId ?? '')
@@ -1113,6 +1167,7 @@ const SessionLogStream = forwardRef<LogStreamHandle, LogStreamProps & { sessionI
   return <TranslationContext.Provider value={context}><DeliveryContext.Provider value={deliveries}><BackgroundWaitContext.Provider value={backgroundTasks}>
     <LogStreamView {...props} logs={logs} ref={ref} />
     {outgoing.filter(item => ![...deliveries.values()].some(delivery => delivery.clientSubmissionId === item.id)).map(item => <OutgoingSubmissionBubble key={item.id} item={item} />)}
+    <PendingWakeups sessionId={props.sessionId} />
     {pending.hasNextPage && <button type="button" className="text-xs underline" onClick={() => void pending.fetchNextPage()}>Load more</button>}
   </BackgroundWaitContext.Provider></DeliveryContext.Provider></TranslationContext.Provider>
 })

@@ -21,6 +21,7 @@ import { execGit } from '../git/git-cli.js';
 import type { EventBus } from '../core/event-bus.js';
 import { getCommitMessageService, getTranslationService } from '../core/container.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
+import { hasOutstandingWork, readTaskOutstandingWork } from './task-outstanding-work.js';
 import { acquireTeamMemberAdmission } from './team-member-admission-barrier.js';
 import { NotFoundError, ServiceError, ValidationError } from '../errors.js';
 import { AgentRuntimeError } from '../runtime/errors.js';
@@ -353,6 +354,18 @@ export class SessionManager {
       this.scheduleSnapshotPersist(sessionId);
       // 仅 agent 侧真实进展用作 TeamRun 成员心跳信号（节流落库）；本地 user_message（含唤醒）被过滤。
       this.maybeRecordTeamRunHeartbeat(sessionId, patch);
+    });
+
+    // Outstanding work can disappear without a run ending (a wake-up cancelled,
+    // a queued message failed or withdrawn); the task may be ready for review then.
+    const reconcileTaskReview = (sessionId: string) => {
+      void this.reconcileTaskReview(sessionId).catch((error) => {
+        console.error(`[SessionManager] reconcileTaskReview failed for session ${sessionId}:`, error);
+      });
+    };
+    this.eventBus.on('session:wakeups_changed', ({ sessionId }) => reconcileTaskReview(sessionId));
+    this.eventBus.on('message-delivery:invalidated', (payload) => {
+      if (payload.sessionId) reconcileTaskReview(payload.sessionId);
     });
 
     this.eventBus.on('session:turn-completed', ({ sessionId }) => {
@@ -2606,8 +2619,9 @@ export class SessionManager {
    * Session 完成后检查 Task 是否可以自动推进状态。
    *
    * 规则：当一个 Task 下所有 Workspace 的所有 CHAT Session 都处于终态
-   * （COMPLETED / CANCELLED / FAILED）时，自动将 IN_PROGRESS 的 Task
-   * 推进到 IN_REVIEW，提示用户进行代码审查。
+   * （COMPLETED / CANCELLED / FAILED），并且没有仍会自动开启新回合的工作
+   * （待触发的唤醒、排队中的消息，见 task-outstanding-work.ts）时，
+   * 自动将 IN_PROGRESS 的 Task 推进到 IN_REVIEW，提示用户进行代码审查。
    * 同时触发 commit message 的后台生成。
    */
   private async checkTaskAutoAdvance(sessionId: string): Promise<void> {
@@ -2623,35 +2637,52 @@ export class SessionManager {
       // 只对 IN_PROGRESS 的 Task 做自动推进
       if (task.status !== TaskStatus.IN_PROGRESS) return;
 
-      // 查询该 Task 下所有 CHAT Session（排除 COMMIT_MSG）
-      const allSessions = await prisma.session.findMany({
-        where: {
-          workspace: { taskId: task.id },
-          purpose: { not: SessionPurpose.COMMIT_MSG },
-        },
-        select: { status: true },
+      const work = await readTaskOutstandingWork(task.id);
+      if (work.sessions === 0 || hasOutstandingWork(work)) {
+        if (work.activeSessions === 0 && (work.pendingWakeups > 0 || work.queuedDeliveries > 0)) {
+          console.log(
+            `[SessionManager] Task ${task.id} stays IN_PROGRESS: ${work.pendingWakeups} pending wake-up(s), ${work.queuedDeliveries} session(s) with a queued message`,
+          );
+        }
+        return;
+      }
+
+      // Conditional: another session's finalizer or a wake-up/delivery change
+      // may run this check concurrently; only one of them may notify.
+      const updated = await prisma.task.updateMany({
+        where: { id: task.id, status: TaskStatus.IN_PROGRESS, deletedAt: null },
+        data: { status: TaskStatus.IN_REVIEW },
+      });
+      if (updated.count !== 1) return;
+
+      this.eventBus.emit('task:updated', {
+        taskId: task.id,
+        projectId: task.projectId,
+        status: TaskStatus.IN_REVIEW,
       });
 
-      const terminalStatuses: string[] = [SessionStatus.COMPLETED, SessionStatus.CANCELLED, SessionStatus.FAILED];
-      const allDone = allSessions.every((s) => terminalStatuses.includes(s.status));
-
-      if (allDone && allSessions.length > 0) {
-        await prisma.task.update({
-          where: { id: task.id },
-          data: { status: TaskStatus.IN_REVIEW },
-        });
-
-        this.eventBus.emit('task:updated', {
-          taskId: task.id,
-          projectId: task.projectId,
-          status: TaskStatus.IN_REVIEW,
-        });
-
-        console.log(`[SessionManager] Task ${task.id} auto-advanced to IN_REVIEW (all sessions completed)`);
-      }
+      console.log(`[SessionManager] Task ${task.id} auto-advanced to IN_REVIEW (all sessions completed, nothing pending)`);
     } catch (error) {
       console.error(`[SessionManager] checkTaskAutoAdvance failed for session ${sessionId}:`, error);
     }
+  }
+
+  /**
+   * Re-run the review check when outstanding work disappeared without a run
+   * ending: a wake-up was cancelled, or a queued message failed or was
+   * withdrawn. Only a session whose last run completed can advance its task,
+   * the same rule the run-end path applies.
+   */
+  async reconcileTaskReview(sessionId: string): Promise<void> {
+    // Let the run's own post-processing (auto-commit, its own check) finish first.
+    const finalization = this.sessionFinalizations.get(sessionId);
+    if (finalization) await finalization;
+    if (this.runtimeCoordinator.hasActiveTurn(sessionId)) return;
+    const session = await prisma.session.findUnique({ where: { id: sessionId }, select: { status: true } });
+    if (session?.status !== SessionStatus.COMPLETED) return;
+    // TeamRun members are advanced by the team reconciler, as in finalizeSessionExit.
+    if (await prisma.agentInvocation.findFirst({ where: { sessionId }, select: { id: true } })) return;
+    await this.checkTaskAutoAdvance(sessionId);
   }
 
   /**

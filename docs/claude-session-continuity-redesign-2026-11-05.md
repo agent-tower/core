@@ -391,3 +391,86 @@ the three cross-directory git conflict cases time out in a subprocess under load
 submitted user body" fails identically on the pristine baseline (its expectation predates the task-handoff
 block in the prompt).
 
+
+## 9. Follow-up (2026-11-09): pending wake-ups keep the task in progress
+
+### 9.1 Problem
+
+A wake-up (section 4.5) lets an agent end its run and be resumed later. The task review rule did not
+know about it. When the run ended, `checkTaskAutoAdvance` saw every chat session in a terminal status,
+moved the task to IN_REVIEW and sent the "ready for review" notification. When the wake-up fired, the
+new turn's `checkTaskAutoRevert` moved the task back to IN_PROGRESS. A task the person had marked DONE
+was reopened the same way, because delivery never looked at the task status. The section 4.5 rule
+"drop the wake-up if the task left IN_PROGRESS" would have dropped every service wake-up in this order of
+events, which is why it was never implemented.
+
+Claude's own background tasks did not have this problem, because the process stays alive and the
+session stays RUNNING until they finish.
+
+### 9.2 Rule
+
+A task is ready for review only when nothing will resume one of its sessions without a person acting:
+
+- every chat session is in a terminal status (unchanged);
+- no wake-up of its sessions is PENDING or READY;
+- no session queue has a message that will still be dispatched on its own. The oldest unsettled entry
+  of a queue decides this; a queue whose oldest entry failed (TRANSLATION_FAILED, PAUSED_DISABLED,
+  DELIVERY_FAILED, DELIVERY_UNKNOWN) waits for the person and does not count.
+
+The last point also removes the same review flip for a follow-up message the person queued while the
+agent was running.
+
+Conversely, Agent Tower never moves a task with pending wake-ups out of IN_PROGRESS, so when a task
+leaves IN_PROGRESS while wake-ups are pending, a person (or a merge) decided about the work: the
+wake-ups are cancelled with `TASK_NOT_IN_PROGRESS` instead of reopening the task.
+
+### 9.3 Implementation
+
+- `services/task-outstanding-work.ts` reads sessions, active wake-ups and unsettled deliveries in one
+  read transaction (one SQLite snapshot). A wake-up creates its delivery row before it is marked FIRED,
+  and a delivery stays unsettled until its turn has claimed the session as RUNNING, so a wake-up on its
+  way is always visible in at least one of the three.
+- `SessionManager.checkTaskAutoAdvance` uses it and advances with a conditional update
+  (`status = IN_PROGRESS`), so concurrent checks notify once.
+- `SessionManager.reconcileTaskReview` re-runs the check when outstanding work disappears without a run
+  ending. It is triggered by the new `session:wakeups_changed` event and by
+  `message-delivery:invalidated`. It waits for the session's own finalization, skips active turns, team
+  members (the team reconciler owns their tasks) and sessions whose last run did not complete, the same
+  conditions as the run-end path.
+- `SessionWakeupService` emits `session:wakeups_changed` on every state change. It cancels wake-ups when
+  `task:updated` reports a status other than IN_PROGRESS (re-reading the task first), and again at
+  delivery time if the task is not IN_PROGRESS. It also releases a SERVICE_EXIT wait whose service has
+  been inactive for more than 15 s without an exit push, using the persisted service state. Without
+  this, a missed push (server restart, a stop racing the exit handler, an exit between the service
+  lookup and the wait being stored) would keep the task in progress forever. Such notifications say that
+  Agent Tower did not observe the exit, and do not report a stale exit code for a STOPPED record.
+- `DELETE /api/sessions/:id/wakeups/:wakeupId` cancels one wake-up (browser, internal, or the agent for
+  its own session). The socket event `session:wakeups_changed` refreshes the web view.
+- Web: below the session log, "等待唤醒 (N)" lists each pending wake-up (service exit, timer time, or
+  "wakes when the current turn ends"), its reason, and a cancel button.
+
+### 9.4 Behavior changes to note
+
+- A timer wake-up can be up to 24 h away; the task stays IN_PROGRESS until it fires or is cancelled.
+- Wake-ups that were pending before this change on tasks already moved to IN_REVIEW by the old rule are
+  cancelled with `TASK_NOT_IN_PROGRESS` when they come due, instead of reopening the task.
+- After a failed run, cancelling a wake-up does not move the task to review (the run-end path never
+  advances after a failure either).
+
+### 9.5 Verification
+
+- `session-wakeup.service.test.ts`: cancellation through the durable delivery gate and through
+  `task:updated` (including a stale event for a reopened task), cancellation by id (idempotent,
+  `WAKEUP_ALREADY_FIRED` after delivery), release of a wait whose exit push was missed, and change
+  events. The suite now stops every service instance after each test, because a pump re-arms itself
+  when called while busy and could otherwise deliver the next test's rows through old fakes.
+- `session-manager.lifecycle.test.ts`: "keeps the task in progress while a wake-up or a queued message
+  will resume the session" — the run ends with a pending wake-up (task stays IN_PROGRESS); the wake-up
+  is cancelled while a follow-up is queued (still IN_PROGRESS); the queued message fails (IN_REVIEW,
+  notified exactly once). With the old rule, the first assertion fails with IN_REVIEW.
+- `LogStream.wakeups.test.tsx`: only PENDING/READY wake-ups are listed; cancel calls the new route.
+- Server and web type checks; socket gateway, task service, task routes, MCP workspace services and
+  LogStream suites pass. Pre-existing failures that also fail on the base commit on this host: the two
+  ACP resend lifecycle cases (flaky), the cross-directory conflict and "freezes the exact submitted user
+  body" delivery cases (section 8.3), and eight team-room cases in `team-reconciler.service.test.ts`
+  (team-run creation returns 400).
