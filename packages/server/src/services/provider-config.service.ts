@@ -680,7 +680,15 @@ function applyCodexApiBaseUrl<T extends Pick<Provider, 'agentType' | 'env' | 'co
     return { provider: { ...provider, env, settings: updated.settings }, diagnostics: [] };
   }
 
-  if (connection.providerKind === 'native') {
+  // An unconfigured Codex Provider is native by default, but its simplified
+  // URL field is still the supported way to opt into an API connection. A
+  // named native model provider (for example ollama) owns its URL in Codex's
+  // model_providers table and must keep rejecting this shorthand edit.
+  if (
+    connection.providerKind === 'native'
+    && connection.modelProviderId
+    && connection.modelProviderId !== 'openai'
+  ) {
     return {
       provider,
       diagnostics: [{
@@ -688,6 +696,17 @@ function applyCodexApiBaseUrl<T extends Pick<Provider, 'agentType' | 'env' | 'co
         code: 'CONFLICT',
         message: `API URL for native Codex model provider '${connection.modelProviderId}' is managed by Codex settings`,
       }],
+    };
+  }
+
+  if (connection.providerKind === 'native') {
+    return {
+      provider: {
+        ...provider,
+        env,
+        settings: updateTomlString(provider.settings, 'openai_base_url', normalizedValue || undefined),
+      },
+      diagnostics: [],
     };
   }
 

@@ -163,7 +163,13 @@ export function projectCodexAcpProvider(
     }
   }
 
-  if (modelProviderId) {
+  // Native Codex providers already carry their model selection in the
+  // persisted TOML (or in Codex's own config/auth files).  Re-projecting the
+  // selection through MODEL_PROVIDER would turn an otherwise native launch
+  // into an API launch and can override the user's Codex login.  Explicit
+  // built-in/custom connections still need the launch-time override because
+  // their effective URL/credential is owned by the Tower Provider.
+  if (modelProviderId && connection.providerKind !== 'native') {
     codexConfig.model_provider = modelProviderId;
     environment.MODEL_PROVIDER = modelProviderId;
   }

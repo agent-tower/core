@@ -50,10 +50,43 @@ describe('AcpRuntimeDriver', () => {
       ...builtInProvider!,
       settings: 'model_reasoning_effort = "high"\n',
     }, {});
-    expect(JSON.parse(projection.environment.CODEX_CONFIG!)).toMatchObject({
+    const config = JSON.parse(projection.environment.CODEX_CONFIG!) as Record<string, unknown>;
+    expect(config).toMatchObject({
       model_context_window: 800000,
       model_reasoning_effort: 'high',
     });
+    expect(config).not.toHaveProperty('model_provider');
+    expect(config).not.toHaveProperty('openai_base_url');
+    expect(projection.environment).not.toHaveProperty('MODEL_PROVIDER');
+  });
+
+  it('keeps the native Codex configuration when no API URL is configured', () => {
+    const builtInProvider = getDefaultProviders().find(provider => provider.id === 'codex-acp-default');
+    expect(builtInProvider).toBeDefined();
+
+    const projection = projectCodexAcpProvider({
+      ...builtInProvider!,
+      config: { model: 'gpt-native-login' },
+      env: {},
+      settings: '',
+    }, {
+      MODEL_PROVIDER: 'stale-provider',
+      OPENAI_BASE_URL: 'https://stale.example/v1',
+      OPENAI_API_KEY: 'stale-api-key',
+      CODEX_API_KEY: 'stale-codex-key',
+    });
+
+    const config = JSON.parse(projection.environment.CODEX_CONFIG!);
+    expect(config).toMatchObject({
+      model: 'gpt-native-login',
+      model_context_window: 800000,
+    });
+    expect(config).not.toHaveProperty('model_provider');
+    expect(config).not.toHaveProperty('openai_base_url');
+    expect(projection.environment).not.toHaveProperty('MODEL_PROVIDER');
+    expect(projection.environment).not.toHaveProperty('OPENAI_BASE_URL');
+    expect(projection.environment).not.toHaveProperty('OPENAI_API_KEY');
+    expect(projection.environment).not.toHaveProperty('CODEX_API_KEY');
   });
 
   it.each([0, 123456])('preserves an explicit Codex ACP context window of %i', (modelContextWindow) => {

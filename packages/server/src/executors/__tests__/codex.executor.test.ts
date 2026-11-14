@@ -309,6 +309,24 @@ describe('Codex Provider runtime connection snapshots', () => {
     expect(runtime.args.some(arg => arg.startsWith('service_tier='))).toBe(false);
   });
 
+  it('uses the Codex model configuration when no API address is configured', () => {
+    const provider = createProvider({
+      name: 'Codex model configuration',
+      agentType: AgentType.CODEX,
+      env: {},
+      config: {},
+      settings: 'model_provider = "openai"\nmodel = "model-from-codex-config"\n',
+      isDefault: false,
+    });
+
+    const runtime = inspectRuntime(getExecutorByProvider(provider.id)!);
+
+    expect(runtime.args).toContain('model="model-from-codex-config"');
+    expect(runtime.args.filter(arg => arg === 'model_provider="openai"')).toHaveLength(1);
+    expect(runtime.args.some(arg => arg.startsWith('openai_base_url='))).toBe(false);
+    expect(runtime.args.some(arg => arg.startsWith('model_providers.'))).toBe(false);
+  });
+
   it.each([
     [AgentType.CLAUDE_CODE, { dangerouslySkipPermissions: true }],
     [AgentType.GEMINI_CLI, { yolo: true }],

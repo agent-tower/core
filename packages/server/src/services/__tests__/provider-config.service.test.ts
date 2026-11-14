@@ -235,6 +235,36 @@ describe('provider config mapper', () => {
     },
   );
 
+  it('leaves an unconfigured Codex provider on the native model configuration', () => {
+    const connection = resolveEffectiveProviderConnection({
+      agentType: AgentType.CODEX,
+      env: {},
+      settings: 'model = "gpt-from-codex-config"\n',
+    });
+
+    expect(connection).toMatchObject({
+      protocol: null,
+      providerKind: 'native',
+      source: 'codex-native',
+      diagnostics: [],
+    });
+    expect(connection.modelProviderId).toBeUndefined();
+    expect(connection.baseUrl).toBeUndefined();
+    expect(connection.secret).toBeUndefined();
+  });
+
+  it('allows the simplified URL to opt an unconfigured Codex provider into the API', () => {
+    const result = mapSimpleToAdvanced({
+      agentType: AgentType.CODEX,
+      env: {},
+      config: {},
+      settings: undefined,
+    }, { apiBaseUrl: 'https://api.example/v1' });
+
+    expect(result.env).toEqual({});
+    expect(result.settings).toContain('openai_base_url = "https://api.example/v1"');
+  });
+
   it('rejects a simplified URL edit for a native Codex provider without rewriting its settings', () => {
     const settings = 'model_provider = "ollama"\n';
     const result = normalizeProviderDraft({

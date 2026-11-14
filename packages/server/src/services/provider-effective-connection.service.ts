@@ -97,9 +97,10 @@ function resolveCodexConnection(
   if (rawProviderId !== undefined && typeof rawProviderId !== 'string') {
     diagnostics.push(diagnostic('settings', 'INVALID_TYPE', 'model_provider must be a string'));
   }
-  const modelProviderId = typeof rawProviderId === 'string' && rawProviderId.trim()
+  const configuredModelProviderId = typeof rawProviderId === 'string' && rawProviderId.trim()
     ? rawProviderId.trim()
-    : 'openai';
+    : undefined;
+  const modelProviderId = configuredModelProviderId ?? 'openai';
 
   if (modelProviderId === 'openai') {
     const rawBaseUrl = settings.openai_base_url;
@@ -110,9 +111,25 @@ function resolveCodexConnection(
       ? rawBaseUrl.trim()
       : undefined;
     const legacyBaseUrl = provider.env.OPENAI_BASE_URL?.trim() || undefined;
+    const secret = provider.env.OPENAI_API_KEY;
+
+    // With neither an API URL nor an API key, leave connection selection to
+    // Codex itself. This preserves ChatGPT login and any model provider from
+    // the user's Codex configuration instead of forcing the official API.
+    if (!canonicalBaseUrl && !legacyBaseUrl && !secret) {
+      return {
+        agentType: provider.agentType,
+        protocol: null,
+        providerKind: 'native',
+        ...(configuredModelProviderId ? { modelProviderId: configuredModelProviderId } : {}),
+        source: 'codex-native',
+        legacyBaseUrl: false,
+        diagnostics,
+      };
+    }
+
     const baseUrl = canonicalBaseUrl ?? legacyBaseUrl ?? DEFAULT_OPENAI_BASE_URL;
     diagnostics.push(...validateHttpBaseUrl(baseUrl));
-    const secret = provider.env.OPENAI_API_KEY;
     if (!isOfficialOpenAiBaseUrl(baseUrl)) {
       return {
         agentType: provider.agentType,
