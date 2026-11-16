@@ -95,7 +95,7 @@ export async function translationRoutes(app: FastifyInstance): Promise<void> {
   }));
   app.post<{ Params: { id: string } }>('/message-deliveries/:id/actions', request => safeTranslationRequest(async () => {
     await requireTranslationOwner(request);
-    const body = parseRequest(z.object({ action: z.enum(['retry_translation', 'send_original', 'retry_delivery', 'cancel', 'confirm_not_sent', 'end_unknown']), expectedRevision: z.number().int().positive(), actionId: z.string().uuid() }).strict(), request.body);
+    const body = parseRequest(z.object({ action: z.enum(['retry_translation', 'send_original', 'retry_delivery', 'cancel', 'confirm_not_sent', 'end_unknown', 'stop_and_send']), expectedRevision: z.number().int().positive(), actionId: z.string().uuid() }).strict(), request.body);
     return getMessageDeliveryService().action(request.params.id, body.action, body.expectedRevision, body.actionId);
   }));
   app.get<{ Params: { id: string } }>('/sessions/:id/translations', request => safeTranslationRequest(async () => {

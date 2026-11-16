@@ -80,6 +80,17 @@ async function taskSession(prompt = 'First user prose', retryTask = false) {
   return { session, task, workspace };
 }
 async function action(id: string, name: Parameters<MessageDeliveryService['action']>[1], actionId = randomUUID()) { return delivery.action(id, name, (await row(id)).revision, actionId); }
+async function blockedSystemFollowup() {
+  await setEnabled(false);
+  const { session } = await taskSession();
+  loseConfirmation = true;
+  const blocked = await delivery.submitSession({ sessionId: session.id, message: 'Background tests exited', systemEvent: true });
+  await until(async () => (await row(blocked.operationId)).state === 'DELIVERY_UNKNOWN');
+  loseConfirmation = false;
+  const selected = await delivery.submitSession({ sessionId: session.id, message: 'Send this message now' });
+  await until(async () => (await row(selected.operationId)).state === 'WAITING_PREDECESSOR');
+  return { session, blocked, selected };
+}
 async function conflictToken(workspace: { id: string; taskId: string; worktreePath: string }, strategy: 'squash' | 'no_ff' | 'rebase') {
   const task = await db.task.findUniqueOrThrow({ where: { id: workspace.taskId } });
   const target = strategy === 'rebase' ? workspace : await db.workspace.create({ data: { taskId: task.id, branchName: 'main', worktreePath: path.join(dir, `target-${randomUUID()}`) } });
@@ -184,6 +195,232 @@ describe('owner delivery: real SQLite, controlled HTTP and SessionManager → CL
     const b = await delivery.submitSession({ sessionId: session.id, message: 'Blocked after unknown' }); await until(() => requests.length === 2); respond(1);
     await until(async () => (await row(b.operationId)).state === 'WAITING_PREDECESSOR'); expect(writes).toHaveLength(1);
     await action(a.operationId, 'end_unknown'); await until(async () => (await row(b.operationId)).state === 'SENT'); expect(writes).toHaveLength(2);
+  });
+
+  it('stop-and-send ends an unknown system predecessor once and preserves the selected translation, attachments and identity', async () => {
+    await setEnabled(false);
+    const { session } = await taskSession();
+    loseConfirmation = true;
+    const blocked = await delivery.submitSession({ sessionId: session.id, message: 'Background tests exited', systemEvent: true });
+    await until(async () => (await row(blocked.operationId)).state === 'DELIVERY_UNKNOWN');
+    loseConfirmation = false;
+    await setEnabled(true);
+    const attachmentPath = path.join(dir, 'stop-and-send.txt'); fs.writeFileSync(attachmentPath, 'attachment body');
+    const file = await db.attachment.create({ data: { originalName: 'stop-and-send.txt', storagePath: attachmentPath, mimeType: 'text/plain', sizeBytes: 15, hash: randomUUID() } });
+    const clientSubmissionId = randomUUID();
+    const selected = await delivery.submitSession({ sessionId: session.id, clientSubmissionId, message: 'Selected user prose', providerId: 'test-provider', attachmentIds: [file.id] });
+    await until(() => requests.length === 1); respond(0);
+    await until(async () => (await row(selected.operationId)).state === 'WAITING_PREDECESSOR');
+    const before = await row(selected.operationId);
+    const actionId = randomUUID();
+    const stop = vi.spyOn(manager, 'stop');
+    try {
+      await delivery.action(selected.operationId, 'stop_and_send', before.revision, actionId);
+      await until(async () => (await row(selected.operationId)).state === 'SENT');
+      expect(await row(blocked.operationId)).toMatchObject({ state: 'CANCELLED', sentAt: null });
+      expect(await db.deliveryReceipt.findUniqueOrThrow({ where: { deliveryId: blocked.operationId } })).toMatchObject({ phase: 'UNKNOWN', submittedAt: null });
+      expect(await row(selected.operationId)).toMatchObject({ state: 'SENT', clientSubmissionId, acceptedText: before.acceptedText, actualSentText: before.acceptedText, sentMode: 'TRANSLATED', attachmentIds: before.attachmentIds, intent: before.intent });
+      expect(await db.deliveryReceipt.findUniqueOrThrow({ where: { deliveryId: selected.operationId } })).toMatchObject({ phase: 'SUBMITTED' });
+      expect(writes).toHaveLength(2); expect(writes[1]).toContain('English Selected user prose'); expect(writes[1]).toContain('stop-and-send.txt');
+      await delivery.action(selected.operationId, 'stop_and_send', before.revision, actionId);
+      expect(stop).toHaveBeenCalledTimes(1); expect(writes).toHaveLength(2);
+      expect(await db.deliveryAction.count({ where: { actionId } })).toBe(1);
+      expect(await db.messageDelivery.count({ where: { clientSubmissionId } })).toBe(1);
+    } finally { stop.mockRestore(); }
+  });
+
+  it('stop-and-send interrupts an active conversation, cancels legacy predecessors and keeps later messages behind the selected turn', async () => {
+    await setEnabled(false);
+    const first = await delivery.createConversation({ prompt: 'Active conversation turn', providerId: 'test-provider' });
+    await until(async () => (await row(first.operationId)).state === 'SENT');
+    const legacy = await db.conversationTurn.create({ data: { sessionId: first.sessionId, message: 'Old legacy turn must not run', queuedAt: new Date(Date.now() - 1000) } });
+    const selected = await delivery.submitSession({ sessionId: first.sessionId, message: 'Selected conversation turn' });
+    await until(async () => (await row(selected.operationId)).state === 'ACCEPTED');
+    const later = await delivery.submitSession({ sessionId: first.sessionId, message: 'Keep the later conversation turn' });
+    await until(async () => (await row(later.operationId)).state === 'WAITING_PREDECESSOR');
+    await action(selected.operationId, 'stop_and_send');
+    await until(async () => (await row(selected.operationId)).state === 'SENT');
+    expect(pipes[0].exited).toBe(true); expect(pipes[1].exited).toBe(false);
+    expect(writes).toHaveLength(2); expect(writes[1]).toContain('Selected conversation turn');
+    expect((await row(first.operationId)).state).toBe('SENT');
+    expect(await db.conversationTurn.findUniqueOrThrow({ where: { id: legacy.id } })).toMatchObject({ status: 'CANCELLED', deliveryId: null });
+    expect((await row(later.operationId)).state).not.toBe('CANCELLED');
+    pipes[1].finish();
+    // The raw CLI transport also waits for output EOF after the process exits.
+    (pipes[1].duplexListener as ((event: { type: string }) => void) | undefined)?.({ type: 'eof' });
+    await until(async () => (await row(later.operationId)).state === 'SENT');
+    expect(writes).toHaveLength(3); expect(writes[2]).toContain('Keep the later conversation turn');
+    expect(await db.conversationTurn.count({ where: { deliveryId: selected.operationId } })).toBe(1);
+  });
+
+  it('stop-and-send leaves an accepted conversation queued when cleanup still fails after an interrupted stop', async () => {
+    await setEnabled(false);
+    const first = await delivery.createConversation({ prompt: 'Prior conversation turn', providerId: 'test-provider' });
+    await until(async () => (await row(first.operationId)).state === 'SENT');
+    const selected = await delivery.submitSession({ sessionId: first.sessionId, message: 'Preserve this accepted input' });
+    await until(async () => (await row(selected.operationId)).state === 'ACCEPTED');
+    const before = await row(selected.operationId);
+    const actionId = randomUUID();
+    const coordinator = (manager as unknown as { runtimeCoordinator: { retryDisposedSessionCleanup: (id: string) => Promise<boolean> } }).runtimeCoordinator;
+    const cleanup = vi.spyOn(coordinator, 'retryDisposedSessionCleanup').mockRejectedValue(new Error('Cleanup owner is still pending'));
+    const originalStop = manager.stop.bind(manager);
+    const stop = vi.spyOn(manager, 'stop').mockImplementationOnce(async (...args) => {
+      // Let the active worker unwind, then fail the stop boundary. Its resumed
+      // successor must preserve ACCEPTED when the cleanup owner still rejects.
+      await originalStop(...args);
+      throw new Error('Runtime cleanup is still pending');
+    });
+    try {
+      await expect(delivery.action(selected.operationId, 'stop_and_send', before.revision, actionId)).rejects.toThrow('cleanup');
+      await until(() => cleanup.mock.calls.length > 0);
+      await manager.waitForConversationQueueIdle(first.sessionId);
+      expect(await row(selected.operationId)).toMatchObject({ state: 'ACCEPTED', revision: before.revision });
+      expect(await db.conversationTurn.findUniqueOrThrow({ where: { deliveryId: selected.operationId } })).toMatchObject({ status: 'QUEUED' });
+      expect(await db.deliveryReceipt.findUnique({ where: { deliveryId: selected.operationId } })).toBeNull();
+      expect(writes).toHaveLength(1);
+      cleanup.mockRestore();
+      await delivery.action(selected.operationId, 'stop_and_send', before.revision, actionId);
+      await until(async () => (await row(selected.operationId)).state === 'SENT');
+      expect(writes).toHaveLength(2); expect(writes[1]).toContain('Preserve this accepted input');
+    } finally { cleanup.mockRestore(); stop.mockRestore(); }
+  });
+
+  it('stop-and-send retains the predecessor barrier when cleanup fails and allows the same action to retry', async () => {
+    const { blocked, selected } = await blockedSystemFollowup();
+    const before = await row(selected.operationId);
+    const predecessor = await row(blocked.operationId);
+    const actionId = randomUUID();
+    const stop = vi.spyOn(manager, 'stop').mockRejectedValueOnce(new Error('Runtime cleanup is still pending'));
+    try {
+      await expect(delivery.action(selected.operationId, 'stop_and_send', before.revision, actionId)).rejects.toThrow('cleanup');
+      expect(await row(selected.operationId)).toMatchObject({ state: before.state, revision: before.revision });
+      expect(await row(blocked.operationId)).toMatchObject({ state: predecessor.state, revision: predecessor.revision });
+      expect(await db.deliveryAction.count({ where: { actionId } })).toBe(0);
+      expect(writes).toHaveLength(1);
+      await delivery.action(selected.operationId, 'stop_and_send', before.revision, actionId);
+      await until(async () => (await row(selected.operationId)).state === 'SENT');
+      expect(writes).toHaveLength(2); expect(stop).toHaveBeenCalledTimes(2);
+    } finally { stop.mockRestore(); }
+  });
+
+  it('stop-and-send blocks claims and competing actions while stopping but accepts later submissions without cancelling them', async () => {
+    const { session, blocked, selected } = await blockedSystemFollowup();
+    let releaseStop!: () => void;
+    const stopping = new Promise<void>(resolve => { releaseStop = resolve; });
+    const originalStop = manager.stop.bind(manager);
+    const stop = vi.spyOn(manager, 'stop').mockImplementation(async (...args) => { await stopping; return originalStop(...args); });
+    let operation: Promise<unknown> | undefined;
+    try {
+      operation = action(selected.operationId, 'stop_and_send');
+      await until(() => stop.mock.calls.length === 1);
+      const later = await delivery.submitSession({ sessionId: session.id, message: 'Later input during stop' });
+      expect(await delivery.claim(selected.operationId)).toBeNull();
+      expect(await delivery.claim(later.operationId)).toBeNull();
+      await expect(action(blocked.operationId, 'end_unknown')).rejects.toMatchObject({ statusCode: 409 });
+      await expect(action(selected.operationId, 'cancel')).rejects.toMatchObject({ statusCode: 409 });
+      expect(writes).toHaveLength(1);
+      releaseStop(); await operation;
+      await until(async () => (await row(later.operationId)).state === 'SENT');
+      expect((await row(selected.operationId)).state).toBe('SENT');
+      expect(writes).toHaveLength(3);
+      expect(writes[1]).toContain('Send this message now'); expect(writes[2]).toContain('Later input during stop');
+    } finally { releaseStop(); await operation?.catch(() => undefined); stop.mockRestore(); }
+  });
+
+  it('stop-and-send rejects a stale revision and an already sent target before stopping its runtime', async () => {
+    const { blocked, selected } = await blockedSystemFollowup();
+    const before = await row(selected.operationId);
+    const stop = vi.spyOn(manager, 'stop');
+    try {
+      await expect(delivery.action(selected.operationId, 'stop_and_send', before.revision - 1, randomUUID())).rejects.toMatchObject({ statusCode: 409 });
+      expect(stop).not.toHaveBeenCalled(); expect((await row(blocked.operationId)).state).toBe('DELIVERY_UNKNOWN');
+      await action(blocked.operationId, 'end_unknown');
+      await until(async () => (await row(selected.operationId)).state === 'SENT');
+      await expect(action(selected.operationId, 'stop_and_send')).rejects.toMatchObject({ statusCode: 409 });
+      expect(stop).not.toHaveBeenCalled(); expect(writes).toHaveLength(2); expect(pipes.at(-1)!.exited).toBe(false);
+    } finally { stop.mockRestore(); }
+  });
+
+  it.each(['successful replay', 'stale request'])('stop-and-send %s cannot pause a newer turn while it is preparing to launch', async mode => {
+    const { session, selected } = await blockedSystemFollowup();
+    const before = await row(selected.operationId);
+    const actionId = randomUUID();
+    let releasePrepare!: () => void;
+    let releaseValidation!: () => void;
+    let validationEntered!: () => void;
+    const preparing = new Promise<void>(resolve => { releasePrepare = resolve; });
+    const validating = new Promise<void>(resolve => { releaseValidation = resolve; });
+    const entered = new Promise<void>(resolve => { validationEntered = resolve; });
+    const permissions = (manager as unknown as { executionPermissions: { prepare: () => Promise<void> } }).executionPermissions;
+    const prepare = vi.spyOn(permissions, 'prepare').mockImplementation(() => preparing);
+    const stop = vi.spyOn(manager, 'stop');
+    let pauseValidation = false;
+    const originalAssertSession = delivery.assertSession.bind(delivery);
+    const validate = vi.spyOn(delivery, 'assertSession').mockImplementation(async (...args) => {
+      const result = await originalAssertSession(...args);
+      if (pauseValidation) { validationEntered(); await validating; }
+      return result;
+    });
+    let replay: Promise<unknown> | undefined;
+    try {
+      await delivery.action(selected.operationId, 'stop_and_send', before.revision, actionId);
+      await until(() => prepare.mock.calls.length === 1);
+      expect((await row(selected.operationId)).state).toBe('DISPATCHING');
+      expect(writes).toHaveLength(1);
+      pauseValidation = true;
+      replay = delivery.action(selected.operationId, 'stop_and_send', mode === 'successful replay' ? before.revision : before.revision - 1, mode === 'successful replay' ? actionId : randomUUID());
+      void replay.catch(() => undefined);
+      await entered;
+      // The newer launch is still inside its preparation await. Validation of
+      // a duplicate or obsolete click cannot revoke that admitted launch.
+      expect(() => delivery.assertSessionDispatchAllowed(session.id)).not.toThrow();
+      releasePrepare(); releaseValidation(); pauseValidation = false;
+      if (mode === 'stale request') await expect(replay).rejects.toMatchObject({ statusCode: 409 });
+      else await replay;
+      await until(async () => (await row(selected.operationId)).state === 'SENT');
+      expect(stop).toHaveBeenCalledTimes(1); expect(writes).toHaveLength(2);
+      expect(pipes.at(-1)!.exited).toBe(false);
+    } finally {
+      pauseValidation = false; releasePrepare(); releaseValidation();
+      await replay?.catch(() => undefined);
+      validate.mockRestore(); prepare.mockRestore(); stop.mockRestore();
+    }
+  });
+
+  it.each(['TASK_INITIAL', 'SYSTEM_EVENT', 'TEAM_USER'])('stop-and-send does not apply to a %s target', async origin => {
+    await setEnabled(false);
+    vi.spyOn(delivery, 'pump').mockResolvedValue();
+    const { session } = await taskSession();
+    const selected = await delivery.submitSession({ sessionId: session.id, initial: origin === 'TASK_INITIAL', systemEvent: origin === 'SYSTEM_EVENT', message: 'Not an interruptible user follow-up' });
+    await db.messageDelivery.update({ where: { id: selected.operationId }, data: { origin, state: 'WAITING_PREDECESSOR' } });
+    const stop = vi.spyOn(manager, 'stop');
+    try {
+      await expect(action(selected.operationId, 'stop_and_send')).rejects.toMatchObject({ statusCode: 409 });
+      expect(stop).not.toHaveBeenCalled(); expect(writes).toHaveLength(0);
+    } finally { stop.mockRestore(); }
+  });
+
+  it('stop-and-send uses the owner action endpoint and rejects Agent credentials before stopping anything', async () => {
+    const { selected } = await blockedSystemFollowup();
+    const { translationRoutes } = await import('../../routes/translations.js');
+    const app = Fastify();
+    app.addHook('onRequest', async request => {
+      if (request.headers['x-test-agent']) request.agentTowerAuthKind = 'agent';
+      if (request.headers['x-test-internal']) request.agentTowerAuthKind = 'internal';
+    });
+    await app.register(translationRoutes, { prefix: '/api' });
+    const stop = vi.spyOn(manager, 'stop');
+    try {
+      const url = `/api/message-deliveries/${selected.operationId}/actions`;
+      const payload = { action: 'stop_and_send', expectedRevision: (await row(selected.operationId)).revision, actionId: randomUUID() };
+      expect((await app.inject({ method: 'POST', url, payload, headers: { 'x-test-agent': '1' } })).statusCode).toBe(403);
+      expect((await app.inject({ method: 'POST', url, payload, headers: { origin: 'https://foreign.example' } })).statusCode).toBe(403);
+      expect(stop).not.toHaveBeenCalled();
+      const response = await app.inject({ method: 'POST', url, payload, headers: { 'x-test-internal': '1' } });
+      expect(response.statusCode, response.body).toBe(200);
+      await until(async () => (await row(selected.operationId)).state === 'SENT');
+      expect(stop).toHaveBeenCalledTimes(1); expect(writes).toHaveLength(2);
+    } finally { stop.mockRestore(); await app.close(); }
   });
 
   it('durable dispatch claim beats cancel and close; SENT requires its ACK, not process started', async () => {
@@ -629,7 +866,8 @@ describe('owner delivery: real SQLite, controlled HTTP and SessionManager → CL
     await until(async () => (await row(first.operationId)).state === 'SENT');
     expect(requests).toHaveLength(0);
     expect((await row(first.operationId)).actualSentText).toBe(text);
-    expect(writes).toEqual([appendAgentOutputIntentInstructions(buildWorkspaceRuntimePrompt(session, text))]);
+    const executionRecord = await db.session.findUniqueOrThrow({ where: { id: session.id }, include: { workspace: { include: { task: true } } } });
+    expect(writes).toEqual([appendAgentOutputIntentInstructions(buildWorkspaceRuntimePrompt(executionRecord, text))]);
   });
 
   it.each([['squash', false], ['no_ff', false], ['rebase', false], ['squash', true], ['no_ff', true], ['rebase', true]] as const)('preserves complete cross-worktree %s conflict instructions (translation enabled: %s)', async (strategy, enabled) => {

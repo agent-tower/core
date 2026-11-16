@@ -19,6 +19,7 @@ import { useStartSession, useSendMessage } from '../use-sessions'
 import { useCreateConversation, useSendConversationMessage } from '../use-conversations'
 import { useCreateTaskTeamRun } from '../use-team-run'
 import { useOutgoingSubmissions } from '../outgoing-submissions'
+import { queryKeys } from '../query-keys'
 
 vi.mock('use-stick-to-bottom', async () => {
   const React = await import('react')
@@ -267,6 +268,69 @@ describe('ordinary submission feedback through production hooks, HTTP and query 
 })
 
 describe('durable feedback and executable recovery', () => {
+  it.each([
+    ['TASK_FOLLOWUP', 'WAITING_PREDECESSOR'],
+    ['CONVERSATION', 'ACCEPTED'],
+  ] as const)('can stop earlier work and send a queued %s message', async (origin, state) => {
+    stored = { ...delivery(origin), state }
+    await mount(<LogStream sessionId="session" logs={[]} />)
+    expect(host.textContent).toContain('Queued, not sent')
+    expect(host.textContent).toContain('Stops the current turn and ends earlier pending sends in this conversation. Later messages stay queued.')
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    await act(async () => button('Stop earlier work and send').click()); await flush()
+    expect(button('Stopping and sending…').disabled).toBe(true)
+    expect(button('Stopping and sending…').getAttribute('aria-busy')).toBe('true')
+    expect(button('Cancel').disabled).toBe(true)
+    const request = requests.find(item => item.method === 'POST')!
+    expect(request.path).toBe('/message-deliveries/operation/actions')
+    expect(request.body).toEqual({ action: 'stop_and_send', expectedRevision: 1, actionId: expect.any(String) })
+    stored = { ...stored!, state: 'SENT', sentAt: new Date().toISOString(), actualSentText: stored!.acceptedText, revision: 3 }
+    await act(async () => submit.resolve(json(response(stored!)))); await flush()
+    expectQuiet()
+    for (const queryKey of [queryKeys.sessions.detail('session'), queryKeys.sessions.runtime('session'), queryKeys.sessions.wakeups('session')]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey })
+    }
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: origin === 'CONVERSATION' ? queryKeys.conversations.all : queryKeys.tasks.all })
+    if (origin === 'TASK_FOLLOWUP') expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.workspaces.all })
+  })
+
+  it('refreshes stop state after response loss and retries the same action UUID after remount', async () => {
+    stored = { ...delivery(), state: 'WAITING_PREDECESSOR' }
+    await mount(<LogStream sessionId="session" logs={[]} />)
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      await act(async () => button('Stop earlier work and send').click()); await flush()
+      const first = requests.find(item => item.method === 'POST')!
+      expect(timeout).toHaveBeenCalledWith(45_000)
+      await act(async () => submit.reject(new DOMException('Stop response timed out', 'TimeoutError'))); await flush()
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Stop and send did not finish. Check the updated status and retry.')
+      expect(button('Stop earlier work and send').disabled).toBe(false)
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions.runtime('session') })
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions.detail('session') })
+      await mount(<></>); await mount(<LogStream sessionId="session" logs={[]} />)
+      submit = deferred<Response>()
+      await act(async () => button('Stop earlier work and send').click()); await flush()
+      expect(requests.filter(item => item.method === 'POST')[1].body).toEqual(first.body)
+      stored = { ...stored!, state: 'READY', revision: 2 }
+      await act(async () => submit.resolve(json(response(stored!)))); await flush()
+      expectQuiet()
+    } finally { timeout.mockRestore() }
+  })
+
+  it.each([
+    ['TEAM_USER', 'WAITING_PREDECESSOR'],
+    ['TEAM_INITIAL', 'WAITING_PREDECESSOR'],
+    ['TASK_INITIAL', 'WAITING_PREDECESSOR'],
+    ['SYSTEM_EVENT', 'WAITING_PREDECESSOR'],
+    ['TASK_FOLLOWUP', 'DELIVERY_UNKNOWN'],
+    ['TASK_FOLLOWUP', 'DISPATCHING'],
+  ] as const)('does not offer stop and send for %s / %s', async (origin, state) => {
+    await mount(<MessageDeliveryFeedback delivery={{ ...delivery(origin), state }} />)
+    expect(host.textContent).not.toContain('Stop earlier work and send')
+    expect(requests.some(item => item.method === 'POST')).toBe(false)
+  })
+
   it.each(['WAITING_PREDECESSOR', 'ACCEPTED', 'WAITING_TASK_INPUT', 'DELIVERY_FAILED', 'PAUSED_DISABLED', 'DELIVERY_UNKNOWN'] as const)('keeps generic %s feedback for original sends without translation actions', async state => {
     stored = { ...delivery(), state }
     await mount(<LogStream sessionId="session" logs={[]} />)

@@ -216,7 +216,7 @@ export interface TeamRunTranslationInvalidatedPayload {
 export type TranslationInvalidatedPayload = SessionTranslationInvalidatedPayload | TeamRunTranslationInvalidatedPayload;
 
 export type MessageDeliveryState = 'WAITING_TRANSLATION' | 'WAITING_TASK_INPUT' | 'READY' | 'WAITING_PREDECESSOR' | 'ACCEPTED' | 'DISPATCHING' | 'SENT' | 'TRANSLATION_FAILED' | 'PAUSED_DISABLED' | 'DELIVERY_FAILED' | 'DELIVERY_UNKNOWN' | 'CANCELLED';
-export type MessageDeliveryAction = 'retry_translation' | 'send_original' | 'retry_delivery' | 'cancel' | 'confirm_not_sent' | 'end_unknown';
+export type MessageDeliveryAction = 'retry_translation' | 'send_original' | 'retry_delivery' | 'cancel' | 'confirm_not_sent' | 'end_unknown' | 'stop_and_send';
 /** Persisted delivery origins shared by the writer, API DTOs and startup checks. */
 export const SESSION_MESSAGE_DELIVERY_ORIGINS = ['TASK_INITIAL', 'TASK_FOLLOWUP', 'SYSTEM_EVENT', 'CONVERSATION'] as const;
 export const TEAM_MESSAGE_DELIVERY_ORIGINS = ['TEAM_USER', 'TEAM_INITIAL'] as const;

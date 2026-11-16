@@ -20,6 +20,9 @@ export function MessageDeliveryFeedback({ delivery: item }: { delivery: MessageD
   // A mode alone is insufficient: unresolved translations can carry a default mode.
   // Only frozen accepted content proves that this operation is sending the original.
   const originalAccepted = item.sentMode === 'ORIGINAL' && item.acceptedText !== null
+  const canStopAndSend = ['TASK_FOLLOWUP', 'CONVERSATION'].includes(item.origin)
+    && ['WAITING_PREDECESSOR', 'ACCEPTED'].includes(item.state)
+  const stoppingAndSending = action.isPending && action.variables?.action === 'stop_and_send'
   // Submission feedback belongs on the send button. Durable queues and failures
   // still need their own feedback and recovery, including after a reload.
   if (originalAccepted && !item.lastError && ['READY', 'DISPATCHING'].includes(item.state)) return null
@@ -36,13 +39,15 @@ export function MessageDeliveryFeedback({ delivery: item }: { delivery: MessageD
     : item.state === 'DISPATCHING' ? [] : [
       ...(!originalAccepted && settings.data?.enabled === true && ['TRANSLATION_FAILED', 'PAUSED_DISABLED'].includes(item.state) ? [['retry_translation', 'Retry translation'] as [MessageDeliveryAction, string]] : []),
       ...(['DELIVERY_FAILED', 'PAUSED_DISABLED'].includes(item.state) && item.acceptedText !== null ? [['retry_delivery', 'Retry delivery'] as [MessageDeliveryAction, string]] : []),
+      ...(canStopAndSend ? [['stop_and_send', 'Stop earlier work and send'] as [MessageDeliveryAction, string]] : []),
       ...(!originalAccepted && ['TRANSLATION_FAILED', 'PAUSED_DISABLED', 'WAITING_TRANSLATION', 'WAITING_TASK_INPUT', 'READY', 'WAITING_PREDECESSOR', 'ACCEPTED'].includes(item.state) ? [['send_original', 'Send original'] as [MessageDeliveryAction, string]] : []),
       ['cancel', 'Cancel'] as [MessageDeliveryAction, string],
     ]
   return <div className="space-y-1 text-xs text-muted-foreground" data-delivery-state={item.state} aria-live="polite">
     <p>{t(item.state === 'DELIVERY_UNKNOWN' ? 'Delivery result unknown. Verify before retrying.' : ['ACCEPTED', 'WAITING_PREDECESSOR'].includes(item.state) ? 'Queued, not sent' : item.state === 'TRANSLATION_FAILED' ? 'Translation failed' : item.state === 'PAUSED_DISABLED' ? 'Sending paused' : item.state === 'DELIVERY_FAILED' ? 'Delivery failed' : item.state === 'WAITING_TASK_INPUT' ? 'Waiting for task input' : item.state === 'WAITING_TRANSLATION' ? 'Waiting for translation' : 'Waiting to send')}</p>
     {item.lastError && <p>{item.lastError}</p>}
-    <div className="flex flex-wrap gap-x-3 gap-y-1">{options.map(([name, label]) => <button type="button" key={name} className="underline" disabled={action.isPending} onClick={() => action.mutate({ delivery: item, action: name })}>{t(label)}</button>)}</div>
-    {action.error && <p role="alert" className="text-destructive">{t('Delivery action failed. Refresh and try again.')}</p>}
+    <div className="flex flex-wrap gap-x-3 gap-y-1">{options.map(([name, label]) => <button type="button" key={name} className="underline" disabled={action.isPending} aria-busy={name === 'stop_and_send' && stoppingAndSending} onClick={() => action.mutate({ delivery: item, action: name })}>{t(name === 'stop_and_send' && stoppingAndSending ? 'Stopping and sending…' : label)}</button>)}</div>
+    {canStopAndSend && <p>{t('Stops the current turn and ends earlier pending sends in this conversation. Later messages stay queued.')}</p>}
+    {action.error && <p role="alert" className="text-destructive">{t(action.variables?.action === 'stop_and_send' ? 'Stop and send did not finish. Check the updated status and retry.' : 'Delivery action failed. Refresh and try again.')}</p>}
   </div>
 }

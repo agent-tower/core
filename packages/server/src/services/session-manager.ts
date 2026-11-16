@@ -201,7 +201,16 @@ export interface SendMessageOptions extends InputSubmissionObserver {
 export class SessionManager {
   private deliveryService?: MessageDeliveryService;
   setMessageDeliveryService(service: MessageDeliveryService) { this.deliveryService = service; }
-  resumeConversationQueue(sessionId: string) { this.kickConversationQueue(sessionId); }
+  resumeConversationQueue(sessionId: string) {
+    this.conversationCleanupBlocked.delete(sessionId);
+    this.kickConversationQueue(sessionId);
+  }
+  async waitForConversationQueueIdle(sessionId: string): Promise<void> {
+    await this.conversationQueueWorkers.get(sessionId);
+  }
+  private isConversationQueuePaused(sessionId: string): boolean {
+    return this.deliveryService?.isSessionDispatchPaused(sessionId) ?? false;
+  }
   private translationBoundaryPending = new Set<string>();
   private snapshotFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private snapshotFlushChains = new Map<string, Promise<void>>();
@@ -247,6 +256,7 @@ export class SessionManager {
   private readonly externalSessionPersistence = new Map<string, Promise<void>>();
   /** Durable conversation turns are consumed one at a time per Session. */
   private readonly conversationQueueWorkers = new Map<string, Promise<void>>();
+  private readonly conversationCleanupBlocked = new Set<string>();
   private conversationQueueStopping = false;
   private readonly pendingConversationQueueKicks = new Set<string>();
   private readonly artifactService = new AgentArtifactService();
@@ -738,6 +748,7 @@ export class SessionManager {
       // the runtime admission signal instead of being lost between the gates.
       startOperation.throwIfStopped();
       if (input.deliveryId) this.appendUserMessageEntry(session, input.originalText ?? session.prompt, `user:${input.deliveryId}`, input.deliveryId);
+      this.deliveryService?.assertSessionDispatchAllowed(id);
       await this.startRuntimeTurn(
         session,
         input.prompt ?? session.prompt,
@@ -859,6 +870,7 @@ export class SessionManager {
       // Preserve that lock order, then serialize the runtime mutation itself.
       actionReservation = this.reserveSessionAction(id);
       await actionReservation.previous;
+      this.deliveryService?.assertSessionDispatchAllowed(id);
 
       const session = await this.findSessionExecutionRecord(id);
       if (!session) {
@@ -930,6 +942,7 @@ export class SessionManager {
       if (providerId && providerId !== session.providerId) {
         await this.runtimeCoordinator.disposeSession(id);
       }
+      this.deliveryService?.assertSessionDispatchAllowed(id);
       await this.startRuntimeTurn(
         session,
         message,
@@ -1157,6 +1170,7 @@ export class SessionManager {
 
   private kickConversationQueue(sessionId: string): void {
     if (this.conversationQueueStopping) { this.pendingConversationQueueKicks.add(sessionId); return; }
+    if (this.isConversationQueuePaused(sessionId) || this.conversationCleanupBlocked.has(sessionId)) return;
     if (this.conversationQueueWorkers.has(sessionId)) return;
 
     const worker = new Promise<void>((resolve, reject) => {
@@ -1188,12 +1202,12 @@ export class SessionManager {
   }
 
   private async processConversationQueue(sessionId: string): Promise<void> {
-    while (!this.conversationQueueStopping) {
+    while (!this.conversationQueueStopping && !this.isConversationQueuePaused(sessionId)) {
       const queued = await prisma.conversationTurn.findFirst({
         where: { sessionId, status: CONVERSATION_TURN_QUEUED },
         orderBy: [{ queuedAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
       });
-      if (!queued) return;
+      if (!queued || this.isConversationQueuePaused(sessionId)) return;
 
       const claimed = await prisma.conversationTurn.updateMany({
         where: { id: queued.id, status: CONVERSATION_TURN_QUEUED },
@@ -1205,6 +1219,10 @@ export class SessionManager {
         },
       });
       if (claimed.count !== 1) continue;
+      if (this.isConversationQueuePaused(sessionId)) {
+        await this.requeueConversationTurn(queued.id);
+        return;
+      }
 
       let submission: Awaited<ReturnType<MessageDeliveryService['claim']>> | undefined;
       try {
@@ -1219,7 +1237,7 @@ export class SessionManager {
         console.log(
           `[ConversationQueue] priorTurnReady session=${sessionId} turn=${queued.id} waitMs=${Date.now() - previousTurnWaitStartedAt}`,
         );
-        if (this.conversationQueueStopping) {
+        if (this.conversationQueueStopping || this.isConversationQueuePaused(sessionId)) {
           await this.requeueConversationTurn(queued.id);
           return;
         }
@@ -1227,9 +1245,28 @@ export class SessionManager {
         const session = await this.findSessionExecutionRecord(sessionId);
         if (!session) throw new NotFoundError('Session', sessionId);
         this.ensureExecutionRecordIsLive(session);
+        if (this.isConversationQueuePaused(sessionId)) {
+          await this.requeueConversationTurn(queued.id);
+          return;
+        }
+        // Keep accepted input queued if a previous stop left an owned runtime
+        // awaiting cleanup. Do not consume its delivery claim just to fail it.
+        try {
+          await this.runtimeCoordinator.retryDisposedSessionCleanup(sessionId);
+        } catch (error) {
+          this.conversationCleanupBlocked.add(sessionId);
+          await this.requeueConversationTurn(queued.id);
+          this.logSessionError('conversation.queueCleanup', error, { sessionId });
+          return;
+        }
+        if (this.isConversationQueuePaused(sessionId)) {
+          await this.requeueConversationTurn(queued.id);
+          return;
+        }
         submission = queued.deliveryId ? await this.deliveryService?.claim(queued.deliveryId, queued.deliveryRevision ?? undefined) : undefined;
         if (queued.deliveryId && !submission) {
-          await prisma.conversationTurn.updateMany({ where: { id: queued.id, status: CONVERSATION_TURN_RUNNING, deliveryRevision: queued.deliveryRevision }, data: { status: 'PAUSED' } });
+          if (this.isConversationQueuePaused(sessionId)) await this.requeueConversationTurn(queued.id);
+          else await prisma.conversationTurn.updateMany({ where: { id: queued.id, status: CONVERSATION_TURN_RUNNING, deliveryRevision: queued.deliveryRevision }, data: { status: 'PAUSED' } });
           return;
         }
         const userEntryId = queued.userEntryId ?? `user:${queued.id}`;
@@ -1266,6 +1303,10 @@ export class SessionManager {
         );
       } catch (error) {
         await submission?.settle();
+        if (this.isConversationQueuePaused(sessionId) && !submission) {
+          await this.requeueConversationTurn(queued.id);
+          return;
+        }
         if (this.conversationQueueStopping) {
           if (!queued.deliveryId) await this.requeueConversationTurn(queued.id);
           return;
@@ -1507,6 +1548,7 @@ export class SessionManager {
   private assertPreChildAdmission(admission: RuntimeStartAdmission, session: SessionExecutionRecord): void {
     try {
       admission.throwIfCancelled();
+      this.deliveryService?.assertSessionDispatchAllowed(session.id);
       assertSessionResourceAvailable(session);
     } catch (error) {
       throw markPreChildProcessFailure(error);

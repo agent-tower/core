@@ -1,12 +1,15 @@
 import { retainTaskSubscription } from '@/lib/socket/task-subscription'
 import { useEffect } from 'react'
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { MessageDelivery, MessageDeliveryAction, MessageDeliveryPage, MessageDeliverySubmission } from '@agent-tower/shared'
+import { isSessionMessageDelivery, type MessageDelivery, type MessageDeliveryAction, type MessageDeliveryPage, type MessageDeliverySubmission } from '@agent-tower/shared'
 import { ServerEvents } from '@agent-tower/shared/socket'
 import { apiClient } from '@/lib/api-client'
 import { socketManager } from '@/lib/socket/manager'
 import { cacheDelivery, mergeDeliveryPages, type DeliveryData } from './delivery-cache'
 import { userSubmission } from './user-submission'
+import { queryKeys } from './query-keys'
+
+const STOP_AND_SEND_REQUEST_TIMEOUT_MS = 45_000
 
 export const deliveryKey = (sessionId: string) => ['message-deliveries', sessionId] as const
 export function useMessageDeliveries(sessionId: string, filter: 'pending' | 'sent' = 'pending', scopeType: 'SESSION' | 'TEAM_TASK' = 'SESSION') {
@@ -53,10 +56,30 @@ export function useDeliveryAction(sessionId: string) {
       const input = { action, expectedRevision: delivery.revision }
       return userSubmission(`action:${delivery.id}`, input, body => {
         const { clientSubmissionId, ...rest } = body as typeof input & { clientSubmissionId: string }
-        return apiClient.post<MessageDeliverySubmission>(`/message-deliveries/${delivery.id}/actions`, { ...rest, actionId: clientSubmissionId })
+        return apiClient.post<MessageDeliverySubmission>(`/message-deliveries/${delivery.id}/actions`, { ...rest, actionId: clientSubmissionId }, action === 'stop_and_send'
+          ? { signal: AbortSignal.timeout(STOP_AND_SEND_REQUEST_TIMEOUT_MS) }
+          : undefined)
       })
     },
     onSuccess: result => cacheDelivery(client, result.delivery),
-    onSettled: () => client.invalidateQueries({ queryKey: deliveryKey(sessionId) }),
+    onSettled: (_result, _error, { delivery, action }) => {
+      const refreshes = [client.invalidateQueries({ queryKey: deliveryKey(sessionId) })]
+      if (action === 'stop_and_send' && isSessionMessageDelivery(delivery)) {
+        refreshes.push(
+          client.invalidateQueries({ queryKey: queryKeys.sessions.detail(delivery.sessionId) }),
+          client.invalidateQueries({ queryKey: queryKeys.sessions.runtime(delivery.sessionId) }),
+          client.invalidateQueries({ queryKey: queryKeys.sessions.wakeups(delivery.sessionId) }),
+        )
+        if (delivery.origin === 'CONVERSATION') refreshes.push(client.invalidateQueries({ queryKey: queryKeys.conversations.all }))
+        else refreshes.push(
+          client.invalidateQueries({ queryKey: queryKeys.workspaces.all }),
+          client.invalidateQueries({ queryKey: queryKeys.tasks.all }),
+        )
+      }
+      // A failed stop must release its button even if a recovery GET is slow.
+      // The queries keep refreshing independently and REST remains authoritative.
+      if (action === 'stop_and_send') void Promise.allSettled(refreshes)
+      else return Promise.allSettled(refreshes)
+    },
   })
 }

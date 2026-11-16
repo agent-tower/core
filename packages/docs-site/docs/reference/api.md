@@ -359,6 +359,8 @@ AI 冲突处理的 owner 请求使用 `systemAction: resolve_conflicts` 和 Git 
 
 动作包括 retry_translation、send_original、retry_delivery、cancel。DELIVERY_UNKNOWN 不自动重投，只能在核对未发送后 confirm_not_sent，或 end_unknown 结束操作（Agent 可能已收到）。ACCEPTED 仅为 ConversationTurn 入队，可在 dispatch claim 前取消；DISPATCHING 不能宣称撤回。关闭/重开翻译设置不自动释放之前的暂停项。
 
+`stop_and_send` 仅接受普通 `TASK_FOLLOWUP` / `CONVERSATION` 的 `WAITING_PREDECESSOR` / `ACCEPTED` 消息，要求正文已就绪、翻译配置仍有效。它暂停该 Session 的派发，停止当前轮次并等待进程清理与旧 worker 退出，然后原子结束当前消息之前的未完成投递、保留后续消息，将当前消息交回正常派发流程。前序 UNKNOWN 只结束操作，不重发、不补造发送回执。停止失败不取消前序投递；重复相同 actionId/expectedRevision 不会再次停止新轮次。同一会话并发的其他投递动作返回409，新提交仍可入队。响应仍为 MessageDeliverySubmission，成功受理不代表模型已经回复。
+
 查询和人工动作仅允许现有 owner 策略，拒绝 Agent credential；写入校验同源。
 
 ## 团队用户投递与固定任务输入

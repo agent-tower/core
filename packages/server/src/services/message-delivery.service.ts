@@ -34,6 +34,7 @@ type DispatchClaim = InputSubmissionObserver & { settle: () => Promise<void> };
 type SessionSubmission = { sessionId: string; clientSubmissionId?: string; message?: string; providerId?: string; attachmentIds?: string[]; initial?: boolean; systemAction?: 'resolve_conflicts'; resolutionContextToken?: string; conflictActor?: string; /** Produced by Agent Tower (wake-up), not by a person; skips translation. */ systemEvent?: boolean };
 type Compensation = { generation: number; attempts: number; nextAttemptAt: number };
 type ConflictSubmissions = { active: Set<ConflictAdmission>; uncertain: boolean; revision: number };
+type Interruption = { actionId: string; fingerprint: string; completion: Promise<SessionMessageDeliverySubmission> };
 
 /** Owns submission identity, ordering and transport receipts. Conversation execution stays in its sole turn pump. */
 export class MessageDeliveryService {
@@ -47,6 +48,7 @@ export class MessageDeliveryService {
   private readonly finalTicket = new ConflictAdmissionGate(1, 1);
   private mutationTail: Promise<unknown> = Promise.resolve();
   private readonly active = new Map<string, Promise<void>>();
+  private readonly interruptions = new Map<string, Interruption>();
   // Only claims whose transport has settled enter this queue. A live write waiting for ACK never does.
   private readonly compensations = new Map<string, Compensation>();
   private readonly listeners = new Set<(payload: MessageDeliveryInvalidatedPayload) => void>();
@@ -62,6 +64,10 @@ export class MessageDeliveryService {
     if (payload) for (const fn of this.listeners) { try { fn(payload); } catch { /* REST recovers. */ } }
   }
   private sessionIdFor(row: Row) { requireSessionDelivery(row); return row.sessionId; }
+  isSessionDispatchPaused(sessionId: string): boolean { return this.interruptions.has(sessionId); }
+  assertSessionDispatchAllowed(sessionId: string): void {
+    if (this.isSessionDispatchPaused(sessionId)) throw new ServiceError('Session delivery is being interrupted', 'DELIVERY_INTERRUPTING', 409);
+  }
   async assertSession(sessionId: string, tx: Tx = this.db) {
     const session = await tx.session.findUnique({ where: { id: sessionId }, include: { conversation: true, workspace: { include: { task: { include: { project: true } } } } } });
     if (!session || session.purpose !== 'CHAT' || session.conversation?.deletedAt || session.workspace?.task.deletedAt || session.workspace?.task.project.archivedAt || (!session.conversation && !session.workspace)) throw new ServiceError('Delivery scope not found', 'NOT_FOUND', 404);
@@ -432,6 +438,7 @@ export class MessageDeliveryService {
     if (row.origin === 'TEAM_INITIAL') return this.advanceInitial(row);
     if (row.origin === 'TEAM_USER') return this.advanceTeam(row);
     requireSessionDelivery(row);
+    if (this.isSessionDispatchPaused(row.sessionId)) return;
     try { await this.assertSession(this.sessionIdFor(row)); } catch {
       await this.db.messageDelivery.updateMany({ where: { id: row.id, state: { notIn: ['DISPATCHING', ...terminal] } }, data: { state: 'CANCELLED', lastError: 'SOURCE_DELETED', revision: { increment: 1 } } }); return;
     }
@@ -474,6 +481,7 @@ export class MessageDeliveryService {
         if (intent.retryTask && session.workspace) await this.options.retryTask?.(session.workspace.taskId, session.workspace.id, session.id);
         const message = await appendAttachmentMarkdownContext(row.acceptedText!, JSON.parse(row.attachmentIds), true);
         const originalText = await appendAttachmentMarkdownContext(row.originalText, JSON.parse(row.attachmentIds), true);
+        this.assertSessionDispatchAllowed(row.sessionId);
         if (row.origin === 'TASK_INITIAL' && session.runtimeLaunchClaimCount === 0) await this.sessions.start(row.sessionId, { ...observer, prompt: message, originalText, deliveryId: row.id });
         else await this.sessions.sendMessage(row.sessionId, message, intent.providerId, undefined, { ...observer, originalText, deliveryId: row.id, userEntryId: `user:${row.id}`, ...(intent.systemEvent ? { origin: 'SYSTEM_EVENT' as const } : {}) });
         await observer.settle();
@@ -588,6 +596,7 @@ export class MessageDeliveryService {
     await this.notify(row.id);
   }
   private async canAdvance(tx: Tx, row: Row): Promise<boolean> {
+    if (row.sessionId && this.isSessionDispatchPaused(row.sessionId)) return false;
     const live = await tx.messageDelivery.findUnique({ where: { id: row.id } });
     if (!live || live.revision !== row.revision || ![...ready, 'ACCEPTED'].includes(live.state)) return false;
     const config = await tx.translationSettings.findUniqueOrThrow({ where: { id: 'singleton' } });
@@ -598,7 +607,7 @@ export class MessageDeliveryService {
       if (live.state === 'READY') await tx.messageDelivery.update({ where: { id: row.id }, data: { state: 'WAITING_PREDECESSOR', revision: { increment: 1 } } });
       return false;
     }
-    return true;
+    return !row.sessionId || !this.isSessionDispatchPaused(row.sessionId);
   }
   async claim(id: string, expectedRevision?: number): Promise<DispatchClaim | null> {
     const claimed = await this.transaction(async tx => {
@@ -674,8 +683,9 @@ export class MessageDeliveryService {
       await tx.deliveryReceipt.updateMany({ where: { deliveryId: id, generation, phase: { not: 'SUBMITTED' } }, data: { phase: definitelyNotSubmitted ? 'NOT_SUBMITTED' : 'UNKNOWN' } });
     });
   }
-  async action(id: string, action: MessageDeliveryAction, expectedRevision: number, actionId: string) {
+  async action(id: string, action: MessageDeliveryAction, expectedRevision: number, actionId: string): Promise<MessageDeliverySubmission> {
     const fingerprint = sha(JSON.stringify([id, action, expectedRevision]));
+    if (action === 'stop_and_send') return this.stopAndSend(id, expectedRevision, actionId, fingerprint);
     await this.transaction(async tx => {
       const row = await tx.messageDelivery.findUnique({ where: { id } });
       if (!row) throw new ServiceError('Delivery not found', 'NOT_FOUND', 404);
@@ -683,6 +693,7 @@ export class MessageDeliveryService {
       else await this.assertSession(this.sessionIdFor(row), tx);
       const old = await tx.deliveryAction.findUnique({ where: { actionId } });
       if (old) { if (old.deliveryId !== id || old.fingerprint !== fingerprint) throw conflict(); return; }
+      if (row.sessionId) this.assertSessionDispatchAllowed(row.sessionId);
       if (row.revision !== expectedRevision || terminal.includes(row.state) || row.state === 'DISPATCHING') throw conflict();
       const config = await tx.translationSettings.findUniqueOrThrow({ where: { id: 'singleton' } });
       let data: Prisma.MessageDeliveryUpdateManyMutationInput;
@@ -714,12 +725,89 @@ export class MessageDeliveryService {
     await this.notify(id); this.wake();
     return ['TEAM_USER','TEAM_INITIAL'].includes(updated.origin) ? this.teamResult(id) : this.result(id);
   }
+  private async stopAndSend(id: string, expectedRevision: number, actionId: string, fingerprint: string): Promise<SessionMessageDeliverySubmission> {
+    if (this.closed) throw conflict();
+    const row = await this.db.messageDelivery.findUnique({ where: { id } });
+    if (!row) throw new ServiceError('Delivery not found', 'NOT_FOUND', 404);
+    requireSessionDelivery(row);
+    if (!['TASK_FOLLOWUP', 'CONVERSATION'].includes(row.origin)) throw conflict();
+    const operation = { actionId, fingerprint } as Interruption;
+    const admission = this.transaction(async tx => {
+      // Serialize validation and gate publication with dispatch claims. A stale
+      // click or a successful action replay must never interrupt a newer turn.
+      if (!await this.validateStopAndSend(tx, row, expectedRevision, actionId, fingerprint)) return null;
+      const existing = this.interruptions.get(row.sessionId);
+      if (existing) {
+        if (existing.actionId !== actionId || existing.fingerprint !== fingerprint) throw conflict();
+        return existing;
+      }
+      if (this.closed) throw conflict();
+      this.interruptions.set(row.sessionId, operation);
+      return operation;
+    });
+    operation.completion = admission.then(admitted => admitted === operation
+      ? this.performStopAndSend(row, expectedRevision, actionId, fingerprint)
+      : admitted ? admitted.completion : this.result(row.id)).finally(() => {
+      if (this.interruptions.get(row.sessionId) === operation) {
+        this.interruptions.delete(row.sessionId);
+        if (!this.closed) this.sessions.resumeConversationQueue(row.sessionId);
+        this.wake();
+      }
+    });
+    return operation.completion;
+  }
+  private async validateStopAndSend(tx: Tx, row: Row & { sessionId: string }, expectedRevision: number, actionId: string, fingerprint: string): Promise<boolean> {
+    await this.assertSession(row.sessionId, tx);
+    const old = await tx.deliveryAction.findUnique({ where: { actionId } });
+    if (old) {
+      if (old.deliveryId !== row.id || old.fingerprint !== fingerprint) throw conflict();
+      return false;
+    }
+    const current = await tx.messageDelivery.findUniqueOrThrow({ where: { id: row.id } });
+    if (current.revision !== expectedRevision || !['WAITING_PREDECESSOR', 'ACCEPTED'].includes(current.state) || current.acceptedText === null) throw conflict();
+    const config = await tx.translationSettings.findUniqueOrThrow({ where: { id: 'singleton' } });
+    if (current.enableEpoch !== config.enableEpoch || current.requiresTranslation && !config.enabled) throw conflict();
+    return true;
+  }
+  private async performStopAndSend(row: Row & { sessionId: string }, expectedRevision: number, actionId: string, fingerprint: string): Promise<SessionMessageDeliverySubmission> {
+    const active = new Map(this.active);
+    const preparing = await this.db.messageDelivery.findMany({ where: { sessionId: row.sessionId, id: { in: [...active.keys()] } }, select: { id: true } });
+    await this.sessions.stop(row.sessionId);
+    // A claimed dispatch may still be preparing attachments, or a conversation
+    // worker may be unwinding the stopped turn. Join both before editing rows.
+    await Promise.all(preparing.map(item => active.get(item.id)));
+    await this.sessions.waitForConversationQueueIdle(row.sessionId);
+    if (this.closed) throw conflict();
+    const changed = await this.transaction(async tx => {
+      if (!await this.validateStopAndSend(tx, row, expectedRevision, actionId, fingerprint)) return { ids: [] as string[], sources: [] as Array<{ id: string; generation: number }> };
+      const predecessors = await tx.messageDelivery.findMany({ where: { channelKey: row.channelKey, sequence: { lt: row.sequence }, state: { notIn: terminal } } });
+      const ids = predecessors.map(item => item.id);
+      // Ending an unknown operation says nothing about whether the agent received
+      // it. Preserve its receipt rather than inventing a successful submission.
+      await tx.messageDelivery.updateMany({ where: { id: { in: ids }, state: { notIn: terminal } }, data: { state: 'CANCELLED', lastError: null, revision: { increment: 1 } } });
+      await tx.conversationTurn.updateMany({ where: { sessionId: row.sessionId, OR: [
+        { delivery: { channelKey: row.channelKey, sequence: { lt: row.sequence } } },
+        { deliveryId: null, queuedAt: { lte: row.createdAt } },
+      ], status: { in: ['QUEUED', 'RUNNING', 'FAILED', 'PAUSED'] } }, data: { status: 'CANCELLED', completedAt: new Date() } });
+      const sourceIds = predecessors.flatMap(item => item.translationSourceId ? [item.translationSourceId] : []);
+      await tx.translationSource.updateMany({ where: { id: { in: sourceIds } }, data: { jobState: 'CANCELLED', generation: { increment: 1 }, currentAttemptVersion: { increment: 1 }, effectiveAttemptId: null, nextRetryAt: null } });
+      const sources = await tx.translationSource.findMany({ where: { id: { in: sourceIds } }, select: { id: true, generation: true } });
+      await tx.conversationTurn.updateMany({ where: { deliveryId: row.id, status: { in: ['QUEUED', 'RUNNING', 'FAILED', 'PAUSED'] } }, data: { status: 'PAUSED' } });
+      await tx.messageDelivery.update({ where: { id: row.id }, data: { state: 'READY', lastError: null, revision: { increment: 1 } } });
+      await tx.deliveryAction.create({ data: { actionId, deliveryId: row.id, fingerprint } });
+      return { ids: [...ids, row.id], sources };
+    });
+    for (const source of changed.sources) this.translation.abortSource(source.id, source.generation);
+    await Promise.all(changed.ids.map(id => this.notify(id)));
+    return this.result(row.id);
+  }
   async shutdown() {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     for (const admission of this.admissions) admission.cancel();
     await Promise.all([...this.admissions].map(admission => admission.settled));
     await this.scan;
+    await Promise.allSettled([...this.interruptions.values()].map(operation => operation.completion));
     await Promise.allSettled([...this.active.values()]);
     this.compensations.clear(); this.listeners.clear();
   }
