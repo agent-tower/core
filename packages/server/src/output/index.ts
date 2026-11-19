@@ -4,6 +4,7 @@
 
 // 类型导出
 export * from './types.js'
+export * from './turn-failure.js'
 
 // MsgStore 导出
 export { MsgStore, sessionMsgStoreManager } from './msg-store.js'

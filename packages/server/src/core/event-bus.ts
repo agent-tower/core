@@ -18,6 +18,8 @@ type EventMap = {
   'session:turn-completed': { sessionId: string };
   /** Codex reported a failed turn before its wrapper process exited. */
   'session:turn-failed': { sessionId: string };
+  /** The agent's output says why a turn failed (for example a usage limit); continuation turns included. */
+  'session:turn-failure-cause': { sessionId: string; cause: import('../output/turn-failure.js').TurnFailureCause };
   'session:completed': { sessionId: string; status: string };
   'session:started': { sessionId: string };
   'session:stopped': { sessionId: string };
@@ -31,7 +33,11 @@ type EventMap = {
   'task:deleted': { taskId: string; projectId: string };
   // Standalone terminal events
   'terminal:stdout': { terminalId: string; data: string };
+  /** User input arms output-driven git invalidation; cwd is server-owned. */
+  'terminal:input': { terminalId: string; cwd: string };
   'terminal:exit': { terminalId: string; exitCode?: number };
+  'workspace-service:output': { serviceId: string; workspaceId: string; runtimeInstanceId: string };
+  'workspace-service:exit': { serviceId: string; workspaceId: string; runtimeInstanceId: string };
   // Workspace setup progress
   'workspace:setup_progress': WorkspaceSetupProgressPayload;
   'workspace:commit_message_updated': {

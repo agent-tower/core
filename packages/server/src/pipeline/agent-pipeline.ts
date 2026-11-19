@@ -4,12 +4,15 @@ import type { EventBus } from '../core/event-bus.js';
 import type { EarlyPtyEvent } from '../executors/base.executor.js';
 import type { CliDuplexIO, CliDuplexEvent } from '../utils/cli-duplex-channel.js';
 import { writeErrorLog } from '../utils/error-log.js';
+import type { TurnFailureCause } from '../output/turn-failure.js';
 
 export interface OutputParser {
   processData(data: string): void;
   finish(exitCode?: number): void;
   onTurnCompleted?(listener: () => void): () => void;
   onTurnFailed?(listener: () => void): () => void;
+  /** The recognised cause of a failed turn, continuation turns included. */
+  onTurnFailureCause?(listener: (cause: TurnFailureCause) => void): () => void;
 }
 
 /**
@@ -24,6 +27,7 @@ export class AgentPipeline {
   private offSessionId?: () => void;
   private offTurnCompleted?: () => void;
   private offTurnFailed?: () => void;
+  private offTurnFailureCause?: () => void;
   private logicalCompletionEmitted = false;
   private logicalFailureEmitted = false;
   private storeFinished = false;
@@ -57,6 +61,10 @@ export class AgentPipeline {
       this.logicalFailureEmitted = true;
       this.markStoreFinished();
       this.eventBus.emit('session:turn-failed', { sessionId: this.sessionId });
+    });
+    this.offTurnFailureCause = this.parser?.onTurnFailureCause?.((cause) => {
+      if (this.destroyed) return;
+      this.eventBus.emit('session:turn-failure-cause', { sessionId: this.sessionId, cause });
     });
 
     if (duplex) {
@@ -191,6 +199,7 @@ export class AgentPipeline {
     this.offSessionId?.();
     this.offTurnCompleted?.();
     this.offTurnFailed?.();
+    this.offTurnFailureCause?.();
     try {
       this.pty.kill();
     } catch {

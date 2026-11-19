@@ -108,6 +108,7 @@ const appSettings: AppSettings = {
   locale: 'zh-CN',
   commitMessageProviderId: null,
   commitMessagePrompt: null,
+  autoResumeAfterUsageLimit: true,
 }
 
 const capabilities = Object.fromEntries(Object.entries(PROVIDER_CAPABILITIES).map(([agent, capability]) => [agent, {

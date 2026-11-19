@@ -133,8 +133,12 @@ export interface RuntimeErrorDto {
   retryable: boolean
 }
 
-/** A wake-up the agent requested: Agent Tower re-invokes the session with a system notification. */
-export type SessionWakeupKind = 'TIMER' | 'SERVICE_EXIT'
+/**
+ * A wake-up: Agent Tower re-invokes the session with a system notification.
+ * TIMER and SERVICE_EXIT are requested by the agent; USAGE_LIMIT is scheduled by
+ * Agent Tower when a turn stopped at the account's usage limit, for after the reset.
+ */
+export type SessionWakeupKind = 'TIMER' | 'SERVICE_EXIT' | 'USAGE_LIMIT'
 export type SessionWakeupState = 'PENDING' | 'READY' | 'FIRED' | 'CANCELLED'
 export interface SessionWakeupDto {
   id: string
@@ -1266,6 +1270,27 @@ export interface GitOperationStatus {
   untrackedCount: number
 }
 
+/**
+ * `GET /git/diff`: one file's diff, exactly one of a text diff, a binary
+ * file, or a file above the size limit. `token` is the version of the file
+ * the answer belongs to (the same token as in the change list when the file
+ * did not change since). Sizes are in bytes; null for a side that does not
+ * exist.
+ */
+export type GitFileDiffResponse =
+  | { kind: 'text'; token: string; diff: string }
+  | { kind: 'binary'; token: string; oldSize: number | null; newSize: number | null }
+  | {
+    kind: 'too_large'
+    token: string
+    oldSize: number | null
+    newSize: number | null
+    /** The per-side limit this answer applied. */
+    limit: number
+    /** True when `force=1` ("load anyway") can show the file. */
+    canForce: boolean
+  }
+
 // ============ 辅助类型 ============
 
 /** 代理可用性检查结果 */
@@ -1492,6 +1517,8 @@ export interface AppSettings {
   locale: AppLocale | null
   commitMessageProviderId: string | null
   commitMessagePrompt: string | null
+  /** Wake a session automatically once the usage limit that stopped its turn has reset (default on). */
+  autoResumeAfterUsageLimit: boolean
 }
 
 /** 访问密码公开状态 */

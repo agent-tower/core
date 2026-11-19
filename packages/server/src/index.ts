@@ -8,6 +8,8 @@ import { installProcessErrorLogging, registerProcessShutdownHandler, writeErrorL
 import { getOrCreateInternalApiToken, INTERNAL_API_TOKEN_ENV } from './utils/internal-api-token.js';
 import { createServerEntryShutdownCoordinator, finishFailedServerEntry, installServerEntryShutdownRequests } from './runtime/server-entry-shutdown.js';
 import type { ReferencedShutdownCoordinator } from './runtime/shutdown-coordinator.js';
+import { getCommandHelperStatus, startCommandHelper } from './runtime/command-helper/client.js';
+import { startRuntimeMetrics } from './runtime/runtime-metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = path.resolve(__dirname, '../../..');
@@ -30,6 +32,10 @@ process.env.AGENT_TOWER_URL = `http://127.0.0.1:${PORT}`;
 process.env[INTERNAL_API_TOKEN_ENV] = getOrCreateInternalApiToken(dataDir);
 
 async function main() {
+  // Fork the command helper before the application grows (see cli.ts).
+  void startCommandHelper();
+  startRuntimeMetrics({ commandHelperStatus: getCommandHelperStatus });
+
   // Keep the application singleton and worker imports behind schema validation.
   const schemaPath = path.resolve(__dirname, '../prisma/schema.prisma');
   try {

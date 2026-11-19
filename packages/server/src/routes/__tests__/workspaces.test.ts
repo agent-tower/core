@@ -217,6 +217,26 @@ describe('workspace routes', () => {
     } finally { await app.close(); }
   }, 15_000);
 
+  it('recovers a rebase in the project directory from a clean linked workspace', async () => {
+    const { project, workspace, git, worktreeGit } = await createBranchSettingsFixture();
+    fs.writeFileSync(path.join(workspace.worktreePath, 'base.txt'), 'feature change\n');
+    worktreeGit('commit', '-am', 'feature change');
+    fs.writeFileSync(path.join(project.repoPath, 'base.txt'), 'main change\n');
+    git('commit', '-am', 'main change');
+    expect(() => git('rebase', workspace.branchName)).toThrow();
+    expect(worktreeGit('status', '--porcelain')).toBe('');
+
+    const receiver = await prisma.session.create({ data: { workspaceId: workspace.id, agentType: 'CURSOR_AGENT', prompt: 'resolve' } });
+    const { resolveConflictInstructions } = await import('../../services/conflict-resolution-context.js');
+    const instructions = await resolveConflictInstructions(prisma, undefined, receiver.id, 'owner');
+    const prefix = 'Operation data: ';
+    const data = instructions.split('\n').find(line => line.startsWith(prefix))!;
+    expect(JSON.parse(data.slice(prefix.length))).toMatchObject({
+      targetKind: 'PROJECT', targetWorktreePath: project.repoPath, sourceWorkspaceId: workspace.id,
+      conflictOp: 'REBASE', sourceBranch: 'main', targetBranch: worktreeGit('rev-parse', 'HEAD'), conflictedFiles: ['base.txt'],
+    });
+  }, 15_000);
+
   it('seals a real cross-worktree no_ff merge conflict even after Git abort removes the live conflict state', async () => {
     const { project, task, workspace, git, worktreeGit } = await createBranchSettingsFixture();
     fs.appendFileSync(path.join(project.repoPath, '.git/info/exclude'), '\ntask-worktree/\n');

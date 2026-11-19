@@ -8,6 +8,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { SessionManager } from '../session-manager.js';
 import type { TaskCleanupSnapshot } from '../task-cleanup.service.js';
 import { AgentType, WorkspaceKind, TaskStatus } from '../../types/index.js';
+import { onWorkspaceGitOperation, type WorkspaceGitOperation } from '../../git/git-operation-events.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-task-service-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -1063,8 +1064,30 @@ describe('TaskService', () => {
       },
     });
 
-    const updated = await service.retry(task.id);
+    const mainWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: '',
+        baseBranch: 'main',
+        worktreePath: '',
+        workingDir: project.repoPath,
+        workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+        status: 'ACTIVE',
+      },
+    });
+    const signals: WorkspaceGitOperation[] = [];
+    const unsubscribe = onWorkspaceGitOperation((event) => signals.push(event));
+    let updated;
+    try {
+      updated = await service.retry(task.id);
+    } finally {
+      unsubscribe();
+    }
 
+    expect(signals).toEqual([{ worktreePaths: [project.repoPath], metadataChanged: true }]);
+    await expect(prisma.workspace.findUnique({ where: { id: mainWorkspace.id } })).resolves.toMatchObject({
+      status: 'ABANDONED',
+    });
     expect(updated.status).toBe('TODO');
     expect(updated.project?.isGitRepo).toBe(false);
     expect(stopSessionMock).toHaveBeenCalledWith(runningSession.id);
@@ -1258,8 +1281,15 @@ describe('TaskService', () => {
       },
     });
 
-    await expect(cleanupService.processDueJobs()).resolves.toBe(1);
+    const signals: WorkspaceGitOperation[] = [];
+    const unsubscribe = onWorkspaceGitOperation((event) => signals.push(event));
+    try {
+      await expect(cleanupService.processDueJobs()).resolves.toBe(1);
+    } finally {
+      unsubscribe();
+    }
 
+    expect(signals).toEqual([{ worktreePaths: [project.repoPath], metadataChanged: true }]);
     expect(stopSessionMock).not.toHaveBeenCalled();
     expect(removeWorktreeMock).not.toHaveBeenCalled();
     expect(deleteBranchIfSafeMock).not.toHaveBeenCalled();

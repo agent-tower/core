@@ -5,7 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
-import { TaskStatus } from '../../types/index.js';
+import { TaskStatus, WorkspaceKind } from '../../types/index.js';
+import { onWorkspaceGitOperation, type WorkspaceGitOperation } from '../../git/git-operation-events.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-project-service-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -240,6 +241,32 @@ describe('ProjectService', () => {
     });
   });
 
+  it('notifies shared-directory metadata after changing the project main branch', async () => {
+    const service = new ProjectService();
+    const repoPath = fs.mkdtempSync(path.join(testDir, 'main-branch-metadata-'));
+    const git = (args: string[]) => execFileSync('git', args, { cwd: repoPath, stdio: 'pipe' });
+    git(['init', '-b', 'main']);
+    git(['config', 'user.email', 'test@example.com']);
+    git(['config', 'user.name', 'Test User']);
+    git(['-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'initial']);
+    git(['branch', 'develop']);
+    const project = await prisma.project.create({ data: { name: 'Main branch metadata', repoPath, mainBranch: 'main' } });
+    const task = await prisma.task.create({ data: { title: 'Main branch metadata', projectId: project.id } });
+    const workspace = await prisma.workspace.create({ data: {
+      taskId: task.id, branchName: '', worktreePath: '', workingDir: repoPath,
+      workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+    } });
+    const signals: WorkspaceGitOperation[] = [];
+    const unsubscribe = onWorkspaceGitOperation((event) => signals.push(event));
+    try {
+      await expect(service.update(project.id, { mainBranch: 'develop' })).resolves.toMatchObject({ mainBranch: 'develop' });
+    } finally {
+      unsubscribe();
+    }
+    expect(signals).toEqual([{ worktreePaths: [repoPath], metadataChanged: true }]);
+    await expect(prisma.workspace.findUnique({ where: { id: workspace.id } })).resolves.toMatchObject({ baseBranch: 'main' });
+  });
+
   it('abandons active workspaces when archiving a project', async () => {
     const backgroundService = { stopAllForWorkspace: vi.fn(async () => {}) };
     const service = new ProjectService(backgroundService as any);
@@ -276,9 +303,27 @@ describe('ProjectService', () => {
       },
     });
 
-    await service.archive(project.id);
+    const mainWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: '',
+        worktreePath: '',
+        workingDir: project.repoPath,
+        workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+        status: 'ACTIVE',
+      },
+    });
+    const signals: WorkspaceGitOperation[] = [];
+    const unsubscribe = onWorkspaceGitOperation((event) => signals.push(event));
+    try {
+      await service.archive(project.id);
+    } finally {
+      unsubscribe();
+    }
 
-    expect(backgroundService.stopAllForWorkspace).toHaveBeenCalledTimes(2);
+    expect(signals).toEqual([{ worktreePaths: [project.repoPath], metadataChanged: true }]);
+    expect(backgroundService.stopAllForWorkspace).toHaveBeenCalledTimes(3);
+    expect(backgroundService.stopAllForWorkspace).toHaveBeenCalledWith(mainWorkspace.id);
     expect(backgroundService.stopAllForWorkspace).toHaveBeenCalledWith(activeWorkspace.id);
     expect(backgroundService.stopAllForWorkspace).toHaveBeenCalledWith(abandonedWorkspace.id);
 
@@ -318,8 +363,31 @@ describe('ProjectService', () => {
       },
     });
 
-    await service.archive(project.id, { deleteRepo: true });
+    const mainWorkspace = await prisma.workspace.create({
+      data: {
+        taskId: task.id,
+        branchName: '',
+        worktreePath: '',
+        workingDir: project.repoPath,
+        workspaceKind: WorkspaceKind.MAIN_DIRECTORY,
+        status: 'ACTIVE',
+      },
+    });
+    const signals: WorkspaceGitOperation[] = [];
+    const unsubscribe = onWorkspaceGitOperation((event) => signals.push(event));
+    try {
+      await service.archive(project.id, { deleteRepo: true });
+    } finally {
+      unsubscribe();
+    }
 
+    expect(signals).toEqual([
+      { worktreePaths: [project.repoPath], metadataChanged: true },
+      { worktreePaths: [project.repoPath], metadataChanged: true },
+    ]);
+    await expect(prisma.workspace.findUnique({ where: { id: mainWorkspace.id } })).resolves.toMatchObject({
+      status: 'ABANDONED', worktreePath: '', workingDir: '',
+    });
     expect(fs.existsSync(worktreePath)).toBe(false);
     expect(fs.existsSync(repoPath)).toBe(false);
     await expect(prisma.workspace.findUnique({ where: { id: activeWorkspace.id } })).resolves.toMatchObject({

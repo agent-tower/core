@@ -218,6 +218,11 @@ Implemented on the Linux host itself (192.204.56.110, read-only toward the runni
 
 Runtime switches: `AGENT_TOWER_PROCESS_SCOPE=compat` forces the old backend; `AGENT_TOWER_SCOPE_HELPER_PATH`
 points at another binary. Without a working binary the server logs nothing special and runs the old backend.
+`AGENT_TOWER_COMMAND_HELPER` (added 2026-11-16) chooses where `runOwnedCommand` starts its commands: `auto`
+(default) uses the command helper process (`packages/server/src/runtime/command-helper/`) on Linux only, `on` on
+every platform, `off` never. The helper runs the same scopes and stop rules; it only keeps fork() out of the
+server process. With `on` outside Linux there is no scope supervisor, so a helper crash or a forced stop can orphan
+running commands.
 
 Supervisor protocol: `--grace`, `--root-exit-signal`, `--pdeathsig`, `--status-fd`; SIGHUP/SIGTERM/SIGINT to
 the supervisor forward that signal; SIGUSR1 escalates to SIGKILL; the supervisor exits with the command's

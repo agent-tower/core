@@ -2,13 +2,16 @@
  * Unified Socket.IO event types.
  */
 
-import type { RuntimePermissionRequest, RuntimeStateDto } from '../types.js';
+import type { GitOperationStatus, RuntimePermissionRequest, RuntimeStateDto } from '../types.js';
 
 export const NAMESPACE = '/events' as const;
 
 export const ClientEvents = {
   SUBSCRIBE: 'subscribe',
   UNSUBSCRIBE: 'unsubscribe',
+  WORKSPACE_GIT_SUBSCRIBE: 'workspace-git:subscribe',
+  WORKSPACE_GIT_UNSUBSCRIBE: 'workspace-git:unsubscribe',
+  WORKSPACE_GIT_REFRESH: 'workspace-git:refresh',
   INPUT: 'input',
   RESIZE: 'resize',
   // Standalone terminal events (client -> server)
@@ -47,6 +50,8 @@ export const ServerEvents = {
   WORKSPACE_COMMIT_MESSAGE_UPDATED: 'workspace:commit_message_updated',
   WORKSPACE_HIBERNATED: 'workspace:hibernated',
   WORKSPACE_GIT_CHANGED: 'workspace:git_changed',
+  WORKSPACE_GIT_STATE: 'workspace:git_state',
+  WORKSPACE_GIT_SUBSCRIPTION_ENDED: 'workspace:git_subscription_ended',
   TEAM_RUN_INVALIDATED: 'team-run:invalidated',
 } as const;
 
@@ -59,6 +64,53 @@ export interface UnsubscribePayload {
   topic: 'session' | 'team-run' | 'task' | 'agent' | 'terminal' | 'project';
   id?: string;
 }
+
+/** The same workspace identifier is used for subscribe, unsubscribe and refresh. */
+export interface WorkspaceGitSubscriptionPayload {
+  workspaceId: string;
+}
+
+export interface WorkspaceGitState {
+  /** Exactly the GET /git/changes response. */
+  changes: {
+    uncommitted: WorkspaceGitChangeEntry[];
+    committed: WorkspaceGitChangeEntry[];
+  };
+  /** Exactly the GET /workspaces/:id/git-status response, including conflict recovery. */
+  status: GitOperationStatus;
+  headOid: string | null;
+  baseBranch: string;
+}
+
+export interface WorkspaceGitChangeEntry {
+  status: string;
+  path: string;
+  additions?: number;
+  deletions?: number;
+  /**
+   * Version of the file's diff: it changes whenever the diff can change.
+   * Opaque; compare for equality only (the web client keys diff queries by it).
+   */
+  token: string;
+}
+
+/** A new epoch replaces the previous state; versions increase within one epoch. */
+export interface WorkspaceGitStatePayload {
+  workspaceId: string;
+  epoch: string;
+  version: number;
+  state: WorkspaceGitState;
+}
+
+export interface WorkspaceGitSubscriptionEndedPayload {
+  workspaceId: string;
+  code: 'NOT_FOUND' | 'WORKSPACE_GIT_UNAVAILABLE';
+  message: string;
+}
+
+export type WorkspaceGitSubscribeAck =
+  | ({ ok: true } & WorkspaceGitStatePayload)
+  | { ok: false; code: string; message: string };
 
 export interface SessionInputPayload {
   sessionId: string;

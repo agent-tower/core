@@ -6,6 +6,11 @@ const API_BASE_URL = getApiBaseUrl()
 
 type RequestOptions = RequestInit & {
   params?: Record<string, string>
+  /**
+   * Aborts the request. Query functions pass TanStack Query's `signal`, so a request whose last
+   * observer went away (a closed diff card, a left task) is cancelled, and the server stops its work.
+   */
+  signal?: AbortSignal
 }
 
 type ApiErrorPayload = Record<string, unknown>
@@ -18,7 +23,7 @@ class ApiClient {
   }
 
   private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-    const { params, ...init } = options
+    const { params, signal, ...init } = options
 
     let url = `${this.baseUrl}${endpoint}`
     if (params) {
@@ -35,6 +40,7 @@ class ApiClient {
       ...init,
       headers,
       credentials: init.credentials ?? 'same-origin',
+      ...(signal ? { signal } : {}),
     })
 
     if (!response.ok) {

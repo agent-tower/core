@@ -84,3 +84,9 @@ packages/server/src/
 - 服务端接口在 `src/runtime/process-scope/`：`getDefaultProcessScopeRuntime()` 返回 supervisor 后端或 `null`（兼容后端：macOS/Windows、无 supervisor、`AGENT_TOWER_PROCESS_SCOPE=compat`）。`requestStop(pid, signal)` 转发优雅信号，`forceStop(pid)` 立即升级；**绝不能 SIGKILL supervisor 本身**，否则后代脱离域。
 - 新的启动点请走 `spawnOwnedProcess`/`runOwnedCommand` 或 `TerminalManager`，不要直接 `spawn` 长生命周期进程。测试里用 `processScope: null` / `scope: null` 固定兼容后端，用假 runtime 验证 supervised 路径。
 - 尚未迁移：CLI/ACP 会话与后台服务的 PTY wrapper（`process-launch.ts`）、`AcpProcessManager`、Windows Job Object。
+- **命令助手进程**（`src/runtime/command-helper/`）：Linux 上 Node 用 `fork()` 启动子进程，服务端进程变大后每次启动都会阻塞事件循环 0.1–0.3 s（耗时来自 V8 堆之外的内存）。服务端入口（`cli.ts`、开发用 `index.ts`）在进程还小时 fork 一个小助手进程；助手运行时 `runOwnedCommand` 把命令交给它执行（同样的进程域、停止规则、超时和输出上限），否则在本进程执行。开关 `AGENT_TOWER_COMMAND_HELPER`：`auto`（默认，仅 Linux）、`on`（所有平台）、`off`（关闭）。
+  - 助手退出时，进行中的命令以 `ERR_COMMAND_HELPER_EXITED` 拒绝，**绝不自动重跑**；退避重启期间命令回到本进程执行，连续失败后不再重启。服务端退出（含 SIGKILL）时助手停止它的命令后退出。
+  - 助手卡住不回应时：命令超过“超时 + 停止宽限期”仍无结果，以 `ERR_COMMAND_HELPER_UNRESPONSIVE` 拒绝，助手被 SIGTERM/SIGKILL 替换；`stopCommandHelper()` 最多等 20 s。`on` 在 Linux 以外没有进程域 supervisor，助手崩溃或被强制停止时，正在运行的命令可能成为孤儿进程。
+  - 查询与订阅：`isCommandHelperRunning()`、`onCommandHelperAvailabilityChange()`。流式的 `spawnOwnedProcess`、终端、Agent 会话不经过助手。
+  - 测试默认不启动助手；让某个测试文件走助手：`npx vitest run --config vitest.command-helper.config.ts <file>`。
+  - 服务端每分钟输出一行 `[runtime-metrics]`：事件循环延迟 p50/p99/max、经助手/本进程执行的命令数、助手重启次数和内存。

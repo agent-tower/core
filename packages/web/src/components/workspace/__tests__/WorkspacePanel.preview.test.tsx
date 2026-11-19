@@ -32,11 +32,6 @@ vi.mock('../TerminalTabs', () => ({ TerminalTabs: () => null }))
 vi.mock('../ReviewView', () => ({ ReviewView: () => null }))
 vi.mock('../HistoryView', () => ({ HistoryView: () => null }))
 vi.mock('@/hooks/use-projects', () => ({ useProject: () => ({ data: null }) }))
-vi.mock('@/stores/git-visibility-store', () => ({
-  useGitVisibilityStore: (selector: (state: { setVisibleContext: ReturnType<typeof vi.fn> }) => unknown) => selector({
-    setVisibleContext: vi.fn(),
-  }),
-}))
 vi.mock('@/lib/i18n', () => ({ useI18n: () => ({ t: (value: string) => value }) }))
 
 describe('WorkspacePanel tab navigation', () => {

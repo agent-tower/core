@@ -2,8 +2,8 @@ import { useEffect } from 'react'
 import { type QueryClient, useQueryClient } from '@tanstack/react-query'
 import { ServerEvents, type WorkspaceGitChangedPayload } from '@agent-tower/shared/socket'
 import { queryKeys } from '@/hooks/query-keys'
-import { useGitVisibilityStore, type VisibleGitContext } from '@/stores/git-visibility-store'
 import { socketManager } from '../manager.js'
+import { getWorkspaceGitSubscriptions } from '../workspace-git-subscriptions'
 
 export function invalidateAllGitRealtimeQueries(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: queryKeys.git.all, refetchType: 'none' })
@@ -11,32 +11,16 @@ export function invalidateAllGitRealtimeQueries(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['workspaces', 'diff'], refetchType: 'none' })
 }
 
-function markWorkspaceGitQueriesStale(
+/**
+ * Applies a `workspace:git_changed` hint. A base-branch change refreshes workspace metadata and the
+ * workspace diff; file diffs follow the version tokens of the new change list. Git queries of a
+ * workspace with a live subscription are left to the pushed state; others refetch where they are
+ * shown and are marked stale elsewhere.
+ */
+export function syncWorkspaceGitChangedQueries(
   queryClient: QueryClient,
-  payload: Partial<WorkspaceGitChangedPayload>,
-) {
-  if (payload.workingDir) {
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.git.changes(payload.workingDir),
-      refetchType: 'none',
-    })
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.git.log(payload.workingDir),
-      refetchType: 'none',
-    })
-  }
-  if (payload.workspaceId) {
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId),
-      refetchType: 'none',
-    })
-  }
-}
-
-export function syncVisibleWorkspaceGitQueries(
-  queryClient: QueryClient,
-  payload?: Partial<WorkspaceGitChangedPayload> | null,
-  visibleContext?: VisibleGitContext | null,
+  payload: Partial<WorkspaceGitChangedPayload> | null | undefined,
+  isLive: (workspaceId: string) => boolean,
 ) {
   if (!payload?.workspaceId || !payload?.workingDir) {
     return
@@ -48,61 +32,35 @@ export function syncVisibleWorkspaceGitQueries(
     if (payload.projectId) queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.projectBranches(payload.projectId) })
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all })
     queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.diff(payload.workspaceId) })
-    queryClient.invalidateQueries({ queryKey: ['git', 'diff', payload.workingDir] })
   }
 
-  if (
-    !visibleContext
-    || visibleContext.workspaceId !== payload.workspaceId
-    || visibleContext.workingDir !== payload.workingDir
-  ) {
-    markWorkspaceGitQueriesStale(queryClient, payload)
+  if (isLive(payload.workspaceId)) {
     return
   }
 
-  if (visibleContext.tab === 'changes') {
-    queryClient.invalidateQueries({ queryKey: queryKeys.git.changes(payload.workingDir) })
-    queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId) })
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.git.log(payload.workingDir),
-      refetchType: 'none',
-    })
-    return
-  }
-
+  queryClient.invalidateQueries({ queryKey: queryKeys.git.changes(payload.workingDir) })
   queryClient.invalidateQueries({ queryKey: queryKeys.git.log(payload.workingDir) })
-  queryClient.invalidateQueries({
-    queryKey: queryKeys.git.changes(payload.workingDir),
-    refetchType: 'none',
-  })
-  queryClient.invalidateQueries({
-    queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId),
-    refetchType: 'none',
-  })
+  queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.gitStatus(payload.workspaceId) })
 }
 
 export function useWorkspaceGitRealtimeSync() {
   const queryClient = useQueryClient()
-  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
 
   useEffect(() => {
     const socket = socketManager.connect()
+    const subscriptions = getWorkspaceGitSubscriptions(queryClient)
 
+    // Reconnect fallback: workspaces with a live subscription get their current state from the
+    // subscription manager's new acknowledgement; everything else reloads when next shown.
     const handleConnect = () => {
       invalidateAllGitRealtimeQueries(queryClient)
       for (const key of ['list', 'detail', 'project-branches']) {
         queryClient.invalidateQueries({ queryKey: ['workspaces', key] })
       }
-      if (visibleContext) {
-        syncVisibleWorkspaceGitQueries(queryClient, {
-          workspaceId: visibleContext.workspaceId,
-          workingDir: visibleContext.workingDir,
-        }, visibleContext)
-      }
     }
 
     const handleWorkspaceGitChanged = (payload: WorkspaceGitChangedPayload) => {
-      syncVisibleWorkspaceGitQueries(queryClient, payload, visibleContext)
+      syncWorkspaceGitChangedQueries(queryClient, payload, (workspaceId) => subscriptions.coversWorkspace(workspaceId))
     }
 
     socket.on('connect', handleConnect)
@@ -112,5 +70,5 @@ export function useWorkspaceGitRealtimeSync() {
       socket.off('connect', handleConnect)
       socket.off(ServerEvents.WORKSPACE_GIT_CHANGED, handleWorkspaceGitChanged)
     }
-  }, [queryClient, visibleContext])
+  }, [queryClient])
 }

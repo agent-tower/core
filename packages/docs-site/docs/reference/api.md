@@ -81,7 +81,7 @@ description: 当前代码库中公开的主要 REST 端点。
 | `DELETE` | `/api/workspaces/:id` | 回收 workspace 运行资源，保留任务及会话历史 |
 | `POST` | `/api/workspaces/:id/open-editor` | 在 IDE 中打开 workspace |
 | `POST` | `/api/workspaces/:id/rebase` | rebase workspace |
-| `GET` | `/api/workspaces/:id/git-status` | 获取所查目录的 Git 状态 |
+| `GET` | `/api/workspaces/:id/git-status` | 获取所查目录的 Git 状态。`WORKTREE` 的 `untrackedCount` 逐个统计未跟踪文件，Git 状态输出超限时按折叠目录后的条目计数 |
 | `POST` | `/api/workspaces/:id/conflict-context` | owner 只读核验原冲突证明并换签；id 为原 source workspace |
 | `POST` | `/api/workspaces/:id/abort-operation` | 中止当前 Git 操作 |
 | `POST` | `/api/workspaces/:id/reactivate` | 唤醒休眠 workspace |
@@ -218,11 +218,38 @@ Agent Tower 关闭时停止托管服务；启动时将遗留的期望运行记�
 | `GET` | `/api/files/read` | 读文件 |
 | `POST` | `/api/files/write` | 写文件 |
 | `GET` | `/api/files/image` | 读取 workspace 中的图片文件 |
-| `GET` | `/api/git/changes` | 查看变更 |
-| `GET` | `/api/git/diff` | 查看单文件 diff |
+| `GET` | `/api/git/changes` | 列出未提交和已提交的文件变更及每项的版本标识 |
+| `GET` | `/api/git/diff` | 读取单文件的文本差异、二进制提示或大小超限提示 |
 | `GET` | `/api/git/log` | 查看提交历史 |
 | `GET` | `/api/git/commit-files` | 查看某次提交变更文件 |
 | `GET` | `/api/git/commit-diff` | 查看某次提交的单文件 diff |
+
+`GET /api/git/changes` 需要绝对路径 `workingDir`。响应的 `uncommitted` 列出未提交变更（含未跟踪文件），`committed` 列出相对基础分支的已提交变更。每项都有 `status`、`path` 和 `token`，另可含增删行数 `additions`、`deletions`。`token` 是该文件差异的不透明版本标识，只用于比较是否相等。
+
+`GET /api/git/diff` 需要同样的 `workingDir`、变更项中的 `path` 和比较类型 `type`。两个路径都不能包含 `..` 路径段。
+
+- `type=uncommitted` 比较 `HEAD` 与工作树，包含已暂存和未暂存的改动。首次提交前比较暂存区与工作树。未跟踪文件按新增处理，同一路径也有已跟踪条目时优先读取已跟踪条目。
+- `type=committed` 比较基础分支与 `HEAD` 的共同祖先到 `HEAD` 的变更（`<base>...HEAD`）。本地基础分支无法比较时尝试 `origin/<base>`。
+
+三种成功响应都带 `kind` 和 `token`。服务端在读取时确定文件版本，调用方可将响应的 `token` 与变更列表中同一项的 `token` 比较，判断版本是否一致。
+
+| `kind` | 其他字段 | 说明 |
+| --- | --- | --- |
+| `text` | `diff` | 文本补丁，没有对应的比较目标时为空字符串 |
+| `binary` | `oldSize`、`newSize` | 二进制文件的旧、新大小 |
+| `too_large` | `oldSize`、`newSize`、`limit`、`canForce` | 至少一侧超过本次单侧上限 `limit`。`canForce` 为 `true` 时可提高上限重试，已知大小超过 `8 MiB` 时为 `false` |
+
+`oldSize`、`newSize` 和 `limit` 的单位是字节，某一侧不存在或大小未知时对应的大小为 `null`。省略 `force` 或传 `force=0`、`force=false` 时上限为每侧 `1 MiB`，`force=1` 或 `force=true` 提高到每侧 `8 MiB`。服务端直接检查工作文件的大小。仓库中的文件版本若由 `.gitattributes` 强制按文本比较，即使超限也可能返回 `text`。
+
+| 适用接口 | HTTP 状态 | `code` | 含义 |
+| --- | --- | --- | --- |
+| 两者 | `400` | `VALIDATION_ERROR` | 查询参数校验失败 |
+| 两者 | `400` | `GIT_UNAVAILABLE` | 无法在 `workingDir` 读取 Git 工作树 |
+| 两者 | `500` | `INTERNAL_ERROR` | 其他未处理错误 |
+| `/api/git/diff` | `499` | `CLIENT_CLOSED_REQUEST` | 客户端在响应完成前已断开 |
+| `/api/git/diff` | `500` | `GIT_DIFF_FAILED` | 无法计算补丁，例如 Git 命令超时或输出超限 |
+
+没有 Git 订阅时，可用 `GET /api/git/changes` 和 `GET /api/workspaces/:id/git-status` 分别读取与 `workspace:git_state` 的 `state.changes`、`state.status` 结构相同的数据，列表中单个文件的差异由 `GET /api/git/diff` 按需提供。
 
 ## Attachments and App Settings
 

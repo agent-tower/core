@@ -11,12 +11,14 @@ const publicSettingsSelect = {
   locale: true,
   commitMessageProviderId: true,
   commitMessagePrompt: true,
+  autoResumeAfterUsageLimit: true,
 };
 
 const updateAppSettingsSchema = z.object({
   locale: localeSchema.optional(),
   commitMessageProviderId: z.string().nullable().optional(),
   commitMessagePrompt: z.string().nullable().optional(),
+  autoResumeAfterUsageLimit: z.boolean().optional(),
 });
 
 function getDefaultAppSettings(): AppSettings {
@@ -25,6 +27,7 @@ function getDefaultAppSettings(): AppSettings {
     locale: null,
     commitMessageProviderId: null,
     commitMessagePrompt: null,
+    autoResumeAfterUsageLimit: true,
   };
 }
 
@@ -54,6 +57,9 @@ export async function appSettingsRoutes(app: FastifyInstance) {
     }
     if (data.commitMessagePrompt !== undefined) {
       updateData.commitMessagePrompt = data.commitMessagePrompt;
+    }
+    if (data.autoResumeAfterUsageLimit !== undefined) {
+      updateData.autoResumeAfterUsageLimit = data.autoResumeAfterUsageLimit;
     }
 
     const settings = await prisma.appSettings.upsert({

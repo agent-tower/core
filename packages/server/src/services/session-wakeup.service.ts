@@ -1,6 +1,8 @@
 /**
  * Session wake-ups: an agent may ask to be re-invoked later (timer) or when a
- * workspace service it started exits. The wake-up is delivered as a session
+ * workspace service it started exits, and Agent Tower schedules one itself when
+ * a turn stopped at the account's usage limit (USAGE_LIMIT, a timer that fires
+ * after the reset; see usage-limit-resume.ts). The wake-up is delivered as a session
  * message of origin SYSTEM_EVENT, so it goes through the same durable delivery
  * queue as user messages and starts a normal follow-up turn. Wake-ups survive
  * the end of the agent's turn and server restarts; they are never delivered
@@ -26,6 +28,8 @@ export const DEFAULT_MAX_WAKEUPS_PER_SESSION_PER_DAY = 24;
 export const MAX_WAKEUPS_PER_DAY_ENV = 'AGENT_TOWER_MAX_WAKEUPS_PER_DAY';
 /** States in which a wake-up still owes the session a future turn. */
 export const ACTIVE_WAKEUP_STATES: SessionWakeupState[] = ['PENDING', 'READY'];
+/** Kinds that become due at their fireAt. */
+const TIMED_WAKEUP_KINDS: SessionWakeupKind[] = ['TIMER', 'USAGE_LIMIT'];
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const READY_BATCH = 50;
 const LOG_TAIL_LINES = 40;
@@ -95,6 +99,14 @@ interface ServiceExitPayload {
   missedExit?: boolean;
 }
 
+/** What the usage-limit stop reported; kept for the wake-up message. */
+export interface UsageLimitWakeupPayload {
+  resetsAt?: string | null;
+  limitType?: string | null;
+  code?: string | null;
+  message?: string | null;
+}
+
 const ACTIVE_STATES = ACTIVE_WAKEUP_STATES;
 
 export function resolveMaxWakeupsPerSessionPerDay(env: NodeJS.ProcessEnv = process.env): number {
@@ -155,6 +167,27 @@ export function buildWakeupMessage(row: Pick<WakeupRow, 'kind' | 'reason' | 'ser
     }
     lines.push('</agent_tower_wakeup>');
     return `${NOTIFICATION_HEADER}\n\n${lines.join('\n')}`;
+  }
+  if (row.kind === 'USAGE_LIMIT') {
+    let payload: UsageLimitWakeupPayload = {};
+    try { payload = JSON.parse(row.payload) as UsageLimitWakeupPayload; } catch { /* empty payload */ }
+    const attributes = [
+      'kind="usage_limit"',
+      payload.limitType ? `limit="${escapeAttribute(payload.limitType)}"` : '',
+      payload.resetsAt ? `resets_at="${escapeAttribute(payload.resetsAt)}"` : '',
+    ].filter(Boolean).join(' ');
+    const stopText = payload.message?.trim();
+    return [
+      NOTIFICATION_HEADER,
+      '',
+      `<agent_tower_wakeup ${attributes}>`,
+      stopText
+        ? `Your previous turn stopped because the usage limit was reached: ${stopText}`
+        : 'Your previous turn stopped because the usage limit was reached.',
+      'The limit has reset. Continue the work that was interrupted.',
+      'Commands, services or subagents that were running when the turn stopped may have finished or been stopped; check their state before relying on them.',
+      '</agent_tower_wakeup>',
+    ].join('\n');
   }
   const scheduledAt = row.createdAt.toISOString();
   const delaySeconds = row.fireAt ? Math.max(0, Math.round((row.fireAt.getTime() - row.createdAt.getTime()) / 1000)) : 0;
@@ -235,6 +268,39 @@ export class SessionWakeupService {
         fireAt: new Date(this.now().getTime() + delaySeconds * 1000),
         state: 'PENDING',
       },
+    });
+    this.changed([row.sessionId]);
+    return toDto(row);
+  }
+
+  /**
+   * The session's turn stopped at the account's usage limit: wake it once the
+   * limit has reset. The time comes from the provider, so the agent-timer delay
+   * bounds do not apply. A session keeps one such wake-up; a later stop (for
+   * example a wake-up that fired before the reset) moves it to the later time.
+   */
+  async scheduleUsageLimitResume(input: { sessionId: string; fireAt: Date; reason: string; payload: UsageLimitWakeupPayload }): Promise<SessionWakeupDto> {
+    await this.assertSession(input.sessionId);
+    const reason = input.reason.trim().slice(0, 500);
+    const payload = JSON.stringify(input.payload);
+    const existing = await prisma.sessionWakeup.findFirst({
+      where: { sessionId: input.sessionId, kind: 'USAGE_LIMIT', state: { in: ACTIVE_STATES } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existing) {
+      // A due (READY) wake-up is left to fire; it is about to resume the session anyway.
+      if (existing.state !== 'PENDING' || (existing.fireAt && existing.fireAt >= input.fireAt)) return toDto(existing);
+      await prisma.sessionWakeup.updateMany({
+        where: { id: existing.id, state: 'PENDING' },
+        data: { fireAt: input.fireAt, reason, payload },
+      });
+      this.changed([input.sessionId]);
+      const moved = await prisma.sessionWakeup.findUnique({ where: { id: existing.id } });
+      return toDto(moved ?? existing);
+    }
+    await this.assertCapacity(input.sessionId);
+    const row = await prisma.sessionWakeup.create({
+      data: { sessionId: input.sessionId, kind: 'USAGE_LIMIT', reason, fireAt: input.fireAt, state: 'PENDING', payload },
     });
     this.changed([row.sessionId]);
     return toDto(row);
@@ -372,7 +438,7 @@ export class SessionWakeupService {
 
   private async runPump(): Promise<void> {
     const due = await prisma.sessionWakeup.findMany({
-      where: { state: 'PENDING', kind: 'TIMER', fireAt: { lte: this.now() } },
+      where: { state: 'PENDING', kind: { in: TIMED_WAKEUP_KINDS }, fireAt: { lte: this.now() } },
       select: { id: true, sessionId: true },
     });
     if (due.length > 0) {

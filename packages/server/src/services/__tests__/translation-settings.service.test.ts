@@ -34,12 +34,13 @@ describe('TranslationSettingsService', () => {
     execFileSync('pnpm', ['exec', 'prisma', 'db', 'push', '--skip-generate', `--schema=${legacySchema}`], {
       cwd: serverRoot, env: { ...process.env, AGENT_TOWER_DATABASE_URL: databaseUrl }, stdio: 'pipe',
     });
-    await prisma.appSettings.create({ data: { id: 'singleton', locale: 'en', dataMigrationVersion: 7 } });
+    // Write the row as the old version did: the current client would read back columns the legacy table does not have yet.
+    await prisma.$executeRaw`INSERT INTO "AppSettings" ("id", "locale", "dataMigrationVersion") VALUES ('singleton', 'en', 7)`;
     await synchronizeDatabaseSchema({ dataDir: testDir, dbPath: path.join(testDir, 'test.db'), schemaPath: path.join(serverRoot, 'prisma/schema.prisma'), entryDir: path.join(serverRoot, 'src') });
   });
 
   it('adds default-off translation storage without rewriting existing settings or backfilling history', async () => {
-    expect(await prisma.appSettings.findUnique({ where: { id: 'singleton' } })).toMatchObject({ locale: 'en', dataMigrationVersion: 7 });
+    expect(await prisma.appSettings.findUnique({ where: { id: 'singleton' } })).toMatchObject({ locale: 'en', dataMigrationVersion: 7, autoResumeAfterUsageLimit: true });
     expect((await service.getPublic()).enabled).toBe(false);
     expect(await prisma.translationSource.count()).toBe(0);
     expect(await prisma.translationAttempt.count()).toBe(0);

@@ -16,6 +16,7 @@ interface UpdateAppSettingsInput {
   locale?: AppLocale | null
   commitMessageProviderId?: string | null
   commitMessagePrompt?: string | null
+  autoResumeAfterUsageLimit?: boolean
 }
 
 export function useUpdateAppSettings() {

@@ -361,7 +361,8 @@ model WorkspaceBackgroundService {
 }
 
 // Agent 请求的唤醒：定时器或工作区服务退出时，以系统事件消息重新调用会话
-// SessionWakeupKind: TIMER, SERVICE_EXIT
+// USAGE_LIMIT：回合因账号额度用尽而停止时，由 Agent Tower 安排在额度重置后唤醒
+// SessionWakeupKind: TIMER, SERVICE_EXIT, USAGE_LIMIT
 // SessionWakeupState: PENDING, READY, FIRED, CANCELLED
 model SessionWakeup {
   id          String    @id @default(uuid())
@@ -566,11 +567,13 @@ model Attachment {
 
 // 应用设置 (单例，只有一行)
 model AppSettings {
-  id                      String  @id @default("singleton")
-  locale                  String?
-  commitMessageProviderId String?
-  commitMessagePrompt     String?
-  dataMigrationVersion    Int     @default(0)
+  id                        String  @id @default("singleton")
+  locale                    String?
+  commitMessageProviderId   String?
+  commitMessagePrompt       String?
+  dataMigrationVersion      Int     @default(0)
+  // 回合因额度用尽停止后，在额度重置时自动唤醒会话（默认开启）
+  autoResumeAfterUsageLimit Boolean @default(true)
 }
 
 // Independent, default-off instance translation configuration. apiKey is server-only.

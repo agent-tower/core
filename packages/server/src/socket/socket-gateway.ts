@@ -8,6 +8,8 @@ import type { SessionManager } from '../services/session-manager.js';
 import type { TerminalManager } from '../services/terminal-manager.js';
 import { AccessAuthService } from '../services/access-auth.service.js';
 import type { AuthenticatedSocket } from './middleware/index.js';
+import { WorkspaceGitSubscriptions, type WorkspaceGitSubscriptionsOptions } from '../git/workspace-git-subscriptions.js';
+import { WorkspaceGitSignals } from '../git/workspace-git-signals.js';
 import {
   ClientEvents,
   ServerEvents,
@@ -32,18 +34,25 @@ export class SocketGateway {
   private taskDeliverySubscriptions = new WeakMap<Socket, Map<string, symbol>>();
   private sessionSubscriptions = new WeakMap<Socket, Map<string, symbol>>();
   private roomTranslationSubscriptions = new WeakMap<Socket, Map<string, symbol>>();
+  private readonly gitSubscriptions: WorkspaceGitSubscriptions;
+  private readonly gitSignals: WorkspaceGitSignals;
 
   constructor(
     private readonly nsp: Namespace,
     private readonly eventBus: EventBus,
     private readonly sessionManager: SessionManager,
-    private readonly terminalManager: TerminalManager
+    private readonly terminalManager: TerminalManager,
+    gitOptions?: WorkspaceGitSubscriptionsOptions,
   ) {
+    this.gitSubscriptions = new WorkspaceGitSubscriptions(nsp, eventBus, (socket) => this.prepareRoomOwnerSocketValidation(socket), gitOptions);
+    this.gitSignals = new WorkspaceGitSignals(eventBus, this.gitSubscriptions);
     this.registerEventBusForwarders();
   }
 
   destroy(): void {
     this.destroyed = true;
+    this.gitSignals.destroy();
+    this.gitSubscriptions.destroy();
     for (const cleanup of this.cleanups) {
       cleanup();
     }
@@ -51,6 +60,7 @@ export class SocketGateway {
   }
 
   register(socket: AuthenticatedSocket): void {
+    this.gitSubscriptions.register(socket);
     // --- Subscribe / Unsubscribe ---
     socket.on(ClientEvents.SUBSCRIBE, (payload: SubscribePayload, ack?: (res: AckResponse) => void) => {
       if (!this.ensureSocketAuthIsCurrent(socket, ack)) return;

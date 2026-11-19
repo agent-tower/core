@@ -1,5 +1,6 @@
 import { prisma } from '../utils/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
+import { notifyMainDirectoryGitMetadataChanged } from '../git/git-operation-events.js';
 import type { SessionManager } from './session-manager.js';
 import { isWorktreeWorkspace } from './workspace-kind.js';
 import type { WorkspaceBackgroundService } from './workspace-background-service.service.js';
@@ -149,6 +150,7 @@ export class TaskCleanupService {
           },
         }),
       ]);
+      for (const workspace of snapshot.workspaces) notifyMainDirectoryGitMetadataChanged(workspace);
     } catch (error) {
       await this.recordFailure(jobId, job.attempts, toErrorMessage(error));
     }

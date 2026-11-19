@@ -2,6 +2,7 @@ import net from 'node:net';
 import type { PreviewStatus } from '@agent-tower/shared';
 import { prisma } from '../utils/index.js';
 import { NotFoundError, ServiceError } from '../errors.js';
+import { notifyMainDirectoryGitMetadataChanged } from '../git/git-operation-events.js';
 
 const DEFAULT_SCHEME = 'http';
 const CONNECTION_TIMEOUT_MS = 1500;
@@ -130,7 +131,7 @@ export class PreviewService {
   async setTarget(workspaceId: string, targetInput: string | null): Promise<NormalizedPreviewTarget | null> {
     const workspace = await prisma.workspace.findUnique({
       where: { id: workspaceId },
-      select: { id: true },
+      select: { id: true, workspaceKind: true, workingDir: true, worktreePath: true },
     });
 
     if (!workspace) {
@@ -142,6 +143,7 @@ export class PreviewService {
         where: { id: workspaceId },
         data: { previewTarget: null },
       });
+      notifyMainDirectoryGitMetadataChanged(workspace);
       return null;
     }
 
@@ -150,6 +152,7 @@ export class PreviewService {
       where: { id: workspaceId },
       data: { previewTarget: normalized.target },
     });
+    notifyMainDirectoryGitMetadataChanged(workspace);
     return normalized;
   }
 

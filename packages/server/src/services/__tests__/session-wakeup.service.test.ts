@@ -264,6 +264,38 @@ describe('SessionWakeupService', () => {
     await expect(f.service.scheduleTimer({ sessionId: session.id, delaySeconds: 60, reason: 'x' })).rejects.toMatchObject({ code: 'WAKEUP_UNAVAILABLE' });
   });
 
+  it('schedules one usage-limit resume per session, moves it to a later reset and fires it like a timer', async () => {
+    const { session } = await fixture();
+    const f = fakes();
+    const payload = { resetsAt: '2026-11-08T00:00:00.000Z', limitType: 'seven_day', code: 'usage_limit_reached', message: "You've hit your weekly limit · resets Nov 7, 4pm (America/Los_Angeles)" };
+    // A weekly reset is days away; the agent-timer limit of 24 hours does not apply.
+    const first = await f.service.scheduleUsageLimitResume({ sessionId: session.id, fireAt: new Date('2026-11-08T00:02:00Z'), reason: payload.message, payload });
+    expect(first).toMatchObject({ kind: 'USAGE_LIMIT', state: 'PENDING', fireAt: '2026-11-08T00:02:00.000Z', reason: payload.message });
+    // An earlier time does not move it; a later stop does.
+    const same = await f.service.scheduleUsageLimitResume({ sessionId: session.id, fireAt: new Date('2026-11-06T05:00:00Z'), reason: 'earlier', payload });
+    expect(same).toMatchObject({ id: first.id, fireAt: '2026-11-08T00:02:00.000Z' });
+    const moved = await f.service.scheduleUsageLimitResume({ sessionId: session.id, fireAt: new Date('2026-11-09T00:02:00Z'), reason: 'later', payload: { ...payload, resetsAt: '2026-11-09T00:00:00.000Z' } });
+    expect(moved).toMatchObject({ id: first.id, fireAt: '2026-11-09T00:02:00.000Z', reason: 'later' });
+    expect(await db.sessionWakeup.count({ where: { sessionId: session.id } })).toBe(1);
+
+    f.now.value = new Date('2026-11-08T12:00:00Z');
+    await f.service.pump();
+    expect(f.submissions).toHaveLength(0);
+    f.now.value = new Date('2026-11-09T00:02:01Z');
+    await f.service.pump();
+    expect(f.submissions).toHaveLength(1);
+    const message = f.submissions[0]!.message;
+    expect(message.startsWith('[SYSTEM NOTIFICATION - NOT USER INPUT]')).toBe(true);
+    expect(message).toContain('<agent_tower_wakeup kind="usage_limit" limit="seven_day" resets_at="2026-11-09T00:00:00.000Z">');
+    expect(message).toContain(`the usage limit was reached: ${payload.message}`);
+    expect(message).toContain('The limit has reset. Continue the work that was interrupted.');
+    expect((await db.sessionWakeup.findUniqueOrThrow({ where: { id: first.id } })).state).toBe('FIRED');
+
+    // After it fired, the next stop schedules a new one.
+    const next = await f.service.scheduleUsageLimitResume({ sessionId: session.id, fireAt: new Date('2026-11-09T05:02:00Z'), reason: 'again', payload });
+    expect(next.id).not.toBe(first.id);
+  });
+
   it('builds messages that never read as user input', () => {
     const text = buildWakeupMessage({ kind: 'SERVICE_EXIT', reason: '', serviceName: 'a"b', fireAt: null, createdAt: new Date(), payload: JSON.stringify({ exitCode: 1, runtimeState: 'FAILED', logTail: ['x'] }) });
     expect(text.startsWith('[SYSTEM NOTIFICATION - NOT USER INPUT]')).toBe(true);

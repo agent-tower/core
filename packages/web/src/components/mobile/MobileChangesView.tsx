@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { GitGraph, ChevronDown, ChevronRight } from 'lucide-react'
 import { FileStatusBadge, Spinner } from '@/design-system'
 import { DiffLine } from '@/components/workspace/DiffLine'
+import { FileDiffNotice } from '@/components/workspace/FileDiffNotice'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { useGitChanges, useGitDiff, type GitChangeEntry } from '@/hooks/use-git'
@@ -20,9 +21,20 @@ function dirname(p: string) {
 
 // ============ Inline Diff ============
 
-function InlineDiff({ workingDir, filePath, type }: { workingDir: string; filePath: string; type: DiffType }) {
+/**
+ * A working file's diff, fetched once per version token of the file. Binary files and files above
+ * the size limit show a notice; "Load anyway" (`onForce`) asks again with the higher limit.
+ */
+function InlineDiff({ workingDir, filePath, type, token, force, onForce }: {
+  workingDir: string
+  filePath: string
+  type: DiffType
+  token: string | undefined
+  force: boolean
+  onForce: () => void
+}) {
   const { t } = useI18n()
-  const { data, isLoading, isError } = useGitDiff(workingDir, filePath, type)
+  const { data, isLoading, isError, isFetching } = useGitDiff(workingDir, filePath, type, token, { force })
 
   if (isLoading) {
     return (
@@ -35,7 +47,11 @@ function InlineDiff({ workingDir, filePath, type }: { workingDir: string; filePa
 
   if (isError) return <div className="px-3 py-3 text-xs text-destructive-ink">{t('Failed to load diff.')}</div>
 
-  const diff = data?.diff || ''
+  if (data && data.kind !== 'text') {
+    return <FileDiffNotice answer={data} loading={isFetching} onLoadAnyway={onForce} className="py-3" />
+  }
+
+  const diff = data?.diff ?? ''
   if (!diff.trim()) return <div className="px-3 py-3 text-xs text-muted-foreground">{t('No diff content available.')}</div>
 
   const lines = diff.split('\n')
@@ -53,6 +69,8 @@ function InlineDiff({ workingDir, filePath, type }: { workingDir: string; filePa
 
 function ExpandableFileItem({ entry, type, workingDir }: { entry: GitChangeEntry; type: DiffType; workingDir: string }) {
   const [isOpen, setIsOpen] = useState(false)
+  // "Load anyway" was chosen: later versions of the file load with the higher limit too.
+  const [force, setForce] = useState(false)
   const dir = dirname(entry.path)
 
   return (
@@ -73,7 +91,16 @@ function ExpandableFileItem({ entry, type, workingDir }: { entry: GitChangeEntry
           {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
       </button>
-      {isOpen && <InlineDiff workingDir={workingDir} filePath={entry.path} type={type} />}
+      {isOpen && (
+        <InlineDiff
+          workingDir={workingDir}
+          filePath={entry.path}
+          type={type}
+          token={entry.token}
+          force={force}
+          onForce={() => setForce(true)}
+        />
+      )}
     </div>
   )
 }

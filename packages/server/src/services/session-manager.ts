@@ -18,6 +18,7 @@ import {
 } from '../output/index.js';
 import type { NormalizedConversation } from '../output/index.js';
 import { execGit } from '../git/git-cli.js';
+import { notifyWorkspaceGitOperation } from '../git/git-operation-events.js';
 import type { EventBus } from '../core/event-bus.js';
 import { getCommitMessageService, getTranslationService } from '../core/container.js';
 import { TeamReconcilerService } from './team-reconciler.service.js';
@@ -1755,6 +1756,10 @@ export class SessionManager {
       });
       return;
     }
+    if (event.type === 'turn_failure_cause') {
+      this.eventBus.emit('session:turn-failure-cause', { sessionId, cause: event.cause });
+      return;
+    }
     if (event.type === 'permission_requested') {
       this.eventBus.emit('session:permission_requested', {
         sessionId,
@@ -2370,12 +2375,16 @@ export class SessionManager {
       if (!this.isCurrentGeneration(sessionId, generation)) return;
       if (!status.trim()) return;
 
-      await execGit(worktreePath, ['add', '-A']);
-      if (!this.isCurrentGeneration(sessionId, generation)) return;
-      await execGit(worktreePath, [
-        'commit', '-m',
-        `auto-commit: uncommitted changes from session ${sessionId.slice(0, 8)}`,
-      ]);
+      try {
+        await execGit(worktreePath, ['add', '-A']);
+        if (!this.isCurrentGeneration(sessionId, generation)) return;
+        await execGit(worktreePath, [
+          'commit', '-m',
+          `auto-commit: uncommitted changes from session ${sessionId.slice(0, 8)}`,
+        ]);
+      } finally {
+        notifyWorkspaceGitOperation([worktreePath]);
+      }
       if (!this.isCurrentGeneration(sessionId, generation)) return;
 
       console.log(`[SessionManager] Auto-committed changes for session ${sessionId}`);

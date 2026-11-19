@@ -9,6 +9,7 @@
 import { prisma } from '../utils/index.js';
 import { AgentType, SessionStatus, SessionPurpose, WorkspaceStatus } from '../types/index.js';
 import { execGit } from '../git/git-cli.js';
+import { notifyMainDirectoryGitMetadataChanged } from '../git/git-operation-events.js';
 import { getEventBus, getSessionManager } from '../core/container.js';
 import { getProviderById } from '../executors/providers.js';
 import type { NormalizedConversation } from '../output/index.js';
@@ -165,6 +166,7 @@ export class CommitMessageService {
       where: { id: session.workspaceId },
       data: { commitMessage },
     });
+    notifyMainDirectoryGitMetadataChanged(session.workspace);
     this.eventBus.emit('workspace:commit_message_updated', {
       workspaceId: session.workspaceId,
       taskId: session.workspace.taskId,

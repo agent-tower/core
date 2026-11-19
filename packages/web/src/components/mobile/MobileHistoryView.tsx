@@ -1,15 +1,10 @@
 import { useState } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
 import { History, ChevronDown, ChevronRight } from 'lucide-react'
 import { FileStatusBadge, Spinner } from '@/design-system'
 import { DiffLine } from '@/components/workspace/DiffLine'
 import { cn } from '@/lib/utils'
-import { useGitCommitFiles, useGitCommitDiff, type GitChangeEntry, type GitLogResponse } from '@/hooks/use-git'
-import { apiClient } from '@/lib/api-client'
-import { queryKeys } from '@/hooks/query-keys'
+import { useGitCommitFiles, useGitCommitDiff, useGitLogPages, type GitChangeEntry } from '@/hooks/use-git'
 import { translate, useI18n } from '@/lib/i18n'
-
-const PAGE_SIZE = 50
 
 function timeAgo(ts: number): string {
   const now = Math.floor(Date.now() / 1000)
@@ -143,17 +138,7 @@ export function MobileHistoryView({ workingDir }: { workingDir?: string }) {
   const { t } = useI18n()
   const {
     data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage,
-  } = useInfiniteQuery({
-    queryKey: queryKeys.git.log(workingDir || ''),
-    queryFn: ({ pageParam = 0 }) =>
-      apiClient.get<GitLogResponse>('/git/log', {
-        params: { workingDir: workingDir || '', limit: String(PAGE_SIZE), skip: String(pageParam) },
-      }),
-    initialPageParam: 0,
-    getNextPageParam: (lastPage, allPages) =>
-      lastPage.commits.length < PAGE_SIZE ? undefined : allPages.length * PAGE_SIZE,
-    enabled: !!workingDir,
-  })
+  } = useGitLogPages(workingDir)
 
   const commits = data?.pages.flatMap(p => p.commits) || []
 

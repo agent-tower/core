@@ -108,6 +108,13 @@ export function GeneralSettingsPage() {
     )
   }, [updateSettings, t])
 
+  const handleAutoResumeChange = useCallback((checked: boolean) => {
+    updateSettings.mutate(
+      { autoResumeAfterUsageLimit: checked },
+      { onError: () => toast.error(t('保存失败')) },
+    )
+  }, [updateSettings, t])
+
   const handlePromptSave = useCallback(() => {
     const prompt = promptText.trim() || null
     updateSettings.mutate(
@@ -242,6 +249,18 @@ export function GeneralSettingsPage() {
             value={locale}
             onChange={(value) => setLocale(value as AppLocale)}
             options={LANGUAGE_OPTIONS}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t('额度用尽后自动唤醒')}
+          description={t('Claude Code 的回合因账号额度用尽而停止时，在额度重置后自动唤醒会话继续工作。待执行的唤醒可在会话中取消。')}
+          align="center"
+        >
+          <Switch
+            checked={appSettings?.autoResumeAfterUsageLimit ?? true}
+            onCheckedChange={handleAutoResumeChange}
+            disabled={!appSettings || updateSettings.isPending}
+            aria-label={t('额度用尽后自动唤醒')}
           />
         </SettingsRow>
       </div>

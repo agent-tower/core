@@ -8,6 +8,7 @@ import type { PrismaClient } from '@prisma/client';
 import { RuntimeType } from '@agent-tower/shared';
 import { TeamLockService } from '../team-lock.service.js';
 import { WorkspaceKind } from '../../types/index.js';
+import { onWorkspaceGitOperation, type WorkspaceGitOperation } from '../../git/git-operation-events.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-workspace-service-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -534,6 +535,25 @@ describe('WorkspaceService TeamRun workspace lifecycle', () => {
     });
     expect(createWorktreeMock).not.toHaveBeenCalled();
     expect(ensureWorktreeExistsMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['archive', 'delete', 'cleanup'] as const)('notifies the shared directory after main-directory %s changes its row', async (operation) => {
+    const { project, task } = await createTask(`main-directory metadata ${operation}`);
+    const workspace = await service.create(task.id, { workspaceKind: WorkspaceKind.MAIN_DIRECTORY });
+    if (operation === 'cleanup') {
+      await prisma.task.update({ where: { id: task.id }, data: { status: 'DONE' } });
+      await prisma.workspace.update({ where: { id: workspace.id }, data: { status: 'ABANDONED' } });
+    }
+    const notifications: WorkspaceGitOperation[] = [];
+    const stop = onWorkspaceGitOperation((event) => notifications.push(event));
+    try {
+      if (operation === 'cleanup') await service.cleanup();
+      else await service[operation](workspace.id);
+      expect(notifications).toEqual([{ worktreePaths: [project.repoPath], metadataChanged: true }]);
+      const saved = await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } });
+      expect(saved.status).toBe('ABANDONED');
+      expect(saved.workingDir).toBe(operation === 'archive' ? project.repoPath : '');
+    } finally { stop(); }
   });
 
   it('uses the saved task base for delayed root creation and keeps the legacy fallback', async () => {

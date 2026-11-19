@@ -1,18 +1,10 @@
 import React, { useState, useCallback, useRef } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
 import { History, FileCode2, ChevronRight } from 'lucide-react'
 import { FileStatusBadge, Spinner } from '@/design-system'
 import { cn } from '@/lib/utils'
-import { useGitCommitFiles, useGitCommitDiff, type GitChangeEntry } from '@/hooks/use-git'
-import { apiClient } from '@/lib/api-client'
-import { getGitHistoryRefreshInterval } from '@/lib/git-refresh-policy'
-import { queryKeys } from '@/hooks/query-keys'
-import { useGitVisibilityStore } from '@/stores/git-visibility-store'
-import type { GitLogResponse } from '@/hooks/use-git'
+import { useGitCommitFiles, useGitCommitDiff, useGitLogPages, type GitChangeEntry } from '@/hooks/use-git'
 import { translate, useI18n } from '@/lib/i18n'
 import { DiffLine } from './DiffLine'
-
-const PAGE_SIZE = 50
 
 function timeAgo(ts: number): string {
   const now = Math.floor(Date.now() / 1000)
@@ -99,25 +91,10 @@ const CommitFileList: React.FC<{
 /** History Tab main component */
 export const HistoryView: React.FC<{ workingDir?: string }> = ({ workingDir }) => {
   const { t } = useI18n()
-  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
-  const refreshInterval = getGitHistoryRefreshInterval(workingDir, visibleContext)
+  // Reloaded when the workspace's pushed git state shows a new HEAD; no timer.
   const {
     data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage,
-  } = useInfiniteQuery({
-    queryKey: queryKeys.git.log(workingDir || ''),
-    queryFn: ({ pageParam = 0 }) =>
-      apiClient.get<GitLogResponse>('/git/log', {
-        params: { workingDir: workingDir || '', limit: String(PAGE_SIZE), skip: String(pageParam) },
-      }),
-    initialPageParam: 0,
-    getNextPageParam: (lastPage, allPages) =>
-      lastPage.commits.length < PAGE_SIZE ? undefined : allPages.length * PAGE_SIZE,
-    enabled: !!workingDir,
-    refetchInterval: refreshInterval,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: refreshInterval ? 'always' : false,
-    refetchOnReconnect: refreshInterval ? 'always' : false,
-  })
+  } = useGitLogPages(workingDir)
 
   const commits = data?.pages.flatMap(p => p.commits) || []
 

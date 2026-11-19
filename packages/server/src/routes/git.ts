@@ -1,8 +1,13 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z, ZodError } from 'zod';
+import type { GitFileDiffResponse } from '@agent-tower/shared';
 import { runOwnedCommand } from '../utils/owned-child-process.js';
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { prisma } from '../utils/index.js';
+import { resolveWorkspaceGitTarget } from '../git/workspace-git-target.js';
+import { discoverRepository } from '../git/state/git-repository-files.js';
+import { getWorkspaceGitDiff, getWorkspaceGitState } from '../git/state/git-state-facade.js';
+import { toGitChangesResponse } from '../git/state/git-state-views.js';
 
 class GitUnavailableError extends Error {
   constructor(public readonly workingDir: string) {
@@ -56,27 +61,31 @@ async function ensureGitAvailable(workingDir: string): Promise<void> {
   throw new GitUnavailableError(workingDir);
 }
 
-async function resolveBaseBranch(workingDir: string): Promise<string | null> {
-  const workspace = await prisma.workspace.findFirst({
-    where: {
-      OR: [
-        { workingDir },
-        { worktreePath: workingDir },
-      ],
-    },
-    include: { task: { include: { project: true } } },
-    orderBy: { updatedAt: 'desc' },
-  });
-
-  if (!workspace) {
-    return null;
+/**
+ * Cheap part of the `GIT_UNAVAILABLE` check, before the database lookup as
+ * before: a directory with no `.git` in it or above it is not a work tree.
+ * The git state computation settles every other case.
+ */
+async function mayBeGitWorkTree(workingDir: string): Promise<boolean> {
+  try {
+    if (!(await fs.stat(workingDir)).isDirectory()) return false;
+  } catch {
+    return false;
   }
-
-  return workspace.baseBranch || workspace.task.project.mainBranch;
+  return (await discoverRepository(workingDir).catch(() => null)) !== null;
 }
 
-function getRemoteBranchRef(branch: string): string {
-  return branch.startsWith('origin/') ? branch : `origin/${branch}`;
+/**
+ * Aborts when the client goes away before the answer is sent: the response
+ * closes without having finished. Returns the signal and its cleanup.
+ */
+function abortWhenClientLeaves(reply: FastifyReply): { signal: AbortSignal; release: () => void } {
+  const controller = new AbortController();
+  const onClose = () => {
+    if (!reply.raw.writableFinished) controller.abort();
+  };
+  reply.raw.once('close', onClose);
+  return { signal: controller.signal, release: () => reply.raw.off('close', onClose) };
 }
 
 function parseNameStatus(output: string): ChangeEntry[] {
@@ -150,6 +159,8 @@ const diffQuerySchema = z.object({
       message: 'Path traversal (..) is not allowed',
     }),
   type: z.enum(['uncommitted', 'committed']),
+  /** "Load anyway": raises the size limit from 1 MiB to 8 MiB per side. */
+  force: z.enum(['0', '1', 'true', 'false']).optional().transform((value) => value === '1' || value === 'true'),
 });
 
 const logQuerySchema = z.object({
@@ -182,125 +193,65 @@ export async function gitRoutes(app: FastifyInstance) {
   /**
    * GET /changes?workingDir=/path/to/worktree
    * Returns uncommitted changes vs HEAD and committed changes vs workspace base branch.
+   * Answered by the git state service (git/state): from a state at most 1 s
+   * old, or from one computation shared with concurrent requests.
    */
   app.get('/changes', async (request, reply) => {
     try {
       const { workingDir } = changesQuerySchema.parse(request.query);
-      await ensureGitAvailable(workingDir);
-      const baseBranch = await resolveBaseBranch(workingDir);
-
-      // Uncommitted changes (staged + unstaged vs HEAD)
-      let uncommitted: ChangeEntry[] = [];
-      try {
-        const output = await execGit(workingDir, ['diff', '--name-status', 'HEAD']);
-        uncommitted = parseNameStatus(output);
-        const numstat = await execGit(workingDir, ['diff', '--numstat', 'HEAD']).catch(() => '');
-        uncommitted = attachNumstat(uncommitted, parseNumstat(numstat));
-      } catch {
-        // If HEAD doesn't exist (initial commit), try against empty tree
-        try {
-          const output = await execGit(workingDir, ['diff', '--name-status']);
-          uncommitted = parseNameStatus(output);
-          const numstat = await execGit(workingDir, ['diff', '--numstat']).catch(() => '');
-          uncommitted = attachNumstat(uncommitted, parseNumstat(numstat));
-        } catch {
-          // ignore
-        }
-      }
-
-      // Also include untracked files
-      try {
-        const untrackedOutput = await execGit(workingDir, [
-          'ls-files', '--others', '--exclude-standard',
-        ]);
-        if (untrackedOutput.trim()) {
-          const untrackedFiles = untrackedOutput.trim().split('\n');
-          for (const f of untrackedFiles) {
-            uncommitted.push({ status: 'A', path: f });
-          }
-        }
-      } catch {
-        // ignore
-      }
-
-      // Committed changes (baseBranch...HEAD)
-      const committedBaseBranch = baseBranch || 'main';
-      let committed: ChangeEntry[] = [];
-      try {
-        const output = await execGit(workingDir, [
-          'diff',
-          '--name-status',
-          `${committedBaseBranch}...HEAD`,
-        ]);
-        committed = parseNameStatus(output);
-        const numstat = await execGit(
-          workingDir,
-          ['diff', '--numstat', `${committedBaseBranch}...HEAD`],
-        ).catch(() => '');
-        committed = attachNumstat(committed, parseNumstat(numstat));
-      } catch {
-        try {
-          const remoteRef = getRemoteBranchRef(committedBaseBranch);
-          const output = await execGit(workingDir, [
-            'diff',
-            '--name-status',
-            `${remoteRef}...HEAD`,
-          ]);
-          committed = parseNameStatus(output);
-          const numstat = await execGit(
-            workingDir,
-            ['diff', '--numstat', `${remoteRef}...HEAD`],
-          ).catch(() => '');
-          committed = attachNumstat(committed, parseNumstat(numstat));
-        } catch {
-          // ignore — no base branch to compare against
-        }
-      }
-
-      return { uncommitted, committed };
+      if (!(await mayBeGitWorkTree(workingDir))) throw new GitUnavailableError(workingDir);
+      const target = await resolveWorkspaceGitTarget(workingDir);
+      const state = await getWorkspaceGitState({
+        worktreePath: workingDir,
+        repositoryPath: target?.repositoryPath ?? null,
+        baseBranch: target?.baseBranch || 'main',
+      });
+      if (!state.available) throw new GitUnavailableError(workingDir);
+      return toGitChangesResponse(state);
     } catch (error) {
       return handleError(error, reply);
     }
   });
 
   /**
-   * GET /diff?workingDir=/path&path=src/index.ts&type=uncommitted|committed
-   * Returns the diff content for a single file.
+   * GET /diff?workingDir=/path&path=src/index.ts&type=uncommitted|committed[&force=1]
+   * One file's diff with its version token (`GitFileDiffResponse`): a text
+   * diff, `binary`, or `too_large`. Computed by the git state service
+   * (git/state/git-file-diff.ts), cached by the file's version, and stopped
+   * when the request closes before the answer is sent. Uncommitted means HEAD
+   * against the working tree, the comparison of the change list.
    */
   app.get('/diff', async (request, reply) => {
+    const client = abortWhenClientLeaves(reply);
     try {
-      const { workingDir, path: filePath, type } = diffQuerySchema.parse(request.query);
-      await ensureGitAvailable(workingDir);
-      const baseBranch = type === 'committed' ? await resolveBaseBranch(workingDir) : null;
-
-      const committedBaseBranch = baseBranch || 'main';
-      let diff = '';
-      try {
-        if (type === 'uncommitted') {
-          diff = await execGit(workingDir, ['diff', '--', filePath]);
-          // If no staged/unstaged diff, the file might be untracked — show full content as addition
-          if (!diff.trim()) {
-            const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
-            diff = await execGit(workingDir, ['diff', '--no-index', nullDevice, filePath]).catch(
-              () => '',
-            );
-          }
-        } else {
-          diff = await execGit(workingDir, ['diff', `${committedBaseBranch}...HEAD`, '--', filePath]);
-          if (!diff.trim()) {
-            diff = await execGit(
-              workingDir,
-              ['diff', `${getRemoteBranchRef(committedBaseBranch)}...HEAD`, '--', filePath]
-            ).catch(() => '');
-          }
-        }
-      } catch {
-        // ignore — return empty diff
-      }
-
-      return { diff };
+      const { workingDir, path: filePath, type, force } = diffQuerySchema.parse(request.query);
+      if (!(await mayBeGitWorkTree(workingDir))) throw new GitUnavailableError(workingDir);
+      const target = await resolveWorkspaceGitTarget(workingDir);
+      const result = await getWorkspaceGitDiff({
+        worktreePath: workingDir,
+        repositoryPath: target?.repositoryPath ?? null,
+        baseBranch: target?.baseBranch || 'main',
+        path: filePath,
+        kind: type,
+        force,
+      }, { signal: client.signal });
+      if (!result.diff) throw new GitUnavailableError(workingDir);
+      const body: GitFileDiffResponse = result.diff;
+      return body;
     } catch (error) {
+      if (client.signal.aborted) {
+        // Nobody reads this answer any more.
+        reply.code(499);
+        return { error: 'The client closed the request', code: 'CLIENT_CLOSED_REQUEST' };
+      }
+      if ((error as { code?: unknown } | null)?.code === 'GIT_DIFF_FAILED') {
+        console.warn(`[git] ${(error as Error).message}`);
+        reply.code(500);
+        return { error: 'The diff could not be computed', code: 'GIT_DIFF_FAILED' };
+      }
       return handleError(error, reply);
+    } finally {
+      client.release();
     }
   });
 

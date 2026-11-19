@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { PrismaClient } from '@prisma/client';
 import { AgentType, SessionPurpose, SessionStatus, TaskStatus } from '../../types/index.js';
 import { EventBus } from '../../core/event-bus.js';
+import { onWorkspaceGitOperation, type WorkspaceGitOperation } from '../../git/git-operation-events.js';
 import type { EarlyPtyEvent, SpawnedChild } from '../../executors/base.executor.js';
 import { RuntimeType, type RuntimeCapabilities } from '@agent-tower/shared';
 import type {
@@ -363,6 +364,48 @@ async function getPersistedCleanupInput(sessionId: string, runtimeInstanceId: st
 }
 
 describe('SessionManager session status vs real process state', () => {
+  it('signals one completed auto-commit and no operation when the worktree is clean', async () => {
+    const { workspace, session } = await createSessionFixture();
+    const worktreePath = fs.mkdtempSync(path.join(testDir, 'auto-commit-'));
+    const git = (args: string[]) => execFileSync('git', args, { cwd: worktreePath, encoding: 'utf8', stdio: 'pipe' });
+    git(['init', '-b', 'main']);
+    git(['config', 'user.name', 'Git state test']);
+    git(['config', 'user.email', 'git-state@example.test']);
+    fs.writeFileSync(path.join(worktreePath, 'changed.txt'), 'agent change\n');
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { worktreePath, workingDir: worktreePath } });
+    const manager = new SessionManager(new EventBus());
+    const signals: WorkspaceGitOperation[] = [];
+    const stopObserving = onWorkspaceGitOperation((event) => signals.push(event));
+    try {
+      await (manager as any).autoCommitChanges(session.id);
+      expect(git(['status', '--porcelain'])).toBe('');
+      expect(git(['log', '-1', '--format=%s'])).toContain('auto-commit: uncommitted changes');
+      expect(signals).toEqual([{ worktreePaths: [worktreePath], recreated: false }]);
+      await (manager as any).autoCommitChanges(session.id);
+      expect(signals).toHaveLength(1);
+    } finally {
+      stopObserving();
+      await manager.destroyAll();
+    }
+  });
+
+  it('notifies shared-directory metadata after caching a main-directory commit message', async () => {
+    const { workspace, session } = await createSessionFixture();
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { workspaceKind: 'MAIN_DIRECTORY', worktreePath: '', workingDir: testDir } });
+    await prisma.session.update({ where: { id: session.id }, data: {
+      purpose: SessionPurpose.COMMIT_MSG,
+      logSnapshot: JSON.stringify({ entries: [{ entryType: 'assistant_message', content: 'fix: shared directory metadata' }] }),
+    } });
+    const { getCommitMessageService } = await import('../../core/container.js');
+    const notifications: WorkspaceGitOperation[] = [];
+    const stop = onWorkspaceGitOperation((event) => notifications.push(event));
+    try {
+      await getCommitMessageService().extractAndCache(session.id);
+      expect((await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).commitMessage).toBe('fix: shared directory metadata');
+      expect(notifications).toEqual([{ worktreePaths: [testDir], metadataChanged: true }]);
+    } finally { stop(); }
+  });
+
   it('rejects direct FULL_ACCESS startup under an injected restricted policy before opening a driver', async () => {
     const { ExecutionPermissionService } = await import('../execution-permission.service.js');
     const provider = { id: 'restricted-provider', name: 'Restricted', agentType: AgentType.CODEX, runtimeType: RuntimeType.ACP,
@@ -1804,6 +1847,45 @@ describe('SessionManager session status vs real process state', () => {
     const contents = (JSON.parse(persisted?.logSnapshot ?? '{}').entries as Array<{ content: string }>).map((entry) => entry.content);
     expect(contents).toContain('FINISHED routing');
     expect(contents).toContain('Background command "router watch" completed (exit code 0)');
+    } finally {
+      await manager.destroyAll();
+    }
+  });
+
+  it('reports a Claude Code usage-limit stop on the event bus with its reset time', async () => {
+    const { session } = await createSessionFixture({ agentType: AgentType.CLAUDE_CODE });
+    const pty = new ControlledPty();
+    spawnMock.mockResolvedValueOnce(spawnResultFor(pty));
+
+    const eventBus = new EventBus();
+    const manager = new SessionManager(eventBus);
+    const completed = waitForEvent(eventBus, 'session:completed');
+    const causes: unknown[] = [];
+    eventBus.on('session:turn-failure-cause', (payload) => causes.push(payload));
+    const limitText = "You've hit your 5-hour limit · resets 1:20am (America/Los_Angeles)";
+    const rateLimitInfo = { status: 'rejected', resetsAt: 1794993600, rateLimitType: 'five_hour' };
+    try {
+      await manager.start(session.id);
+      const line = (message: Record<string, unknown>) => pty.emitData(JSON.stringify(message) + '\n');
+      line({ type: 'system', subtype: 'init', session_id: 'claude-native' });
+      line({ type: 'rate_limit_event', rate_limit_info: rateLimitInfo, uuid: 'rl-1', session_id: 'claude-native' });
+      line({
+        type: 'assistant',
+        message: { id: 'synthetic-1', role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: limitText }] },
+        error: 'rate_limit',
+        api_error: 'usage_limit_reached',
+        api_error_status: 429,
+        api_error_params: { rate_limit_info: rateLimitInfo },
+      });
+      line({ type: 'result', subtype: 'success', is_error: true, result: limitText, num_turns: 1, result_index: 0, uuid: 'r0', origin: null, api_error_status: 429 });
+      pty.emitExit(0);
+
+      const payload = await completed;
+      expect(payload.status).toBe(SessionStatus.FAILED);
+      expect(causes).toEqual([{
+        sessionId: session.id,
+        cause: { kind: 'usage_limit', resetsAt: '2026-11-18T09:20:00.000Z', limitType: 'five_hour', code: 'usage_limit_reached', message: limitText },
+      }]);
     } finally {
       await manager.destroyAll();
     }

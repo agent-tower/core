@@ -3,6 +3,7 @@ export { buildTextPreview } from '../utils/text-preview.js';
 import { prisma } from '../utils/index.js';
 import { TaskStatus, SessionStatus, SessionPurpose, WorkspaceKind, WorkspaceStatus } from '../types/index.js';
 import { getWorkspaceWorkingDir } from './workspace-kind.js';
+import { notifyMainDirectoryGitMetadataChanged } from '../git/git-operation-events.js';
 import {
   NotFoundError,
   ServiceError,
@@ -1167,10 +1168,13 @@ export class TaskService {
           console.warn(`[TaskService] retry: failed to stop session ${session.id}:`, err);
         }
       }
-      if (workspace.id !== options.preserveWorkspaceId) await prisma.workspace.update({
-        where: { id: workspace.id },
-        data: { status: WorkspaceStatus.ABANDONED },
-      });
+      if (workspace.id !== options.preserveWorkspaceId) {
+        await prisma.workspace.update({
+          where: { id: workspace.id },
+          data: { status: WorkspaceStatus.ABANDONED },
+        });
+        notifyMainDirectoryGitMetadataChanged(workspace);
+      }
     }
 
     // 重置 Task 到 TODO

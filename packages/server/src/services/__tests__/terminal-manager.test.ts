@@ -33,6 +33,21 @@ class FakePty {
 }
 
 describe('TerminalManager process ownership', () => {
+  it('publishes server-owned cwd before user input can produce terminal output', async () => {
+    const shell = new FakePty();
+    const scope = fakeScope({ requestStop: vi.fn(() => { shell.exit(); return true; }) });
+    const bus = new EventBus();
+    const inputs = vi.fn();
+    bus.on('terminal:input', inputs);
+    const manager = new TerminalManager(bus, { spawn: vi.fn(() => shell) as any, processScope: scope, platform: 'linux' });
+    const terminal = manager.create('socket', { cwd: '/worktree/child' });
+    shell.write.mockImplementation(() => {
+      expect(inputs).toHaveBeenCalledExactlyOnceWith({ terminalId: terminal.terminalId, cwd: '/worktree/child' });
+    });
+    try { manager.write(terminal.terminalId, 'git commit\n'); }
+    finally { await manager.destroyAll(); }
+  });
+
   it('retains descendants after root exit and retries failed termination', async () => {
     const shell = new FakePty();
     let rootAlive = true;

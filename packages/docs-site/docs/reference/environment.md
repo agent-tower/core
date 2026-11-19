@@ -19,6 +19,8 @@ description: 当前代码中实际使用的环境变量。
 | `AGENT_TOWER_INTERNAL_TOKEN` | Agent Tower 应用级内部 MCP/API 调用凭证，仅用于可信内部进程或手动 MCP 配置；不要提交到仓库 |
 | `AGENT_TOWER_WEB_DIR` | 静态前端目录 |
 | `AGENT_TOWER_NODE_RUNTIME` | 子进程启动 Node 脚本时使用的 Node/Electron runtime |
+| `AGENT_TOWER_COMMAND_HELPER` | 命令辅助进程负责执行 Git 等需收集输出的命令。默认 `auto` 在 Linux 上随服务启动，在其他系统上关闭。`on` 在所有平台启用，`off` 时由服务端直接执行，服务正常运行 |
+| `AGENT_TOWER_COMMAND_HELPER_RECYCLE_RSS_MB` | 辅助进程的常驻内存（RSS）阈值，默认 `384` MiB。连续 `3` 次报告超过阈值时尝试更换进程，两次尝试至少间隔 `10` 分钟，新进程就绪后才切换。设为 `0` 可关闭按内存更换 |
 | `AGENT_TOWER_MCP_ENTRY` | 打包桌面端注入给 agent 的 MCP 入口脚本路径 |
 | `AGENT_TOWER_DESKTOP_RUNTIME_MODE` | 桌面端 runtime 模式标记 |
 | `LOG_LEVEL` | Fastify 日志级别 |

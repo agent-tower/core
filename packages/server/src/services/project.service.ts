@@ -5,6 +5,7 @@ import type { ProjectGitCapability } from '@agent-tower/shared';
 import { prisma } from '../utils/index.js';
 import { NotFoundError, ValidationError } from '../errors.js';
 import { execGit } from '../git/git-cli.js';
+import { notifyWorkspaceGitMetadataChanged } from '../git/git-operation-events.js';
 import {
   detectAndStoreProjectGitCapability,
   detectProjectGitCapability,
@@ -445,6 +446,7 @@ export class ProjectService {
         data: { ...input, ...(mainBranch !== undefined ? { mainBranch } : {}) },
       });
     });
+    if (mainBranch !== undefined) notifyWorkspaceGitMetadataChanged([project.repoPath]);
     return this.withGitMetadata(updated);
   }
 
@@ -511,6 +513,9 @@ export class ProjectService {
             where: { id: { in: activeWorkspaceIds } },
             data: { status: WorkspaceStatus.ABANDONED },
           });
+          notifyWorkspaceGitMetadataChanged(allWorkspaces
+            .filter((workspace) => workspace.status === WorkspaceStatus.ACTIVE && workspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY)
+            .map((workspace) => workspace.workingDir || workspace.worktreePath));
         }
 
         if (input.deleteRepo) {
@@ -535,6 +540,9 @@ export class ProjectService {
               where: { id: { in: allWorkspaces.map((workspace) => workspace.id) } },
               data: { worktreePath: '', workingDir: '' },
             });
+            notifyWorkspaceGitMetadataChanged(allWorkspaces
+              .filter((workspace) => workspace.workspaceKind === WorkspaceKind.MAIN_DIRECTORY)
+              .map((workspace) => workspace.workingDir || workspace.worktreePath));
           }
         }
 

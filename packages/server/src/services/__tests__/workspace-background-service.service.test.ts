@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
+import { EventBus } from '../../core/event-bus.js';
 
 const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-background-service-'));
 const dbPath = path.join(testDir, 'test.db');
@@ -24,15 +25,17 @@ class FakeProcessManager {
   beforeStop?: (serviceId: string) => Promise<void>;
   write = vi.fn();
   callbacks = new Map<string, (event: any) => unknown>();
+  outputCallbacks = new Map<string, () => void>();
 
   createRuntimeInstanceId() {
     return `runtime-${this.next++}`;
   }
 
-  async start(serviceId: string, runtimeInstanceId: string, spec: unknown, onExit: (event: any) => unknown) {
+  async start(serviceId: string, runtimeInstanceId: string, spec: unknown, onExit: (event: any) => unknown, onOutput?: () => void) {
     this.startCalls(serviceId, runtimeInstanceId, spec);
     this.active.set(serviceId, { runtimeInstanceId, onExit });
     this.callbacks.set(runtimeInstanceId, onExit);
+    if (onOutput) this.outputCallbacks.set(serviceId, onOutput);
     await this.afterStart?.(serviceId);
     return { runtimeInstanceId, pid: 1000 + this.next };
   }
@@ -125,6 +128,23 @@ describe('WorkspaceBackgroundService', () => {
   afterAll(async () => {
     await prisma.$disconnect();
     fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('publishes workspace-bound output and exit signals without looking up output in the database', async () => {
+    const manager = new FakeProcessManager();
+    const bus = new EventBus();
+    const output = vi.fn();
+    const exit = vi.fn();
+    bus.on('workspace-service:output', output);
+    bus.on('workspace-service:exit', exit);
+    const service = new WorkspaceBackgroundService(manager as any, undefined, bus);
+    const { workspace } = await createWorkspace('git-signals');
+    const started = await service.start(workspace.id, 'web', { command: 'node' });
+    manager.outputCallbacks.get(started.id)!();
+    expect(output).toHaveBeenCalledExactlyOnceWith({ serviceId: started.id, workspaceId: workspace.id, runtimeInstanceId: started.runtimeInstanceId });
+    await manager.exit(started.id, 0);
+    expect(exit).toHaveBeenCalledExactlyOnceWith({ serviceId: started.id, workspaceId: workspace.id, runtimeInstanceId: started.runtimeInstanceId });
+    await service.shutdown();
   });
 
   it('makes start/stop/restart idempotent and rejects spec changes', async () => {

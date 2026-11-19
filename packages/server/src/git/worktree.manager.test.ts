@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WorktreeManager } from './worktree.manager.js';
+import { onWorkspaceGitOperation, type WorkspaceGitOperation } from './git-operation-events.js';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -44,7 +45,12 @@ describe('WorktreeManager.remove', () => {
     expect(fs.readFileSync(path.join(childPath, 'parent.txt'), 'utf8')).toBe('parent code');
     fs.writeFileSync(path.join(childPath, 'child.txt'), 'child code');
     git(childPath, ['add', '.']); git(childPath, ['commit', '-m', 'child change']);
-    await manager.merge(childPath, 'at/parent', { targetWorktreePath: parentPath });
+    const signals: WorkspaceGitOperation[] = [];
+    const stopObserving = onWorkspaceGitOperation((event) => signals.push(event));
+    try {
+      await manager.merge(childPath, 'at/parent', { targetWorktreePath: parentPath });
+      expect(signals).toEqual([{ worktreePaths: [childPath, parentPath], recreated: false }]);
+    } finally { stopObserving(); }
     expect(fs.readFileSync(path.join(parentPath, 'child.txt'), 'utf8')).toBe('child code');
     expect(git(repoPath, ['branch', '--show-current']).trim()).toBe('main');
     expect(git(parentPath, ['status', '--porcelain']).trim()).toBe('');
@@ -85,6 +91,22 @@ describe('WorktreeManager.remove', () => {
     });
     expect(fs.existsSync(worktreePath)).toBe(false);
     await expect(manager.list()).resolves.not.toContain(path.resolve(worktreePath));
+  });
+
+  it('signals a restored worktree after its git directory exists', async () => {
+    const worktreePath = await manager.create('at/restore-signal');
+    await manager.remove(worktreePath);
+    const signals: WorkspaceGitOperation[] = [];
+    const stopObserving = onWorkspaceGitOperation((event) => {
+      expect(fs.existsSync(path.join(worktreePath, '.git'))).toBe(true);
+      signals.push(event);
+    });
+    try {
+      expect(await manager.ensureWorktreeExists('at/restore-signal')).toBe(worktreePath);
+      expect(signals).toEqual([{ worktreePaths: [worktreePath], recreated: true }]);
+      await manager.ensureWorktreeExists('at/restore-signal');
+      expect(signals).toHaveLength(1);
+    } finally { stopObserving(); }
   });
 
   it('removes a registered TeamRun nested worktree using git worktree registry state', async () => {
@@ -169,6 +191,53 @@ describe('WorktreeManager.remove', () => {
       managed: false,
     });
     expect(fs.existsSync(path.join(unmanagedPath, 'keep.txt'))).toBe(true);
+  });
+});
+
+describe.each(['main', 'linked'])('WorktreeManager rebase in a %s worktree', (kind) => {
+  let tempDir: string;
+  let worktreePath: string;
+  let manager: WorktreeManager;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tower-worktree-manager-'));
+    const repoPath = path.join(tempDir, 'repo');
+    initRepo(repoPath);
+    manager = new WorktreeManager(repoPath);
+    git(repoPath, ['branch', 'topic']);
+    fs.writeFileSync(path.join(repoPath, 'README.md'), 'main change\n');
+    git(repoPath, ['commit', '-am', 'main change']);
+
+    if (kind === 'main') {
+      worktreePath = repoPath;
+      git(repoPath, ['checkout', 'topic']);
+    } else {
+      worktreePath = path.join(tempDir, 'linked');
+      git(repoPath, ['worktree', 'add', worktreePath, 'topic']);
+    }
+    fs.writeFileSync(path.join(worktreePath, 'README.md'), 'topic change\n');
+    git(worktreePath, ['commit', '-am', 'topic change']);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it.each(['--merge', '--apply'])('detects and aborts a conflict with %s', async (backend) => {
+    expect(process.cwd()).not.toBe(worktreePath);
+    const originalHead = git(worktreePath, ['rev-parse', 'HEAD']);
+    const idle = { operation: 'idle', conflictOp: null, conflictedFiles: [] };
+    await expect(manager.getGitOperationStatus(worktreePath, 'main')).resolves.toMatchObject(idle);
+
+    expect(() => git(worktreePath, ['rebase', backend, 'main'])).toThrow();
+    await expect(manager.getGitOperationStatus(worktreePath, 'main')).resolves.toMatchObject({
+      operation: 'rebase', conflictOp: 'REBASE', conflictedFiles: ['README.md'],
+    });
+
+    await manager.abortOperation(worktreePath);
+    await expect(manager.getGitOperationStatus(worktreePath, 'main')).resolves.toMatchObject(idle);
+    expect(git(worktreePath, ['rev-parse', 'HEAD'])).toBe(originalHead);
+    expect(git(worktreePath, ['status', '--porcelain'])).toBe('');
   });
 });
 

@@ -1,8 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Workspace, GitOperationStatus, WorkspaceKind, ProjectWorkspaceBranches, UpdateWorkspaceBaseBranchInput } from '@agent-tower/shared'
 import { apiClient } from '../lib/api-client'
-import { getGitStatusRefreshInterval } from '../lib/git-refresh-policy'
-import { useGitVisibilityStore } from '../stores/git-visibility-store'
+import { getWorkspaceGitSubscriptions, gitRestRefetchOptions } from '../lib/socket/workspace-git-subscriptions'
 import { queryKeys } from './query-keys'
 
 // ============ Queries ============
@@ -152,19 +151,19 @@ export function useOpenInEditor() {
 
 // ============ Git Operations ============
 
-/** 获取 workspace 的 Git 操作状态 */
+/**
+ * The workspace's git operation status. Loads once over REST; while the workspace's git
+ * subscription is live, pushes keep it current, otherwise it refetches on window focus and
+ * reconnect. It never polls.
+ */
 export function useGitStatus(workspaceId: string, options: { enabled?: boolean } = {}) {
-  const visibleContext = useGitVisibilityStore((state) => state.visibleContext)
-  const refreshInterval = getGitStatusRefreshInterval(workspaceId, visibleContext)
+  const subscriptions = getWorkspaceGitSubscriptions(useQueryClient())
 
   return useQuery({
     queryKey: queryKeys.workspaces.gitStatus(workspaceId),
     queryFn: () => apiClient.get<GitOperationStatus>(`/workspaces/${workspaceId}/git-status`),
     enabled: !!workspaceId && (options.enabled ?? true),
-    refetchInterval: refreshInterval,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: refreshInterval ? 'always' : false,
-    refetchOnReconnect: refreshInterval ? 'always' : false,
+    ...gitRestRefetchOptions(() => subscriptions.coversWorkspace(workspaceId)),
   })
 }
 

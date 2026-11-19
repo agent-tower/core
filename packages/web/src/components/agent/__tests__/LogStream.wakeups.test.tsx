@@ -66,6 +66,16 @@ describe('Pending wake-ups in the session log', () => {
     expect(apiClient.delete).toHaveBeenCalledWith('/sessions/session-1/wakeups/service')
   })
 
+  it('labels a resume that Agent Tower scheduled after a usage limit', async () => {
+    const fireAt = new Date(Date.now() + 3 * 24 * 60 * 60_000)
+    wakeups = [wakeup({ id: 'limit', kind: 'USAGE_LIMIT', reason: "You've hit your weekly limit · resets Nov 21, 3pm (America/Los_Angeles)", fireAt: fireAt.toISOString() })]
+    await render()
+    const notice = container.querySelector('[data-pending-wakeups]')
+    expect(notice?.textContent).toMatch(/额度用尽，重置后于 .+ 唤醒/)
+    expect(notice?.textContent).toContain("You've hit your weekly limit")
+    expect(container.querySelector('[data-wakeup-id="limit"] button')).not.toBeNull()
+  })
+
   it('renders nothing when no wake-up is pending', async () => {
     wakeups = [wakeup({ id: 'fired', state: 'FIRED' })]
     await render()

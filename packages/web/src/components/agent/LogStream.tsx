@@ -478,6 +478,7 @@ const SystemEventMessage = memo(({ content, compact }: { content: string; compac
     const match = content.match(/<agent_tower_wakeup\s+kind="([^"]+)"(?:[^>]*service="([^"]*)")?/)
     if (match?.[1] === 'service_exit') return t('后台服务 {name} 已退出', { name: match[2] || '' })
     if (match?.[1] === 'timer') return t('定时唤醒已触发')
+    if (match?.[1] === 'usage_limit') return t('额度已重置，继续执行')
     return t('系统唤醒')
   }, [content, t])
   return (
@@ -522,6 +523,7 @@ function PendingWakeups({ sessionId }: { sessionId: string }) {
   const describe = (wakeup: SessionWakeupDto) => {
     if (wakeup.state === 'READY') return t('当前回合结束后唤醒')
     if (wakeup.kind === 'SERVICE_EXIT') return t('后台服务 {name} 退出后唤醒', { name: wakeup.serviceName ?? '' })
+    if (wakeup.kind === 'USAGE_LIMIT' && wakeup.fireAt) return t('额度用尽，重置后于 {time} 唤醒', { time: formatWakeupTime(wakeup.fireAt) })
     return wakeup.fireAt ? t('{time} 定时唤醒', { time: formatWakeupTime(wakeup.fireAt) }) : t('定时唤醒')
   }
   return (

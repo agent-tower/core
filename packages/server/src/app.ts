@@ -19,6 +19,7 @@ import {
   getMessageDeliveryService,
   destroyApplicationProcesses,
   getSessionWakeupService,
+  getUsageLimitResume,
 } from './core/container.js';
 import { tunnelAuthHook } from './middleware/tunnel-auth.js';
 import { accessAuthHook } from './middleware/access-auth.js';
@@ -112,6 +113,7 @@ export async function buildApp() {
     getSessionManager().stopConversationQueue();
     await getMessageDeliveryService().start();
     getSessionWakeupService().start();
+    getUsageLimitResume().start();
 
     app.log.info(`[startup:onReady] enter elapsed=${elapsed()}`);
     app.log.info(`[startup:onReady] initializeSocket start elapsed=${elapsed()}`);
@@ -163,6 +165,7 @@ export async function buildApp() {
     hibernationScheduler?.stop();
     memberHeartbeatScheduler?.stop();
     getTaskCleanupService().stop();
+    getUsageLimitResume().stop();
     getSessionWakeupService().stop();
     processCleanup = destroyApplicationProcesses();
     void processCleanup.catch(() => undefined);

@@ -24,6 +24,7 @@ import { useTaskTeamRun, useRoomMessages, usePostRoomMessage } from '@/hooks/use
 import { useWorkspaces, useOpenInEditor } from '@/hooks/use-workspaces'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
+import { useWorkspaceGitSubscription } from '@/lib/socket/hooks/useWorkspaceGitSubscription'
 import { useSendMessage, useSessionActivity, useStopSession } from '@/hooks/use-sessions'
 import { useProviders } from '@/hooks/use-providers'
 import { useTaskBody } from '@/hooks/use-tasks'
@@ -67,7 +68,6 @@ import type { UrlTransform } from 'streamdown'
 import { useI18n } from '@/lib/i18n'
 import { getApiBaseUrl } from '@/lib/api-base-url'
 import { streamdownComponents } from '@/lib/streamdown-components'
-import { useGitVisibilityStore, type VisibleGitTab } from '@/stores/git-visibility-store'
 import 'streamdown/styles.css'
 
 const API_BASE_URL = getApiBaseUrl()
@@ -132,7 +132,6 @@ const TEAM_RUN_TAB_CONFIG: { key: MobileTab; label: string; icon: typeof Message
 
 export function MobileTaskDetail({ task, onBack, onSelectTask, onCreateSubtask, onDeleteTask, onTaskPriorityChange, isDeleting, autoStartState, onAutoStartRecovered }: MobileTaskDetailProps) {
   const { t } = useI18n()
-  const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
   const [activeTab, setActiveTab] = useState<MobileTab>('chat')
   const [input, setInput] = useState('')
   const [isStartDialogOpen, setIsStartDialogOpen] = useState(false)
@@ -248,6 +247,12 @@ export function MobileTaskDetail({ task, onBack, onSelectTask, onCreateSubtask, 
     () => getWorkspaceMergeTargetBranch(selectedWorkspace, workspaces, task?.mainBranch ?? ''),
     [selectedWorkspace, task?.mainBranch, workspaces],
   )
+  // Git data of the selected workspace stays live while this task is open, whichever tab is
+  // selected; the subscription pauses while the browser tab is hidden.
+  useWorkspaceGitSubscription(
+    taskSupportsGit && !isProjectRepoDeleted ? selectedWorkspaceOperationId : undefined,
+    workingDir,
+  )
   const shouldLoadGitData = Boolean(
     canRunGit
     && selectedWorkspaceOperationId
@@ -266,28 +271,6 @@ export function MobileTaskDetail({ task, onBack, onSelectTask, onCreateSubtask, 
   const conflictRecovery = useConflictRecovery((workspaces ?? []).map(workspace => workspace.id), !teamRun)
   const { pendingConflictDetails } = conflictRecovery
   const isResolveDialogOpen = Boolean(pendingConflictDetails)
-
-  useEffect(() => {
-    const gitTab: VisibleGitTab | null = taskSupportsGit && (activeTab === 'changes' || (activeTab === 'chat' && shouldLoadGitData))
-      ? 'changes'
-      : taskSupportsGit && activeTab === 'history'
-        ? 'history'
-        : null
-
-    if (!selectedWorkspaceOperationId || !workingDir || !gitTab) {
-      setVisibleGitContext(null)
-      return
-    }
-
-    setVisibleGitContext({
-      workspaceId: selectedWorkspaceOperationId,
-      workingDir,
-      tab: gitTab,
-    })
-    return () => {
-      setVisibleGitContext(null)
-    }
-  }, [activeTab, taskSupportsGit, selectedWorkspaceOperationId, setVisibleGitContext, shouldLoadGitData, workingDir])
 
   const conflictDetails = useMemo<ConflictDetails | null>(() => {
     if (pendingConflictDetails) return pendingConflictDetails

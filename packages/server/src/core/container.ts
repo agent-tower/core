@@ -14,9 +14,11 @@ import { TeamRunService } from '../services/team-run.service.js';
 import { emitTeamRunInvalidated } from '../services/team-run-events.js';
 import { MessageDeliveryService } from '../services/message-delivery.service.js';
 import { SessionWakeupService } from '../services/session-wakeup.service.js';
+import { UsageLimitResume } from '../services/usage-limit-resume.js';
 import { TaskService } from '../services/task.service.js';
 import { TranslationService } from '../services/translation.service.js';
 import { assertApplicationProcessStartAllowed, beginApplicationProcessShutdown, cleanupApplicationProcessOwners } from '../runtime/application-process-cleanup.js';
+import { stopCommandHelper } from '../runtime/command-helper/client.js';
 // TerminalManager is lazy-imported to avoid eager native module (node-pty) loading
 // that could break getEventBus()/getSessionManager() if the import fails.
 import type { TerminalManager } from '../services/terminal-manager.js';
@@ -35,6 +37,7 @@ let translationService: TranslationService | null = null;
 let teamTaskInputService: TeamTaskInputService | null = null;
 let messageDeliveryService: MessageDeliveryService | null = null;
 let sessionWakeupService: SessionWakeupService | null = null;
+let usageLimitResume: UsageLimitResume | null = null;
 const workspaceSetupProgressStore = new WorkspaceSetupProgressStore();
 
 export function getTeamTaskInputService(): TeamTaskInputService {
@@ -106,7 +109,7 @@ export function getTaskCleanupService(): TaskCleanupService {
 export function getWorkspaceBackgroundService(): WorkspaceBackgroundService {
   if (!workspaceBackgroundService) {
     assertApplicationProcessStartAllowed();
-    workspaceBackgroundService = new WorkspaceBackgroundService();
+    workspaceBackgroundService = new WorkspaceBackgroundService(undefined, undefined, getEventBus());
   }
   return workspaceBackgroundService;
 }
@@ -133,6 +136,13 @@ export function getSessionWakeupService(): SessionWakeupService {
     backgroundService.onServiceExit((event) => wakeups.handleServiceExit(event));
   }
   return sessionWakeupService;
+}
+
+export function getUsageLimitResume(): UsageLimitResume {
+  if (!usageLimitResume) {
+    usageLimitResume = new UsageLimitResume({ eventBus: getEventBus(), wakeups: getSessionWakeupService() });
+  }
+  return usageLimitResume;
 }
 
 export async function getTerminalManager(): Promise<TerminalManager> {
@@ -162,6 +172,9 @@ export async function destroyApplicationProcesses(): Promise<void> {
       const manager = terminalManager ?? await terminalManagerPromise?.catch(() => null);
       await manager?.destroyAll();
     },
+    // Stops the helper's running commands through the owner stop rules and
+    // resolves once the helper has exited.
+    () => stopCommandHelper(),
   ]);
 }
 

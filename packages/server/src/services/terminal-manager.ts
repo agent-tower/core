@@ -47,6 +47,7 @@ function cleanInternalEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 interface ManagedTerminal {
   pty: IPty;
+  cwd: string;
   socketId: string;
   lastActivity: number;
   cleanups: Array<{ dispose(): void }>;
@@ -199,6 +200,7 @@ export class TerminalManager {
     const exitPromise = new Promise<void>((resolve) => { resolveExit = resolve; });
     const managed: ManagedTerminal = {
       pty: shell,
+      cwd,
       socketId,
       lastActivity: Date.now(),
       cleanups: [],
@@ -271,6 +273,7 @@ export class TerminalManager {
     const terminal = this.terminals.get(terminalId);
     if (!terminal || terminal.stopRequested || terminal.exited) return;
     terminal.lastActivity = Date.now();
+    if (data.length > 0) this.eventBus.emit('terminal:input', { terminalId, cwd: terminal.cwd });
     terminal.pty.write(data);
   }
 

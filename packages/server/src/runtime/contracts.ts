@@ -22,7 +22,9 @@ export type RuntimeStreamEvent =
   | { type: 'progress' }
   | { type: 'execution_permission_applied'; mode: ExecutionPermissionMode }
   /** The agent process reported the background work it is still waiting for (empty = nothing pending). */
-  | { type: 'background_tasks_changed'; tasks: RuntimeBackgroundTask[] };
+  | { type: 'background_tasks_changed'; tasks: RuntimeBackgroundTask[] }
+  /** The agent's output says why a turn failed (for example a usage limit); continuation turns included. */
+  | { type: 'turn_failure_cause'; cause: import('../output/turn-failure.js').TurnFailureCause };
 
 export type RuntimeTerminalEvent =
   | { type: 'completed'; outcome?: RuntimeTurnOutcome }

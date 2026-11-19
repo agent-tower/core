@@ -5,13 +5,14 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { ReferencedShutdownCoordinator } from '../runtime/shutdown-coordinator.js';
 import { assertApplicationProcessStartAllowed, registerApplicationProcessCleanup } from '../runtime/application-process-cleanup.js';
-import { createWindowsProcessTreeAdapter, type WindowsProcessIdentity, type WindowsProcessTreeAdapter } from '../runtime/acp/process-manager.js';
+import { createWindowsProcessTreeAdapter, type WindowsProcessIdentity, type WindowsProcessTreeAdapter } from '../runtime/acp/windows-process-tree.js';
+import { getRunningCommandHelper } from '../runtime/command-helper/client.js';
+import { countOwnedCommand } from '../runtime/runtime-metrics.js';
+import { DEFAULT_STOP_GRACE_MS, FORCE_EXIT_TIMEOUT_MS } from './owned-process-limits.js';
 import { createUnixProcessIdentityAdapter, PROCESS_IDENTITY_ENV, type UnixProcessIdentityAdapter } from './unix-process-identity.js';
 import { getDefaultProcessScopeRuntime, parseScopeStatusLine, type ProcessScopeRuntime } from '../runtime/process-scope/process-scope.js';
 
 export interface ChildProcessOwner { stop(): Promise<void> }
-
-const FORCE_EXIT_TIMEOUT_MS = 2_000;
 
 const activeOwners = new Set<ChildProcessOwner>();
 
@@ -57,9 +58,9 @@ export class OwnedChildProcess implements ChildProcessOwner {
     this.shutdown = new ReferencedShutdownCoordinator(async () => {
       await this.initialCapture.catch(() => undefined);
       const alreadyExited = await this.signal('SIGTERM');
-      if (!alreadyExited && !await this.waitForExit(options.graceMs ?? 2_000)) {
+      if (!alreadyExited && !await this.waitForExit(options.graceMs ?? DEFAULT_STOP_GRACE_MS)) {
         await this.signal('SIGKILL');
-        if (!await this.waitForExit(2_000)) throw new Error('Child process tree cleanup remains pending');
+        if (!await this.waitForExit(FORCE_EXIT_TIMEOUT_MS)) throw new Error('Child process tree cleanup remains pending');
       }
       clearInterval(this.captureTimer);
       await this.capturePromise;
@@ -173,7 +174,7 @@ export class SupervisedChildProcess implements ChildProcessOwner {
       child.once('exit', () => { this.exited = true; resolve(); });
       child.once('error', () => { if (!child.pid) { this.exited = true; resolve(); } });
     });
-    const graceMs = options.graceMs ?? 2_000;
+    const graceMs = options.graceMs ?? DEFAULT_STOP_GRACE_MS;
     this.shutdown = new ReferencedShutdownCoordinator(async () => {
       const pid = this.child.pid;
       if (pid && !this.exited) {
@@ -292,7 +293,7 @@ export function spawnOwnedProcess(command: string, args: string[], options: Spaw
   const executable = scope ? resolveExecutable(command, options.env ?? process.env, options.cwd) : null;
   if (scope && executable) {
     const invocation = scope.buildInvocation(
-      { id: `command-${token}`, graceMs: options.graceMs ?? 2_000, rootExitSignal: 'SIGTERM', stopOnParentDeath: true, statusFd: 3 },
+      { id: `command-${token}`, graceMs: options.graceMs ?? DEFAULT_STOP_GRACE_MS, rootExitSignal: 'SIGTERM', stopOnParentDeath: true, statusFd: 3 },
       executable,
       args,
     );
@@ -341,8 +342,30 @@ export interface OwnedCommandOptions {
   signal?: AbortSignal;
 }
 
-/** execFile-like text command whose timeout also reclaims hooks and helpers. */
+/**
+ * execFile-like text command whose timeout also reclaims hooks and helpers.
+ *
+ * When the application has started the command helper
+ * (`runtime/command-helper`), the command runs there and this process starts
+ * no child: on Linux a fork() of the grown server blocks its event loop.
+ * Otherwise it runs here. Results and errors are the same either way.
+ */
 export function runOwnedCommand(command: string, args: string[], options: OwnedCommandOptions): Promise<{ stdout: string; stderr: string }> {
+  if (options.signal?.aborted) return Promise.reject(Object.assign(new Error(`${command} was cancelled`), { code: 'ABORT_ERR' }));
+  const helper = getRunningCommandHelper();
+  if (!helper) {
+    const result = runOwnedCommandInProcess(command, args, options);
+    countOwnedCommand('in-process');
+    return result;
+  }
+  assertApplicationProcessStartAllowed();
+  const result = helper.run(command, args, options);
+  countOwnedCommand('helper');
+  return result;
+}
+
+/** Runs the command as a child of this process. The command helper runs every request through this. */
+export function runOwnedCommandInProcess(command: string, args: string[], options: OwnedCommandOptions): Promise<{ stdout: string; stderr: string }> {
   if (options.signal?.aborted) return Promise.reject(Object.assign(new Error(`${command} was cancelled`), { code: 'ABORT_ERR' }));
   const child = spawnOwnedProcess(command, args, options);
   const owner = child.owner;

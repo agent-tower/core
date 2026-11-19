@@ -10,6 +10,7 @@ import type {
   WorkspaceBackgroundServiceRuntimeState,
 } from '@agent-tower/shared';
 import { ServiceError } from '../errors.js';
+import type { EventBus } from '../core/event-bus.js';
 import { WorkspaceStatus } from '../types/index.js';
 import { prisma } from '../utils/index.js';
 import { getWorkspaceWorkingDir } from './workspace-kind.js';
@@ -152,6 +153,7 @@ export class WorkspaceBackgroundService {
   constructor(
     private readonly processManager = new WorkspaceBackgroundProcessManager(),
     private readonly lifecycleBarrier: WorkspaceLifecycleBarrier = defaultWorkspaceLifecycleBarrier,
+    private readonly eventBus?: EventBus,
   ) {}
 
   async authorizeCaller(
@@ -483,7 +485,11 @@ export class WorkspaceBackgroundService {
         record.id,
         runtimeInstanceId,
         { command: record.command, args, cwd },
-        (event) => this.handleProcessExit(event),
+        (event) => {
+          this.eventBus?.emit('workspace-service:exit', { serviceId: record.id, workspaceId: record.workspaceId, runtimeInstanceId });
+          return this.handleProcessExit(event);
+        },
+        () => this.eventBus?.emit('workspace-service:output', { serviceId: record.id, workspaceId: record.workspaceId, runtimeInstanceId }),
       );
       const promoted = await prisma.workspaceBackgroundService.updateMany({
         where: { id: record.id, runtimeInstanceId, runtimeState: 'STARTING' },

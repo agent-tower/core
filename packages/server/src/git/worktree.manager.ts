@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { ConflictOp } from '@agent-tower/shared';
 import type { GitOperationStatus } from '@agent-tower/shared';
+import { notifyWorkspaceGitOperation } from './git-operation-events.js';
 import {
   execGit,
   type ExecGitOptions,
@@ -272,6 +273,7 @@ export class WorktreeManager {
       throw err;
     }
 
+    notifyWorkspaceGitOperation([worktreePath], true);
     return worktreePath;
   }
 
@@ -363,6 +365,7 @@ export class WorktreeManager {
       throw err;
     }
 
+    notifyWorkspaceGitOperation([worktreePath], true);
     return worktreePath;
   }
 
@@ -399,6 +402,18 @@ export class WorktreeManager {
    * 6. Remove the worktree and delete the task branch
    */
   async merge(
+    worktreePath: string,
+    targetBranch: string,
+    options?: { commitMessage?: string; targetWorktreePath?: string; restoreOriginalBranch?: boolean }
+  ): Promise<{ sha: string; taskBranch: string }> {
+    try {
+      return await this.performMerge(worktreePath, targetBranch, options);
+    } finally {
+      notifyWorkspaceGitOperation([worktreePath, options?.targetWorktreePath ?? this.repoPath]);
+    }
+  }
+
+  private async performMerge(
     worktreePath: string,
     targetBranch: string,
     options?: { commitMessage?: string; targetWorktreePath?: string; restoreOriginalBranch?: boolean }
@@ -521,6 +536,18 @@ export class WorktreeManager {
     targetWorktreePath: string,
     options?: { commitMessage?: string }
   ): Promise<{ sha: string; sourceBranch: string; targetBranch: string }> {
+    try {
+      return await this.performMergeIntoWorktree(sourceWorktreePath, targetWorktreePath, options);
+    } finally {
+      notifyWorkspaceGitOperation([sourceWorktreePath, targetWorktreePath]);
+    }
+  }
+
+  private async performMergeIntoWorktree(
+    sourceWorktreePath: string,
+    targetWorktreePath: string,
+    options?: { commitMessage?: string }
+  ): Promise<{ sha: string; sourceBranch: string; targetBranch: string }> {
     const sourceBranch = (await execGit(sourceWorktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
     const targetBranch = (await execGit(targetWorktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
 
@@ -579,6 +606,14 @@ export class WorktreeManager {
    * - On non-conflict failure, auto-aborts to keep repo clean
    */
   async rebase(worktreePath: string, baseBranch: string): Promise<void> {
+    try {
+      await this.performRebase(worktreePath, baseBranch);
+    } finally {
+      notifyWorkspaceGitOperation([worktreePath]);
+    }
+  }
+
+  private async performRebase(worktreePath: string, baseBranch: string): Promise<void> {
     // Pre-check 1: worktree must be clean (no uncommitted tracked changes)
     if (!(await this.isWorktreeClean(worktreePath))) {
       throw new WorktreeDirtyError(worktreePath);
@@ -684,6 +719,14 @@ export class WorktreeManager {
    * If no operation is in progress, this is a no-op.
    */
   async abortOperation(worktreePath: string): Promise<void> {
+    try {
+      await this.performAbortOperation(worktreePath);
+    } finally {
+      notifyWorkspaceGitOperation([worktreePath]);
+    }
+  }
+
+  private async performAbortOperation(worktreePath: string): Promise<void> {
     if (await this.isRebaseInProgress(worktreePath)) {
       await execGit(worktreePath, ['rebase', '--abort']);
       return;
@@ -887,8 +930,8 @@ export class WorktreeManager {
       const rebaseApplyPath = (await execGit(worktreePath, ['rev-parse', '--git-path', 'rebase-apply'], options?.())).trim();
 
       const [mergeExists, applyExists] = await Promise.all([
-        fs.access(rebaseMergePath).then(() => true).catch(() => false),
-        fs.access(rebaseApplyPath).then(() => true).catch(() => false),
+        fs.access(path.resolve(worktreePath, rebaseMergePath)).then(() => true).catch(() => false),
+        fs.access(path.resolve(worktreePath, rebaseApplyPath)).then(() => true).catch(() => false),
       ]);
 
       return mergeExists || applyExists;

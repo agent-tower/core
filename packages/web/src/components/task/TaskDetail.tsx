@@ -40,8 +40,8 @@ import { queryKeys } from '@/hooks/query-keys'
 import { apiClient } from '@/lib/api-client'
 import { useNormalizedLogs } from '@/lib/socket/hooks/useNormalizedLogs'
 import { useWorkspaceSetupProgress } from '@/lib/socket/hooks/useWorkspaceSetupProgress'
+import { useWorkspaceGitSubscription } from '@/lib/socket/hooks/useWorkspaceGitSubscription'
 import { socketManager } from '@/lib/socket/manager'
-import { useGitVisibilityStore } from '@/stores/git-visibility-store'
 import { useSendMessage, useSessionActivity, useStopSession, useStartSession } from '@/hooks/use-sessions'
 import { useTaskBody } from '@/hooks/use-tasks'
 import { useProviders } from '@/hooks/use-providers'
@@ -500,7 +500,12 @@ export function TaskDetail({ task, onSelectTask, onCreateSubtask, onDeleteTask, 
 
   // ============ Git Status ============
 
-  const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
+  // Git data of the selected workspace stays live while this task is open, whichever panel tab
+  // is selected; the subscription pauses while the browser tab is hidden.
+  useWorkspaceGitSubscription(
+    taskSupportsGit && !isProjectRepoDeleted ? selectedWorkspaceOperationId : undefined,
+    workingDir,
+  )
   const shouldLoadTaskDetailGitData = Boolean(
     canRunSelectedWorkspaceGitOperations
     && selectedWorkspaceOperationId
@@ -515,22 +520,6 @@ export function TaskDetail({ task, onSelectTask, onCreateSubtask, onDeleteTask, 
   } = useGitChanges(workingDir, {
     enabled: shouldLoadTaskDetailGitData,
   })
-
-  useEffect(() => {
-    if (isWorkspaceOpen || !shouldLoadTaskDetailGitData || !selectedWorkspaceOperationId || !workingDir) {
-      return
-    }
-
-    setVisibleGitContext({
-      workspaceId: selectedWorkspaceOperationId,
-      workingDir,
-      tab: 'changes',
-    })
-
-    return () => {
-      setVisibleGitContext(null)
-    }
-  }, [isWorkspaceOpen, selectedWorkspaceOperationId, setVisibleGitContext, shouldLoadTaskDetailGitData, workingDir])
 
   // Collect sessions from active workspace for ResolveConflictsDialog
   const selectedWorkspaceSessions = selectedWorkspace?.sessions ?? []

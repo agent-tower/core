@@ -94,6 +94,7 @@ export class WorkspaceBackgroundProcessManager {
     runtimeInstanceId: string,
     spec: WorkspaceBackgroundProcessSpec,
     onExit: (event: WorkspaceBackgroundProcessExit) => void | Promise<void>,
+    onOutput?: () => void,
   ): Promise<WorkspaceBackgroundProcessStartResult> {
     if (this.has(serviceId)) {
       throw new ServiceError('Workspace service is already running', 'SERVICE_BUSY', 409);
@@ -150,6 +151,7 @@ export class WorkspaceBackgroundProcessManager {
     managed.cleanups.push(shell.onData((data) => {
       if (this.processes.get(serviceId)?.runtimeInstanceId !== runtimeInstanceId) return;
       this.appendLog(serviceId, data);
+      if (data.length > 0) onOutput?.();
     }));
     managed.cleanups.push(shell.onExit(({ exitCode }) => {
       const current = this.processes.get(serviceId);

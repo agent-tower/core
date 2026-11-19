@@ -13,7 +13,6 @@ import { PreviewPanel, type PreviewOpenRequest, type PreviewSource } from "./Pre
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { buildWorkspaceViews } from "./team-workspace-view"
 import { useProject } from "@/hooks/use-projects"
-import { useGitVisibilityStore, type VisibleGitTab } from "@/stores/git-visibility-store"
 import type { QuickCommand } from "@agent-tower/shared"
 
 export type WorkspaceTab = "editor" | "terminal" | "preview" | "review" | "history" | "subtasks" | "handoff"
@@ -173,7 +172,6 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
     onPreviewRequestHandled,
   }) {
     const { t } = useI18n()
-    const setVisibleGitContext = useGitVisibilityStore((state) => state.setVisibleContext)
     const isRailVariant = variant === 'rail'
     const [internalExpanded, setInternalExpanded] = useState(false)
     const isExpanded = isRailVariant ? expanded ?? internalExpanded : true
@@ -274,28 +272,6 @@ export const WorkspacePanel: React.FC<WorkspacePanelProps> = React.memo(
       if (tabs.some((tab) => tab.key === activeTab)) return
       setActiveTab(tabs[0]?.key ?? 'editor')
     }, [activeTab, tabs])
-
-    useEffect(() => {
-      if (isRailVariant && !isExpanded) {
-        return
-      }
-
-      const gitTab: VisibleGitTab | null = activeTab === 'review'
-        ? 'changes'
-        : activeTab === 'history'
-          ? 'history'
-          : null
-
-      if (!workspaceId || !workingDir || !gitTab) {
-        setVisibleGitContext(null)
-        return
-      }
-
-      setVisibleGitContext({ workspaceId, workingDir, tab: gitTab })
-      return () => {
-        setVisibleGitContext(null)
-      }
-    }, [activeTab, isExpanded, isRailVariant, setVisibleGitContext, workingDir, workspaceId])
 
     const showSwitcher = !!onSelectWorkspace && buildWorkspaceViews(workspaces, teamRun).length > 1
     const activeTabConfig = tabs.find((tab) => tab.key === activeTab) ?? tabs[0]

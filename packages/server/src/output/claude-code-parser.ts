@@ -28,6 +28,63 @@ import {
   setSessionId,
 } from './utils/patch.js'
 import { stripAnsiSequences } from './utils/ansi.js'
+import { type TurnFailureCause, unixSecondsToIso } from './turn-failure.js'
+
+/**
+ * Subscription rate-limit state, from a rate_limit_event or from the
+ * api_error_params of an API error message. resetsAt is in Unix seconds.
+ */
+export interface ClaudeRateLimitInfo {
+  status?: string
+  resetsAt?: number
+  rateLimitType?: string
+}
+
+/** The API error carried by the assistant message that ended a turn. */
+export interface ClaudeTurnApiError {
+  /** Public SDKAssistantMessageError, for example rate_limit. */
+  error: string | null
+  /** The CLI's typed cause, for example usage_limit_reached (marked internal by the CLI). */
+  apiError: string | null
+  rateLimitInfo: ClaudeRateLimitInfo | null
+  text: string | null
+}
+
+/** api_error values for the account's own usage limits; their reset time is in api_error_params.rate_limit_info. */
+const CLAUDE_USAGE_LIMIT_API_ERRORS = new Set(['usage_limit_reached', 'model_requires_usage_credits'])
+
+/**
+ * Recognises a turn that stopped because the account reached its usage limit
+ * (a 5-hour, weekly or per-model plan limit, or a usage-credit allowance).
+ * Other 429s, such as throttles, organization policy refusals and API-key
+ * limits, carry no rejected subscription state and are not usage limits.
+ */
+export function classifyClaudeTurnFailure(input: {
+  result: { api_error?: string | null; api_error_status?: number | null; result?: string }
+  apiError: ClaudeTurnApiError | null
+  rateLimitInfo: ClaudeRateLimitInfo | null
+}): TurnFailureCause | null {
+  const { result, apiError } = input
+  const rejected = input.rateLimitInfo?.status === 'rejected' ? input.rateLimitInfo : null
+  const code = result.api_error ?? apiError?.apiError ?? null
+  let info: ClaudeRateLimitInfo | null
+  if (code && CLAUDE_USAGE_LIMIT_API_ERRORS.has(code)) {
+    const fromError = apiError?.rateLimitInfo ?? null
+    info = unixSecondsToIso(fromError?.resetsAt) ? fromError : (rejected ?? fromError)
+  } else if ((apiError?.error === 'rate_limit' || result.api_error_status === 429) && rejected && unixSecondsToIso(rejected.resetsAt)) {
+    // Public fields only: a 429 while the subscription state is rejected with a reset time.
+    info = rejected
+  } else {
+    return null
+  }
+  return {
+    kind: 'usage_limit',
+    resetsAt: unixSecondsToIso(info?.resetsAt),
+    limitType: info?.rateLimitType ?? null,
+    code: code ?? apiError?.error ?? null,
+    message: apiError?.text ?? result.result ?? null,
+  }
+}
 
 /**
  * Claude Code 消息类型
@@ -77,6 +134,13 @@ interface ClaudeCodeMessage {
   content?: string
   error?: string
   errors?: string[]
+  // API error details on the assistant message that wraps an API error, and on
+  // the result of the turn it ended (Claude Code 2.1.x).
+  api_error?: string | null
+  api_error_status?: number | null
+  api_error_params?: { rate_limit_info?: ClaudeRateLimitInfo } | null
+  // rate_limit_event
+  rate_limit_info?: ClaudeRateLimitInfo
   result?: string
   is_error?: boolean
   usage?: {
@@ -221,6 +285,11 @@ export class ClaudeCodeParser {
   private turnStartedListeners = new Set<() => void>()
   private turnBoundaryListeners = new Set<(boundary: ClaudeTurnBoundary) => void>()
   private backgroundTaskListeners = new Set<(tasks: ClaudeBackgroundTask[]) => void>()
+  private turnFailureCauseListeners = new Set<(cause: TurnFailureCause) => void>()
+  // Latest subscription rate-limit state reported by rate_limit_event.
+  private rateLimitInfo: ClaudeRateLimitInfo | null = null
+  // The API error of the current turn, from the assistant message that wraps it.
+  private turnApiError: ClaudeTurnApiError | null = null
 
   constructor(msgStore: MsgStore, private readonly control?: { message(value: unknown): void; failed(error: unknown): void }) {
     this.msgStore = msgStore
@@ -246,6 +315,15 @@ export class ClaudeCodeParser {
   onTurnBoundary(listener: (boundary: ClaudeTurnBoundary) => void): () => void {
     this.turnBoundaryListeners.add(listener)
     return () => this.turnBoundaryListeners.delete(listener)
+  }
+
+  /**
+   * A failed top-level turn whose cause is recognised, delivery and continuation
+   * turns alike. Reported before the turn-failed signal of the same result.
+   */
+  onTurnFailureCause(listener: (cause: TurnFailureCause) => void): () => void {
+    this.turnFailureCauseListeners.add(listener)
+    return () => this.turnFailureCauseListeners.delete(listener)
   }
 
   /** 进程仍在等待的后台任务集合发生变化 */
@@ -404,7 +482,11 @@ export class ClaudeCodeParser {
         break
       case 'assistant':
         this.clearApiRetryState()
+        this.recordApiError(msg)
         this.handleAssistantMessage(msg)
+        break
+      case 'rate_limit_event':
+        if (msg.rate_limit_info && typeof msg.rate_limit_info === 'object') this.rateLimitInfo = msg.rate_limit_info
         break
       case 'user':
         this.clearApiRetryState()
@@ -843,6 +925,13 @@ export class ClaudeCodeParser {
       }
     }
 
+    // The cause goes out before the turn-failed signal, for continuation turns
+    // too; the API error it is read from belongs to this turn only.
+    if (isTopLevel) {
+      if (isFailure && !isPseudoTurn) this.reportFailureCause(msg)
+      this.turnApiError = null
+    }
+
     // A message_stop can precede tool execution or another assistant message.
     // Only a top-level result ends a turn, after its messages and usage have
     // been committed to the store. The delivery result notifies completion
@@ -865,6 +954,24 @@ export class ClaudeCodeParser {
       }
       for (const listener of [...this.turnBoundaryListeners]) listener(boundary)
     }
+  }
+
+  /** Keeps the API error of a top-level assistant message that wraps one (for example a usage limit). */
+  private recordApiError(msg: ClaudeCodeMessage): void {
+    if (msg.parent_tool_use_id != null || (!msg.error && !msg.api_error)) return
+    const text = msg.message?.content?.find((block) => block.type === 'text' && block.text)?.text
+    this.turnApiError = {
+      error: msg.error ?? null,
+      apiError: msg.api_error ?? null,
+      rateLimitInfo: msg.api_error_params?.rate_limit_info ?? null,
+      text: text ?? null,
+    }
+  }
+
+  private reportFailureCause(msg: ClaudeCodeMessage): void {
+    const cause = classifyClaudeTurnFailure({ result: msg, apiError: this.turnApiError, rateLimitInfo: this.rateLimitInfo })
+    if (!cause) return
+    for (const listener of [...this.turnFailureCauseListeners]) listener(cause)
   }
 
   private updateToolResultStatus(toolUseId: string, isError?: boolean): void {

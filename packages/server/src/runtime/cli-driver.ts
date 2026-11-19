@@ -421,6 +421,9 @@ class CliDriverSession implements DriverSession {
     const onPatch = ({ patch, seq }: { sessionId: string; patch: unknown[]; seq: number }) => {
       sink.stream({ type: 'conversation_patch', patch: patch as never, seq });
     };
+    const onFailureCause = ({ cause }: { sessionId: string; cause: import('../output/turn-failure.js').TurnFailureCause }) => {
+      sink.stream({ type: 'turn_failure_cause', cause });
+    };
     const onSessionId = ({ agentSessionId }: { sessionId: string; agentSessionId: string }) => {
       this.currentExternalSessionId = agentSessionId;
       sink.stream({ type: 'external_session_id', externalSessionId: agentSessionId });
@@ -485,6 +488,7 @@ class CliDriverSession implements DriverSession {
     bus.on('session:sessionId', onSessionId);
     bus.on('session:turn-completed', onCompleted);
     bus.on('session:turn-failed', onFailed);
+    bus.on('session:turn-failure-cause', onFailureCause);
     bus.on('session:exit', onExit);
     active.cleanups.push(
       () => bus.off('session:stdout', onStdout),
@@ -492,6 +496,7 @@ class CliDriverSession implements DriverSession {
       () => bus.off('session:sessionId', onSessionId),
       () => bus.off('session:turn-completed', onCompleted),
       () => bus.off('session:turn-failed', onFailed),
+      () => bus.off('session:turn-failure-cause', onFailureCause),
       () => bus.off('session:exit', onExit),
     );
 

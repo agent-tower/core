@@ -20,6 +20,8 @@ import { installProcessErrorLogging, registerProcessShutdownHandler, writeErrorL
 import { getOrCreateInternalApiToken, INTERNAL_API_TOKEN_ENV } from './utils/internal-api-token.js';
 import { createServerEntryShutdownCoordinator, finishFailedServerEntry, installServerEntryShutdownRequests } from './runtime/server-entry-shutdown.js';
 import type { ReferencedShutdownCoordinator } from './runtime/shutdown-coordinator.js';
+import { getCommandHelperStatus, startCommandHelper } from './runtime/command-helper/client.js';
+import { startRuntimeMetrics } from './runtime/runtime-metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -185,6 +187,12 @@ async function main() {
   process.env.AGENT_TOWER_HOST = host;
   process.env.AGENT_TOWER_PORT = String(port);
   process.env.AGENT_TOWER_URL = `http://127.0.0.1:${port}`;
+
+  // Fork the command helper while this process is still small: on Linux every
+  // later fork() copies the grown server's page tables and blocks its event
+  // loop. Git and CLI probes then run through the helper (runOwnedCommand).
+  void startCommandHelper();
+  startRuntimeMetrics({ commandHelperStatus: getCommandHelperStatus });
 
   // 初始化数据库
   const schemaPath = path.resolve(__dirname, '../prisma/schema.prisma');

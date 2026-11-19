@@ -25,6 +25,13 @@ describe('api-client', () => {
     )
   })
 
+  it('passes the abort signal of a query to fetch', async () => {
+    const controller = new AbortController()
+    await apiClient.get('/git/diff', { params: { path: 'a.txt' }, signal: controller.signal })
+
+    expect(fetch).toHaveBeenCalledWith('/api/git/diff?path=a.txt', expect.objectContaining({ signal: controller.signal }))
+  })
+
   it('preserves structured error details for conflict responses', async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: false,

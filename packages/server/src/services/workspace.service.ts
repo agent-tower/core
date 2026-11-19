@@ -2,6 +2,9 @@ import { prisma } from '../utils/index.js';
 import { WorkspaceKind, WorkspaceStatus, TaskStatus, SessionStatus, SessionPurpose } from '../types/index.js';
 import { WorktreeManager } from '../git/worktree.manager.js';
 import { execGit, MergeConflictError } from '../git/git-cli.js';
+import { notifyMainDirectoryGitMetadataChanged, notifyWorkspaceGitOperation } from '../git/git-operation-events.js';
+import { getWorkspaceGitState } from '../git/state/git-state-facade.js';
+import { mainDirectoryGitStatus, toGitOperationStatus } from '../git/state/git-state-views.js';
 import { NotFoundError, ServiceError } from '../errors.js';
 import { getSessionManager, getEventBus, getWorkspaceBackgroundService, getWorkspaceSetupProgressStore } from '../core/container.js';
 import type { WorkspaceSetupProgressPayload } from '@agent-tower/shared/socket';
@@ -307,19 +310,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function mainDirectoryGitStatus(): GitOperationStatus {
-  return {
-    operation: 'idle',
-    conflictedFiles: [],
-    conflictOp: null,
-    ahead: 0,
-    behind: 0,
-    hasUncommittedChanges: false,
-    uncommittedCount: 0,
-    untrackedCount: 0,
-  };
-}
-
 function toIso(date: Date): string {
   return date.toISOString();
 }
@@ -432,6 +422,17 @@ export class WorkspaceService {
     task: { project: { mainBranch: string } };
   }): string {
     return workspace.baseBranch || workspace.task.project.mainBranch;
+  }
+
+  /** Emit after the new paths/base are persisted, so subscribers reload them. */
+  private notifyWorktreeRestored(workspace: { id: string; taskId: string; worktreePath: string; task: { projectId: string } }): void {
+    this.eventBus.emit('workspace:git_changed', {
+      workspaceId: workspace.id,
+      taskId: workspace.taskId,
+      projectId: workspace.task.projectId,
+      workingDir: workspace.worktreePath,
+      reason: 'worktree',
+    });
   }
 
   // ── Queries ──────────────────────────────────────────────────────────────────
@@ -1513,6 +1514,13 @@ export class WorkspaceService {
       include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
 
+    // A new main-directory alias can change the comparison target selected by
+    // GET /git/changes for every viewer of that shared directory.
+    this.eventBus.emit('workspace:git_changed', {
+      workspaceId: workspace.id, taskId, projectId: task.projectId,
+      workingDir: task.project.repoPath, reason: 'base-branch',
+    });
+
     return workspace;
   }
 
@@ -1755,8 +1763,12 @@ export class WorkspaceService {
     }
 
     const executionBranch = targetExecutionBranchName(input);
-    await execGit(executionWorkspace.worktreePath, ['checkout', '-B', executionBranch, input.targetHeadSha]);
-    await execGit(executionWorkspace.worktreePath, ['reset', '--hard', input.targetHeadSha]);
+    try {
+      await execGit(executionWorkspace.worktreePath, ['checkout', '-B', executionBranch, input.targetHeadSha]);
+      await execGit(executionWorkspace.worktreePath, ['reset', '--hard', input.targetHeadSha]);
+    } finally {
+      notifyWorkspaceGitOperation([executionWorkspace.worktreePath]);
+    }
     const actualHead = (await execGit(executionWorkspace.worktreePath, ['rev-parse', 'HEAD'])).trim();
     if (actualHead !== input.targetHeadSha) {
       throw new ServiceError(
@@ -1773,6 +1785,7 @@ export class WorkspaceService {
         baseBranch: input.targetBranchName,
       },
     });
+    this.notifyWorktreeRestored(executionWorkspace);
     return { executionBranch };
   }
 
@@ -1860,7 +1873,11 @@ export class WorkspaceService {
       }
 
       const mainHead = (await execGit(mainWorkspace.worktreePath, ['rev-parse', 'HEAD'])).trim();
-      await execGit(worktreePath, ['reset', '--hard', mainHead]);
+      try {
+        await execGit(worktreePath, ['reset', '--hard', mainHead]);
+      } finally {
+        notifyWorkspaceGitOperation([worktreePath]);
+      }
 
       const actualHead = (await execGit(worktreePath, ['rev-parse', 'HEAD'])).trim();
       if (!mainHead || actualHead !== mainHead || !(await worktreeManager.isWorktreeClean(worktreePath))) {
@@ -1905,6 +1922,7 @@ export class WorkspaceService {
         where: { id: workspace.id },
         include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
       });
+      this.notifyWorktreeRestored(activated);
       return activated;
     } catch (error) {
       if (workspace.cleanedAt && !resourcesBound) {
@@ -1995,6 +2013,7 @@ export class WorkspaceService {
       where: { id: workspace.id },
       include: { sessions: visibleSessionsFilter, task: { include: { project: true } } },
     });
+    this.notifyWorktreeRestored(restored);
     return restored;
   }
 
@@ -2053,6 +2072,7 @@ export class WorkspaceService {
         hibernatedAt: null,
       },
     });
+    notifyMainDirectoryGitMetadataChanged(workspace);
     try {
       // Preserve branch ownership for retry if another task still needs it.
       if (!worktreeManager || await this.cleanupWorkspaceBranch(workspace, worktreeManager)) {
@@ -2138,6 +2158,10 @@ export class WorkspaceService {
 
   /**
    * 获取工作空间的 Git 操作状态
+   *
+   * Answered by the git state service (state at most 1 s old, or one shared
+   * computation). Checks before a Git operation keep calling
+   * `WorktreeManager.getGitOperationStatus` directly, uncached.
    */
   async getGitStatus(id: string): Promise<GitOperationStatus> {
     const workspace = await prisma.workspace.findUnique({
@@ -2159,11 +2183,11 @@ export class WorkspaceService {
       return mainDirectoryGitStatus();
     }
 
-    const worktreeManager = new WorktreeManager(workspace.task.project.repoPath);
-    const status = await worktreeManager.getGitOperationStatus(
-      workspace.worktreePath,
-      this.getBaseBranch(workspace)
-    );
+    const status = toGitOperationStatus(await getWorkspaceGitState({
+      worktreePath: workspace.worktreePath,
+      repositoryPath: workspace.task.project.repoPath,
+      baseBranch: this.getBaseBranch(workspace),
+    }));
     if (status.conflictOp && status.conflictedFiles.length) {
       status.resolutionContextToken = await observeLiveConflict(prisma, workspace.id);
     }
@@ -2700,6 +2724,7 @@ export class WorkspaceService {
       data: { status: WorkspaceStatus.ABANDONED },
       include: { sessions: true, task: { include: { project: true } } },
     });
+    notifyMainDirectoryGitMetadataChanged(archived);
     return archived;
   }
 
@@ -2841,6 +2866,7 @@ export class WorkspaceService {
     });
 
     console.log(`[WorkspaceService] Workspace ${id} reactivated at ${worktreePath}`);
+    this.notifyWorktreeRestored(updated);
     return updated;
   }
 
@@ -2940,11 +2966,15 @@ export class WorkspaceService {
       const status = await execGit(worktreePath, ['status', '--porcelain']);
       if (!status.trim()) return;
 
-      await execGit(worktreePath, ['add', '-A']);
-      await execGit(worktreePath, [
-        'commit', '-m',
-        `auto-commit: save changes before hibernation (workspace ${workspaceId.slice(0, 8)})`,
-      ]);
+      try {
+        await execGit(worktreePath, ['add', '-A']);
+        await execGit(worktreePath, [
+          'commit', '-m',
+          `auto-commit: save changes before hibernation (workspace ${workspaceId.slice(0, 8)})`,
+        ]);
+      } finally {
+        notifyWorkspaceGitOperation([worktreePath]);
+      }
       console.log(`[WorkspaceService] Auto-committed dirty changes before hibernation for ${workspaceId}`);
     } catch (err) {
       console.warn(
@@ -3013,6 +3043,7 @@ export class WorkspaceService {
               where: { id: workspace.id },
               data: { worktreePath: '', workingDir: '', previewTarget: null },
             });
+            notifyMainDirectoryGitMetadataChanged(workspace);
             const cleanupComplete = !worktreeManager || await this.cleanupWorkspaceBranch(workspace, worktreeManager);
 
             if (cleanupComplete) {

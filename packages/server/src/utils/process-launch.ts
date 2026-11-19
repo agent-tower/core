@@ -21,7 +21,7 @@ export function getNodeRuntimeCommand(): string {
  * fallback when a bundled Node runtime is unavailable. That executable needs
  * ELECTRON_RUN_AS_NODE; a real Node binary does not.
  */
-function isStandaloneNodeRuntime(runtimeCommand: string): boolean {
+export function isStandaloneNodeRuntime(runtimeCommand: string): boolean {
   // `runtimeCommand` may be a Windows path even when this helper is exercised
   // from a POSIX test process, so do not rely on the host platform's separator.
   const executableName = runtimeCommand.replace(/^.*[\\/]/, '').toLowerCase();

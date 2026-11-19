@@ -1,5 +1,6 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
+import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   GitGraph, FileCode2, ChevronRight, ChevronDown,
   ArrowLeft, History, FolderOpen, Folder,
@@ -8,26 +9,19 @@ import { DiffStat as BaseDiffStat, FileStatusBadge, SearchField, Spinner, TONE_D
 import { cn } from '@/lib/utils'
 import { useI18n, translate } from '@/lib/i18n'
 import {
-  useGitChanges, useGitDiff, useGitCommitFiles, useGitCommitDiff,
-  type GitChangeEntry, type GitLogResponse, type GitLogEntry,
+  useGitChanges, useGitDiff, useGitCommitFiles, useGitCommitDiff, useGitLogPages,
+  type GitChangeEntry, type GitLogEntry,
 } from '@/hooks/use-git'
-import { apiClient } from '@/lib/api-client'
-import { queryKeys } from '@/hooks/query-keys'
 import { GitStatusBar } from './GitStatusBar'
 import { DiffLine } from './DiffLine'
+import { FileDiffNotice } from './FileDiffNotice'
+import {
+  AUTO_COLLAPSE_LINES, ROW_GAP, SECTION_HEIGHT, buildReviewRows, currentReviewCard,
+  diffQueryKey, estimateDiffBody, estimateReviewRow, filterReviewRows, type CardRow, type CardState, type DiffAnswer, type DiffType,
+} from './review-rows'
 
-// 与 HistoryView 保持一致：二者共享 queryKeys.git.log 缓存，分页参数必须相同
-const PAGE_SIZE = 50
-const AUTO_COLLAPSE_LINES = 400
+const DEFAULT_CARD_STATE: CardState = {}
 
-type DiffType = 'uncommitted' | 'committed'
-
-/** 卡片数据源：工作区 diff 或单 commit diff */
-type CardSource =
-  | { kind: 'working'; diffType: DiffType }
-  | { kind: 'commit'; hash: string }
-
-/** 视图模式状态机：overview ⇄ commit-detail */
 type ViewMode =
   | { kind: 'overview' }
   | { kind: 'commit'; commit: GitLogEntry }
@@ -52,11 +46,6 @@ function timeAgo(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString()
 }
 
-function cardKeyOf(source: CardSource, path: string) {
-  return source.kind === 'working' ? `${source.diffType}:${path}` : `${source.hash}:${path}`
-}
-
-/** +n −n 增删统计（设计系统的 DiffStat）；两项都没有数据时不显示 */
 const DiffStat: React.FC<{ additions?: number; deletions?: number; className?: string }> = ({
   additions, deletions, className,
 }) => {
@@ -64,14 +53,13 @@ const DiffStat: React.FC<{ additions?: number; deletions?: number; className?: s
   return <BaseDiffStat additions={additions} deletions={deletions} className={className} />
 }
 
-// ============================================================
-// Diff 渲染
-// ============================================================
+interface ExpansionProps {
+  expanded: boolean
+  onExpand: () => void
+}
 
-/** diff 文本主体：超大 diff 默认截断，可展开 */
-const DiffContent: React.FC<{ diff: string }> = ({ diff }) => {
+const DiffContent = React.memo(function DiffContent({ diff, expanded, onExpand }: ExpansionProps & { diff: string }) {
   const { t } = useI18n()
-  const [expanded, setExpanded] = useState(false)
   const lines = useMemo(() => diff.split('\n'), [diff])
 
   if (!diff.trim()) {
@@ -93,7 +81,7 @@ const DiffContent: React.FC<{ diff: string }> = ({ diff }) => {
       {truncated && (
         <button
           type="button"
-          onClick={() => setExpanded(true)}
+          onClick={onExpand}
           className="w-full py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           {t('还有 {count} 行变更被折叠，点击展开全部', { count: lines.length - AUTO_COLLAPSE_LINES })}
@@ -101,94 +89,89 @@ const DiffContent: React.FC<{ diff: string }> = ({ diff }) => {
       )}
     </div>
   )
-}
+})
 
-/** 工作区文件 diff（懒加载） */
-const WorkingDiffBody: React.FC<{
-  workingDir: string; path: string; diffType: DiffType; enabled: boolean
-}> = ({ workingDir, path, diffType, enabled }) => {
+function DiffLoading({ height }: { height: number }) {
   const { t } = useI18n()
-  const { data, isLoading, isError } = useGitDiff(workingDir, enabled ? path : null, diffType)
-
-  if (!enabled || isLoading) {
-    return (
+  return (
+    <div style={{ height }}>
       <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
         <Spinner size="sm" />
         <span className="text-xs">{t('正在加载差异...')}</span>
       </div>
-    )
-  }
-  if (isError) {
-    return <div className="py-6 text-center text-destructive-ink text-xs">{t('差异加载失败')}</div>
-  }
-  return <DiffContent diff={data?.diff || ''} />
+    </div>
+  )
 }
 
-/** 单 commit 文件 diff（懒加载） */
-const CommitDiffBody: React.FC<{
-  workingDir: string; hash: string; path: string; enabled: boolean
-}> = ({ workingDir, hash, path, enabled }) => {
+const WorkingDiffBody: React.FC<ExpansionProps & {
+  workingDir: string; path: string; diffType: DiffType; token?: string
+  force: boolean; onForce: () => void; loadingHeight: number
+}> = ({ workingDir, path, diffType, token, force, onForce, loadingHeight, ...expansion }) => {
   const { t } = useI18n()
-  const { data, isLoading, isError } = useGitCommitDiff(workingDir, enabled ? hash : null, enabled ? path : null)
+  const { data, isLoading, isError, isFetching } = useGitDiff(workingDir, path, diffType, token, { force })
 
-  if (!enabled || isLoading) {
-    return (
-      <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
-        <Spinner size="sm" />
-        <span className="text-xs">{t('正在加载差异...')}</span>
-      </div>
-    )
-  }
+  if (isLoading) return <DiffLoading height={loadingHeight} />
   if (isError) {
     return <div className="py-6 text-center text-destructive-ink text-xs">{t('差异加载失败')}</div>
   }
-  return <DiffContent diff={data?.diff || ''} />
+  if (data && data.kind !== 'text') {
+    return <FileDiffNotice answer={data} loading={isFetching} onLoadAnyway={onForce} />
+  }
+  return <DiffContent diff={data?.diff ?? ''} {...expansion} />
 }
 
-// ============================================================
-// Diff 卡片
-// ============================================================
+const CommitDiffBody: React.FC<ExpansionProps & {
+  workingDir: string; hash: string; path: string; loadingHeight: number
+}> = ({ workingDir, hash, path, loadingHeight, ...expansion }) => {
+  const { t } = useI18n()
+  const { data, isLoading, isError } = useGitCommitDiff(workingDir, hash, path)
 
-const DiffCard: React.FC<{
-  entry: GitChangeEntry
-  source: CardSource
+  if (isLoading) return <DiffLoading height={loadingHeight} />
+  if (isError) {
+    return <div className="py-6 text-center text-destructive-ink text-xs">{t('差异加载失败')}</div>
+  }
+  return <DiffContent diff={data?.diff || ''} {...expansion} />
+}
+
+interface DiffCardProps {
   workingDir: string
+  row: CardRow
+  state: CardState
+  onStateChange: (key: string, patch: CardState) => void
+  mayLoad: boolean
   flash: boolean
-  registerNode: (key: string, node: HTMLElement | null) => void
-}> = ({ entry, source, workingDir, flash, registerNode }) => {
-  const [collapsed, setCollapsed] = useState(false)
-  const [shouldLoad, setShouldLoad] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  const key = cardKeyOf(source, entry.path)
+}
 
-  // 注册节点供树导航定位
-  useEffect(() => {
-    registerNode(key, ref.current)
-    return () => registerNode(key, null)
-  }, [key, registerNode])
+function DiffBody({ workingDir, row, state, onStateChange, mayLoad }: Omit<DiffCardProps, 'flash'>) {
+  const client = useQueryClient()
+  const { source, entry, key } = row
+  const force = state.force === true
+  const cached = client.getQueryData(diffQueryKey(workingDir, row, force))
+  // Keep observing an admitted request as scrolling starts. A new version can wait
+  // with its previous answer on screen until this window settles.
+  const [request, setRequest] = useState<{ token?: string; force: boolean } | null>(null)
+  if ((mayLoad || cached !== undefined) && (!request || request.token !== entry.token || request.force !== force)) {
+    setRequest({ token: entry.token, force })
+  }
+  const onExpand = useCallback(() => onStateChange(key, { expanded: true }), [key, onStateChange])
+  const loadingHeight = estimateDiffBody(entry)
+  if (!request) return <DiffLoading height={loadingHeight} />
+  const expansion = { expanded: !!state.expanded, onExpand }
+  return source.kind === 'working' ? (
+    <WorkingDiffBody workingDir={workingDir} path={entry.path} diffType={source.diffType}
+      token={request.token} force={request.force} onForce={() => onStateChange(key, { force: true })}
+      loadingHeight={loadingHeight} {...expansion} />
+  ) : (
+    <CommitDiffBody workingDir={workingDir} path={entry.path} hash={source.hash} loadingHeight={loadingHeight} {...expansion} />
+  )
+}
 
-  // 进入视口（含 300px 预加载边距）才请求 diff，一次性
-  useEffect(() => {
-    const node = ref.current
-    if (!node || shouldLoad) return
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setShouldLoad(true)
-          observer.disconnect()
-        }
-      },
-      { rootMargin: '300px 0px' },
-    )
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [shouldLoad])
-
+export const DiffCard = React.memo(function DiffCard(props: DiffCardProps) {
+  const { row: { entry, key }, state: { collapsed }, onStateChange, flash } = props
   const dir = dirname(entry.path)
 
   return (
     <div
-      ref={ref}
       data-card-key={key}
       className={cn(
         'rounded-md border border-border bg-background overflow-hidden transition-shadow',
@@ -197,7 +180,8 @@ const DiffCard: React.FC<{
     >
       <button
         type="button"
-        onClick={() => setCollapsed((v) => !v)}
+        aria-expanded={!collapsed}
+        onClick={() => onStateChange(key, { collapsed: !collapsed })}
         className="w-full flex items-center gap-2 px-3 py-2 bg-muted/40 hover:bg-muted/70 transition-colors text-left"
       >
         {collapsed
@@ -211,21 +195,14 @@ const DiffCard: React.FC<{
       </button>
       {!collapsed && (
         <div className="border-t border-border/60">
-          {source.kind === 'working' ? (
-            <WorkingDiffBody workingDir={workingDir} path={entry.path} diffType={source.diffType} enabled={shouldLoad} />
-          ) : (
-            <CommitDiffBody workingDir={workingDir} hash={source.hash} path={entry.path} enabled={shouldLoad} />
-          )}
+          <DiffBody {...props} />
         </div>
       )}
     </div>
   )
-}
+})
 
-// ============================================================
-// 右侧栏：文件树
-// ============================================================
-
+// File tree
 type TreeEntry = GitChangeEntry & { cardKey: string }
 
 interface TreeDir {
@@ -257,7 +234,7 @@ function buildTree(entries: TreeEntry[]): TreeDir {
   return compressTree(root)
 }
 
-/** 压缩单链目录：a/b/c 只有一个子目录时合并显示 */
+/** Show a chain of single-child directories as one path. */
 function compressTree(node: TreeDir): TreeDir {
   const dirs = new Map<string, TreeDir>()
   for (const child of node.dirs.values()) {
@@ -296,48 +273,47 @@ const TreeDirRow: React.FC<{
   )
 }
 
-const TreeChildren: React.FC<{
+const TreeChildren = React.memo(function TreeChildren({ node, depth, activeKey, onSelect }: {
   node: TreeDir
   depth: number
   activeKey: string | null
   onSelect: (entry: TreeEntry) => void
-}> = ({ node, depth, activeKey, onSelect }) => (
-  <>
-    {[...node.dirs.values()]
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((dir) => (
-        <TreeDirRow key={dir.path} dir={dir} depth={depth} activeKey={activeKey} onSelect={onSelect} />
-      ))}
-    {node.files
-      .slice()
-      .sort((a, b) => a.path.localeCompare(b.path))
-      .map((entry) => {
-        const active = activeKey === entry.cardKey
-        return (
-          <button
-            key={entry.cardKey}
-            type="button"
-            onClick={() => onSelect(entry)}
-            className={cn(
-              'flex items-center gap-1.5 w-full px-2 py-1 rounded-sm text-left',
-              active ? 'bg-muted' : 'hover:bg-muted/60',
-            )}
-            style={{ paddingLeft: 8 + depth * 12 }}
-            title={entry.path}
-          >
-            <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', TONE_DOT[fileChangeTone(entry.status)])} />
-            <span className={cn('text-xs truncate', active ? 'text-foreground font-medium' : 'text-foreground/90')}>
-              {basename(entry.path)}
-            </span>
-          </button>
-        )
-      })}
-  </>
-)
-
-// ============================================================
-// 右侧栏：提交时间线
-// ============================================================
+}) {
+  return (
+    <>
+      {[...node.dirs.values()]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((dir) => (
+          <TreeDirRow key={dir.path} dir={dir} depth={depth} activeKey={activeKey} onSelect={onSelect} />
+        ))}
+      {node.files
+        .slice()
+        .sort((a, b) => a.path.localeCompare(b.path))
+        .map((entry) => {
+          const active = activeKey === entry.cardKey
+          return (
+            <button
+              key={entry.cardKey}
+              aria-current={active || undefined}
+              type="button"
+              onClick={() => onSelect(entry)}
+              className={cn(
+                'flex items-center gap-1.5 w-full px-2 py-1 rounded-sm text-left',
+                active ? 'bg-muted' : 'hover:bg-muted/60',
+              )}
+              style={{ paddingLeft: 8 + depth * 12 }}
+              title={entry.path}
+            >
+              <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', TONE_DOT[fileChangeTone(entry.status)])} />
+              <span className={cn('text-xs truncate', active ? 'text-foreground font-medium' : 'text-foreground/90')}>
+                {basename(entry.path)}
+              </span>
+            </button>
+          )
+        })}
+    </>
+  )
+})
 
 const CommitTimeline: React.FC<{
   workingDir: string
@@ -345,18 +321,10 @@ const CommitTimeline: React.FC<{
   onSelectCommit: (commit: GitLogEntry) => void
 }> = ({ workingDir, selectedHash, onSelectCommit }) => {
   const { t } = useI18n()
+  // Shares the history cache with HistoryView, so it uses the same paged query.
   const {
     data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage,
-  } = useInfiniteQuery({
-    queryKey: queryKeys.git.log(workingDir),
-    queryFn: ({ pageParam = 0 }) =>
-      apiClient.get<GitLogResponse>('/git/log', {
-        params: { workingDir, limit: String(PAGE_SIZE), skip: String(pageParam) },
-      }),
-    initialPageParam: 0,
-    getNextPageParam: (lastPage, allPages) =>
-      lastPage.commits.length < PAGE_SIZE ? undefined : allPages.length * PAGE_SIZE,
-  })
+  } = useGitLogPages(workingDir)
 
   const commits = data?.pages.flatMap((p) => p.commits) || []
 
@@ -419,9 +387,15 @@ const CommitTimeline: React.FC<{
   )
 }
 
-// ============================================================
-// 主组件
-// ============================================================
+function SectionLabel({ section, count }: { section: DiffType; count: number }) {
+  const { t } = useI18n()
+  return (
+    <div className="flex items-center gap-2 px-5 bg-background/95 backdrop-blur-sm" style={{ height: SECTION_HEIGHT }}>
+      <span className="text-xs font-medium text-muted-foreground">{section === 'uncommitted' ? t('未提交') : t('已提交')}</span>
+      <span className="text-[11px] tabular-nums text-muted-foreground">{count}</span>
+    </div>
+  )
+}
 
 export interface ReviewViewProps {
   projectId?: string
@@ -458,39 +432,28 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   const commitHash = viewMode.kind === 'commit' ? viewMode.commit.hash : null
   const { data: commitFilesData, isLoading: commitFilesLoading } = useGitCommitFiles(workingDir, commitHash)
 
-  const cardNodes = useRef(new Map<string, HTMLElement>())
+  const client = useQueryClient()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const treeRef = useRef<HTMLDivElement>(null)
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const registerNode = useCallback((key: string, node: HTMLElement | null) => {
-    if (node) cardNodes.current.set(key, node)
-    else cardNodes.current.delete(key)
-  }, [])
-
-  // 数据整理：当前模式下的卡片条目
-  const { uncommitted, committed, commitFiles } = useMemo(() => {
-    const matches = (e: GitChangeEntry) =>
-      !filter.trim() || e.path.toLowerCase().includes(filter.trim().toLowerCase())
-
-    if (viewMode.kind === 'commit') {
-      const source: CardSource = { kind: 'commit', hash: viewMode.commit.hash }
-      const files: TreeEntry[] = (commitFilesData?.files || [])
-        .filter(matches)
-        .map((e) => ({ ...e, cardKey: cardKeyOf(source, e.path) }))
-      return { uncommitted: [] as TreeEntry[], committed: [] as TreeEntry[], commitFiles: files }
-    }
-
-    const un: TreeEntry[] = (changesData?.uncommitted || [])
-      .filter(matches)
-      .map((e) => ({ ...e, cardKey: cardKeyOf({ kind: 'working', diffType: 'uncommitted' }, e.path) }))
-    const co: TreeEntry[] = (changesData?.committed || [])
-      .filter(matches)
-      .map((e) => ({ ...e, cardKey: cardKeyOf({ kind: 'working', diffType: 'committed' }, e.path) }))
-    return { uncommitted: un, committed: co, commitFiles: [] as TreeEntry[] }
-  }, [viewMode, changesData, commitFilesData, filter])
-
-  const allEntries = viewMode.kind === 'commit' ? commitFiles : [...uncommitted, ...committed]
+  const [cardStates, setCardStates] = useState(() => new Map<string, CardState>())
+  const listedRows = useMemo(() => buildReviewRows(changesData, commitHash, commitFilesData?.files),
+    [changesData, commitHash, commitFilesData])
+  const rows = useMemo(() => filterReviewRows(listedRows, filter), [listedRows, filter])
+  const indexByKey = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows])
+  const allEntries = useMemo(() => rows.flatMap(row => row.kind === 'card' ? [{ ...row.entry, cardKey: row.key }] : []), [rows])
   const tree = useMemo(() => buildTree(allEntries), [allEntries])
+
+  useEffect(() => {
+    const listed = new Set(listedRows.map(row => row.key))
+    setCardStates(previous => {
+      if ([...previous.keys()].every(key => listed.has(key))) return previous
+      return new Map([...previous].filter(([key]) => listed.has(key)))
+    })
+  }, [listedRows])
+  const updateCard = useCallback((key: string, patch: CardState) => {
+    setCardStates(previous => new Map(previous).set(key, { ...previous.get(key), ...patch }))
+  }, [])
 
   const totals = useMemo(() => {
     let additions = 0
@@ -502,61 +465,81 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
     return { additions, deletions, files: allEntries.length }
   }, [allEntries])
 
-  // scroll-spy：滚动时取视口顶部附近的卡片高亮树节点
-  const handleScroll = useCallback(() => {
-    const container = scrollRef.current
-    if (!container) return
-    const containerTop = container.getBoundingClientRect().top
-    let current: string | null = null
-    let bestOffset = Number.NEGATIVE_INFINITY
-    for (const [key, node] of cardNodes.current) {
-      const offset = node.getBoundingClientRect().top - containerTop
-      if (offset <= 48 && offset > bestOffset) {
-        bestOffset = offset
-        current = key
-      }
+  const labelHeight = commitHash ? 0 : SECTION_HEIGHT
+  // Freeze estimates for this layout. A placeholder that exactly matches its estimate
+  // has no measured-size override in TanStack Virtual. Reading a newly cached answer
+  // during layout would move later rows before ResizeObserver could report that delta.
+  const estimatedSizes = useMemo(() => rows.map(row => {
+    if (row.kind === 'section') return SECTION_HEIGHT
+    const state = cardStates.get(row.key)
+    const answer = client.getQueryData<DiffAnswer>(diffQueryKey(workingDir ?? '', row, state?.force))
+    return estimateReviewRow(row, state, answer)
+  }), [rows, cardStates, client, workingDir])
+  const pendingResize = useRef<{ top: number; delta: number } | null>(null)
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    getItemKey: useCallback((index: number) => rows[index].key, [rows]),
+    estimateSize: index => estimatedSizes[index],
+    gap: ROW_GAP,
+    overscan: 2,
+    scrollPaddingStart: labelHeight,
+    isScrollingResetDelay: 150,
+  })
+  // Native scroll events can arrive after a resize. Accumulate against the live
+  // viewport, incorporating prior rows in the same ResizeObserver delivery.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) => {
+    const top = instance.scrollElement?.scrollTop ?? 0
+    const pendingDelta = pendingResize.current?.delta ?? 0
+    const adjustedTop = top + pendingDelta
+    const atTop = instance.getVirtualItemForOffset(adjustedTop)
+    if (atTop && (item.index < atTop.index || (item.index === atTop.index && atTop.start < adjustedTop))) {
+      pendingResize.current = { top, delta: pendingDelta + delta }
+      // Calculate the next virtual window at the corrected offset as well. An
+      // intermediate window at the old offset would mount and fetch unrelated cards.
+      instance.scrollOffset = Math.max(0, adjustedTop + delta)
     }
-    if (!current) {
-      // 没有卡片越过顶线时取第一张
-      let firstKey: string | null = null
-      let firstOffset = Number.POSITIVE_INFINITY
-      for (const [key, node] of cardNodes.current) {
-        const offset = node.getBoundingClientRect().top - containerTop
-        if (offset < firstOffset) {
-          firstOffset = offset
-          firstKey = key
-        }
-      }
-      current = firstKey
-    }
-    setActiveKey(current)
-  }, [])
+    // Apply the correction after the track height and row positions reach the DOM.
+    return false
+  }
+  const items = virtualizer.getVirtualItems()
+  const totalSize = virtualizer.getTotalSize()
+  const lastStart = virtualizer.measurementsCache[rows.length - 1]?.start ?? 0
+  useLayoutEffect(() => {
+    const element = scrollRef.current
+    const pending = pendingResize.current
+    if (!element || !pending || items !== virtualizer.getVirtualItems()) return
+    pendingResize.current = null
+    // The browser may have clamped the old top when a short final row shrank.
+    // Include any user movement since measurement while restoring that clamp.
+    const maxTop = element.scrollHeight - element.clientHeight
+    const userDelta = element.scrollTop - Math.min(pending.top, maxTop)
+    element.scrollTop = pending.top + pending.delta + userDelta
+  }, [items, virtualizer])
 
+  const updateCurrentCard = useCallback(() => {
+    const top = (scrollRef.current?.scrollTop ?? 0) + labelHeight
+    setActiveKey(currentReviewCard(rows, virtualizer.getVirtualItems(), top)?.key ?? null)
+  }, [virtualizer, rows, labelHeight])
+  useLayoutEffect(updateCurrentCard, [updateCurrentCard, items])
   useEffect(() => {
-    const container = scrollRef.current
-    if (!container) return
-    let raf = 0
-    const onScroll = () => {
-      cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(handleScroll)
-    }
-    container.addEventListener('scroll', onScroll, { passive: true })
-    return () => {
-      container.removeEventListener('scroll', onScroll)
-      cancelAnimationFrame(raf)
-    }
-  }, [handleScroll])
+    treeRef.current?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, [activeKey])
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current) }, [])
 
-  // 树节点点击 → 滚动定位 + 闪烁高亮
   const scrollToCard = useCallback((entry: TreeEntry) => {
-    const node = cardNodes.current.get(entry.cardKey)
-    if (!node) return
-    node.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    setActiveKey(entry.cardKey)
+    const index = indexByKey.get(entry.cardKey)
+    if (index === undefined) return
     setFlashKey(entry.cardKey)
+    virtualizer.scrollToIndex(index, { align: 'start' })
     if (flashTimer.current) clearTimeout(flashTimer.current)
     flashTimer.current = setTimeout(() => setFlashKey(null), 1200)
-  }, [])
+  }, [indexByKey, virtualizer])
+
+  const activeRow = rows[indexByKey.get(activeKey ?? '') ?? 0]
+  const pinned = activeRow?.kind === 'card' && activeRow.source.kind === 'working'
+    ? rows[indexByKey.get(`section:${activeRow.source.diffType}`)!]
+    : rows[0]
 
   const enterCommit = useCallback((commit: GitLogEntry) => {
     setViewMode((prev) =>
@@ -565,14 +548,14 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         : { kind: 'commit', commit },
     )
     setFilter('')
-    setActiveKey(null)
+    setFlashKey(null)
     scrollRef.current?.scrollTo({ top: 0 })
   }, [])
 
   const backToOverview = useCallback(() => {
     setViewMode({ kind: 'overview' })
     setFilter('')
-    setActiveKey(null)
+    setFlashKey(null)
     scrollRef.current?.scrollTo({ top: 0 })
   }, [])
 
@@ -603,7 +586,6 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         />
       )}
 
-      {/* 统计条 / 面包屑 */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60 shrink-0 min-h-[37px]">
         {viewMode.kind === 'overview' ? (
           <>
@@ -639,102 +621,73 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         )}
       </div>
 
-      {/* 主区 + 右侧栏 */}
       <div className="flex flex-1 min-h-0">
-        {/* diff 卡片流 */}
-        <div ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto scrollbar-app-thin">
-          {isLoadingMain ? (
-            <div className="p-3 space-y-3">
-              {[0, 1].map((i) => (
-                <div key={i} className="rounded-md border border-border overflow-hidden">
-                  <div className="h-8 bg-muted/60 animate-pulse motion-reduce:animate-none" />
-                  <div className="p-3 space-y-2">
-                    <div className="h-3 w-2/3 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
-                    <div className="h-3 w-1/2 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
-                    <div className="h-3 w-3/4 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : changesError && viewMode.kind === 'overview' ? (
-            <div className="flex-1 flex items-center justify-center py-16 text-destructive-ink text-sm">
-              {t('变更加载失败')}
-            </div>
-          ) : allEntries.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-              <FileCode2 size={28} className="mb-2 text-muted-foreground/70" />
-              <span className="text-xs">
-                {filter.trim()
-                  ? t('没有匹配筛选条件的文件')
-                  : viewMode.kind === 'commit'
-                    ? t('该提交没有文件变更')
-                    : t('没有待审查的变更')}
-              </span>
-            </div>
-          ) : viewMode.kind === 'commit' ? (
-            <div className="p-3 space-y-3">
-              {commitFiles.map((entry) => (
-                <DiffCard
-                  key={entry.cardKey}
-                  entry={entry}
-                  source={{ kind: 'commit', hash: viewMode.commit.hash }}
-                  workingDir={workingDir}
-                  flash={flashKey === entry.cardKey}
-                  registerNode={registerNode}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="p-3 space-y-4">
-              {uncommitted.length > 0 && (
-                <section>
-                  <div className="sticky top-0 z-10 -mx-3 px-5 py-1.5 bg-background/95 backdrop-blur-sm">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {t('未提交')}
-                    </span>
-                    <span className="ml-2 text-[11px] tabular-nums text-muted-foreground">{uncommitted.length}</span>
-                  </div>
-                  <div className="space-y-3 mt-1">
-                    {uncommitted.map((entry) => (
-                      <DiffCard
-                        key={entry.cardKey}
-                        entry={entry}
-                        source={{ kind: 'working', diffType: 'uncommitted' }}
-                        workingDir={workingDir}
-                        flash={flashKey === entry.cardKey}
-                        registerNode={registerNode}
-                      />
-                    ))}
-                  </div>
-                </section>
-              )}
-              {committed.length > 0 && (
-                <section>
-                  <div className="sticky top-0 z-10 -mx-3 px-5 py-1.5 bg-background/95 backdrop-blur-sm">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {t('已提交')}
-                    </span>
-                    <span className="ml-2 text-[11px] tabular-nums text-muted-foreground">{committed.length}</span>
-                  </div>
-                  <div className="space-y-3 mt-1">
-                    {committed.map((entry) => (
-                      <DiffCard
-                        key={entry.cardKey}
-                        entry={entry}
-                        source={{ kind: 'working', diffType: 'committed' }}
-                        workingDir={workingDir}
-                        flash={flashKey === entry.cardKey}
-                        registerNode={registerNode}
-                      />
-                    ))}
-                  </div>
-                </section>
-              )}
+        <div className="relative flex-1 min-w-0 min-h-0">
+          {pinned?.kind === 'section' && !isLoadingMain && !changesError && (
+            <div data-review-pinned className="pointer-events-none absolute inset-x-0 top-0 z-10">
+              <SectionLabel section={pinned.section} count={pinned.count} />
             </div>
           )}
+          <div ref={scrollRef} onScroll={updateCurrentCard} data-review-scroll
+            className="h-full overflow-y-auto scrollbar-app-thin [overflow-anchor:none]">
+            {isLoadingMain ? (
+              <div className="p-3 space-y-3">
+                {[0, 1].map((i) => (
+                  <div key={i} className="rounded-md border border-border overflow-hidden">
+                    <div className="h-8 bg-muted/60 animate-pulse motion-reduce:animate-none" />
+                    <div className="p-3 space-y-2">
+                      <div className="h-3 w-2/3 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
+                      <div className="h-3 w-1/2 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
+                      <div className="h-3 w-3/4 bg-muted animate-pulse motion-reduce:animate-none rounded-sm" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : changesError && viewMode.kind === 'overview' ? (
+              <div className="flex-1 flex items-center justify-center py-16 text-destructive-ink text-sm">
+                {t('变更加载失败')}
+              </div>
+            ) : allEntries.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+                <FileCode2 size={28} className="mb-2 text-muted-foreground/70" />
+                <span className="text-xs">
+                  {filter.trim()
+                    ? t('没有匹配筛选条件的文件')
+                    : viewMode.kind === 'commit'
+                      ? t('该提交没有文件变更')
+                      : t('没有待审查的变更')}
+                </span>
+              </div>
+            ) : (
+              <div className="relative" style={{
+                height: totalSize,
+                // Leave just enough trailing space to start-align even a short last card.
+                minHeight: `calc(100% + ${Math.max(0, lastStart - labelHeight)}px)`,
+              }}>
+                {items.map(item => {
+                  const row = rows[item.index]
+                  return (
+                    <div key={item.key} data-index={item.index} ref={virtualizer.measureElement}
+                      className="absolute inset-x-0" style={{ top: item.start }}>
+                      {row.kind === 'section' ? (
+                        <div style={{ height: SECTION_HEIGHT }}>
+                          {row.key !== pinned?.key && <SectionLabel section={row.section} count={row.count} />}
+                        </div>
+                      ) : (
+                        <div className="px-3">
+                          <DiffCard row={row} workingDir={workingDir} state={cardStates.get(row.key) ?? DEFAULT_CARD_STATE}
+                            onStateChange={updateCard} mayLoad={!virtualizer.isScrolling || flashKey === row.key}
+                            flash={flashKey === row.key} />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* 右侧栏：筛选 + 文件树 + 提交时间线 */}
         <aside
           className="shrink-0 border-l border-border flex flex-col min-h-0"
           style={{ width: 'clamp(15rem, 24%, 22rem)' }}
@@ -743,7 +696,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
             <SearchField size="sm" value={filter} onValueChange={setFilter} placeholder={t('筛选文件...')} />
           </div>
 
-          <div className="flex-1 overflow-y-auto scrollbar-app-thin px-1.5 pb-1.5 min-h-0">
+          <div ref={treeRef} className="flex-1 overflow-y-auto scrollbar-app-thin px-1.5 pb-1.5 min-h-0">
             {allEntries.length === 0 ? (
               <div className="px-2 py-3 text-xs text-muted-foreground">
                 {filter.trim() ? t('无匹配文件') : t('暂无变更文件')}

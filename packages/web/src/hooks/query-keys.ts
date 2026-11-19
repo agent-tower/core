@@ -89,13 +89,22 @@ export const queryKeys = {
   git: {
     all: ['git'] as const,
     changes: (workingDir: string) => ['git', 'changes', workingDir] as const,
-    diff: (workingDir: string, filePath: string, type: string) =>
-      ['git', 'diff', workingDir, filePath, type] as const,
     log: (workingDir: string) => ['git', 'log', workingDir] as const,
     commitFiles: (workingDir: string, hash: string) =>
       ['git', 'commitFiles', workingDir, hash] as const,
-    commitDiff: (workingDir: string, hash: string, filePath: string) =>
-      ['git', 'commitDiff', workingDir, hash, filePath] as const,
+  },
+
+  /**
+   * File diffs never change under their key: a working diff is keyed by its file's version token
+   * (from the change list), a commit diff by its commit. They live outside `git.all`, so
+   * invalidating git state never refetches them; a new token is a new query.
+   */
+  gitDiffs: {
+    all: ['git-diffs'] as const,
+    file: (workingDir: string, type: string, filePath: string, token: string, force: boolean) =>
+      ['git-diffs', 'file', workingDir, type, filePath, token, force] as const,
+    commit: (workingDir: string, hash: string, filePath: string) =>
+      ['git-diffs', 'commit', workingDir, hash, filePath] as const,
   },
 
   profiles: {
