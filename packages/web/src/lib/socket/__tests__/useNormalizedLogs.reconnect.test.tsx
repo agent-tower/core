@@ -73,17 +73,20 @@ describe('useNormalizedLogs reconnect recovery', () => {
     sessionStatus = 'RUNNING',
     sessionStartedAt,
     sessionEndedAt,
+    logView,
   }: {
     sessionId?: string
     sessionStatus?: string
     sessionStartedAt?: string | number | null
     sessionEndedAt?: string | number | null
+    logView?: 'light' | 'full'
   }) {
     const result = useNormalizedLogs({
       sessionId,
       sessionStatus,
       sessionStartedAt,
       sessionEndedAt,
+      logView,
     })
     useEffect(() => {
       latest = result
@@ -609,5 +612,57 @@ describe('useNormalizedLogs reconnect recovery', () => {
     expect(latest.isAttached).toBe(true)
     consoleWarn.mockRestore()
     consoleError.mockRestore()
+  })
+
+  it('downloads a session that had already ended once, in the light view', async () => {
+    vi.useFakeTimers()
+    apiGet.mockResolvedValue({ entries: [message('one', 'final')], seq: 0 } satisfies NormalizedConversation)
+
+    await act(async () => { root.render(<Harness sessionStatus="COMPLETED" logView="light" />) })
+    await act(async () => { await latest.attach() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+
+    expect(apiGet).toHaveBeenCalledTimes(1)
+    expect(apiGet.mock.calls[0][0]).toBe('/sessions/session-1/logs')
+    expect(apiGet.mock.calls[0][1]).toMatchObject({ params: { view: 'light' } })
+    expect(latest.entries.map((entry) => entry.content)).toEqual(['final'])
+  })
+
+  it('asks for the full view unless the caller can load omitted outputs', async () => {
+    apiGet.mockResolvedValue({ entries: [message('one', 'final')], seq: 0 } satisfies NormalizedConversation)
+
+    await act(async () => { root.render(<Harness sessionStatus="COMPLETED" />) })
+    await act(async () => { await latest.attach() })
+
+    expect(apiGet.mock.calls[0][1]).toMatchObject({ params: { view: 'full' } })
+  })
+
+  it('re-reads once when a session it watched live has ended', async () => {
+    vi.useFakeTimers()
+    apiGet.mockResolvedValueOnce({ entries: [message('one', 'partial')], seq: 1 } satisfies NormalizedConversation)
+      .mockResolvedValueOnce({ entries: [message('one', 'complete')], seq: 2 } satisfies NormalizedConversation)
+
+    await act(async () => { root.render(<Harness sessionStatus="RUNNING" />) })
+    await act(async () => { await latest.attach() })
+    await act(async () => { root.render(<Harness sessionStatus="COMPLETED" />) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+
+    expect(apiGet).toHaveBeenCalledTimes(2)
+    expect(latest.entries.map((entry) => entry.content)).toEqual(['complete'])
+  })
+
+  it('applies text-block metadata patches in place instead of reloading the log', async () => {
+    apiGet.mockResolvedValue({ entries: [message('one', 'answer')], seq: 1 } satisfies NormalizedConversation)
+    await act(async () => { root.render(<Harness />) })
+    await act(async () => { await latest.attach() })
+
+    const textBlock = { turnId: 't', runtimeGeneration: 'g', streamId: 'main', blockId: 'b', semanticType: 'assistant_message', sourceRevision: 1, state: 'SEALED', sealedReason: 'EXPLICIT' }
+    await act(async () => {
+      socket.dispatch('session:patch', { sessionId: 'session-1', seq: 2, patch: [{ op: 'add', path: '/entries/0/metadata', value: { textBlock } }] })
+      await Promise.resolve()
+    })
+
+    expect(apiGet).toHaveBeenCalledTimes(1)
+    expect(latest.entries[0].metadata?.textBlock?.state).toBe('SEALED')
   })
 })

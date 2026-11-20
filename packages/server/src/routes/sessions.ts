@@ -5,7 +5,7 @@ import { requireTranslationOwner } from './translations.js';
 import { isUserInput } from './user-input-origin.js';
 import { getSessionManager, getMessageDeliveryService } from '../core/container.js';
 import { AgentType, SessionContext } from '../types/index.js';
-import { sessionMsgStoreManager } from '../output/index.js';
+import { sessionLogReader } from '../services/session-log-reader.js';
 import { prisma } from '../utils/index.js';
 import { getProviderById } from '../executors/index.js';
 import { RuntimeType } from '@agent-tower/shared';
@@ -21,6 +21,18 @@ import {
 } from '../services/agent-artifact.service.js';
 import { TeamSchedulerService } from '../services/team-scheduler.service.js';
 import { INTERNAL_API_INVOCATION_ID_HEADER } from '../utils/internal-api-token.js';
+
+/** Most entries one `GET /sessions/:id/logs/entries` request may name. */
+const LOG_ENTRY_CONTENT_MAX_IDS = 50;
+
+/** An empty result marks a malformed ID, which the route rejects. */
+function decodeEntryId(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return '';
+  }
+}
 
 function buildProjectReadOnlyError(project: {
   name: string;
@@ -462,38 +474,50 @@ export async function sessionRoutes(app: FastifyInstance) {
   );
 
   // 获取会话日志快照
-  app.get<{ Params: { id: string } }>(
+  // `view=light` shortens long tool outputs (see output/log-view.ts); the full
+  // text of such an entry comes from GET /sessions/:id/logs/entries.
+  app.get<{ Params: { id: string }; Querystring: { view?: string } }>(
     '/sessions/:id/logs',
     async (request, reply) => {
       const { id } = request.params;
-
-      // 检查 session 是否存在
-      const session = await prisma.session.findUnique({ where: { id } });
-      if (!session) {
+      const view = request.query.view === 'light' ? 'light' : 'full';
+      // Live sessions come from the in-memory MsgStore; persisted snapshots are
+      // terminal (no more patches), so a missing seq reads as fully synced (0).
+      const result = await sessionLogReader.readLogView(prisma, id, view);
+      if (!result) {
         reply.code(404);
         return { error: 'Session not found' };
       }
-
-      // 优先从内存 MsgStore 读取（运行中或刚结束的 session）
-      const msgStore = sessionMsgStoreManager.get(id);
-      if (msgStore) {
-        return msgStore.getSnapshot();
+      if (result.kind === 'json') {
+        return reply.type('application/json; charset=utf-8').send(result.value);
       }
+      return result.value;
+    }
+  );
 
-      // 从数据库读取持久化的日志快照
-      if (session.logSnapshot) {
-        try {
-          const parsed = JSON.parse(session.logSnapshot);
-          // Terminal sessions: no more patches arrive; client sees this as fully synced.
-          if (typeof parsed.seq !== 'number') parsed.seq = 0;
-          return parsed;
-        } catch {
-          return { entries: [], seq: 0 };
-        }
+  // Full text of tool outputs that the light log view shortened.
+  // `entries` lists `<entryId>:<fullLength>` pairs with each ID URL-encoded, so
+  // IDs may contain `,` or `:`; the length picks between entries that share an ID.
+  app.get<{ Params: { id: string }; Querystring: { entries?: string } }>(
+    '/sessions/:id/logs/entries',
+    async (request, reply) => {
+      const raw = typeof request.query.entries === 'string' ? request.query.entries : '';
+      const requests = raw.split(',').filter(Boolean).map((item) => {
+        const separator = item.lastIndexOf(':');
+        const id = decodeEntryId(separator > 0 ? item.slice(0, separator) : item);
+        const length = separator > 0 ? Number(item.slice(separator + 1)) : undefined;
+        return { id, length: Number.isSafeInteger(length) && length! >= 0 ? length : undefined };
+      });
+      if (requests.length === 0 || requests.length > LOG_ENTRY_CONTENT_MAX_IDS || requests.some((item) => !item.id || item.id.length > 200)) {
+        reply.code(400);
+        return { error: `entries must list 1-${LOG_ENTRY_CONTENT_MAX_IDS} entry IDs` };
       }
-
-      // MsgStore 不存在且无持久化数据，返回空快照
-      return { entries: [], seq: 0 };
+      const entries = await sessionLogReader.readEntryContents(prisma, request.params.id, requests);
+      if (!entries) {
+        reply.code(404);
+        return { error: 'Session not found' };
+      }
+      return { entries };
     }
   );
 }

@@ -88,6 +88,8 @@ export function AgentSessionPanel({
     attach,
   } = useNormalizedLogs({
     sessionId,
+    // LogStream below gets the same session and loads omitted tool outputs.
+    logView: 'light',
     sessionStatus,
     sessionStartedAt,
     sessionEndedAt,

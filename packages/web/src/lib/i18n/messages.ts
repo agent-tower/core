@@ -720,6 +720,8 @@ export const messages: Record<AppLocale, Record<string, string>> = {
     'Enter a URL the Agent Tower server can reach.': '输入 Agent Tower 服务器可访问的 URL。',
     'Failed to delete project': '删除项目失败',
     'Failed to load full message': '加载完整消息失败',
+    'Loading the full output…': '正在加载完整输出…',
+    'Could not load the full output.': '无法加载完整输出。',
     'Failed to restore project': '恢复项目失败',
     'Failed to save preview target': '保存预览目标失败',
     'Forward': '前进',

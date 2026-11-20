@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
-import fastifyStatic from '@fastify/static';
+import { registerWebStatic } from './web-static.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerRoutes } from './routes/index.js';
@@ -89,19 +89,8 @@ export async function buildApp() {
       __dirname,
       process.env.AGENT_TOWER_WEB_DIR,
     );
-    await app.register(fastifyStatic, {
-      root: webDistPath,
-      prefix: '/',
-      wildcard: false,
-    });
-
-    // SPA fallback：非 API/socket 路由返回 index.html
-    app.setNotFoundHandler((req, reply) => {
-      if (req.url.startsWith('/api') || req.url.startsWith('/socket.io')) {
-        return reply.code(404).send({ error: 'Not Found' });
-      }
-      return reply.sendFile('index.html');
-    });
+    // Hashed assets are cached as immutable; index.html revalidates (web-static.ts).
+    await registerWebStatic(app, webDistPath);
   }
 
   // 服务器启动后初始化 Socket.IO 并清理过期 worktree

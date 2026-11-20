@@ -69,7 +69,22 @@ export class MessageDeliveryService {
     if (this.isSessionDispatchPaused(sessionId)) throw new ServiceError('Session delivery is being interrupted', 'DELIVERY_INTERRUPTING', 409);
   }
   async assertSession(sessionId: string, tx: Tx = this.db) {
-    const session = await tx.session.findUnique({ where: { id: sessionId }, include: { conversation: true, workspace: { include: { task: { include: { project: true } } } } } });
+    // Polled for every open session view; never load the multi-MB logSnapshot here.
+    const session = await tx.session.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        purpose: true,
+        prompt: true,
+        workspaceId: true,
+        conversationId: true,
+        initialDeliveryId: true,
+        inputIntent: true,
+        runtimeLaunchClaimCount: true,
+        conversation: true,
+        workspace: { select: { id: true, taskId: true, task: { select: { deletedAt: true, project: { select: { archivedAt: true } } } } } },
+      },
+    });
     if (!session || session.purpose !== 'CHAT' || session.conversation?.deletedAt || session.workspace?.task.deletedAt || session.workspace?.task.project.archivedAt || (!session.conversation && !session.workspace)) throw new ServiceError('Delivery scope not found', 'NOT_FOUND', 404);
     // Member sessions belong to TeamRun's admission path (P4), never this owner input adapter.
     if (await tx.agentInvocation.findFirst({ where: { sessionId }, select: { id: true } })) throw new ServiceError('Use the TeamRun room input', 'SESSION_NOT_ADMITTED', 409);
@@ -92,6 +107,30 @@ export class MessageDeliveryService {
     if (['TEAM_USER','TEAM_INITIAL'].includes(row.origin)) return this.teamDto(row);
     const session = await this.assertSession(this.sessionIdFor(row));
     return this.dto(row, session.conversationId);
+  }
+  /**
+   * Deliveries referenced by a log view's user messages. The scope lists cover
+   * a session's own pending and latest sent deliveries; team, cancelled and
+   * older ones are read here in one request instead of one request each.
+   * Each row gets the same checks as `get`; an ID that `get` would reject is
+   * left out instead of failing the whole batch.
+   */
+  async getMany(ids: string[]): Promise<MessageDelivery[]> {
+    const rows = await this.db.messageDelivery.findMany({ where: { id: { in: ids } } });
+    const sessions = new Map<string, ReturnType<MessageDeliveryService['assertSession']>>();
+    const items = await Promise.all(rows.map(async (row): Promise<MessageDelivery | null> => {
+      try {
+        if (['TEAM_USER','TEAM_INITIAL'].includes(row.origin)) return await this.teamDto(row);
+        const sessionId = this.sessionIdFor(row);
+        let session = sessions.get(sessionId);
+        if (!session) { session = this.assertSession(sessionId); sessions.set(sessionId, session); }
+        return this.dto(row, (await session).conversationId);
+      } catch (error) {
+        if (error instanceof ServiceError) return null;
+        throw error;
+      }
+    }));
+    return items.filter((item): item is MessageDelivery => item !== null);
   }
   async list(scopeType: 'SESSION' | 'CONVERSATION' | 'TEAM_TASK', scopeId: string, cursor?: string, filter?: 'pending' | 'sent'): Promise<MessageDeliveryPage> {
     if (scopeType === 'TEAM_TASK') {

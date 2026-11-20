@@ -1,9 +1,16 @@
 # Task view latency redesign (2026-11-16)
 
-**Merged, awaiting deployment as of 2026-11-18.** The command helper, pushed git state and versioned
-file diffs are in `at/67407e89` at `3065a3e`. The project owner will deploy the git changes first,
-measure production latency, and then decide whether to change log loading. Sections 5.C–5.E and 10
-retain the open recommendations. [Completed steps and commits](#71-completed-steps)
+**Git work deployed; first log changes implemented on 2026-11-19, not yet deployed.** The command
+helper, pushed git state and versioned file diffs are in `at/67407e89` at `3065a3e` and run in
+production as 0.7.5-beta.7. On 2026-11-19 the owner asked for the slow task opening to be fixed.
+The light log view, the translation read and the patch and read fixes in 5.C–5.D are implemented
+in `at/7dd18ece`, with immutable caching of web assets and batched delivery reads (5.E). In an
+A/B over HTTP/2 on copies of production sessions and a slow link, the first log row appears 8–30%
+sooner on a first visit, 16–54% sooner with the app open and 43–59% sooner on a returning visit,
+whose board also appears about 2 s sooner. Translated text appeared in the same frame as the log
+in 57 of 60 opens of the branch; on the base build it followed a median 0.5–7.5 s later (6.1).
+Storage changes and tail-first loading remain open (5.C.3–5.C.4, 10).
+[Completed steps and commits](#71-completed-steps)
 
 ## 1. Summary
 
@@ -23,9 +30,9 @@ with settled edits made **zero git HTTP requests in 130 s**. Its server ran **on
 |---|---|
 | A. Process starts | Done. Buffered commands, including git, can start in the command helper. Interactive processes keep their existing owners (5.A). |
 | B. Git state and diffs | Done. State is pushed over Socket.IO. Desktop and mobile use REST on first load or if the subscription fails. A file's version identifies its diff (5.B). |
-| C. Log loading | Open. The current implementation reads the full log. Patch handling, storage and tail-first loading are under review (5.C, 10). |
-| D. Translation overlays | Open. The proposal would replace repeated full-log reads while preserving access and staleness checks (5.D). |
-| E. Other requests | File-diff cancellation is implemented. Provider lookup, message deliveries and cancellation for logs and translations are open (5.E). |
+| C. Log loading | Partly done, not deployed. The task view opens with a light log view and loads long tool outputs on expansion. The metadata patch no longer reloads the log, and a finished session is downloaded once (5.C.2, 5.C.6). Storage and tail-first loading are open. |
+| D. Translation overlays | Partly done, not deployed. One bounded read starts with the log read, and the server reuses each transcript's block index. Polling slows to 60 s when nothing is in progress (5.D). |
+| E. Other requests | File-diff cancellation is implemented. Since 2026-11-19, hashed web assets are cached as immutable, and a log view reads its messages' deliveries in batches (not deployed). Provider lookup, the delivery idle poll and server-side cancellation for logs and translations are open (5.E). |
 | F. Measurement | The server logs event-loop delay, command dispatch, git activity and memory. The journal script reports HTTP latency. Production comparison follows deployment (5.F). |
 
 Related work includes the [session UI latency study](perf-session-ui-lag.md),
@@ -578,10 +585,13 @@ key. Focus and reconnect do not refetch it, and a failed fetch has no automatic 
 diffs use directory, commit hash and path as an immutable key. These keys sit outside the general
 git invalidation prefix, so a change to one file leaves other cached file queries alone.
 
-### 5.C Incremental log storage and loading (proposal)
+### 5.C Incremental log storage and loading
 
 The owner deferred the following proposals until after the git deployment and measurement.
 The suggested sizes and intervals in 5.C–5.E come from the original latency study in 2.6.
+On 2026-11-19, with the git work deployed, the owner asked for the slow task opening to be
+fixed. The parts of step 1 marked done below and the light log view in 5.C.6 are implemented
+in `at/7dd18ece` and not yet deployed. Storage changes and tail-first loading remain proposals.
 
 #### 5.C.1 Facts that shape the design
 
@@ -628,6 +638,15 @@ attach and again at the terminal revalidation 1.5 s later.
 6. Select only the fields needed by the callers in 5.C.1. Section 10.1 records the review's
    alternative of excluding the log from default Session reads.
 
+| Item | Status on 2026-11-19 |
+|---|---|
+| 1. Metadata upsert | Done. The browser applies `add /entries/{i}/metadata` (contract §2.8), so sealing a text block no longer reloads the log. |
+| 2. Revalidation at the end | Partly done. A snapshot requested after the session had already ended is final, so the second download 1.5 s after opening is skipped. A live-to-terminal transition still re-reads once. There is no validator or `304`. |
+| 3. Per-session patch room | Open. |
+| 4. Stored sequence and ETag | Open. |
+| 5. Snapshot cache across replacements | Done. `dropStaleReplaces` keeps the cache and shifts its message index. Property tests compare it with a full replay, including whole-entry and whole-array replacements. |
+| 6. Narrow Session reads | Partly done. Message-delivery access (`assertSession`), translation access (`readableSession`), the log routes and the checkpoint write no longer read the log column. The other callers in 5.C.1 are open. |
+
 #### 5.C.3 Step 2. Store logs as entry chunks
 
 The original proposal groups 200 entries per `SessionLogChunk`. Each chunk holds the session and
@@ -669,10 +688,36 @@ After a crash the server restores the checkpoint's sequence. A client that has a
 higher sequence can ignore the restored snapshot and subsequent patches. The proposal adds a
 `logEpoch` on store restoration so the client can accept the new sequence.
 
-### 5.D Translation overlays without full-log parses (proposal)
+#### 5.C.6 Light log view (implemented 2026-11-19)
+
+Tool outputs are 85–90% of the bytes of production logs, and the log view shows a tool's output
+only after the user expands its item. The task view therefore opens with a light view of the same
+document. `GET /sessions/:id/logs?view=light` keeps every entry at its index, so live patches still
+apply. It shortens a `tool_use` output longer than 1,024 characters to its first paragraph (the
+title line, the command or an ACP `Input` block, at most 600 characters). `contentOmitted` records
+the full length. `metadata.toolContent` and `metadata.fileChanges`, which the web client never
+reads, are dropped. The default view stays complete for other consumers.
+
+The client loads a shortened output when its item is expanded, through
+`GET /sessions/:id/logs/entries?entries=<id>:<length>,...`. Each ID is URL-encoded on its own, and
+the answer echoes the requested length, because entry IDs repeat in long logs (151 of 7,652 entries
+in the seeded production sample). Opening a tool group prefetches its shortened outputs, up to 50
+per request, when they total at most 200,000 characters; larger outputs load on their own expansion.
+A later `replace` of the entry's content carries the full text and makes the entry complete
+(contract §2.9). Only views that can load the rest ask for the light view: the hook option is
+`logView: 'light'`, used by the desktop and mobile task views and the agent session panel.
+
+The server caches the light view of a persisted snapshot per `Session.updatedAt`, within a shared
+budget of 24 × 2²⁰ characters. A snapshot is written only while the session's store exists, and
+the store is released after its final write. The persisted cache is used only without a store, so
+a cached version always holds the last write of a turn. Entry reads reuse the parsed snapshots of
+the two most recently read sessions until they are idle for 60 s, so expanding several items parses
+the log once.
+
+### 5.D Translation overlays without full-log parses
 
 These options preserve the access and staleness checks in 3.4. The owner deferred them with the
-log work.
+log work. The status after the 2026-11-19 change follows the list.
 
 1. Select the fields needed for authorization in `readableSession` and `assertReadableSession`.
    This would avoid loading the log for translation events, subscriptions, job claims and retries.
@@ -694,17 +739,40 @@ log work.
    The message-delivery hook would need its own subscription first. It depends on the overlay hook's
    `session:<id>` room to receive `message-delivery:invalidated`.
 
+| Item | Status on 2026-11-19 |
+|---|---|
+| 1. Narrow access reads | Done for `readableSession` and `assertReadableSession`. |
+| 2–3. Current blocks without a parse per read | Done differently. The server caches each transcript's block index, per stored version for a persisted snapshot and per sequence number for a live store. Overlay reads and source checks use it. Rows are still filtered in JavaScript, not SQL. |
+| 4. One bounded response | Done. `limit` accepts 1–1,000 (default 100 for other clients), and the web client asks for 1,000. Its read now starts with the log read instead of after the log has rendered. The views unmount the log stream while the first snapshot loads, so that read gets no abort signal and survives the unmount. The remount shows its result at once. If the read has already finished, the remount reads again, because room events are missed while the stream is unmounted. In the A/B in 6.1 every first open made these two reads. |
+| 5. Merge single changed rows | Open. |
+| 6. Safety read | Done as proposed. The client polls every 5 s while output is active or an overlay is unsettled, otherwise every 60 s. |
+| 7. Skip reads when translation is off | Open. |
+
 ### 5.E Request hygiene
 
 - **Provider availability is open.** The proposal would resolve executables by checking `PATH` with
   `fs.access(X_OK)` and the existing Unix path fallbacks. It would cache availability until a
   configuration change, manual refresh or 60 s expiry.
-- **Message deliveries are open.** The proposal keeps the invalidation event and reconnect refresh,
-  polls while a delivery is pending and removes the 5 s idle poll. Delivery polling across scopes
-  accounted for 43% of the requests in 2.1.
-- **Cancellation on task switch.** The log and translation clients already pass abort signals to
-  their fetches. Extending cancellation through their server-side work remains open. Working and
-  branch file-diff requests carry the signal all the way to git (5.B.5).
+- **Message deliveries: the per-message reads are batched; the idle poll is open.** A user message
+  in the log shows its delivery's feedback. The session lists carry only pending deliveries and the
+  latest 100 sent ones from session origins. Team inputs, cancelled operations and older sent ones
+  were each read with `GET /message-deliveries/:id`: 21 requests in a median cold open of
+  `90d922fc` (6.1). Since 2026-11-19, rows that render together share one
+  `GET /message-deliveries/by-ids` request (1–100 IDs), and that open makes 4. Each row gets the
+  same checks as the single read, which stays for other callers. The
+  proposal for polling remains open: keep the invalidation event and reconnect refresh, poll while a
+  delivery is pending, and remove the 5 s idle poll. Delivery polling across scopes accounted for 43%
+  of the requests in 2.1.
+- **Static assets are cached (2026-11-19).** The server sent every file of the web client with
+  `Cache-Control: public, max-age=0`, so each page load asked again about every chunk it needed,
+  and so did the first open of the lazily loaded task view. Vite names the files under `assets/`
+  after their content, so these now carry `public, max-age=31536000, immutable` (`web-static.ts`).
+  `index.html` keeps `max-age=0`, so a deployment is picked up on the next load. The first visit
+  after a deployment still downloads the new chunks.
+- **Cancellation on task switch.** The log client passes abort signals to its fetches. Since
+  2026-11-19 the overlay read deliberately does not (5.D, item 4): it is one bounded request that
+  finishes after a switch and stays cached. Extending cancellation through server-side work
+  remains open. Working and branch file-diff requests carry the signal all the way to git (5.B.5).
 
 ### 5.F Runtime measurements
 
@@ -727,7 +795,9 @@ journalctl -u agent-tower -o cat --since "-2 hours" --no-pager --grep='\[runtime
 The script joins requests by process and request ID. Compare the counts of changes, git-status and
 diff requests, per-route p50/p90/p99, and the p90 of plain requests grouped by overlap with git/provider
 or log-heavy routes. This shows whether the old git request traffic and the associated queueing fell.
-Compare log and translation latency before choosing the next work. Production results are pending.
+Compare log and translation latency before choosing the next work. Once the log changes in
+5.C.6 are deployed, opening a finished session should cost one `/logs` request and about two
+`/translations` requests, as in the A/B in 6.1. Production results are pending.
 
 | Fields on the minute line | Expected reading and conditions |
 |---|---|
@@ -828,6 +898,97 @@ Sources for these acceptance checks are the step 3a, step 4 and hardening handof
 [benchmark report](../packages/server/scripts/bench-command-helper-memory.md) also records the
 built-server replacement run.
 
+**Task opening with the light log view, first A/B (2026-11-19).** Two built servers ran side by
+side on copies of the same five production sessions: the branch `at/7dd18ece` after step 1 and its
+base `77447b6`. Each sat behind a small proxy that compresses responses with zstd. That proxy
+spoke HTTP/1.1, while production speaks HTTP/2; the second A/B below corrects this. Headless
+Chromium in Docker emulated 450 ms latency, 375 KB/s down and 128 KB/s up. Each open was timed
+from the click in the task list to the first log row and to the first translated paragraph. A
+cold open used a fresh browser context. A warm open followed the opening of another task, so the
+task view's code was already loaded. Four rounds alternated which build went first (ABBA). The
+host also ran other work; its load average was 2.3–6.8 between rounds.
+
+Each cell is the median of four opens, base → branch, sorted by log size.
+
+| Session | Cold: first log row | Cold: first translation | Warm: first log row | Warm: first translation |
+|---|---:|---:|---:|---:|
+| `6017fb8b` | 8.8 → 6.7 s | 13.4 → 6.7 s | 5.2 → 3.4 s | 10.0 → 3.4 s |
+| `07f8a026` | 6.9 → 5.7 s | 8.1 → 5.7 s | 4.0 → 2.6 s | 5.0 → 2.6 s |
+| `94a8967f` | 6.5 → 5.8 s | 9.1 → 5.8 s | 3.3 → 2.4 s | 5.8 → 2.4 s |
+| `a74f2b1d` | 6.0 → 5.2 s | 7.1 → 5.2 s | 2.7 → 2.2 s | 4.1 → 2.2 s |
+| `90d922fc` | 5.6 → 4.9 s | 5.8 → 4.9 s | 2.2 → 1.9 s | 2.7 → 1.9 s |
+
+For the first log row, the four-run ranges of the two builds overlapped in three of the ten cells
+(cold `94a8967f`, cold and warm `90d922fc`). For the first translation they never overlapped. On
+the branch the first translated paragraph appeared in the same frame as the first log row in every
+run. On the base build the paged overlay reads started after the log had rendered.
+
+| Session, cold open | Log transfer | Log requests | Overlay requests | Overlay transfer | All API transfer |
+|---|---:|---:|---:|---:|---:|
+| `6017fb8b` | 889 → 398 KB | 1 → 1 | 11 → 2 | 230 → 301 KB | 1,130 → 710 KB |
+| `07f8a026` | 474 → 135 KB | 1 → 1 | 4 → 2 | 117 → 108 KB | 602 → 254 KB |
+| `94a8967f` | 451 → 185 KB | 1 → 1 | 7 → 2 | 127 → 136 KB | 589 → 331 KB |
+| `a74f2b1d` | 329 → 118 KB | 1 → 1 | 4 → 2 | 89 → 81 KB | 426 → 207 KB |
+| `90d922fc` | 276 → 30 KB | 2 → 1 | 2 → 2 | 30 → 30 KB | 320 → 74 KB |
+
+Transfers are compressed sizes. Warm opens differed by at most one overlay request and 15 KB. The
+base build downloaded the finished session `90d922fc` twice; the second download is the terminal
+revalidation in 5.C.1. Per download, the light view was 2.2–4.6 times smaller than the full log.
+The branch's two overlay reads are the ones described in 5.D (item 4); for `6017fb8b` they moved
+71 KB more than the base build's paged reads. Cold opens took about 3 s longer than warm opens on
+both builds, mostly for loading the task view's code.
+
+A functional run on the branch build expanded every collapsed item of a long session over four
+rounds. It showed 11 complete outputs, and all 4 entry requests answered 200. No output stayed
+loading or failed, and the page reported no errors.
+
+**Task opening, second A/B over HTTP/2 (2026-11-19).** Production serves the app through Caddy
+over HTTPS, so browsers use HTTP/2 there. Over the first A/B's HTTP/1.1 proxy, Chromium opens at
+most six connections per host, so fan-outs of many small requests queued. This run put a separate
+Caddy instance with production's `encode zstd gzip` and `reverse_proxy` in front of each build,
+over TLS with HTTP/2. The branch build includes 5.C.6, 5.D and the caching and delivery changes in
+5.E; the base is again `77447b6`. The five sessions were copied again. They had grown since the
+first run (`94a8967f` to a 4.6 MB log), so the two runs differ cell by cell. Link emulation and
+ABBA order were as before, with four rounds.
+
+A returning visit opens the app in a new tab of a browser that had visited it and opened another
+task. It is throttled from navigation on and is the usual case for daily use. Host load reached
+13–17 in the last two rounds. Each cell is the median of four opens, base → branch, in seconds.
+
+| Session | Log transfer | First visit: log, translation | App open: log, translation | Returning: log, translation |
+|---|---:|---:|---:|---:|
+| `94a8967f` | 1,262 → 339 KB | 8.6, 12.4 → 6.0, 6.0 | 6.8, 12.3 → 3.1, 3.1 | 10.1, 16.1 → 4.2, 4.2 |
+| `6017fb8b` | 1,245 → 421 KB | 8.9, 14.0 → 6.5, 6.9 | 7.0, 13.1 → 3.7, 3.7 | 10.5, 18.0 → 4.6, 4.6 |
+| `07f8a026` | 631 → 139 KB | 7.3, 8.8 → 5.2, 5.2 | 4.0, 5.3 → 2.7, 2.7 | 7.9, 9.8 → 3.5, 3.5 |
+| `a74f2b1d` | 388 → 119 KB | 5.4, 7.0 → 4.3, 4.3 | 2.7, 4.4 → 2.1, 2.1 | 5.7, 7.3 → 3.0, 3.0 |
+| `90d922fc` | 299 → 30 KB | 4.4, 4.9 → 4.1, 4.1 | 1.9, 2.7 → 1.6, 1.6 | 4.4, 5.4 → 2.5, 2.5 |
+
+The first log row appeared 8–30% sooner on a first visit, 16–54% sooner with the app open and
+43–59% sooner on a returning visit. Every round favoured the branch: per round, the five first-row
+times summed to 31.8–49.0 → 23.8–30.8 s on first visits, 21.8–32.2 → 12.4–16.3 s with the app open
+and 27.8–51.4 → 17.3–27.4 s on returning visits. The four-run ranges overlapped in 15 of the 35
+time cells, mostly through single slow runs in the loaded rounds. On the branch the first
+translated paragraph appeared in the same frame as the first log row in 57 of 60 opens and at most
+1.3 s later in the other three. On the base build it followed 0.2–13.1 s later.
+
+| Returning visit | Board appears | Chunks revalidated: load, open | API requests on open | Delivery requests on open |
+|---|---:|---:|---:|---:|
+| `94a8967f` | 5.5 → 3.5 s | 37, 22 → 0, 0 | 42 → 25 | 7 → 3 |
+| `6017fb8b` | 5.4 → 3.3 s | 37, 22 → 0, 0 | 44 → 26 | 7 → 3 |
+| `07f8a026` | 5.8 → 3.6 s | 37, 22 → 0, 0 | 41 → 25 | 14 → 2 |
+| `a74f2b1d` | 5.0 → 3.3 s | 37, 22 → 0, 0 | 31 → 26 | 6 → 3 |
+| `90d922fc` | 5.4 → 3.4 s | 37, 22 → 0, 0 | 48 → 28 | 23 → 4 |
+
+On the base build, a returning visit revalidated all 37 chunks of the board and the 22 of the task
+view; each answer was a 304, so the cost is the round trips. The branch took every chunk from the
+browser cache. A first visit downloads the same chunks on both builds. The base build read each
+historical delivery on its own. The branch read them in batches, one per tick in which rows
+rendered; while the list measured its rows, that came to 2–4 requests.
+
+A functional run on this build expanded every collapsed item of `07f8a026` over four rounds. The
+light log came in one request, and three batched entry reads answered 200. Nothing stayed loading
+or failed, and the page reported no errors.
+
 ### 6.2 Guarantees kept
 
 Viewers share work without sharing access credentials. A valid subscription receives a complete
@@ -842,9 +1003,29 @@ depends on inherited non-V8 memory and host load. Git still scans a worktree whe
 External working-file edits wait for a signal or safety check. Section 8 lists the accepted diff
 and cache limits.
 
-Opening a long session still loads the full log. Translation overlays, message deliveries and
-checkpoints still incur the costs documented in 2.5 and 5.C. The task view's production open time
-has yet to be measured with the git changes deployed.
+Opening a session still loads every entry. The light view only shortens long tool outputs, so
+`6017fb8b` still transfers 421 KB in the second A/B (398 KB, 1.5 MB uncompressed, in the first),
+mostly entry fields and short entries.
+Loading the tail first (5.C.4) is the next step for long sessions.
+
+The task view's own requests, the log among them, start only after its code has loaded: 20
+files, 362 KB with zstd. Two chunks carry most of it. One holds the log renderer with its Markdown
+pipeline (164 KB; Rollup named it after a Mermaid module inside, but Mermaid itself loads only for
+a diagram). The other holds the components the desktop and mobile views share (153 KB, named after
+the handoff panel). Both are needed for the first paint. Since the caching change in 5.E, a
+returning visit takes this code from the browser cache; the first visit after a deployment still
+downloads it. The board has loaded the view only on demand since `22b48fa`, because evaluating it
+early used memory that made iOS reload the page. A prefetch that only downloads after the board
+has rendered (`rel=prefetch`, which Safari ignores) would keep that guarantee; it is not
+implemented.
+
+A first open makes two overlay reads (5.D, item 4). The views replace the log stream with a
+spinner while the first snapshot loads, so the stream mounts twice. Mounting it once, with the view
+rather than the stream starting the overlay read, would remove both the second read and the remount.
+The second read starts after the log is shown, so it costs transfer but not display time. The
+delivery lists are still polled every 5 s when nothing is pending (5.E). Checkpoints still
+serialize the whole log (5.C.3). Production open time has not been measured with the log changes,
+which are not deployed.
 
 ## 7. Implementation and follow-up
 
@@ -864,6 +1045,8 @@ the steps in dependency order. Section 6.1 reports results from isolated accepta
 | Hardening | Done | `3aeaa2b` | Registration retries and visible subscription termination with REST recovery. |
 | Hardening | Done | `0cf5311`, `580e7d3` | Planned helper replacement and the final 384 MiB default. |
 | Hardening | Done | `933ad35` | Main-worktree rebase detection in the authoritative operation path. |
+| Log loading, step 1 | Implemented in `at/7dd18ece`, not deployed | `ee855c2`, `8fca025` (Agent Tower's automatic commits) | Light log view and entry reads, single translation read, metadata patch, single download on open, snapshot cache, narrow Session reads (5.C.2, 5.C.6, 5.D). |
+| Task opening, follow-up | Implemented in `at/7dd18ece`, not deployed | `ab6d738` (Agent Tower's automatic commit) | Immutable caching of hashed web assets and batched delivery reads for log views (5.E, 6.1). |
 
 ### 7.2 Follow-up work
 
@@ -877,8 +1060,8 @@ that later review.
 | Original phase | Pending proposal |
 |---|---|
 | 0 | Add per-caller spawn timings and log-serving counters if the existing measurements leave questions open. |
-| 1 | Fix the metadata patch reload loop, double fetch on open and whole-row reads. Other suggestions include cached executable lookup, log and translation cancellation, and handling editor launch errors. |
-| 4 | Read translation overlays without full-log parses and make message deliveries event-driven. |
+| 1 | The metadata patch, the double fetch on open and the polled whole-row reads are fixed on `at/7dd18ece`. Still open: the other whole-row reads in 5.C.1, cached executable lookup, log and translation cancellation, and handling editor launch errors. |
+| 4 | Translation overlays no longer parse the log per read (5.D), and log views read message deliveries in batches (5.E). Still open: mounting the log stream once so a first open reads overlays once (6.3), merging single changed rows, skipping reads when translation is off, and event-driven delivery lists without the 5 s idle poll. |
 | 5 | Change log storage and load the tail first. The original chunked-storage design and the review's per-entry alternative are still open. |
 
 ## 8. Known limits
@@ -933,10 +1116,10 @@ The special REST status for `MAIN_DIRECTORY` in 5.B.1 is a separate display conv
 
 ### 9.2 Still open
 
-The next decision needs **post-deployment measurements**. The owner will deploy, then compare
-production data using 5.F. No log implementation has been approved. Open choices include targeted
-log-read fixes, the patch contract, chunked versus per-entry or file storage, tail-first loading,
-translation updates and message deliveries. Section 10 preserves the review's alternatives. Native
+The git work is deployed. On 2026-11-19 the owner asked for slow task opening to be fixed, and
+the targeted log and translation fixes above were implemented. Still open are chunked versus
+per-entry or file storage, tail-first loading, the remaining translation updates and message
+deliveries. Section 10 preserves the review's alternatives. Native
 process starts for terminals, agents and ACP adapters are also deferred.
 
 ## 10. Review recommendations pending decision

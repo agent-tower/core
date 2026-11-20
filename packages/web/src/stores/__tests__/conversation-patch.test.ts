@@ -573,7 +573,7 @@ describe('conversation patch boundary behaviour (§4 / §7 D1–D9)', () => {
     expect(warnSpy).toHaveBeenCalledTimes(4)
   })
 
-  it('rejects near-miss op/path pairs outside the six supported combos', () => {
+  it('rejects near-miss op/path pairs outside the supported combos', () => {
     for (const patch of [
       [{ op: 'add', path: '/entries', value: [] }],
       [{ op: 'add', path: '/entries/0/content', value: 'x' }],
@@ -793,5 +793,113 @@ describe('conversation patch dev/test freezing (§3.4 / §7-D5)', () => {
       vi.unstubAllEnvs()
       vi.resetModules()
     }
+  })
+})
+
+describe('add /entries/{i}/metadata (§2.8, text-block lifecycle)', () => {
+  const textBlock = {
+    turnId: 'turn-1',
+    runtimeGeneration: 'generation-1',
+    streamId: 'main',
+    blockId: 'block-1',
+    semanticType: 'assistant_message' as const,
+    sourceRevision: 1,
+    state: 'SEALED' as const,
+    sealedReason: 'EXPLICIT' as const,
+  }
+
+  it('upserts a missing metadata member like the baseline and copies only the parent chain', () => {
+    const a = entry('a', 'answer')
+    const b = entry('b', 'output', { action: 'file_read', status: 'success' })
+    const document = freezeConversationInDev(conversation([a, b], 4))
+
+    const next = expectSameAsBaseline(document, [
+      { op: 'add', path: '/entries/0/metadata', value: { textBlock } },
+    ])
+
+    expect(next.entries[0]).not.toBe(a)
+    expect(next.entries[0].metadata).toEqual({ textBlock })
+    expect(next.entries[1]).toBe(b)
+    expect(a.metadata).toBeUndefined()
+  })
+
+  it('replaces an existing metadata object as a whole, like the baseline', () => {
+    const { sealedReason: _sealedReason, ...openBlock } = textBlock
+    void _sealedReason
+    const open = { textBlock: { ...openBlock, state: 'OPEN' as const } }
+    const a = { ...entry('a', 'answer'), metadata: open }
+    const document = freezeConversationInDev(conversation([a]))
+
+    const next = expectSameAsBaseline(document, [
+      { op: 'add', path: '/entries/0/metadata', value: { textBlock } },
+    ])
+
+    expect(next.entries[0].metadata?.textBlock?.state).toBe('SEALED')
+    expect(a.metadata.textBlock.state).toBe('OPEN')
+  })
+
+  it('applies after a content replace in the same batch, in order', () => {
+    const document = freezeConversationInDev(conversation([entry('a', 'first')]))
+
+    const next = expectSameAsBaseline(document, [
+      { op: 'replace', path: '/entries/0/content', value: 'first paragraph\n\nsecond' },
+      { op: 'add', path: '/entries/0/metadata', value: { textBlock: { ...textBlock, state: 'OPEN', paragraphs: [{ end: 17 }] } } },
+    ])
+
+    expect(next.entries[0].content).toBe('first paragraph\n\nsecond')
+    expect(next.entries[0].metadata?.textBlock?.paragraphs).toEqual([{ end: 17 }])
+  })
+
+  it('fails like the baseline when the entry does not exist (reload path)', () => {
+    const document = conversation([entry('a')])
+    expect(expectRejectedLikeBaseline(document, [
+      { op: 'add', path: '/entries/3/metadata', value: { textBlock } },
+    ])).toBe('failed')
+  })
+
+  it('rejects a non-object metadata value (never produced; downstream reads it as an object)', () => {
+    const document = conversation([entry('a')])
+    for (const value of ['sealed', 1, null, []]) {
+      const result = applyConversationPatch(document, [{ op: 'add', path: '/entries/0/metadata', value }] as Operation[])
+      expect(result.ok).toBe(false)
+      if (result.ok) throw new Error('unreachable')
+      expect(result.kind).toBe('failed')
+    }
+  })
+
+  it('still rejects other nested add paths', () => {
+    const document = conversation([entry('a')])
+    expectUnsupported(document, [{ op: 'add', path: '/entries/0/metadata/textBlock', value: textBlock }])
+  })
+})
+
+describe('light log view entries (§2.9)', () => {
+  function lightTool(id: string, preview: string, fullLength: number): NormalizedEntry {
+    return { ...entry(id, preview, { action: 'file_read', status: 'success' }), contentOmitted: fullLength }
+  }
+
+  it('drops contentOmitted when a content replace carries the full text', () => {
+    const document = conversation([lightTool('a', 'Reading /a.md', 5000)])
+    const result = applyConversationPatch(document, [
+      { op: 'replace', path: '/entries/0/content', value: 'Reading /a.md\n\nfull text' },
+    ])
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.conversation.entries[0].content).toBe('Reading /a.md\n\nfull text')
+    expect('contentOmitted' in result.conversation.entries[0]).toBe(false)
+  })
+
+  it('keeps contentOmitted when only the tool status or metadata changes', () => {
+    const document = conversation([lightTool('a', 'Reading /a.md', 5000)])
+    const result = applyConversationPatch(document, [
+      { op: 'replace', path: '/entries/0/metadata/status', value: 'failed' },
+      { op: 'add', path: '/entries/0/metadata', value: { action: 'file_read', status: 'failed', toolName: 'Read' } },
+    ])
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.conversation.entries[0].contentOmitted).toBe(5000)
+    expect(result.conversation.entries[0].metadata?.toolName).toBe('Read')
   })
 })

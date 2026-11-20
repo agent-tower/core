@@ -10,6 +10,9 @@ import { TranslationError } from '../services/translation-errors.js';
 import { QueueError } from '../services/translation-queue.js';
 import { translationSettingsDraftSchema, translationSettingsUpdateSchema } from '../services/translation-settings.service.js';
 
+/** 1–100 comma-separated delivery IDs; the character class keeps the match linear. */
+const MESSAGE_DELIVERY_ID_LIST = /^[A-Za-z0-9_-]{1,64}(?:,[A-Za-z0-9_-]{1,64}){0,99}$/;
+
 const draftTestSchema = z.object({
   draft: translationSettingsDraftSchema,
   text: z.string().min(1).max(256 * 1024),
@@ -90,6 +93,12 @@ export async function translationRoutes(app: FastifyInstance): Promise<void> {
     const query = parseRequest(z.object({ scopeType: z.enum(['SESSION', 'CONVERSATION', 'TEAM_TASK']), scopeId: z.string().min(1), cursor: z.string().regex(/^\d+$/).refine(value => Number.isSafeInteger(Number(value))).optional(), filter: z.enum(['pending', 'sent']).optional() }).strict(), request.query);
     return getMessageDeliveryService().list(query.scopeType, query.scopeId, query.cursor, query.filter);
   }));
+  // One request for the deliveries a log view's user messages refer to (1–100 IDs, comma-separated).
+  app.get('/message-deliveries/by-ids', request => safeTranslationRequest(async () => {
+    await requireTranslationOwner(request);
+    const query = parseRequest(z.object({ ids: z.string().regex(MESSAGE_DELIVERY_ID_LIST) }).strict(), request.query);
+    return { items: await getMessageDeliveryService().getMany([...new Set(query.ids.split(','))]) };
+  }));
   app.get<{ Params: { id: string } }>('/message-deliveries/:id', request => safeTranslationRequest(async () => {
     await requireTranslationOwner(request); return getMessageDeliveryService().get(request.params.id);
   }));
@@ -100,10 +109,11 @@ export async function translationRoutes(app: FastifyInstance): Promise<void> {
   }));
   app.get<{ Params: { id: string } }>('/sessions/:id/translations', request => safeTranslationRequest(async () => {
     await requireTranslationOwner(request);
-    const query = parseRequest(z.object({ blockIds: z.string().max(10000).optional(), cursor: z.string().max(200).optional() }).strict(), request.query);
+    // `limit` (1-1000, default 100) lets one request read a whole session's overlays.
+    const query = parseRequest(z.object({ blockIds: z.string().max(10000).optional(), cursor: z.string().max(200).optional(), limit: z.string().regex(/^\d{1,4}$/).refine(value => Number(value) >= 1 && Number(value) <= 1000).optional() }).strict(), request.query);
     const blockIds = query.blockIds?.split(',').filter(Boolean);
     if (blockIds && blockIds.length > 100) throw new ValidationError('Too many block IDs');
-    return getTranslationService().listSessionOverlays(request.params.id, { blockIds, cursor: query.cursor });
+    return getTranslationService().listSessionOverlays(request.params.id, { blockIds, cursor: query.cursor, limit: query.limit ? Number(query.limit) : undefined });
   }));
   app.post<{ Params: { id: string; sourceId: string } }>('/sessions/:id/translations/:sourceId/retry', request => safeTranslationRequest(async () => {
     await requireTranslationOwner(request);

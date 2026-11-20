@@ -56,6 +56,7 @@ describe('User delivery translation indicator', () => {
   function restore(getDelivery: () => SessionMessageDelivery) {
     vi.mocked(apiClient.get).mockImplementation(async (url, options) => {
       const item = getDelivery()
+      if (url === '/message-deliveries/by-ids') return { items: String(options?.params?.ids).split(',').includes(item.id) ? [item] : [] }
       if (url !== '/message-deliveries') return item
       const sent = item.state === 'SENT'
       return { items: (options?.params?.filter === 'sent') === sent ? [item] : [], nextCursor: null }

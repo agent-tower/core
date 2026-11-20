@@ -1,6 +1,5 @@
 import { mergeDeliveryLogs } from '@/lib/delivery-logs'
-import { useQuery } from '@tanstack/react-query'
-import { apiClient } from '@/lib/api-client'
+import { useQueryClient } from '@tanstack/react-query'
 import { useOutgoingSubmissions } from '@/hooks/outgoing-submissions'
 import { OutgoingSubmissionBubble } from './OutgoingSubmissionBubble'
 import { createContext, useContext, useState, useMemo, useCallback, useImperativeHandle, forwardRef, memo, useRef, useEffect } from 'react'
@@ -9,7 +8,9 @@ import { indexSessionTranslations, sessionTranslationPresentation, useSessionTra
 import { useTranslationReveals } from '@/hooks/translation-reveals'
 import { useTranslationSettings } from '@/hooks/use-translation-settings'
 import { useMessageDeliveries } from '@/hooks/use-message-deliveries'
+import { useHistoricalDelivery } from '@/hooks/use-historical-delivery'
 import { useRuntimeState } from '@/hooks/use-sessions'
+import { prefetchLogEntryContents, useLogEntryContent } from '@/hooks/use-log-entry-content'
 import { useCancelSessionWakeup, usePendingSessionWakeups } from '@/hooks/use-session-wakeups'
 import { MessageDeliveryAttachments, MessageDeliveryFeedback } from './MessageDeliveryStatus'
 import { TranslationComparison, TranslationReveal, TranslationStatus } from './TranslationComparison'
@@ -463,7 +464,7 @@ MarkdownMessage.displayName = 'MarkdownMessage'
 
 // 1. User Message — 右对齐聊天气泡
 function HistoricalDelivery({ id }: { id: string }) {
-  const { data } = useQuery({ queryKey: ['message-delivery', id], queryFn: () => apiClient.get<MessageDelivery>(`/message-deliveries/${encodeURIComponent(id)}`), staleTime: Infinity })
+  const { data } = useHistoricalDelivery(id)
   return data ? <MessageDeliveryFeedback delivery={data} /> : null
 }
 const DeliveryContext = createContext<ReadonlyMap<string, MessageDelivery>>(new Map())
@@ -671,8 +672,57 @@ function activitySummary(logs: LogEntry[]): string[] {
   return labels.filter((label, index) => index === 0 || label !== labels[index - 1])
 }
 
+interface LogSession {
+  sessionId: string
+  /** Starts loading omitted tool outputs that are about to be shown. */
+  prefetchOutputs: (entries: ReadonlyArray<{ id: string; length: number }>) => void
+}
+
+/**
+ * Session of the rendered transcript, provided by `SessionLogStream`. Tool
+ * outputs the light log view left out (`contentOmitted`) load through it.
+ */
+const LogSessionContext = createContext<LogSession | null>(null)
+
+function ToolOutputText({ text }: { text: string }) {
+  return (
+    <code className="block p-2.5 text-xs font-mono text-muted-foreground leading-relaxed whitespace-pre-wrap break-all">
+      {text}
+    </code>
+  )
+}
+
+/** A tool output the light log view shortened; the rest loads on first display. */
+function OmittedToolOutput({ log, length, className }: { log: LogEntry; length: number; className: string }) {
+  const { t } = useI18n()
+  const session = useContext(LogSessionContext)
+  const full = useLogEntryContent(session?.sessionId, log.id, length)
+  return (
+    <div className={className}>
+      <ToolOutputText text={full.data ?? log.content} />
+      {full.isLoading && (
+        <div role="status" className="px-2.5 pb-2 text-xs text-muted-foreground">{t('Loading the full output…')}</div>
+      )}
+      {full.isError && (
+        <div role="alert" className="px-2.5 pb-2 text-xs text-destructive">
+          {t('Could not load the full output.')}{' '}
+          <button type="button" className="underline" onClick={() => void full.refetch()}>{t('Retry')}</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Expanded tool output. */
+const ToolOutput = memo(({ log, className }: { log: LogEntry; className: string }) => (
+  typeof log.contentOmitted === 'number'
+    ? <OmittedToolOutput log={log} length={log.contentOmitted} className={className} />
+    : <div className={className}><ToolOutputText text={log.content} /></div>
+))
+ToolOutput.displayName = 'ToolOutput'
+
 // 3. Tool / Action — 内联文本样式，去除边框噪音
-const ToolBlock = memo(({ title, content, type }: { title: string; content: string; type: LogType }) => {
+const ToolBlock = memo(({ title, content, type, log }: { title: string; content: string; type: LogType; log?: LogEntry }) => {
   const [isOpen, setIsOpen] = useState(false)
   const isAction = type === LogType.Action
 
@@ -694,6 +744,8 @@ const ToolBlock = memo(({ title, content, type }: { title: string; content: stri
   // 提取首行摘要
   const firstLine = content?.split('\n')[0] || ''
   const summary = firstLine !== title ? firstLine : ''
+  const hasOutput = Boolean(content) || typeof log?.contentOmitted === 'number'
+  const outputClassName = 'ml-5 mt-0.5 mb-1.5 rounded-md bg-muted/50 border border-border/60 overflow-x-auto'
 
   return (
     <div className="my-2">
@@ -714,20 +766,16 @@ const ToolBlock = memo(({ title, content, type }: { title: string; content: stri
         {summary && (
           <span className="truncate text-muted-foreground font-mono">{summary}</span>
         )}
-        {content && (
+        {hasOutput && (
           <span className="ml-auto shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground/70">
             {isOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
           </span>
         )}
       </button>
 
-      {isOpen && content && (
-        <div className="ml-5 mt-0.5 mb-1.5 rounded-md bg-muted/50 border border-border/60 overflow-x-auto">
-          <code className="block p-2.5 text-xs font-mono text-muted-foreground leading-relaxed whitespace-pre-wrap break-all">
-            {content}
-          </code>
-        </div>
-      )}
+      {isOpen && hasOutput && (log
+        ? <ToolOutput log={log} className={outputClassName} />
+        : <div className={outputClassName}><ToolOutputText text={content} /></div>)}
     </div>
   )
 })
@@ -794,6 +842,7 @@ ToolCountBadge.displayName = 'ToolCountBadge'
 const ExecutionDetailsGroup = memo(({ logs, onBeforeToggle }: { logs: LogEntry[]; onBeforeToggle?: () => void }) => {
   const { t } = useI18n()
   const [isOpen, setIsOpen] = useState(false)
+  const session = useContext(LogSessionContext)
   const toolLogs = logs.filter(isToolDetailLog)
   const summaries = activitySummary(logs)
   const detailCount = toolLogs.length
@@ -806,6 +855,12 @@ const ExecutionDetailsGroup = memo(({ logs, onBeforeToggle }: { logs: LogEntry[]
           // 展开会改变内容高度；若此时日志正跟随底部，外层 stick-to-bottom 会把视口
           // 重新钉到底部，等于把刚点开的卡片往上顶一个展开高度。先放弃跟随。
           onBeforeToggle?.()
+          if (!isOpen && session) {
+            // Item outputs are one click away now; load the small ones in one request.
+            session.prefetchOutputs(toolLogs.flatMap((log) => (
+              typeof log.contentOmitted === 'number' ? [{ id: log.id, length: log.contentOmitted }] : []
+            )))
+          }
           setIsOpen(!isOpen)
         }}
         aria-expanded={isOpen}
@@ -843,7 +898,8 @@ ExecutionDetailsGroup.displayName = 'ExecutionDetailsGroup'
 /** Single item inside a ToolGroup — expandable for full content */
 const ToolGroupItem = memo(({ log, title, onBeforeToggle }: { log: LogEntry; title: string; onBeforeToggle?: () => void }) => {
   const [isDetailOpen, setIsDetailOpen] = useState(false)
-  const hasDetailContent = Boolean(log.content.trim()) && log.content.trim() !== title.trim()
+  const hasDetailContent = typeof log.contentOmitted === 'number'
+    || (Boolean(log.content.trim()) && log.content.trim() !== title.trim())
 
   const isSuccess = isToolSuccess(log)
   const isFailed = isToolFailure(log) || log.type === LogType.Error
@@ -880,11 +936,7 @@ const ToolGroupItem = memo(({ log, title, onBeforeToggle }: { log: LogEntry; tit
         )}
       </button>
       {isDetailOpen && hasDetailContent && (
-        <div className="ml-5 mt-0.5 mb-1 rounded-md bg-muted/50 border border-border/60 overflow-x-auto">
-          <code className="block p-2.5 text-xs font-mono text-muted-foreground leading-relaxed whitespace-pre-wrap break-all">
-            {log.content}
-          </code>
-        </div>
+        <ToolOutput log={log} className="ml-5 mt-0.5 mb-1 rounded-md bg-muted/50 border border-border/60 overflow-x-auto" />
       )}
     </div>
   )
@@ -1115,7 +1167,7 @@ function renderItem(
       return <UserMessage content={log.content} deliveryId={log.deliveryId} compact={compact} workingDir={workingDir} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenPreviewUrl={onOpenPreviewUrl} />
 
     case LogType.Tool:
-      return <ToolBlock type={log.type} title={log.title || 'Tool'} content={log.content} />
+      return <ToolBlock type={log.type} title={log.title || 'Tool'} content={log.content} log={log} />
 
     case LogType.Action:
       return <ToolBlock type={log.type} title="Action" content={log.content} />
@@ -1148,7 +1200,7 @@ function renderItem(
 const OVERSCAN_ROWS = 8
 
 const SessionLogStream = forwardRef<LogStreamHandle, LogStreamProps & { sessionId: string }>(function SessionLogStream(props, ref) {
-  const translations = useSessionTranslations(props.sessionId, props.logs)
+  const translations = useSessionTranslations(props.sessionId, props.logs, props.isOutputActive === true)
   const settings = useTranslationSettings()
   const sources = useMemo(() => props.logs.flatMap(log => log.textBlock
     ? getTranslationTextBlocks(log.content, log.textBlock).map(block => ({ id: JSON.stringify([block.turnId, block.blockId]), revision: block.sourceRevision, streaming: log.textBlock!.state === 'OPEN' })) : []), [props.logs])
@@ -1166,12 +1218,17 @@ const SessionLogStream = forwardRef<LogStreamHandle, LogStreamProps & { sessionI
   const logs = useMemo(() => mergeDeliveryLogs(props.logs, [...deliveries.values()]), [props.logs, deliveries])
   const runtime = useRuntimeState(props.sessionId)
   const backgroundTasks = runtime.data?.backgroundTasks?.length ? runtime.data.backgroundTasks : NO_BACKGROUND_TASKS
-  return <TranslationContext.Provider value={context}><DeliveryContext.Provider value={deliveries}><BackgroundWaitContext.Provider value={backgroundTasks}>
+  const queryClient = useQueryClient()
+  const logSession = useMemo<LogSession>(() => ({
+    sessionId: props.sessionId,
+    prefetchOutputs: (entries) => prefetchLogEntryContents(queryClient, props.sessionId, entries),
+  }), [queryClient, props.sessionId])
+  return <LogSessionContext.Provider value={logSession}><TranslationContext.Provider value={context}><DeliveryContext.Provider value={deliveries}><BackgroundWaitContext.Provider value={backgroundTasks}>
     <LogStreamView {...props} logs={logs} ref={ref} />
     {outgoing.filter(item => ![...deliveries.values()].some(delivery => delivery.clientSubmissionId === item.id)).map(item => <OutgoingSubmissionBubble key={item.id} item={item} />)}
     <PendingWakeups sessionId={props.sessionId} />
     {pending.hasNextPage && <button type="button" className="text-xs underline" onClick={() => void pending.fetchNextPage()}>Load more</button>}
-  </BackgroundWaitContext.Provider></DeliveryContext.Provider></TranslationContext.Provider>
+  </BackgroundWaitContext.Provider></DeliveryContext.Provider></TranslationContext.Provider></LogSessionContext.Provider>
 })
 
 export const LogStream = forwardRef<LogStreamHandle, LogStreamProps>(function LogStream(props, ref) {

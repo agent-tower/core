@@ -30,7 +30,7 @@ interface NormalizedConversation {
 
 ## 1. 服务端实际会产生什么（可 emittable 集合）
 
-全仓 grep（`pushPatch` / `conversation_patch` / `session:patch` / `{ op:` 字面量 / `applyPatch` / `ConversationPatch.*`）后，**当前代码只能产生 6 种 `(op, path)` 组合**，且**每个 patch 数组恰好只有一个 op**：
+全仓 grep（`pushPatch` / `conversation_patch` / `session:patch` / `{ op:` 字面量 / `applyPatch` / `ConversationPatch.*`）后，**当前代码只能产生 7 种 `(op, path)` 组合**（第 7 种于 2026-11-19 补入契约）。第 1–6 种的 patch 数组恰好只有一个 op；文本块追踪器会把第 7 种追加到同一批次的 `replace /entries/{i}/content` 之后，或单独成批：
 
 | # | op | path 模式 | value 类型 | 生成位置 |
 |---|---|---|---|---|
@@ -40,15 +40,16 @@ interface NormalizedConversation {
 | 4 | `replace` | `/entries/{i}/metadata/status` | `ToolStatus` | `patch.ts:74-82`；`codex-parser.ts:344`、`cursor-agent-parser.ts:879`、`claude-code-parser.ts:638` |
 | 5 | `add` | `/sessionId` | `string`（根级对象成员 upsert） | `patch.ts:87-95`；`codex-parser.ts:235`、`cursor-agent-parser.ts:625`、`claude-code-parser.ts:283`、`runtime/acp/acp-driver.ts:644` |
 | 6 | `replace` | `/entries`（**根级整数组**） | `NormalizedEntry[]` | **仅** `runtime/acp/acp-driver.ts:678`（`reconcileLoadedHistory`），值来自 `runtime/acp/history-reconciler.ts` 的 `mergedEntries` |
+| 7 | `add` | `/entries/{i}/metadata` | `metadata` 对象（条目成员 upsert） | `output/text-block-tracker.ts`（`seal()` 与 `decorate()`）。2026-10-20 的 `0f4485f` 引入，晚于本契约；2026-11-19 补入契约（§2.8），此前浏览器拒绝该 op，每次文本块封口或新增段落都会整份重拉日志 |
 
 **不会产生**（已核实）：
 
 - `remove`：`removeEntry`（`patch.ts:100-107`）全仓**零调用点**（仅定义、聚合对象 `patch.ts:125`、re-export `output/index.ts:20`）。`useNormalizedLogs.ts:130` 的 `patchTouchesAgentOutput` 虽显式处理 `op === 'remove'`，但那只是历史兼容分支，**不代表 P0-2 支持 remove**（见 §7-D2）。
 - `move` / `copy` / `test`：**全仓零产生点**（server、CLI、测试、fixture 都没有），只存在于共享类型联合 `packages/shared/src/socket/events.ts:124` 和 `packages/server/src/output/types.ts:8`。
-- 数组 `"-"` append（`add /entries/-`）：**当前服务端不产生**，§1 六种组合中不含该路径。
-- **多 op 批次**：`mergePatches`（`patch.ts:112-114`）零调用点；当前所有 patch 数组长度恒为 1。
+- 数组 `"-"` append（`add /entries/-`）：**当前服务端不产生**，§1 七种组合中不含该路径。
+- **多 op 批次**：`mergePatches`（`patch.ts:112-114`）零调用点；除文本块追踪器追加的第 7 种 op 外，patch 数组长度恒为 1。
 
-> 结论：实现**必须支持** §1 的 6 种组合。`remove`、`move/copy/test`、数组 `"-"` append 都属于"契约允许、当前零产生点"，**最终裁定为不实现**：遇到即整批降级 + 结构化告警（§4；§7-D2 / D3 / D8）。这是**有意的范围裁剪，不是遗漏**，必须在代码注释中写明；其依据是"只覆盖服务端当前真实的产生集合"，避免为假想需求扩大实现面。
+> 结论：实现**必须支持** §1 的 7 种组合。`remove`、`move/copy/test`、数组 `"-"` append 都属于"契约允许、当前零产生点"，**最终裁定为不实现**：遇到即整批降级 + 结构化告警（§4；§7-D2 / D3 / D8）。这是**有意的范围裁剪，不是遗漏**，必须在代码注释中写明；其依据是"只覆盖服务端当前真实的产生集合"，避免为假想需求扩大实现面。
 
 ---
 
@@ -103,6 +104,17 @@ interface NormalizedConversation {
 - 强制按 `patch[]` 顺序执行。
 - 一个批次内允许多次修改同一数组（索引位移累积）。
 - 不要求（也不允许）实现去做"同 path 覆盖前一条"这类优化：`dropStaleReplaces` 的"同 path 覆盖"是**服务端 MsgStore 的**日志压缩语义（`msg-store.ts:166-217`，仅按 path 字符串精确匹配、只对 `replace` 生效、且 `replace /entries` **不会**覆盖 `replace /entries/N/*`），与客户端 apply 语义**无关**，不得混用。
+
+### 2.8 `add /entries/{i}/metadata`（条目 metadata 成员 upsert，2026-11-19 补入）
+
+- 基准行为：对象成员 upsert——`entries[i].metadata = value`，`metadata` 已存在则整体覆盖，不存在则新增；父级条目 `entries[i]` 必须存在，否则基准抛 `OPERATION_PATH_UNRESOLVABLE`。
+- 实现（`conversation-patch.ts` 的 `applyMetadataUpsert`）：条目不存在、或 `value` 不是对象（数组也不行）时 `ok=false`（`failed`）→ 重拉；成功时按 §3.1 复制父链（新 entry 对象 + 新 `entries` 数组），`value` 按 §3.3 收为只读。
+- 来源：`text-block-tracker.ts` 在文本块封口（`seal()`）和流式内容新增段落/修订（`decorate()` 追加到同一批次）时发出。该 op 与 §2.3 的 `replace /entries/{i}/content` 可同批出现，必须按顺序执行。
+
+### 2.9 轻量日志视图中的 `contentOmitted`（2026-11-19）
+
+- `GET /sessions/:id/logs?view=light` 把较长的工具输出缩短为前缀（`content` 为原文前缀），并在条目上标记 `contentOmitted`（原文字符数）；完整原文按需从 `GET /sessions/:id/logs/entries` 读取。服务端存储与实时文档永远不含该字段，patch 也不会写它。
+- §2.3 的 `replace /entries/{i}/content` 携带完整原文，因此应用时**删除** `contentOmitted`；§2.2 整条替换的新值本来就不含该字段。
 
 ---
 
@@ -171,7 +183,7 @@ entries[7] = {
 
 | 情形 | 行为 |
 |---|---|
-| `op ∈ {add, replace}` 且 `(op, path)` **精确匹配** §1 的 6 种模式之一，索引为规范、可精确表示，**且 ≤ `0x7fffffff`（int32 内）**，且在界内（`add /entries/{i}` 要求 `0 <= i <= entries.length`；`replace /entries/{i}` 要求 `0 <= i < entries.length`） | 正常应用 |
+| `op ∈ {add, replace}` 且 `(op, path)` **精确匹配** §1 的 7 种模式之一，索引为规范、可精确表示，**且 ≤ `0x7fffffff`（int32 内）**，且在界内（`add /entries/{i}` 要求 `0 <= i <= entries.length`；`replace /entries/{i}` 要求 `0 <= i < entries.length`） | 正常应用 |
 | `add` 索引非规范（前导零，如 `/entries/00`）、超出可精确表示范围（`!Number.isSafeInteger`，如 `/entries/9007199254740992`），**或安全但会被 `~~` 回绕（如 `2147483648`）** | **不支持** → 整批降级 + 告警（§7-D9；**有意分歧**见 §5.1：基准会经 `~~` 规范化/回绕后"成功"） |
 | `replace` 索引非规范、超出可精确表示范围，**或安全但会被 `~~` 回绕（如 `2147483648`）** | **不支持** → 整批降级 + 告警（§7-D9；基准**只在原始指针片段查不到属性时**失败 → `OPERATION_PATH_UNRESOLVABLE`，此时与基准无分歧；**病态稀疏输入使原始指针片段可解析（未回绕的索引位置存在）时，基准会继续走到数组操作阶段并按 `~~` 回绕"成功"写入 `[-2147483648]`、原位置不变 → 属有意分歧（§5.1，更严格方向）**；P0-2 一律拒绝） |
 | `replace /entries/{i}` 越界（`i >= entries.length`，含 `"-"`） | **不支持** → 整批降级 + 告警（§7-D1） |
@@ -179,7 +191,7 @@ entries[7] = {
 | `add /entries/-`（数组 append） | **不支持** → 整批降级 + 告警（§7-D8；有意分歧见 §5.1） |
 | `op === 'remove'`（任意 path，含 `/entries/{i}`） | **不支持** → 整批降级 + 告警（§7-D2；不再按 RFC `splice` 语义实现） |
 | `op ∈ {move, copy, test}` | **不支持** → 降级（§7-D3，有意裁剪） |
-| 基准可成功、但不在 §1 六种组合内的近似 `(op,path)`：`replace /sessionId`、`add /entries`、`add /entries/{i}/content`、`add /entries/{i}/metadata/status`、`replace /entries/{i}/metadata`、`replace /entries/{i}/metadata/{非 status}` 等 | **不支持** → 整批降级 + 告警（§5.1 有意分歧；基准对其中多数会直接赋值成功） |
+| 基准可成功、但不在 §1 七种组合内的近似 `(op,path)`：`replace /sessionId`、`add /entries`、`add /entries/{i}/content`、`add /entries/{i}/metadata/status`、`replace /entries/{i}/metadata`、`replace /entries/{i}/metadata/{非 status}` 等 | **不支持** → 整批降级 + 告警（§5.1 有意分歧；基准对其中多数会直接赋值成功） |
 | 任何其他 path（含 `/foo`、`/entries/{i}/unknown`、`/`） | **不支持** → 降级 |
 | `replace /entries/{i}/content` 但 `entries[i]` 不存在，或**最终键 `content` 缺失 / 为 `undefined`** | 处理失败 → 降级（与基准的抛错→重拉一致；`null` 视为存在） |
 | `replace /entries/{i}/metadata/status` 但 `entries[i]` / `metadata` / `status` 缺失或为 `undefined` | 处理失败 → 降级（同上） |
@@ -187,7 +199,7 @@ entries[7] = {
 | patch value 任意层级含 `undefined` | 处理失败 → 降级（与基准 `hasUndefined` 一致） |
 | 整批中任意一条失败 | **整批丢弃**，不做部分应用（与 `fast-json-patch` 的 `applyPatch` 语义一致：它返回 `newDocument`，失败即返回 `false`，调用方不落地半成品） |
 
-**匹配规则（裁定）**：实现按 `(op, path)` **精确匹配**——只有 §1 表中列出的六种组合、且索引满足 §2.1 的字面量规则时才应用；**清单外一律降级 + 结构化告警**，不得按 path 前缀或"看起来像"推断语义。
+**匹配规则（裁定）**：实现按 `(op, path)` **精确匹配**——只有 §1 表中列出的七种组合、且索引满足 §2.1 的字面量规则时才应用；**清单外一律降级 + 结构化告警**，不得按 path 前缀或"看起来像"推断语义。
 
 **全局失败语义（裁定）**：任一 op 未知或失败 → **整批不落地 + 重放权威 snapshot**（上表末行），避免部分应用造成状态分叉。
 
@@ -221,7 +233,7 @@ console.warn('[sessionLogStore] unsupported conversation patch op/path', { op, p
   1. `remove`（任意 path）；
   2. `move` / `copy` / `test`；
   3. 数组 `add /entries/-`；
-  4. **近似 `(op,path)` 组合**（基准可能成功但不在 §1 六种组合内）：`replace /sessionId`、`add /entries`、`add /entries/{i}/content`、`add /entries/{i}/metadata/status`、`replace /entries/{i}/metadata` 等；实现按 `(op,path)` **精确匹配**，清单外一律降级 + 告警；
+  4. **近似 `(op,path)` 组合**（基准可能成功但不在 §1 七种组合内）：`replace /sessionId`、`add /entries`、`add /entries/{i}/content`、`add /entries/{i}/metadata/status`、`replace /entries/{i}/metadata` 等；实现按 `(op,path)` **精确匹配**，清单外一律降级 + 告警；
   5. **非规范 `add` 索引**（前导零，如 `/entries/00`）：基准用 `~~key` 规范化后成功插入；P0-2 只接受规范索引；
   6. **超出可精确表示范围 / 会被 `~~`（ToInt32）回绕的 `add` 索引**（`4294967296`→0、`9007199254740991`→-1、`9007199254740992`→0）：基准会静默插到错误位置，P0-2 宁可整批降级并重拉权威快照（§7-D9）。
   除上述清单（以及 §4 表中基准本身也失败的越界/未知 path）外，成功路径必须与基准全等。
@@ -263,7 +275,7 @@ console.warn('[sessionLogStore] unsupported conversation patch op/path', { op, p
 用随机生成器（建议 `fast-check`，仅在 devDependencies）覆盖：
 
 - 随机 entries 长度（0..20）+ 随机 `NormalizedEntry`（含/不含 `metadata`，`metadata` 含/不含 `status`）；
-- 随机 op 序列（1..8 条），op 覆盖 §1 支持的 6 种组合**与有意不支持的集合**（`remove` / `move` / `copy` / `test` / `add /entries/-` / 非规范或超大 `add` 索引），索引在 `[-1, len+2]` 内取（故意踩界内 / 界外边界）；
+- 随机 op 序列（1..8 条），op 覆盖 §1 支持的 7 种组合**与有意不支持的集合**（`remove` / `move` / `copy` / `test` / `add /entries/-` / 非规范或超大 `add` 索引），索引在 `[-1, len+2]` 内取（故意踩界内 / 界外边界）；
 - 随机 value（同形状对象 / 字符串 / 数组）；
 - 断言（支持集合）：与 `fast-json-patch` 结果**全等**（`JSON.stringify` 或深比较）；失败侧则断言降级；两者必须一致；
 - 断言（不支持集合与越界索引）：实现必须 `ok === false` + 告警；**不与基准比较结果**（基准可能成功，见 §5.1 有意分歧清单）；

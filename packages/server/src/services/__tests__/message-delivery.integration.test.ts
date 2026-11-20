@@ -1025,6 +1025,31 @@ describe('owner delivery: real SQLite, controlled HTTP and SessionManager → CL
     } finally { await app.close(); }
   });
 
+  it('reads a log view\'s deliveries in one request with the single read\'s access rules', async () => {
+    const { translationRoutes } = await import('../../routes/translations.js');
+    const app = Fastify(); app.addHook('onRequest', async request => { if (request.headers['x-test-agent']) request.agentTowerAuthKind = 'agent'; });
+    await app.register(translationRoutes, { prefix: '/api' });
+    try {
+      const { session } = await taskSession();
+      const first = await delivery.submitSession({ sessionId: session.id, initial: true });
+      const second = await delivery.submitSession({ sessionId: session.id, message: 'Second user prose' });
+      const hidden = await delivery.createConversation({ prompt: 'private owner prose', providerId: 'test-provider', clientSubmissionId: randomUUID() });
+      await db.conversation.update({ where: { id: hidden.destinationId }, data: { deletedAt: new Date() } });
+      const ids = [first.operationId, second.operationId, hidden.operationId, randomUUID(), first.operationId];
+      const response = await app.inject({ url: `/api/message-deliveries/by-ids?ids=${ids.join(',')}` });
+      expect(response.statusCode).toBe(200);
+      const items = (response.json() as { items: Array<{ id: string; sessionId: string; originalText: string }> }).items;
+      // Unknown and hidden IDs are left out; the single read answers 404 for them.
+      expect(items.map(item => item.id).sort()).toEqual([first.operationId, second.operationId].sort());
+      expect(items.find(item => item.id === second.operationId)).toMatchObject({ sessionId: session.id, originalText: 'Second user prose' });
+      expect((await app.inject({ url: `/api/message-deliveries/${hidden.operationId}` })).statusCode).toBe(404);
+      expect((await app.inject({ url: `/api/message-deliveries/by-ids?ids=${first.operationId}`, headers: { 'x-test-agent': '1' } })).statusCode).toBe(403);
+      for (const bad of ['', ',', `${first.operationId},`, 'a b', Array.from({ length: 101 }, () => randomUUID()).join(',')]) {
+        expect((await app.inject({ url: `/api/message-deliveries/by-ids?ids=${encodeURIComponent(bad)}` })).statusCode, bad.slice(0, 40)).toBe(400);
+      }
+    } finally { await app.close(); }
+  });
+
   it('workspace and pending Session creation both deduplicate before creating identities, including concurrent lost-response retries', async () => {
     const { task } = await taskSession();
     const service = new (await import('../workspace.service.js')).WorkspaceService();

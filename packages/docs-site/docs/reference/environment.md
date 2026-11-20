@@ -17,7 +17,7 @@ description: 当前代码中实际使用的环境变量。
 | `AGENT_TOWER_URL` | MCP 和子进程连接后端时使用的基础地址 |
 | `AGENT_TOWER_AGENT_CREDENTIAL` | Agent Tower 为托管 Agent/MCP 签发的临时 API 凭据，只绑定当前 session/invocation；不要手写或持久化 |
 | `AGENT_TOWER_INTERNAL_TOKEN` | Agent Tower 应用级内部 MCP/API 调用凭证，仅用于可信内部进程或手动 MCP 配置；不要提交到仓库 |
-| `AGENT_TOWER_WEB_DIR` | 静态前端目录 |
+| `AGENT_TOWER_WEB_DIR` | 静态前端目录。`assets/` 下的文件名带内容哈希，以 `Cache-Control: public, max-age=31536000, immutable` 返回，浏览器无需再次询问；`index.html` 等其他文件保持 `max-age=0`，部署后下次加载即生效。反向代理应原样转发该头 |
 | `AGENT_TOWER_NODE_RUNTIME` | 子进程启动 Node 脚本时使用的 Node/Electron runtime |
 | `AGENT_TOWER_COMMAND_HELPER` | 命令辅助进程负责执行 Git 等需收集输出的命令。默认 `auto` 在 Linux 上随服务启动，在其他系统上关闭。`on` 在所有平台启用，`off` 时由服务端直接执行，服务正常运行 |
 | `AGENT_TOWER_COMMAND_HELPER_RECYCLE_RSS_MB` | 辅助进程的常驻内存（RSS）阈值，默认 `384` MiB。连续 `3` 次报告超过阈值时尝试更换进程，两次尝试至少间隔 `10` 分钟，新进程就绪后才切换。设为 `0` 可关闭按内存更换 |

@@ -103,6 +103,18 @@ describe('Session translation read model', () => {
     expect(container.textContent).toBe('translation')
   })
 
+  it('lets a read survive the unmount while the first log snapshot loads and serves the remount', async () => {
+    let finish!: (value: { items: SessionTranslationOverlay[]; nextCursor: null }) => void
+    get.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }) as never)
+    // The view shows a spinner instead of the log while the snapshot loads.
+    await render(<Consumer name="a" sessionId="s1" logs={[]} />)
+    await render(null)
+    await render(<Consumer name="a" sessionId="s1" logs={[log]} />)
+    expect(get).toHaveBeenCalledTimes(1)
+    await act(async () => finish({ items: [overlay], nextCursor: null })); await flush()
+    expect(container.textContent).toBe('translation')
+  })
+
   it('keeps validated translations during transient refresh errors and removes them on revoked access', async () => {
     await render(<Consumer name="a" sessionId="s1" logs={[log]} />)
     get.mockRejectedValue(new ApiError(503, 'temporarily unavailable'))
@@ -213,5 +225,36 @@ describe('Session translation read model', () => {
     expect(container.textContent).toBe('translation|second')
     await act(async () => finish({ items: [], nextCursor: null })); await flush()
     expect(container.textContent).toBe('original|second')
+  })
+
+  it('starts reading with the log instead of after it, in one bounded request', async () => {
+    await render(<Consumer name="a" sessionId="s1" logs={[]} />)
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(get.mock.calls[0][1]?.params).toEqual({ limit: '1000' })
+    // The transcript arriving is not a change: the read already covered it.
+    await render(<Consumer name="a" sessionId="s1" logs={[log]} />)
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toBe('translation')
+    // A later new block still re-reads.
+    const second = { ...log, id: 'log-b', content: 'second', textBlock: { ...log.textBlock!, blockId: 'b2' } }
+    await render(<Consumer name="a" sessionId="s1" logs={[log, second]} />)
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it('polls quickly only while output or translations are in progress', async () => {
+    function interval(outputActive: boolean, overlays: SessionTranslationOverlay[]) {
+      const query = client.getQueryCache().find({ queryKey: ['session-translations', 's1'] })!
+      query.setData(overlays)
+      const observer = query.observers[0]!
+      const option = observer.options.refetchInterval
+      void outputActive
+      return typeof option === 'function' ? option(query as never) : option
+    }
+    function Active({ active }: { active: boolean }) { useSessionTranslations('s1', [log], active); return null }
+    await render(<Active active={false} />)
+    expect(interval(false, [overlay])).toBe(60_000)
+    expect(interval(false, [{ ...overlay, state: 'RUNNING' }])).toBe(5000)
+    await render(<Active active />)
+    expect(interval(true, [overlay])).toBe(5000)
   })
 })

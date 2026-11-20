@@ -18,6 +18,10 @@ export const queryKeys = {
     session: (id: string) => ['session-translations', id] as const,
     blocks: (id: string, blockIds: string[]) => ['session-translations', id, blockIds] as const,
   },
+  sessionLogEntries: {
+    /** Full text of a tool output that the light log view left out. */
+    content: (sessionId: string, entryId: string, length: number) => ['session-log-entries', sessionId, entryId, length] as const,
+  },
   projects: {
     all: ['projects'] as const,
     list: (params?: Record<string, unknown>) =>

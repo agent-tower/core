@@ -44,6 +44,8 @@ export interface LogEntry {
     totalTokens: number
     modelContextWindow?: number
   }
+  /** Tool output left out of the light log view; `content` is its prefix. */
+  contentOmitted?: number
   cursorActivity?: {
     processingStartedAt?: number
     lastOutputAt?: number
@@ -138,6 +140,12 @@ export interface NormalizedEntry {
     todos?: Array<{ content: string; status: string; priority?: string | null }>
     todoOperation?: string
   }
+  /**
+   * Only in the light log view (`GET /sessions/:id/logs?view=light`): `content`
+   * is a prefix of the full tool output, which has this many characters. The
+   * full text is loaded on demand from `GET /sessions/:id/logs/entries`.
+   */
+  contentOmitted?: number
 }
 
 // ============ 映射函数 ============
@@ -233,6 +241,7 @@ function convertNormalizedEntry(entry: NormalizedEntry): LogEntry | null {
         type: LogType.Tool,
         title: getToolTitle(entry),
         content: entry.content,
+        ...(typeof entry.contentOmitted === 'number' ? { contentOmitted: entry.contentOmitted } : {}),
         isCollapsed: entry.metadata?.status === 'success',
         tool: {
           action: entry.metadata?.action,

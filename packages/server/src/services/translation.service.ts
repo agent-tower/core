@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient, type TranslationSource as SourceRow, type TranslationAttempt as AttemptRow } from '@prisma/client';
-import { sessionMsgStoreManager } from '../output/msg-store.js';
+import { sessionLogReader } from './session-log-reader.js';
 import type { NormalizedConversation, NormalizedEntry } from '../output/types.js';
 import { getTranslationTextBlocks, isTranslatableMessageType, type TranslationSemanticType, type TranslationTextBlock, TEAM_RUN_TRANSLATION_MAX_MESSAGE_IDS, TEAM_RUN_TRANSLATION_PREVIEW_LENGTH, type TeamRunTranslationOverlay, type TeamRunTranslationOverlaySummary, type TranslationInvalidatedPayload, type SessionTranslationOverlay, type TranslationBlockState, type TranslationDirection, type TranslationSettingsDraft } from '@agent-tower/shared';
 import { ServiceError } from '../errors.js';
@@ -15,6 +15,9 @@ const enabledAdapters: Prisma.TranslationSourceWhereInput = { OR: [{ sourceKind:
 const ACTIVE = ['PENDING', 'RUNNING', 'RETRY_WAIT'];
 const RETRYABLE = ['FAILED', 'CANCELLED', 'INTERRUPTED', 'QUEUE_FULL', 'PAUSED_DISABLED'];
 type Db = Prisma.TransactionClient;
+/** Session overlay page size; the web client asks for the maximum so one request usually suffices. */
+const SESSION_OVERLAY_PAGE_DEFAULT = 100;
+const SESSION_OVERLAY_PAGE_MAX = 1000;
 type SourceInput =
   | { kind: 'SESSION_BLOCK'; sessionId: string; turnId: string; blockId: string; semanticType: TranslationSemanticType; text: string; state: TranslationBlockState; sourceRevision?: number; enableEpoch?: number }
   | { kind: 'ROOM_MESSAGE'; messageId: string }
@@ -281,14 +284,11 @@ export class TranslationService {
     try {
       if (source.sourceKind === 'SESSION_BLOCK' && source.sessionId) {
         const session = await this.readableSession(source.sessionId, tx);
-        const snapshot = this.sessionSnapshot(session);
-        const blocks = snapshotBlocks(snapshot);
-        if (blocks && !blocks.has(JSON.stringify([source.turnId, source.blockId]))) {
+        const index = await sessionLogReader.readTranslationBlocks(tx, session.id);
+        const blocks = index?.blocks ?? null;
+        if (index && !index.blocks.has(JSON.stringify([source.turnId, source.blockId]))) {
           const parentId = source.blockId?.replace(/:p\d+$/, '');
-          return snapshot?.entries.some(entry => {
-            const block = sessionTextBlock(entry);
-            return block?.turnId === source.turnId && block?.blockId === parentId;
-          }) ? 'STALE' : 'DELETED';
+          return index.parents.has(JSON.stringify([source.turnId, parentId])) ? 'STALE' : 'DELETED';
         }
         return this.matchesSnapshot(source, blocks) ? 'CURRENT' : 'STALE';
       }
@@ -309,17 +309,20 @@ export class TranslationService {
     } catch (error) { if (error instanceof ServiceError && error.code === 'NOT_FOUND') return 'DELETED'; throw error; }
   }
 
+  /** Access check; never loads `logSnapshot` (multi-MB), which callers read through `sessionLogReader`. */
   private async readableSession(sessionId: string, tx: Db) {
-    const session = await tx.session.findUnique({ where: { id: sessionId }, include: { workspace: { include: { task: { include: { project: true } } } }, conversation: true } });
+    const session = await tx.session.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        purpose: true,
+        conversationId: true,
+        workspace: { select: { task: { select: { deletedAt: true, project: { select: { archivedAt: true } } } } } },
+        conversation: { select: { deletedAt: true } },
+      },
+    });
     if (!session || session.purpose !== 'CHAT' || session.conversation?.deletedAt || session.workspace?.task.deletedAt || session.workspace?.task.project.archivedAt || (!session.workspace && !session.conversation)) throw new ServiceError('Translation source not found', 'NOT_FOUND', 404);
     return session;
-  }
-
-  private sessionSnapshot(session: { id: string; logSnapshot: string | null }): NormalizedConversation | null {
-    const live = sessionMsgStoreManager.get(session.id)?.getSnapshot();
-    if (live) return live;
-    if (!session.logSnapshot) return null;
-    try { return JSON.parse(session.logSnapshot) as NormalizedConversation; } catch { return { entries: [] }; }
   }
 
   private matchesSnapshot(source: SourceRow, blocks: Map<string, TranslationTextBlock> | null): boolean {
@@ -377,17 +380,18 @@ export class TranslationService {
     }
   }
 
-  async listSessionOverlays(sessionId: string, options: { blockIds?: string[]; cursor?: string } = {}): Promise<{ items: SessionTranslationOverlay[]; nextCursor: string | null }> {
+  async listSessionOverlays(sessionId: string, options: { blockIds?: string[]; cursor?: string; limit?: number } = {}): Promise<{ items: SessionTranslationOverlay[]; nextCursor: string | null }> {
     const session = await this.readableSession(sessionId, this.db);
-    const blocks = snapshotBlocks(this.sessionSnapshot(session));
-    const rows = await this.db.translationSource.findMany({ where: { sessionId, sourceKind: 'SESSION_BLOCK', deletedAt: null, ...(options.blockIds ? { blockId: { in: options.blockIds } } : {}), ...(options.cursor ? { id: { gt: options.cursor } } : {}) }, include: { attempts: { where: { status: 'SUCCESS' }, orderBy: { attemptVersion: 'desc' }, take: 1 } }, orderBy: { id: 'asc' }, take: 100 });
+    const blocks = (await sessionLogReader.readTranslationBlocks(this.db, session.id))?.blocks ?? null;
+    const take = Math.min(Math.max(Math.trunc(options.limit ?? SESSION_OVERLAY_PAGE_DEFAULT), 1), SESSION_OVERLAY_PAGE_MAX);
+    const rows = await this.db.translationSource.findMany({ where: { sessionId, sourceKind: 'SESSION_BLOCK', deletedAt: null, ...(options.blockIds ? { blockId: { in: options.blockIds } } : {}), ...(options.cursor ? { id: { gt: options.cursor } } : {}) }, include: { attempts: { where: { status: 'SUCCESS' }, orderBy: { attemptVersion: 'desc' }, take: 1 } }, orderBy: { id: 'asc' }, take });
     const items: SessionTranslationOverlay[] = [];
     for (const row of rows) {
       if (!this.matchesSnapshot(row, blocks)) continue;
       const attempt = row.attempts.find(a => a.id === row.effectiveAttemptId && a.sourceRevision === row.sourceRevision && a.sourceHash === row.sourceHash);
       items.push({ sourceId: row.id, sessionId, turnId: row.turnId!, blockId: row.blockId!, sourceRevision: row.sourceRevision, overlayRevision: row.overlayRevision, state: row.jobState as SessionTranslationOverlay['state'], originalText: row.originalText, translatedText: attempt?.resultText ?? null, targetLanguage: attempt?.targetLanguage ?? null, errorCode: row.errorCode });
     }
-    return { items, nextCursor: rows.length === 100 ? rows[rows.length - 1].id : null };
+    return { items, nextCursor: rows.length === take ? rows[rows.length - 1].id : null };
   }
 
   async retrySessionOverlay(sessionId: string, sourceId: string, revision: number): Promise<void> {

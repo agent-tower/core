@@ -120,6 +120,12 @@ export interface NormalizedEntry {
     todos?: TodoItem[]
     todoOperation?: string
   }
+  /**
+   * Only in the light log view (`GET /sessions/:id/logs?view=light`): `content`
+   * is a prefix of the full tool output, which has this many characters.
+   * Stored and live documents never carry this field.
+   */
+  contentOmitted?: number
 }
 
 // 标准化对话

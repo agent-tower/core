@@ -7,7 +7,7 @@
  * of with the patched entry.
  *
  * Behaviour contract: `docs/perf-p0-2-conversation-patch-contract.md`.
- *  - §1/§2  only the six `(op, path)` pairs the server actually emits are
+ *  - §1/§2  only the seven `(op, path)` pairs the server actually emits are
  *           supported, applied in array order with `fast-json-patch@3.1.1`
  *           semantics as the equivalence baseline;
  *  - §3     every object on the patched path is re-created, untouched siblings
@@ -216,7 +216,14 @@ function applyAdd(
     return ok(freezeNode({ ...conversation, sessionId: operation.value as string }))
   }
   if (segments[0] !== 'entries') return unsupported(operation)
-  // `add /entries` and `add /entries/{i}/...` are outside §1's six pairs.
+  // §2.8: `add /entries/{i}/metadata` sets the metadata member of an existing
+  // entry (RFC 6902 `add` on an object member replaces it). The server's
+  // text-block tracker emits it when a text block is sealed or gains a
+  // paragraph; rejecting it reloaded the whole log at every such step.
+  if (segments.length === 3 && segments[2] === 'metadata') {
+    return applyMetadataUpsert(conversation, segments, operation)
+  }
+  // `add /entries` and other `add /entries/{i}/...` paths are outside the contract.
   if (segments.length !== 2) return unsupported(operation)
 
   const index = parseArrayIndex(segments[1])
@@ -228,6 +235,27 @@ function applyAdd(
   const entries = conversation.entries.slice()
   entries.splice(index, 0, freezeAdoptedInDev(operation.value) as NormalizedEntry)
   return ok(withEntries(conversation, entries))
+}
+
+function applyMetadataUpsert(
+  conversation: NormalizedConversation,
+  segments: string[],
+  operation: ValueOperation,
+): ConversationPatchResult {
+  const index = parseArrayIndex(segments[1])
+  if (index === undefined) return unsupported(operation)
+  if (!Array.isArray(conversation.entries)) return failed('entries is not an array')
+  const entry = conversation.entries[index]
+  // Like the baseline, the parent (the entry) must exist; the member need not.
+  if (!isRecord(entry)) return failed('entry does not exist')
+  // Downstream readers (`use-todos`, `log-adapter`) treat metadata as an object.
+  if (!isRecord(operation.value) || Array.isArray(operation.value)) {
+    return failed('entry metadata must be an object')
+  }
+  return ok(replaceEntryAt(conversation, index, freezeNode({
+    ...entry,
+    metadata: freezeAdoptedInDev(operation.value) as NormalizedEntry['metadata'],
+  })))
 }
 
 function applyReplace(
@@ -283,8 +311,12 @@ function applyReplace(
   // §2.3: the baseline requires the replaced member to exist.
   if (isContent) {
     if (entry.content === undefined) return failed('entry content does not exist')
+    // A light-view entry (`contentOmitted`) holds only a prefix; the patch
+    // carries the full text, so the entry is complete from here on.
+    const { contentOmitted: _omitted, ...rest } = entry as NormalizedEntry
+    void _omitted
     return ok(replaceEntryAt(conversation, index, freezeNode({
-      ...entry,
+      ...rest,
       content: operation.value as string,
     })))
   }

@@ -13,6 +13,14 @@ type Owner = { refresh: () => void; permission: (denied: boolean) => void }
 type Subscription = { owners: Set<Owner>; epoch: number; denied: boolean; dispose: () => void }
 const subscriptions = new WeakMap<Socket, Map<string, Subscription>>()
 const EMPTY_OVERLAYS: SessionTranslationOverlay[] = []
+/** Server maximum: one request reads a whole session's overlays in practice. */
+const SESSION_TRANSLATION_PAGE_LIMIT = 1000
+/** Overlay states the translation queue can still change without a user action. */
+const UNSETTLED_STATES = new Set<SessionTranslationOverlay['state']>(['OPEN', 'PENDING', 'RUNNING', 'RETRY_WAIT', 'QUEUE_FULL'])
+/** Safety re-read while output or translations are in progress; events normally arrive first. */
+const ACTIVE_REFETCH_MS = 5000
+/** Safety re-read of a settled session (missed event, revoked access, expired cookie). */
+const SETTLED_REFETCH_MS = 60_000
 
 // Multiple task panels can display the same Session. The last consumer owns
 // unsubscribe; reconnect and invalidation have one listener per Session room.
@@ -104,15 +112,15 @@ export function mergeTranslationSnapshot(previous: SessionTranslationOverlay[] |
   }))
 }
 
-export async function readSessionTranslations(sessionId: string, blockIds: string[] | undefined, signal: AbortSignal): Promise<SessionTranslationOverlay[]> {
+export async function readSessionTranslations(sessionId: string, blockIds: string[] | undefined, signal?: AbortSignal): Promise<SessionTranslationOverlay[]> {
   const items: SessionTranslationOverlay[] = []
   for (let offset = 0; offset < (blockIds?.length ?? 1); offset += 100) {
     let cursor: string | null = null
     const visited = new Set<string>()
     do {
-      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       const page: Page = await apiClient.get<Page>(`/sessions/${encodeURIComponent(sessionId)}/translations`, {
-        signal, params: { ...(blockIds ? { blockIds: blockIds.slice(offset, offset + 100).join(',') } : {}), ...(cursor ? { cursor } : {}) },
+        signal, params: { limit: String(SESSION_TRANSLATION_PAGE_LIMIT), ...(blockIds ? { blockIds: blockIds.slice(offset, offset + 100).join(',') } : {}), ...(cursor ? { cursor } : {}) },
       })
       items.push(...page.items)
       cursor = page.nextCursor
@@ -125,7 +133,12 @@ export async function readSessionTranslations(sessionId: string, blockIds: strin
   return items
 }
 
-export function useSessionTranslations(sessionId: string, logs: LogEntry[]) {
+/**
+ * Overlays for one Session. The read starts with the log read instead of after
+ * it (the server checks overlays against the transcript itself), and one
+ * request returns all overlays, so translated text arrives with the log.
+ */
+export function useSessionTranslations(sessionId: string, logs: LogEntry[], outputActive = false) {
   const client = useQueryClient()
   const [denied, setDenied] = useState(false)
   const selection = useMemo(() => JSON.stringify(logs.filter(isTranslationCandidate).map(log => {
@@ -137,19 +150,27 @@ export function useSessionTranslations(sessionId: string, logs: LogEntry[]) {
   // log caches. Original bytes are checked at presentation, never hashed into keys.
   const query = useQuery({
     queryKey: queryKeys.sessionTranslations.session(sessionId),
-    enabled: selection !== '[]',
-    queryFn: async ({ signal }) => {
+    enabled: Boolean(sessionId),
+    queryFn: async (context) => {
+      // The request deliberately gets no abort signal. On a first open the
+      // view swaps the log for a spinner while the snapshot loads, which
+      // unmounts this hook, and TanStack cancels a read whose signal was taken.
+      // The read started together with the log must survive to serve the
+      // remount, so the signal is only read after the request: an explicit
+      // cancellation (revoked access) still discards the result. After a task
+      // switch this one bounded request finishes and stays cached.
+      const cancelled = () => context.signal.aborted
       const socket = socketManager.getSocket()
       for (let attempt = 0; attempt < 3; attempt++) {
         const started = epoch(socket, sessionId)
         let result: SessionTranslationOverlay[]
-        try { result = await readSessionTranslations(sessionId, undefined, signal) }
+        try { result = await readSessionTranslations(sessionId, undefined) }
         catch (error) {
           // A later network failure or remount must not resurrect a revoked cache.
-          if (!signal.aborted && accessDenied(error)) client.setQueryData(queryKeys.sessionTranslations.session(sessionId), EMPTY_OVERLAYS)
+          if (!cancelled() && accessDenied(error)) client.setQueryData(queryKeys.sessionTranslations.session(sessionId), EMPTY_OVERLAYS)
           throw error
         }
-        if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        if (cancelled()) throw new DOMException('Aborted', 'AbortError')
         // Invalidating a first in-flight Query does not necessarily cancel it.
         // Re-read when an event/reconnect arrived during the request.
         if (epoch(socket, sessionId) === started) return result
@@ -157,8 +178,15 @@ export function useSessionTranslations(sessionId: string, logs: LogEntry[]) {
       throw new Error('Translation snapshot changed while reading')
     },
     structuralSharing: (oldData, newData) => mergeTranslationSnapshot(oldData as SessionTranslationOverlay[] | undefined, newData as SessionTranslationOverlay[]),
+    // A remount re-reads: events are missed while no consumer holds the room.
+    // A read still in flight from before the unmount serves the remount
+    // instead; a change made during that gap means output or a translation is
+    // in progress, so the 5 s poll below brings it.
     refetchOnMount: 'always',
-    refetchInterval: 5000,
+    refetchInterval: (current) => outputActive
+      || current.state.data?.some(overlay => UNSETTLED_STATES.has(overlay.state))
+      ? ACTIVE_REFETCH_MS
+      : SETTLED_REFETCH_MS,
     retry: false,
     gcTime: 30 * 60_000,
   })
@@ -178,7 +206,8 @@ export function useSessionTranslations(sessionId: string, logs: LogEntry[]) {
   useEffect(() => {
     const previous = previousSelection.current
     previousSelection.current = { sessionId, selection }
-    if (previous.sessionId === sessionId && previous.selection !== selection) {
+    // The first transcript load is not a change: the read started together with it.
+    if (previous.sessionId === sessionId && previous.selection !== '[]' && previous.selection !== selection) {
       void client.invalidateQueries({ queryKey: queryKeys.sessionTranslations.session(sessionId) }, { cancelRefetch: false })
     }
   }, [client, sessionId, selection])

@@ -2520,6 +2520,8 @@ export class SessionManager {
             ...(tokenUsage ? { tokenUsage: JSON.stringify(tokenUsage) } : {}),
           } : {}),
         },
+        // Without a select Prisma returns the whole row, i.e. reads the log back.
+        select: { id: true },
       });
 
       if (snapshotChanged) {

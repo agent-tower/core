@@ -472,6 +472,8 @@ export function MobileTaskDetail({ task, onBack, onSelectTask, onCreateSubtask, 
 
   const { isConnected, isLoadingSnapshot, isOutputActive, lastExitAt, logs, entries, attach } = useNormalizedLogs({
     sessionId: logSessionId,
+    // LogStream below gets the same session and loads omitted tool outputs.
+    logView: 'light',
     sessionStatus: displayedSession?.status,
     sessionStartedAt: displayedSession?.startedAt
       ?? (displayedSession as (Session & { createdAt?: string }) | null)?.createdAt,

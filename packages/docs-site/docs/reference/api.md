@@ -146,9 +146,12 @@ Agent Tower 关闭时停止托管服务；启动时将遗留的期望运行记�
 | `POST` | `/api/sessions/:id/start` | 启动 session |
 | `POST` | `/api/sessions/:id/stop` | 停止 session |
 | `POST` | `/api/sessions/:id/message` | 给 session 发送消息 |
-| `GET` | `/api/sessions/:id/logs` | 获取日志快照 |
+| `GET` | `/api/sessions/:id/logs` | 获取日志快照；`view=light` 返回轻量视图（见下文），默认 `full` 返回完整日志 |
+| `GET` | `/api/sessions/:id/logs/entries?entries=<id>:<长度>,...` | 读取轻量视图省略的工具输出全文，一次 1–50 个，每个 ID 单独做 URL 编码；返回 `{entries:[{id,length,content}]}`（`length` 原样回显请求值，用于区分同 ID 条目），找不到的条目不返回 |
 | `GET` | `/api/sessions/:id/visualizations/:file` | 读取当前 Codex thread 的内联可视化 HTML |
 | `GET` | `/api/sessions/:id/artifacts/download?path=...` | 校验并下载 Session 声明的持久化产物 |
+
+日志轻量视图（`view=light`）与完整日志的条目和下标一一对应，实时 patch 照常适用。区别只在 `tool_use` 条目：超过 1024 个字符的工具输出只保留开头一段（标题行或 ACP `Input` 块，最多 600 个字符），并用 `contentOmitted` 记录全文长度；`metadata.toolContent` 与 `metadata.fileChanges` 不返回。之后对该条目 `content` 的 `replace` patch 带来全文，条目随即完整。网页在展开工具项时按 `条目ID:长度` 读取全文；条目 ID 可能重复，长度用于区分。
 
 ## Conversations
 
@@ -343,7 +346,7 @@ Agent Tower 关闭时停止托管服务；启动时将遗留的期望运行记�
 | `GET` | `/api/translation-settings` | 独立翻译配置，凭据仅返回是否设置 |
 | `PUT` | `/api/translation-settings` | `expectedRevision` 与凭据 `keep/replace/clear` 保存意图 |
 | `POST` | `/api/translation-settings/test` | 临时草稿测试，不保存配置或历史 |
-| `GET` | `/api/sessions/:id/translations` | `blockIds` 逗号分隔（最多 100），可选 `cursor`；返回 `items/nextCursor`，每页最多 100 条 |
+| `GET` | `/api/sessions/:id/translations` | `blockIds` 逗号分隔（最多 100），可选 `cursor` 与 `limit`（1–1000，默认 100）；返回 `items/nextCursor`，每页最多 `limit` 条 |
 | `POST` | `/api/sessions/:id/translations/:sourceId/retry` | `{expectedRevision}`；仅已有可重试来源，采用当前配置 |
 
 这些入口要求应用 owner 或受信任 internal 身份，拒绝托管 Agent credential；密码关闭时沿用正常本地 owner 入口，写操作保留同源校验。来源读取还要求会话属于可读的未删除对话或未删除任务/未归档项目，内部自动提交会话不提供翻译 overlay。
@@ -381,6 +384,7 @@ AI 冲突处理的 owner 请求使用 `systemAction: resolve_conflicts` 和 Git 
 | Method | Path | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/message-deliveries?scopeType=SESSION&scopeId=:id` | 每页最多100；亦支持 CONVERSATION、TEAM_TASK（scopeId 为 taskId），cursor 取 nextCursor；filter=pending 排除历史，filter=sent 倒序查询已发送 |
+| `GET` | `/api/message-deliveries/by-ids?ids=:id,:id` | 一次读取 1–100 个输入操作，返回 `{ items }`；检查与单个读取相同，单个读取会拒绝的 ID 直接省略。日志视图用它读取用户消息引用、但列表不含的操作（团队输入、已取消和较早的已发送操作） |
 | `GET` | `/api/message-deliveries/:id` | 恢复单个输入操作、原文和冻结的实际发送正文 |
 | `POST` | `/api/message-deliveries/:id/actions` | action、expectedRevision 和 UUID actionId；重复相同 actionId 幂等，过期 revision 返回409 |
 

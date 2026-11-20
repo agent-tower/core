@@ -138,6 +138,12 @@ function patchTouchesAgentOutput(patch: Operation[], entries: NormalizedEntry[])
 
 interface UseNormalizedLogsOptions {
   sessionId: string
+  /**
+   * `light` downloads long tool outputs as a prefix (`contentOmitted` holds the
+   * full length). Only views that load the rest on demand may ask for it: a
+   * `LogStream` given this `sessionId`.
+   */
+  logView?: 'light' | 'full'
   sessionStatus?: SessionStatus | string
   sessionStartedAt?: string | number | null
   sessionEndedAt?: string | number | null
@@ -171,6 +177,7 @@ interface UseNormalizedLogsReturn {
 export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormalizedLogsReturn {
   const {
     sessionId,
+    logView = 'full',
     sessionStatus,
     sessionStartedAt: sessionStartedAtInput,
     sessionEndedAt: sessionEndedAtInput,
@@ -216,6 +223,10 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
   }
   const currentSessionIdRef = useRef(sessionId)
   currentSessionIdRef.current = sessionId
+  // Session whose latest successful snapshot was requested while it was already
+  // terminal. Such a snapshot is final, so the terminal revalidation below would
+  // only download the same log a second time.
+  const finalSnapshotSessionRef = useRef<string | null>(null)
 
   const callbacksRef = useRef({ onAgentSessionId, onExit, onError })
   callbacksRef.current = { onAgentSessionId, onExit, onError }
@@ -229,9 +240,11 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
       setIsOutputActive(false)
       setLastExitAt(sessionEndedAt ?? null)
     } else if (sessionStatus === SessionStatus.RUNNING || sessionStatus === SessionStatus.PENDING) {
+      finalSnapshotSessionRef.current = null
       setIsOutputActive(true)
       setLastExitAt(null)
     } else {
+      finalSnapshotSessionRef.current = null
       setLastExitAt(null)
     }
   }, [sessionId, sessionStatus, sessionEndedAt])
@@ -275,6 +288,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     const handlePatch = (payload: SessionPatchPayload) => {
       if (payload.sessionId !== sessionId) return
 
+      finalSnapshotSessionRef.current = null
       setIsOutputActive(true)
       setLastExitAt(null)
 
@@ -460,12 +474,15 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
         // The next authoritative snapshot includes every patch received before
         // this request. Only patches racing with this request need buffering.
         pendingPatchesRef.current[requestSessionId] = []
+        const requestedAfterEnd = isTerminalStatus(sessionStatusRef.current)
 
         try {
+          // The light view leaves long tool outputs out (`contentOmitted`); the
+          // log view loads them per entry when the user expands one.
           const serverSnapshot = normalizeServerConversation(
             await apiClient.get<NormalizedConversation>(
               `/sessions/${requestSessionId}/logs`,
-              { cache: 'no-store', signal: controller.signal },
+              { cache: 'no-store', signal: controller.signal, params: { view: logView } },
             ),
           )
 
@@ -542,6 +559,9 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
           }
 
           if (isCurrentSession()) {
+            finalSnapshotSessionRef.current = requestedAfterEnd && buffered.length === 0
+              ? requestSessionId
+              : null
             snapshotLoadedRef.current = true
             setIsAttached(true)
             const latest = useSessionLogStore.getState().getConversation(requestSessionId)
@@ -613,7 +633,7 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     request.promise = promise
     snapshotRequestsRef.current.set(requestSessionId, request)
     return promise
-  }, [sessionId])
+  }, [sessionId, logView])
 
   loadSnapshotRef.current = loadSnapshot
 
@@ -646,9 +666,12 @@ export function useNormalizedLogs(options: UseNormalizedLogsOptions): UseNormali
     })
   }, [sessionId, loadSnapshot])
 
+  // A live-to-terminal transition re-reads the final snapshot once, in case the
+  // last patches were missed. A snapshot requested after the end is already final.
   useEffect(() => {
     if (!sessionId || !isTerminalStatus(sessionStatus)) return
     const timer = window.setTimeout(() => {
+      if (finalSnapshotSessionRef.current === sessionId) return
       loadSnapshotRef.current?.()
     }, TERMINAL_REVALIDATE_DELAY_MS)
     return () => window.clearTimeout(timer)

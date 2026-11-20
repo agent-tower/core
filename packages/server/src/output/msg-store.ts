@@ -191,6 +191,12 @@ export class MsgStore {
     // Fast path: 紧邻同 path replace 是热路径（streaming 文本/工具状态、单 PTY chunk 内连续 delta）。
     // 仅当 last 消息是 patch、所有 op 都是 replace 且全部 path 都被新 patch 覆盖时，
     // 直接整条替换，省掉全数组扫描。
+    //
+    // The incremental snapshot cache stays valid here: a dropped op only wrote a
+    // path that the incoming patch, applied next, replaces again. The cache may
+    // still hold the dropped value until then, which is exactly the state before
+    // this patch. Only the cached message index moves with the removed messages.
+    // Invalidating instead made every streaming read rebuild the whole document.
     const last = this.messages[this.messages.length - 1];
     if (
       last?.type === 'patch' &&
@@ -201,13 +207,15 @@ export class MsgStore {
     ) {
       this.totalBytes -= estimateMsgBytes(last);
       this.messages.pop();
-      this.cachedSnapshot = null;
-      this.cachedUpToIndex = -1;
+      this.shiftCacheForRemovedMessage(this.messages.length);
       return;
     }
 
     // Slow path: 跨 stdout/跨 PTY chunk 的非紧邻同 path replace 仍需倒序扫全数组。
-    let mutated = false;
+    // The cache stays valid here too: entries are only appended (canonical
+    // `add /entries/{i}`, docs/perf-p0-2-conversation-patch-contract.md §1), so
+    // a path names the same value until the incoming patch replaces it; a
+    // `replace /entries` in between overwrites both versions alike.
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const m = this.messages[i];
       if (m.type !== 'patch') continue;
@@ -220,18 +228,18 @@ export class MsgStore {
       if (filtered.length === 0) {
         this.messages.splice(i, 1);
         this.totalBytes -= oldBytes;
+        this.shiftCacheForRemovedMessage(i);
       } else {
         m.patch = filtered;
         const newBytes = estimateMsgBytes(m);
         this.totalBytes -= oldBytes - newBytes;
       }
-      mutated = true;
     }
+  }
 
-    if (mutated) {
-      this.cachedSnapshot = null;
-      this.cachedUpToIndex = -1;
-    }
+  /** Keeps `cachedUpToIndex` pointing at the same message after `messages[index]` is removed. */
+  private shiftCacheForRemovedMessage(index: number): void {
+    if (this.cachedSnapshot && index <= this.cachedUpToIndex) this.cachedUpToIndex -= 1;
   }
 
   /**
@@ -310,8 +318,9 @@ export class MsgStore {
    * 使用增量缓存：只重放上次快照之后的新 patch，避免每次从头重放
    */
   getSnapshot(): NormalizedConversation {
-    // If cache is valid, only apply new messages since last snapshot
-    if (this.cachedSnapshot && this.cachedUpToIndex >= 0) {
+    // If cache is valid, only apply new messages since last snapshot.
+    // `cachedUpToIndex === -1` with a cache means "base only, no message applied yet".
+    if (this.cachedSnapshot) {
       let conversation = this.cachedSnapshot;
       let changed = false;
 
