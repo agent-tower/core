@@ -349,6 +349,8 @@ Agent Tower 关闭时停止托管服务；启动时将遗留的期望运行记�
 | `GET` | `/api/sessions/:id/translations` | `blockIds` 逗号分隔（最多 100），可选 `cursor` 与 `limit`（1–1000，默认 100）；返回 `items/nextCursor`，每页最多 `limit` 条 |
 | `POST` | `/api/sessions/:id/translations/:sourceId/retry` | `{expectedRevision}`；仅已有可重试来源，采用当前配置 |
 
+`GET /api/translation-settings` 返回 `systemPrompt` 与 `promptTemplate`。保存和草稿测试均接受这两个字段。省略 `systemPrompt` 时沿用已保存的系统提示词。`promptTemplate` 是用户消息模板，必须包含 `{{text}}`。至少一个字段要包含 `{{target_language}}`，系统提示词仅支持这个变量。
+
 这些入口要求应用 owner 或受信任 internal 身份，拒绝托管 Agent credential；密码关闭时沿用正常本地 owner 入口，写操作保留同源校验。来源读取还要求会话属于可读的未删除对话或未删除任务/未归档项目，内部自动提交会话不提供翻译 overlay。
 
 只翻译新增或继续更新的 `assistant_message` 正文。原文即时输出，完整长段落在父正文仍输出时即可提交翻译，遇工具/思考或显式块完成时提交剩余正文；尾块在轮结束时提交。日志 textBlock.paragraphs 记录已封口段落的 UTF-16 end 和 translationEpoch；段落 overlay 的 blockId 为父 blockId 加 :p序号，sourceRevision 沿用父版本。客户端可用共享 getTranslationTextBlocks 投影并按原文字节匹配译文。思考、工具参数、工具结果和静态历史不进入翻译。会话停止不会删除已完成且仍可读的展示翻译。

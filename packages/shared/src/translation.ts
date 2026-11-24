@@ -23,11 +23,15 @@ export interface TranslationSettingsFields {
   model: string;
   sendTargetLanguage: string;
   displayTargetLanguage: string;
+  systemPrompt: string;
+  /** Template for the user-role message. */
   promptTemplate: string;
   maxConcurrency: number;
 }
 
-export interface TranslationSettingsDraft extends TranslationSettingsFields {
+export interface TranslationSettingsDraft extends Omit<TranslationSettingsFields, 'systemPrompt'> {
+  /** Older clients omit this field. In that case, use the saved system prompt. */
+  systemPrompt?: string;
   /** Replace with an empty value explicitly selects a service which requires no credential. */
   apiKey: TranslationSecretWrite;
 }
@@ -44,8 +48,8 @@ export interface TranslationPublicSettings extends TranslationSettingsFields {
   keyConfigured: boolean;
 }
 
-/** Safe to persist on an attempt. It deliberately contains no credential or key write intent. */
-export type TranslationSanitizedConfigSnapshot = Omit<TranslationPublicSettings, 'keyConfigured'>;
+/** Attempts recorded before configurable system prompts have no systemPrompt field. */
+export type TranslationSanitizedConfigSnapshot = Omit<TranslationPublicSettings, 'keyConfigured' | 'systemPrompt'> & { systemPrompt?: string };
 
 export interface TranslationSource {
   id: string;
@@ -114,7 +118,8 @@ export interface TranslationDraftTestResult {
   resultText: string;
 }
 
-export const DEFAULT_TRANSLATION_PROMPT_TEMPLATE = '请将以下内容翻译为 {{target_language}}，保持原意，只返回译文：\n\n{{text}}';
+export const DEFAULT_TRANSLATION_SYSTEM_PROMPT = '请将用户消息翻译为 {{target_language}}，保持原意，只返回译文。';
+export const DEFAULT_TRANSLATION_PROMPT_TEMPLATE = '{{text}}';
 export const DEFAULT_TRANSLATION_MAX_CONCURRENCY = 4;
 
 /** Original transcript facts. No translated text belongs in the log patch stream. */

@@ -7,9 +7,9 @@ import { queryKeys } from './query-keys'
 // never useMutation (whose variables live in MutationCache).
 export function publicTranslationSettings(value: TranslationPublicSettings): TranslationPublicSettings {
   const { id, revision, enableEpoch, credentialRevision, keyConfigured, enabled, apiBaseUrl, model,
-    sendTargetLanguage, displayTargetLanguage, promptTemplate, maxConcurrency } = value
+    sendTargetLanguage, displayTargetLanguage, systemPrompt, promptTemplate, maxConcurrency } = value
   return { id, revision, enableEpoch, credentialRevision, keyConfigured, enabled, apiBaseUrl, model,
-    sendTargetLanguage, displayTargetLanguage, promptTemplate, maxConcurrency }
+    sendTargetLanguage, displayTargetLanguage, systemPrompt, promptTemplate, maxConcurrency }
 }
 
 export function useTranslationSettings() {
@@ -23,7 +23,7 @@ const safeErrors: Record<string, string> = {
   AUTH_FAILED: 'Translation credential was rejected. Check the API key.',
   MODEL_CONFIG_ERROR: 'Check the translation base URL and model.',
   INVALID_CONFIG: 'Complete the translation configuration and credential choice.',
-  INVALID_TEMPLATE: 'The template must contain only {{target_language}} and {{text}}, including both variables.',
+  INVALID_TEMPLATE: 'Use {{text}} only in the user message and {{target_language}} in either prompt. These are the only supported variables.',
   VALIDATION_ERROR: 'Check the translation fields and credential choice.',
   TIMEOUT: 'The translation request timed out. Try again.',
   NETWORK_ERROR: 'Could not connect to the translation service.',

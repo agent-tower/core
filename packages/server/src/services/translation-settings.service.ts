@@ -1,14 +1,17 @@
 import type { PrismaClient, TranslationSettings as SettingsRecord } from '@prisma/client';
 import { z } from 'zod';
-import type {
-  TranslationPublicSettings,
-  TranslationSanitizedConfigSnapshot,
-  TranslationSettingsDraft,
-  TranslationSettingsUpdate,
+import {
+  compileTranslationPrompts,
+  DEFAULT_TRANSLATION_PROMPT_TEMPLATE,
+  DEFAULT_TRANSLATION_SYSTEM_PROMPT,
+  type TranslationPublicSettings,
+  type TranslationSettingsDraft,
+  type TranslationSettingsUpdate,
 } from '@agent-tower/shared';
 import { ServiceError, ValidationError } from '../errors.js';
 import { normalizeTranslationApiBaseUrl } from './translation-client.js';
-import { validateTranslationTemplate } from './translation-protection.js';
+
+const LEGACY_DEFAULT_PROMPT = '请将以下内容翻译为 {{target_language}}，保持原意，只返回译文：\n\n{{text}}';
 
 const secretWriteSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('keep') }).strict(),
@@ -22,6 +25,7 @@ export const translationSettingsDraftSchema = z.object({
   model: z.string().max(256),
   sendTargetLanguage: z.string().max(64),
   displayTargetLanguage: z.string().max(64),
+  systemPrompt: z.string().max(32_768).optional(),
   promptTemplate: z.string().max(32_768),
   maxConcurrency: z.number().int().min(1).max(16),
   apiKey: secretWriteSchema,
@@ -32,7 +36,7 @@ export const translationSettingsUpdateSchema = translationSettingsDraftSchema.ex
 }).strict();
 
 /** Only execution code receives this type; never return it from HTTP or persist it on attempts. */
-export interface TranslationExecutionConfig extends TranslationSanitizedConfigSnapshot {
+export interface TranslationExecutionConfig extends Omit<TranslationPublicSettings, 'keyConfigured'> {
   apiKey: string | null;
 }
 
@@ -42,6 +46,7 @@ export type TranslationSettingsChangeListener = (
 ) => void;
 
 function toPublic(row: SettingsRecord): TranslationPublicSettings {
+  const usesLegacyDefault = row.systemPrompt === null && row.promptTemplate === LEGACY_DEFAULT_PROMPT;
   return {
     id: row.id,
     enabled: row.enabled,
@@ -53,7 +58,8 @@ function toPublic(row: SettingsRecord): TranslationPublicSettings {
     keyConfigured: Boolean(row.apiKey),
     sendTargetLanguage: row.sendTargetLanguage,
     displayTargetLanguage: row.displayTargetLanguage,
-    promptTemplate: row.promptTemplate,
+    systemPrompt: row.systemPrompt ?? DEFAULT_TRANSLATION_SYSTEM_PROMPT,
+    promptTemplate: usesLegacyDefault ? DEFAULT_TRANSLATION_PROMPT_TEMPLATE : row.promptTemplate,
     maxConcurrency: row.maxConcurrency,
   };
 }
@@ -83,6 +89,7 @@ function applyDraft(row: SettingsRecord, draft: TranslationSettingsDraft): Setti
     model: draft.model.trim(),
     sendTargetLanguage: draft.sendTargetLanguage.trim(),
     displayTargetLanguage: draft.displayTargetLanguage.trim(),
+    systemPrompt: draft.systemPrompt ?? row.systemPrompt,
     promptTemplate: draft.promptTemplate,
     maxConcurrency: draft.maxConcurrency,
     apiKey,
@@ -99,10 +106,8 @@ function validateExecution(config: TranslationExecutionConfig): void {
   if (config.apiKey === null) {
     throw new ValidationError('Configure a translation credential, or explicitly replace it with an empty value for a service without credentials');
   }
-  try {
-    validateTranslationTemplate(config.promptTemplate);
-  } catch {
-    throw new ValidationError('Translation template must contain {{target_language}} and {{text}}, with valid variable syntax');
+  if (!compileTranslationPrompts(config.systemPrompt, config.promptTemplate)) {
+    throw new ValidationError('Use {{text}} only in the user message and {{target_language}} in either prompt. These are the only supported variables.');
   }
 }
 
@@ -114,7 +119,9 @@ export class TranslationSettingsService {
 
   private getRow(): Promise<SettingsRecord> {
     return this.db.translationSettings.upsert({
-      where: { id: 'singleton' }, create: { id: 'singleton' }, update: {},
+      where: { id: 'singleton' },
+      create: { id: 'singleton', systemPrompt: DEFAULT_TRANSLATION_SYSTEM_PROMPT, promptTemplate: DEFAULT_TRANSLATION_PROMPT_TEMPLATE },
+      update: {},
     });
   }
 
@@ -155,6 +162,7 @@ export class TranslationSettingsService {
           model: desired.model,
           sendTargetLanguage: desired.sendTargetLanguage,
           displayTargetLanguage: desired.displayTargetLanguage,
+          systemPrompt: desired.systemPrompt,
           promptTemplate: desired.promptTemplate,
           maxConcurrency: desired.maxConcurrency,
           apiKey: desired.apiKey,

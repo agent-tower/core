@@ -6,43 +6,6 @@ export const MAX_TRANSLATION_BLOCK_BYTES = 64 * 1024;
 export const MAX_TRANSLATION_SEGMENT_BYTES = 4 * 1024;
 export const MAX_TRANSLATION_SEGMENTS = 16;
 
-export type TranslationTemplateToken =
-  | { type: 'literal'; value: string }
-  | { type: 'variable'; name: 'text' | 'target_language' };
-
-/** Parse first, then interpolate: user text can never introduce another substitution. */
-export function parseTranslationTemplate(template: string): TranslationTemplateToken[] {
-  const tokens: TranslationTemplateToken[] = [];
-  const variables = new Set<string>();
-  let cursor = 0;
-  for (const match of template.matchAll(/\{\{([\s\S]*?)\}\}/g)) {
-    const literal = template.slice(cursor, match.index);
-    if (literal.includes('{{') || literal.includes('}}')) throw new TranslationError('INVALID_TEMPLATE');
-    if (literal) tokens.push({ type: 'literal', value: literal });
-    const name = match[1]!.trim();
-    if (name !== 'text' && name !== 'target_language') throw new TranslationError('INVALID_TEMPLATE');
-    tokens.push({ type: 'variable', name });
-    variables.add(name);
-    cursor = match.index! + match[0].length;
-  }
-  const tail = template.slice(cursor);
-  if (tail.includes('{{') || tail.includes('}}') || variables.size !== 2) {
-    throw new TranslationError('INVALID_TEMPLATE');
-  }
-  if (tail) tokens.push({ type: 'literal', value: tail });
-  return tokens;
-}
-
-export function validateTranslationTemplate(template: string): void {
-  parseTranslationTemplate(template);
-}
-
-export function renderTranslationTemplate(template: string, targetLanguage: string, text: string): string {
-  return parseTranslationTemplate(template).map((token) => token.type === 'literal'
-    ? token.value
-    : token.name === 'text' ? text : targetLanguage).join('');
-}
-
 interface Piece { value: string; protected: boolean }
 interface MaskedChunk { value: string; segmentIndex?: number }
 

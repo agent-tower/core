@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_TRANSLATION_PROMPT_TEMPLATE, type TranslationSettingsDraft } from '@agent-tower/shared';
+import { DEFAULT_TRANSLATION_PROMPT_TEMPLATE, DEFAULT_TRANSLATION_SYSTEM_PROMPT, type TranslationSettingsDraft } from '@agent-tower/shared';
 import { synchronizeDatabaseSchema } from '../../utils/database-schema.js';
 import { TranslationSettingsService } from '../translation-settings.service.js';
 
@@ -58,11 +58,38 @@ describe('TranslationSettingsService', () => {
     expect(await service.getPublic()).toMatchObject({
       enabled: false, revision: 0, enableEpoch: 0, keyConfigured: false,
       sendTargetLanguage: 'English', displayTargetLanguage: '简体中文',
+      systemPrompt: DEFAULT_TRANSLATION_SYSTEM_PROMPT,
       promptTemplate: DEFAULT_TRANSLATION_PROMPT_TEMPLATE,
     });
     expect(await service.getPublic()).not.toHaveProperty('apiKey');
     expect(await prisma.translationSource.count()).toBe(0);
     expect(await prisma.translationAttempt.count()).toBe(0);
+  });
+
+  it('preserves a saved system prompt when an older client submits only the user template', async () => {
+    const systemPrompt = 'Translate into {{target_language}} and keep names as written.';
+    await service.save({ ...draft, systemPrompt, expectedRevision: 0 });
+    const legacy = { ...draft, promptTemplate: 'Into {{target_language}}\n\n{{text}}' };
+    expect(await service.resolveDraft(legacy)).toMatchObject({ systemPrompt, promptTemplate: legacy.promptTemplate });
+    expect(await service.save({ ...legacy, expectedRevision: 1 })).toMatchObject({ systemPrompt, promptTemplate: legacy.promptTemplate });
+    expect(await new TranslationSettingsService(prisma).getExecutionConfig()).toMatchObject({ systemPrompt, promptTemplate: legacy.promptTemplate });
+  });
+
+  it('splits the old built-in default on read and keeps custom user templates verbatim', async () => {
+    // Omit the new column as a pre-upgrade writer would. SQLite supplies the original default.
+    await prisma.$executeRaw`INSERT INTO "TranslationSettings" ("id", "revision", "updatedAt") VALUES ('singleton', 7, CURRENT_TIMESTAMP)`;
+    const legacy = await prisma.translationSettings.findUniqueOrThrow({ where: { id: 'singleton' } });
+    expect(legacy.systemPrompt).toBeNull();
+    expect(legacy.promptTemplate).not.toBe('{{text}}');
+    expect(await service.getExecutionConfig()).toMatchObject({
+      revision: 7, systemPrompt: DEFAULT_TRANSLATION_SYSTEM_PROMPT, promptTemplate: '{{text}}',
+    });
+
+    const custom = '  Into {{ target_language }}\n{{ text }}  ';
+    await prisma.translationSettings.update({ where: { id: 'singleton' }, data: { promptTemplate: custom } });
+    expect(await service.getPublic()).toMatchObject({ revision: 7, promptTemplate: custom });
+    const saved = await service.save({ ...draft, systemPrompt: 'Translate carefully.', promptTemplate: legacy.promptTemplate, expectedRevision: 7 });
+    expect(saved.promptTemplate).toBe(legacy.promptTemplate);
   });
 
   it('saves incomplete disabled drafts, but strictly rejects unknown node selection fields', async () => {
@@ -145,7 +172,11 @@ describe('TranslationSettingsService', () => {
     { apiBaseUrl: 'https://name:password@example.com/v1' },
     { apiBaseUrl: 'https://example.com/v1?token=private' },
     { apiBaseUrl: 'https://example.com/v1#secret' },
-    { promptTemplate: '{{text}}' },
+    { systemPrompt: 'Translate', promptTemplate: '{{text}}' },
+    { systemPrompt: '{{target_language}}: {{text}}' },
+    { systemPrompt: '{{unknown}}' },
+    { systemPrompt: '{{target_language' },
+    { promptTemplate: '{{target_language}}' },
     { promptTemplate: '{{target_language}} {{text}} {{thinking}}' },
     { promptTemplate: '{{target_language}} {{text}} {{unclosed' },
     { sendTargetLanguage: ' ' },

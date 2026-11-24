@@ -187,4 +187,4 @@ MessageDeliveryService 取得 DISPATCHING claim 后才允许 SessionManager star
 
 claim 的 settle 闭包仅在输入传输结束后登记 generation 绑定补偿；确认与恢复落库连续失败时，worker 以退避和有界批次重试状态恢复到 UNKNOWN，不重新写正文，不扫描正常等待 ACK 的 DISPATCHING。异 runtime/turn/transport 的确认拒绝本身不能把正常 ACK 标记未知。Claude 图片分段及 Codex 图片提取必须保留文本的首尾空白、换行和片段间空白，不能 trim 后仍以未 trim 正文冻结 actualSentText。Codex 仅删除已接受为本地图片输入的具体 Markdown 匹配；远程/缺失图片引用和重复匹配之间的正文保持原样。
 
-翻译 HTTP 的固定 system 格式协议负责告知上游逐字保留 opaque 保护占位符与边界；用户仍只配置一份共用翻译模板。该协议不能替代 restore 的严格结构校验，损坏的译文仍拒绝投递/展示。
+翻译 HTTP 使用一条 `system` 和一条 `user` 消息。前者含配置的 `systemPrompt` 及固定占位符格式规则，后者用 `promptTemplate` 插入已保护的正文。发送、展示与草稿测试共用这条路径。返回后在本地还原已识别的占位符。

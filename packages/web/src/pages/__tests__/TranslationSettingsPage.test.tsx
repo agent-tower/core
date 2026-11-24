@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_TRANSLATION_PROMPT_TEMPLATE, type TranslationPublicSettings } from '@agent-tower/shared'
+import { DEFAULT_TRANSLATION_PROMPT_TEMPLATE, DEFAULT_TRANSLATION_SYSTEM_PROMPT, type TranslationPublicSettings } from '@agent-tower/shared'
 import { apiClient, ApiError } from '@/lib/api-client'
 import { TranslationSettingsPage } from '../TranslationSettingsPage'
 import { queryKeys } from '@/hooks/query-keys'
@@ -20,7 +20,7 @@ const settings: TranslationPublicSettings = {
   id: 'singleton', revision: 3, enableEpoch: 0, credentialRevision: 1, keyConfigured: false,
   enabled: false, apiBaseUrl: 'https://translate.example/v1', model: 'small-model',
   sendTargetLanguage: 'English', displayTargetLanguage: 'English',
-  promptTemplate: DEFAULT_TRANSLATION_PROMPT_TEMPLATE, maxConcurrency: 4,
+  systemPrompt: DEFAULT_TRANSLATION_SYSTEM_PROMPT, promptTemplate: DEFAULT_TRANSLATION_PROMPT_TEMPLATE, maxConcurrency: 4,
 }
 let client: QueryClient
 let root: Root
@@ -125,29 +125,37 @@ describe('Translation settings draft boundary', () => {
     expect(put).toHaveBeenCalledTimes(1)
   })
 
-  it('tests unsaved SEND and DISPLAY drafts without saving or delivering; ignores late results after edits', async () => {
+  it('tests edited prompts in both directions, ignores late results, and persists them on save', async () => {
     let finish!: (value: { resultText: string }) => void
     post.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }) as never)
     await mount()
     mode('anonymous')
     change(input('translation-model'), 'unsaved-model')
+    const systemPrompt = 'Translate into {{target_language}} using plain language.'
+    const promptTemplate = 'Source: {{text}}'
+    change(input('translation-system-prompt'), systemPrompt)
+    change(input('translation-template'), promptTemplate)
     const sample = container.querySelector<HTMLTextAreaElement>('[aria-label="Sample text"]')!
     change(sample, 'test sample')
     act(() => button('Test translation').click())
     expect(post.mock.calls[0].slice(0, 2)).toEqual(['/translation-settings/test', {
-      draft: { ...translationDraft(settings), model: 'unsaved-model', apiKey: { action: 'replace', value: '' } }, text: 'test sample', direction: 'SEND',
+      draft: { ...translationDraft(settings), systemPrompt, promptTemplate, model: 'unsaved-model', apiKey: { action: 'replace', value: '' } }, text: 'test sample', direction: 'SEND',
     }])
-    change(input('translation-model'), 'new-model')
+    const revisedPrompt = 'Use formal {{target_language}}.'
+    change(input('translation-system-prompt'), revisedPrompt)
     await act(async () => finish({ resultText: 'late-result' })); await flush()
     expect(container.textContent).not.toContain('late-result')
     change(container.querySelector('#translation-test-direction')!, 'DISPLAY')
     post.mockResolvedValueOnce({ resultText: 'display-result' })
     act(() => button('Test translation').click()); await flush()
-    expect(post.mock.calls[1][1]).toMatchObject({ direction: 'DISPLAY', draft: { model: 'new-model' } })
+    expect(post.mock.calls[1][1]).toMatchObject({ direction: 'DISPLAY', draft: { systemPrompt: revisedPrompt, promptTemplate } })
     expect(container.textContent).toContain('display-result')
     expect(put).not.toHaveBeenCalled()
     expect(post.mock.calls.every(call => call[0] === '/translation-settings/test')).toBe(true)
     expect(client.getQueryData<TranslationPublicSettings>(queryKeys.translationSettings.detail)?.enabled).toBe(false)
+    act(() => button('保存').click()); await flush()
+    expect(put.mock.calls[0][1]).toMatchObject({ systemPrompt: revisedPrompt, promptTemplate })
+    expect(client.getQueryData(queryKeys.translationSettings.detail)).toMatchObject({ systemPrompt: revisedPrompt, promptTemplate })
   })
 
   it('does not retain a tested key or request variables in caches, storage or a remounted form', async () => {
@@ -192,7 +200,7 @@ describe('Translation settings draft boundary', () => {
     expect(container.textContent).toContain('Enter a model and both target languages.')
     change(input('translation-model'), 'model')
     act(() => button('保存').click()); await flush()
-    expect(container.textContent).toContain('The template must contain only')
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Use {{text}} only in the user message')
     expect(put).toHaveBeenCalledTimes(1)
   })
 })
@@ -204,7 +212,10 @@ describe('translation execution validation', () => {
     for (const url of ['https://user:secret@example.com/v1', 'https://example.com/v1?key=secret', 'https://example.com/#fragment', 'file:///tmp', 'https:example.com', 'https://example.com/?', 'https://example.com/#', 'https://@example.com']) {
       expect(validateTranslationDraft({ ...draft, apiBaseUrl: url }, true)).not.toBeNull()
     }
-    for (const template of ['{{text}}', '{{target_language}} {{unknown}} {{text}}', '{{text}} {{target_language}} {{broken', '{{{text}} {{target_language}}']) {
+    expect(validateTranslationDraft({ ...draft, systemPrompt: 'To {{target_language}}', promptTemplate: '{{text}}' }, true)).toBeNull()
+    expect(validateTranslationDraft({ ...draft, systemPrompt: '{{text}}', promptTemplate: '{{target_language}} {{text}}' }, true)).not.toBeNull()
+    expect(validateTranslationDraft({ ...draft, systemPrompt: 'Translate', promptTemplate: '{{text}}' }, true)).not.toBeNull()
+    for (const template of ['{{target_language}}', '{{target_language}} {{unknown}} {{text}}', '{{text}} {{target_language}} {{broken', '{{{text}} {{target_language}}']) {
       expect(validateTranslationDraft({ ...draft, promptTemplate: template }, true)).not.toBeNull()
     }
     expect(validateTranslationDraft({ ...draft, apiKey: { action: 'clear' } }, true)).not.toBeNull()

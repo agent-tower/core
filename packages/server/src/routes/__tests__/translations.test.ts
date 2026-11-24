@@ -42,7 +42,7 @@ const { translationRoutes } = await import('../translations.js');
 const draft: TranslationSettingsDraft = {
   enabled: false, apiBaseUrl: 'http://localhost:7777/v1', model: 'translator',
   sendTargetLanguage: 'English', displayTargetLanguage: '简体中文',
-  promptTemplate: DEFAULT_TRANSLATION_PROMPT_TEMPLATE, maxConcurrency: 4,
+  systemPrompt: 'Translate into {{target_language}}.', promptTemplate: DEFAULT_TRANSLATION_PROMPT_TEMPLATE, maxConcurrency: 4,
   apiKey: { action: 'keep' },
 };
 async function buildApp() {

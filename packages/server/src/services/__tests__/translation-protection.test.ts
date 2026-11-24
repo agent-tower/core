@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { compileTranslationPrompts } from '@agent-tower/shared';
 import {
   MAX_TRANSLATION_BLOCK_BYTES,
   MAX_TRANSLATION_SEGMENT_BYTES,
-  parseTranslationTemplate,
   prepareTranslation,
-  renderTranslationTemplate,
   findTranslationParagraphEnds,
 } from '../translation-protection.js';
 
@@ -31,18 +30,19 @@ describe('streaming translation paragraph boundaries', () => {
 });
 
 describe('translation templates', () => {
-  it('parses only the two variables and substitutes source text exactly once', () => {
+  it('substitutes only template variables and preserves legacy user templates', () => {
     const source = 'Hello {{text}} and {{target_language}}';
-    expect(renderTranslationTemplate('To {{ target_language }}: {{ text }}', '简体中文', source))
-      .toBe(`To 简体中文: ${source}`);
-    expect(parseTranslationTemplate('{{text}} {{target_language}} {{text}}').filter((token) => token.type === 'variable')).toHaveLength(3);
+    expect(compileTranslationPrompts('To {{ target_language }}', '{{ text }}')?.('简体中文', source))
+      .toEqual({ system: 'To 简体中文', user: source });
+    expect(compileTranslationPrompts('Be concise', 'To {{ target_language }}: {{text}} {{text}}')?.('简体中文', source))
+      .toEqual({ system: 'Be concise', user: `To 简体中文: ${source} ${source}` });
   });
 
   it.each([
     '{{text}}', '{{target_language}}', '{{unknown}} {{text}} {{target_language}}',
     '{{ text }} {{ target_language }} {{ unfinished', '{{text}} {{target_language}} }}',
   ])('rejects missing, unknown or malformed variables: %s', (template) => {
-    expect(() => parseTranslationTemplate(template)).toThrow('INVALID_TEMPLATE');
+    expect(compileTranslationPrompts('Translate', template)).toBeNull();
   });
 });
 

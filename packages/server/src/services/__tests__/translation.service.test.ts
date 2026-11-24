@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { DEFAULT_TRANSLATION_PROMPT_TEMPLATE, type TranslationSettingsDraft } from '@agent-tower/shared';
 import { TranslationSettingsService } from '../translation-settings.service.js';
 import { TranslationService } from '../translation.service.js';
-import { TranslationClient } from '../translation-client.js';
+import { TRANSLATION_FORMAT_PROTOCOL, TranslationClient } from '../translation-client.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tower-translation-'));
@@ -98,18 +98,23 @@ describe('TranslationService isolated SQLite behavior', () => {
     const service = make(async (_url, init) => {
       payload = JSON.parse(String(init?.body)); headers = init?.headers;
       await gate;
-      return response(payload.messages.at(-1).content.split('\n').slice(1).join('\n').replace('Hello', '你好'));
+      return response(payload.messages.at(-1).content.replace('Hello', '你好'));
     });
-    await enable(); await service.start();
+    const systemPrompt = 'Use formal {{target_language}}.';
+    await enable({ systemPrompt, promptTemplate: '{{text}}' }); await service.start();
     const original = 'Hello world `secret_code()` with [guide](https://private.test/a)';
     const registered = await service.registerSource(source(sessionId, original));
     await until(async () => payload, Boolean);
-    await enable({ model: 'new-model', apiKey: { action: 'replace', value: 'new-secret' } });
+    await enable({ model: 'new-model', systemPrompt: 'Use a casual tone.', apiKey: { action: 'replace', value: 'new-secret' } });
     release();
     const done = await until(() => row(registered.id), r => r.jobState === 'SUCCESS');
     const attempt = await db.translationAttempt.findUniqueOrThrow({ where: { id: done.effectiveAttemptId! } });
     expect(payload.model).toBe('first-model');
     expect(payload.stream).toBe(false);
+    expect(payload.messages).toEqual([
+      { role: 'system', content: `Use formal 简体中文.\n\n${TRANSLATION_FORMAT_PROTOCOL}` },
+      { role: 'user', content: expect.stringMatching(/^Hello world /) },
+    ]);
     expect(JSON.stringify(payload)).not.toContain('secret_code');
     expect(JSON.stringify(payload)).not.toContain('private.test');
     expect(JSON.stringify(payload)).not.toContain('Original prompt');
@@ -118,7 +123,21 @@ describe('TranslationService isolated SQLite behavior', () => {
     expect(attempt.resultText).toContain('(https://private.test/a)');
     expect(attempt.resultText).toContain('你好');
     expect(attempt.sanitizedConfigSnapshot).not.toContain('translation-secret');
+    expect(JSON.parse(attempt.sanitizedConfigSnapshot)).toMatchObject({ systemPrompt, promptTemplate: '{{text}}' });
     expect((await row(registered.id)).originalText).toBe(original);
+  });
+
+  it.each([['SEND', 'English'], ['DISPLAY', '简体中文']] as const)('uses the draft prompts and %s target in the HTTP request', async (direction, language) => {
+    const service = make(async (_url, init) => {
+      expect(JSON.parse(String(init?.body)).messages).toEqual([
+        { role: 'system', content: `Use ${language} for release notes.\n\n${TRANSLATION_FORMAT_PROTOCOL}` },
+        { role: 'user', content: 'Release note: Sample text' },
+      ]);
+      return response('Translated sample');
+    });
+    const unsaved = { ...draft, systemPrompt: 'Use {{ target_language }} for release notes.', promptTemplate: 'Release note: {{text}}' };
+    await expect(service.testDraft('owner', unsaved, 'Sample text', direction)).resolves.toEqual({ resultText: 'Translated sample' });
+    expect((await settings.getPublic()).revision).toBe(0);
   });
 
   it('isolates out-of-order source revisions and independent sources with identical text', async () => {

@@ -145,8 +145,11 @@ function TranslationSettingsForm({ initial, reload }: { initial: TranslationPubl
         {keyMode === 'replace' && <Input className="mt-2" type="password" aria-label={t('New API key')} autoComplete="off" maxLength={16384} value={keyValue} onChange={event => { invalidateTest(); setKeyValue(event.target.value) }} />}
         {keyMode === 'clear' && <p className="mt-2 text-xs text-muted-foreground">{t('Clearing prevents enabling and testing until a credential choice is configured.')}</p>}
       </SettingsField>
-      <SettingsField htmlFor="translation-template" label={t('Shared prompt template')} description={t('Both directions use this template. Include {{target_language}} and {{text}}; unknown variables are invalid.')}>
-        <Textarea id="translation-template" className="min-h-32 font-mono text-xs" maxLength={32768} value={draft.promptTemplate} onChange={event => update('promptTemplate', event.target.value)} />
+      <SettingsField htmlFor="translation-system-prompt" label={t('System prompt')} description={t('Set translation instructions for both directions. Agent Tower appends formatting rules for protected content.')}>
+        <Textarea id="translation-system-prompt" className="min-h-24 font-mono text-xs" maxLength={32768} value={draft.systemPrompt} onChange={event => update('systemPrompt', event.target.value)} />
+      </SettingsField>
+      <SettingsField htmlFor="translation-template" label={t('User message template')} description={t('Use {{text}} for the source text. Include {{target_language}} in either field for the selected direction.')}>
+        <Textarea id="translation-template" className="min-h-20 font-mono text-xs" maxLength={32768} value={draft.promptTemplate} onChange={event => update('promptTemplate', event.target.value)} />
       </SettingsField>
       <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer text-sm font-medium">{t('高级配置')}</summary>
         <SettingsField className="mt-4" htmlFor="translation-concurrency" label={t('Maximum translation concurrency (1–16)')}><Input id="translation-concurrency" type="number" min={1} max={16} step={1} value={draft.maxConcurrency} onChange={event => update('maxConcurrency', Number(event.target.value))} /></SettingsField>

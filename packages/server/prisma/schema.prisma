@@ -589,6 +589,8 @@ model TranslationSettings {
   credentialRevision    Int      @default(0)
   sendTargetLanguage    String   @default("English")
   displayTargetLanguage String   @default("简体中文")
+  // A null system prompt identifies single-template settings. The service creates new rows with both role defaults.
+  systemPrompt          String?
   promptTemplate        String   @default("请将以下内容翻译为 {{target_language}}，保持原意，只返回译文：\n\n{{text}}")
   maxConcurrency        Int      @default(4)
   createdAt             DateTime @default(now())

@@ -1,8 +1,8 @@
-import type { TranslationPublicSettings, TranslationSettingsDraft } from '@agent-tower/shared'
+import { compileTranslationPrompts, DEFAULT_TRANSLATION_SYSTEM_PROMPT, type TranslationPublicSettings, type TranslationSettingsDraft } from '@agent-tower/shared'
 
 export function translationDraft(value: TranslationPublicSettings): TranslationSettingsDraft {
-  const { enabled, apiBaseUrl, model, sendTargetLanguage, displayTargetLanguage, promptTemplate, maxConcurrency } = value
-  return { enabled, apiBaseUrl, model, sendTargetLanguage, displayTargetLanguage, promptTemplate, maxConcurrency, apiKey: { action: 'keep' } }
+  const { enabled, apiBaseUrl, model, sendTargetLanguage, displayTargetLanguage, systemPrompt, promptTemplate, maxConcurrency } = value
+  return { enabled, apiBaseUrl, model, sendTargetLanguage, displayTargetLanguage, systemPrompt, promptTemplate, maxConcurrency, apiKey: { action: 'keep' } }
 }
 
 export function validateTranslationDraft(draft: TranslationSettingsDraft, execution: boolean): string | null {
@@ -18,18 +18,8 @@ export function validateTranslationDraft(draft: TranslationSettingsDraft, execut
   if (!execution) return null
   if (!draft.model.trim() || !draft.sendTargetLanguage.trim() || !draft.displayTargetLanguage.trim() || /[\r\n\0]/.test(draft.model + draft.sendTargetLanguage + draft.displayTargetLanguage)) return 'Enter a model and both target languages.'
   if (draft.apiKey.action === 'clear' || (draft.apiKey.action === 'replace' && /[\r\n\0]/.test(draft.apiKey.value))) return 'Complete the translation configuration and credential choice.'
-  const variables = new Set<string>()
-  let invalid = false
-  let cursor = 0
-  for (const match of draft.promptTemplate.matchAll(/\{\{([\s\S]*?)\}\}/g)) {
-    const literal = draft.promptTemplate.slice(cursor, match.index)
-    if (literal.includes('{{') || literal.includes('}}')) invalid = true
-    const name = match[1].trim()
-    if (name !== 'text' && name !== 'target_language') invalid = true
-    variables.add(name)
-    cursor = match.index + match[0].length
+  if (!compileTranslationPrompts(draft.systemPrompt ?? DEFAULT_TRANSLATION_SYSTEM_PROMPT, draft.promptTemplate)) {
+    return 'Use {{text}} only in the user message and {{target_language}} in either prompt. These are the only supported variables.'
   }
-  const rest = draft.promptTemplate.slice(cursor)
-  if (invalid || rest.includes('{{') || rest.includes('}}') || !variables.has('text') || !variables.has('target_language')) return 'The template must contain only {{target_language}} and {{text}}, including both variables.'
   return null
 }

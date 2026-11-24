@@ -696,7 +696,8 @@ export class TranslationService {
   }
 
   private translateSegment(config: TranslationExecutionConfig, targetLanguage: string, text: string, signal: AbortSignal) {
-    return this.client.translate({ apiBaseUrl: config.apiBaseUrl, model: config.model, apiKey: config.apiKey, promptTemplate: config.promptTemplate, targetLanguage, text, signal });
+    return this.client.translate({ apiBaseUrl: config.apiBaseUrl, model: config.model, apiKey: config.apiKey,
+      systemPrompt: config.systemPrompt, promptTemplate: config.promptTemplate, targetLanguage, text, signal });
   }
 
   private async owns(tx: Db, source: SourceRow, attempt: AttemptRow): Promise<SourceRow | null> {

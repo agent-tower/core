@@ -13,7 +13,8 @@ import { prepareTranslation } from '../translation-protection.js';
 
 const request: TranslationClientRequest = {
   apiBaseUrl: 'https://compatible.example/custom/v2/', model: 'translate-model', apiKey: 'private-key',
-  promptTemplate: 'Translate to {{ target_language }}: {{ text }}', targetLanguage: '简体中文', text: 'Hello',
+  systemPrompt: 'Translate into {{ target_language }} using a formal tone.',
+  promptTemplate: '{{ text }}', targetLanguage: '简体中文', text: 'Hello',
 };
 
 function completion(content: unknown, finishReason = 'stop'): Response {
@@ -28,7 +29,7 @@ describe('OpenAI compatible translation client', () => {
     const prepared = prepareTranslation(original);
     const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
       const body = JSON.parse(String(init!.body));
-      return completion(body.messages.at(-1).content.replace(/^Translate to 简体中文: /, '').replace('Hello', '你好'));
+      return completion(body.messages.at(-1).content.replace('Hello', '你好'));
     });
     const client = new TranslationClient({ fetchImpl });
     const translated = await client.translate({ ...request, text: prepared.segments[0]! });
@@ -37,9 +38,19 @@ describe('OpenAI compatible translation client', () => {
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe('https://compatible.example/custom/v2/chat/completions');
     expect(init).toMatchObject({ method: 'POST', redirect: 'error', headers: { authorization: 'Bearer private-key', 'content-type': 'application/json' } });
-    expect(JSON.parse(String(init!.body))).toEqual({ model: 'translate-model', messages: [{ role: 'system', content: TRANSLATION_FORMAT_PROTOCOL }, { role: 'user', content: `Translate to 简体中文: ${prepared.segments[0]}` }], stream: false });
+    expect(JSON.parse(String(init!.body))).toEqual({ model: 'translate-model', messages: [
+      { role: 'system', content: `Translate into 简体中文 using a formal tone.\n\n${TRANSLATION_FORMAT_PROTOCOL}` },
+      { role: 'user', content: prepared.segments[0] },
+    ], stream: false });
     expect(String(init!.body)).not.toContain('private.example');
     expect(String(init!.body)).not.toContain('secret code');
+  });
+
+  it('rejects a system template that would insert source text before making a request', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(new TranslationClient({ fetchImpl }).translate({ ...request, systemPrompt: 'To {{target_language}}: {{text}}' }))
+      .rejects.toMatchObject({ errorCode: 'INVALID_TEMPLATE' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('permits an explicitly empty key for a local compatible service and never invents /v1', async () => {
@@ -174,7 +185,7 @@ describe('OpenAI compatible translation client', () => {
     const outbound: string[] = [];
     const client = new TranslationClient({ fetchImpl: async (_url, init) => {
       outbound.push(String(init?.body));
-      return completion(JSON.parse(String(init?.body)).messages.at(-1).content.replace(/^Translate to 简体中文: /, ''));
+      return completion(JSON.parse(String(init?.body)).messages.at(-1).content);
     } });
     const results = [];
     for (const text of prepared.segments) results.push(await client.translate({ ...request, text }));

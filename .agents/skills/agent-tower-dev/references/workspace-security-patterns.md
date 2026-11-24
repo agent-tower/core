@@ -46,7 +46,7 @@
 - 配置和草稿测试只允许现有 owner 入口及经过校验的 internal credential，明确拒绝托管 Agent credential。密码关闭时沿现有普通 owner 访问，不额外要求 browser cookie；非 internal 写请求继续复用 `hasValidSameOriginSignal()`，缺失 Origin 不意味着 internal 身份。不能信任 body 中的成员或身份声明。
 - Key 只在独立服务端配置和执行内存中使用；普通配置读取只返回 `keyConfigured`，attempt 快照不得包含 Key。错误响应及日志不得携带请求正文、模板展开值、Authorization、第三方响应体或含凭据 URL；Zod 错误也不能回显用户提交的凭据。
 - 外发只使用服务端保存或 owner 草稿中的 HTTP(S) endpoint，禁止 URL 内凭据、query/fragment 和 redirect，不能附带浏览器 Cookie、Agent/internal token。允许 owner 配置本地翻译服务不构成逐条消息自带 URL 的代理能力。
-- 代码、路径、链接目标、提及、图片引用及资源/交付指令留在本地，译文必须通过 token 和结构完整性校验再还原。只有待译自然语言、随机保护 token 与必要翻译指令进入 HTTP；不发送历史、系统运行规则、thinking、工具内容或附件全文。保护不是授权替代物，调用方仍需先取得有类型的合格正文。
+- 代码、路径、链接目标、提及、图片引用及资源/交付指令留在本地，固定系统格式规则要求上游保留占位符，服务端还原返回文本中已识别的占位符。只有待译自然语言、随机保护 token 与必要翻译指令进入 HTTP；不发送历史、系统运行规则、thinking、工具内容或附件全文。保护不是授权替代物，调用方仍需先取得有类型的合格正文。
 - 草稿测试不保存配置、不创建 runtime/消息/派活，并与普通翻译共用全局请求额度；独立身份和实例等待数均受限。关闭与 app shutdown 要取消并等待请求句柄退出，不能因 abort 已发出就转借仍未退出请求的额度。
 
 ## Preview Gateway
