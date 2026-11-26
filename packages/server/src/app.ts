@@ -147,6 +147,10 @@ export async function buildApp() {
     app.log.info(`[startup:onReady] complete elapsed=${elapsed()}`);
   });
 
+  app.addHook('onListen', async () => {
+    getTranslationService().startSessionCheckpointRecovery();
+  });
+
   // Fastify waits for HTTP/upgrade clients before onClose. Revoke producers
   // and close streaming connections first so they cannot block process cleanup.
   app.addHook('preClose', async () => {

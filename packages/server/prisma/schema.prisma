@@ -454,6 +454,7 @@ model Session {
   runtimeLaunchNextDiagnosticAt DateTime?
   purpose        String             @default("CHAT") // CHAT: 正常会话, COMMIT_MSG: 生成提交消息
   logSnapshot    String? // 序列化的 NormalizedConversation JSON，session 结束时持久化
+  translationCheckpoint SessionTranslationCheckpoint?
   tokenUsage     String? // JSON: { totalTokens, modelContextWindow? }
   processes      ExecutionProcess[]
   artifacts      AgentArtifact[]
@@ -470,6 +471,14 @@ model Session {
   @@index([workspaceId])
   @@index([context])
   @@index([workspaceId, purpose, createdAt])
+}
+
+model SessionTranslationCheckpoint {
+  sessionId String  @id
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  token     String
+
+  @@index([token, sessionId])
 }
 
 // 用户对话消息的可靠发送队列。消息先落库，再由 SessionManager 按 Session 串行执行。

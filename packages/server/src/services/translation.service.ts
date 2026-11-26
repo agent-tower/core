@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient, type TranslationSource as SourceRow, type TranslationAttempt as AttemptRow } from '@prisma/client';
-import { sessionLogReader } from './session-log-reader.js';
-import type { NormalizedConversation, NormalizedEntry } from '../output/types.js';
-import { getTranslationTextBlocks, isTranslatableMessageType, type TranslationSemanticType, type TranslationTextBlock, TEAM_RUN_TRANSLATION_MAX_MESSAGE_IDS, TEAM_RUN_TRANSLATION_PREVIEW_LENGTH, type TeamRunTranslationOverlay, type TeamRunTranslationOverlaySummary, type TranslationInvalidatedPayload, type SessionTranslationOverlay, type TranslationBlockState, type TranslationDirection, type TranslationSettingsDraft } from '@agent-tower/shared';
+import { buildTranslationBlockIndex, sessionLogReader } from './session-log-reader.js';
+import type { NormalizedConversation } from '../output/types.js';
+import { isTranslatableMessageType, type TranslationSemanticType, type TranslationTextBlock, TEAM_RUN_TRANSLATION_MAX_MESSAGE_IDS, TEAM_RUN_TRANSLATION_PREVIEW_LENGTH, type TeamRunTranslationOverlay, type TeamRunTranslationOverlaySummary, type TranslationInvalidatedPayload, type SessionTranslationOverlay, type TranslationBlockState, type TranslationDirection, type TranslationSettingsDraft } from '@agent-tower/shared';
 import { ServiceError } from '../errors.js';
 import { TranslationSettingsService, type TranslationExecutionConfig } from './translation-settings.service.js';
 import { TranslationClient, TranslationError } from './translation-client.js';
@@ -18,6 +18,8 @@ type Db = Prisma.TransactionClient;
 /** Session overlay page size; the web client asks for the maximum so one request usually suffices. */
 const SESSION_OVERLAY_PAGE_DEFAULT = 100;
 const SESSION_OVERLAY_PAGE_MAX = 1000;
+const SESSION_CHECKPOINT_BATCH_SIZE = 4;
+type PendingSessionCheckpoint = { sessionId: string; token: string };
 type SourceInput =
   | { kind: 'SESSION_BLOCK'; sessionId: string; turnId: string; blockId: string; semanticType: TranslationSemanticType; text: string; state: TranslationBlockState; sourceRevision?: number; enableEpoch?: number }
   | { kind: 'ROOM_MESSAGE'; messageId: string }
@@ -27,24 +29,6 @@ interface Limits { sources: number; displaySources: number; laneSources: number;
 const DEFAULT_LIMITS: Limits = { sources: 512, displaySources: 384, laneSources: 64, attemptMs: 180_000, chainMs: 300_000, retryDelays: [1_000, 4_000], tickMs: 1_000, leaseMs: 30_000, renewMs: 10_000 };
 interface Handle { generation: number; controller: AbortController; done: Promise<void> }
 type RoomOverlayRow = TeamRunTranslationOverlay & { originalTextTruncated: number | bigint; translatedTextTruncated: number | bigint };
-
-function sessionTextBlock(entry: NormalizedEntry) {
-  const block = entry.metadata?.textBlock;
-  return isTranslatableMessageType(entry.entryType) && block?.semanticType === entry.entryType ? block : undefined;
-}
-
-function snapshotBlocks(snapshot: NormalizedConversation | null): Map<string, TranslationTextBlock> | null {
-  if (!snapshot) return null;
-  const blocks = new Map<string, TranslationTextBlock>();
-  for (const entry of snapshot.entries ?? []) {
-    const lifecycle = sessionTextBlock(entry);
-    if (!lifecycle) continue;
-    for (const block of getTranslationTextBlocks(entry.content, lifecycle)) {
-      blocks.set(JSON.stringify([block.turnId, block.blockId]), block);
-    }
-  }
-  return blocks;
-}
 
 /** App-owned translation state machine; transcript facts remain in MsgStore/Session snapshots. */
 export class TranslationService {
@@ -57,13 +41,13 @@ export class TranslationService {
   private readonly draftControllers = new Set<AbortController>();
   private readonly circuits = new Set<number>();
   private timer?: ReturnType<typeof setInterval>;
+  private checkpointTimer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
   private closed = false;
   private started = false;
   private pumping?: Promise<void>;
-  private checkpointOverflow = false;
-  private pendingCheckpoints = new Set<string>();
   private checkpointDrain?: Promise<void>;
+  private checkpointCursor?: PendingSessionCheckpoint;
   private pendingRoomMessages = new Set<string>();
   private roomDrain?: Promise<void>;
   private roomCursor?: { translationEligibilityEpoch: number; id: string };
@@ -129,26 +113,18 @@ export class TranslationService {
     })().finally(() => { this.roomDrain = undefined; });
     return this.roomDrain;
   }
-  checkpointCommitted(sessionId: string): void {
-    if (this.closed) return;
-    if (this.pendingCheckpoints.size < 512) this.pendingCheckpoints.add(sessionId);
-    else this.checkpointOverflow = true;
-    void this.drainCheckpoints();
+  /** Start snapshot reconciliation only once HTTP is listening. */
+  startSessionCheckpointRecovery(): void {
+    if (!this.started || this.closed || this.checkpointTimer) return;
+    this.checkpointTimer = setInterval(() => {
+      void this.drainCheckpoints().catch(() => undefined);
+    }, this.limits.tickMs);
+    this.checkpointTimer.unref();
   }
   private async drainCheckpoints(): Promise<void> {
     if (this.closed || this.checkpointDrain) return;
     this.checkpointDrain = (async () => {
-      for (const id of [...this.pendingCheckpoints].slice(0, 64)) {
-        this.pendingCheckpoints.delete(id);
-        try { await this.syncSessionCheckpoint(id); } catch {
-          if (this.pendingCheckpoints.size < 512) this.pendingCheckpoints.add(id);
-          else this.checkpointOverflow = true;
-        }
-      }
-      if (this.checkpointOverflow && this.pendingCheckpoints.size < 448) {
-        this.checkpointOverflow = false;
-        try { await this.recoverSessionCheckpoints(); } catch { this.checkpointOverflow = true; }
-      }
+      this.checkpointCursor = await this.recoverSessionCheckpointBatch(this.checkpointCursor);
     })().finally(() => { this.checkpointDrain = undefined; });
     await this.checkpointDrain;
   }
@@ -219,9 +195,8 @@ export class TranslationService {
       await tx.translationSource.updateMany({ where: { AND: [enabledAdapters], jobState: 'RUNNING', deletedAt: null }, data: { overlayRevision: { increment: 1 }, jobState: 'PENDING', generation: { increment: 1 } } });
       await tx.translationSource.updateMany({ where: { AND: [enabledAdapters], jobState: { in: ACTIVE }, deletedAt: null, OR: [{ enableEpoch: { not: config.enableEpoch } }, ...(!config.enabled ? [{}] : [])] }, data: { overlayRevision: { increment: 1 }, jobState: 'PAUSED_DISABLED', nextRetryAt: null, generation: { increment: 1 }, errorCode: 'DISABLED' } });
     });
-    await this.recoverSessionCheckpoints();
     await this.drainRoomMessages();
-    this.timer = setInterval(() => { void this.drainCheckpoints(); if (!this.roomDrain) void this.drainRoomMessages().catch(() => undefined); this.wake(); }, this.limits.tickMs);
+    this.timer = setInterval(() => { if (!this.roomDrain) void this.drainRoomMessages().catch(() => undefined); this.wake(); }, this.limits.tickMs);
     this.timer.unref();
     await this.pump();
   }
@@ -336,26 +311,37 @@ export class TranslationService {
     await this.readableSession(sessionId, this.db);
   }
 
-  /** Called only after the single Session snapshot writer has committed a boundary. */
-  async syncSessionCheckpoint(sessionId: string): Promise<void> {
-    const session = await this.db.session.findUnique({ where: { id: sessionId }, select: { logSnapshot: true, purpose: true } });
-    if (!session?.logSnapshot || session.purpose !== 'CHAT') return;
+  /** Reconcile a committed snapshot and acknowledge only the version that was read. */
+  async syncSessionCheckpoint(sessionId: string, expectedToken?: string): Promise<void> {
+    const token = expectedToken ?? (await this.db.sessionTranslationCheckpoint.findUnique({
+      where: { sessionId }, select: { token: true },
+    }))?.token;
+    if (!token) return;
+    const session = await this.db.session.findUnique({
+      where: {
+        id: sessionId,
+        purpose: 'CHAT',
+        translationCheckpoint: { is: { token } },
+      },
+      select: { logSnapshot: true },
+    });
+    if (session?.logSnapshot) await this.reconcileSessionSnapshot(sessionId, session.logSnapshot);
+    await this.db.sessionTranslationCheckpoint.deleteMany({ where: { sessionId, token } });
+  }
+
+  private async reconcileSessionSnapshot(sessionId: string, logSnapshot: string): Promise<void> {
     let snapshot: NormalizedConversation;
-    try { snapshot = JSON.parse(session.logSnapshot) as NormalizedConversation; } catch { return; }
-    if (!Array.isArray(snapshot.entries)) return;
+    try { snapshot = JSON.parse(logSnapshot) as NormalizedConversation; } catch { return; }
+    if (!Array.isArray(snapshot?.entries)) return;
     const known = await this.db.translationSource.findMany({ where: { sessionId, sourceKind: 'SESSION_BLOCK' }, select: { id: true, turnId: true, blockId: true, sourceRevision: true, sourceHash: true, blockState: true, jobState: true, deletedAt: true } });
     const versions = new Map(known.map(row => [JSON.stringify([row.turnId, row.blockId]), row]));
-    const blocks = snapshotBlocks(snapshot)!;
+    const { blocks, parents } = buildTranslationBlockIndex(snapshot);
     // A revised parent may have fewer/different paragraph boundaries. Cancel old
     // sources without tombstoning identities that a later revision can reuse.
-    const parents = new Map(snapshot.entries.flatMap(entry => {
-      const block = sessionTextBlock(entry);
-      return block ? [[JSON.stringify([block.turnId, block.blockId]), block] as const] : [];
-    }));
     for (const row of known) {
       if (row.deletedAt || !row.blockId || blocks.has(JSON.stringify([row.turnId, row.blockId]))) continue;
-      const parent = parents.get(JSON.stringify([row.turnId, row.blockId.replace(/:p\d+$/, '')]));
-      if (!parent || row.jobState !== 'CANCELLED') await this.cancel(row.id, !parent);
+      const hasParent = parents.has(JSON.stringify([row.turnId, row.blockId.replace(/:p\d+$/, '')]));
+      if (!hasParent || row.jobState !== 'CANCELLED') await this.cancel(row.id, !hasParent);
     }
     for (const block of blocks.values()) {
       if (block.translationEpoch === undefined) continue;
@@ -365,19 +351,20 @@ export class TranslationService {
     }
   }
 
-  private async recoverSessionCheckpoints(): Promise<void> {
-    let cursor: string | undefined;
-    while (true) {
-      // Only explicitly marked live output, never static history.
-      const sessions = await this.db.session.findMany({ where: { purpose: 'CHAT', logSnapshot: { contains: '"translationEpoch":' }, ...(cursor ? { id: { gt: cursor } } : {}) }, select: { id: true }, orderBy: { id: 'asc' }, take: 64 });
-      for (const session of sessions) {
-        try { await this.syncSessionCheckpoint(session.id); } catch (error) {
-          if (!(error instanceof ServiceError && error.code === 'NOT_FOUND') && this.pendingCheckpoints.size < 512) this.pendingCheckpoints.add(session.id);
-        }
+  private async recoverSessionCheckpointBatch(cursor?: PendingSessionCheckpoint): Promise<PendingSessionCheckpoint | undefined> {
+    const checkpoints = await this.db.$queryRaw<PendingSessionCheckpoint[]>(Prisma.sql`
+      SELECT "sessionId", "token" FROM "SessionTranslationCheckpoint"
+      WHERE "token" > ''
+      ${cursor ? Prisma.sql`AND ("token", "sessionId") > (${cursor.token}, ${cursor.sessionId})` : Prisma.empty}
+      ORDER BY "token", "sessionId" LIMIT ${SESSION_CHECKPOINT_BATCH_SIZE}
+    `);
+    for (const { sessionId, token } of checkpoints) {
+      if (this.closed) return;
+      try { await this.syncSessionCheckpoint(sessionId, token); } catch {
+        // Leave failed work marked. Advancing the cursor also lets other sessions progress.
       }
-      if (sessions.length < 64) break;
-      cursor = sessions[sessions.length - 1].id;
     }
+    return checkpoints.length === SESSION_CHECKPOINT_BATCH_SIZE ? checkpoints.at(-1) : undefined;
   }
 
   async listSessionOverlays(sessionId: string, options: { blockIds?: string[]; cursor?: string; limit?: number } = {}): Promise<{ items: SessionTranslationOverlay[]; nextCursor: string | null }> {
@@ -776,11 +763,11 @@ export class TranslationService {
     this.enabledEpoch = undefined;
     this.listeners.clear();
     if (this.timer) clearInterval(this.timer);
+    if (this.checkpointTimer) clearInterval(this.checkpointTimer);
     this.unsubscribe?.();
     for (const handle of this.running.values()) handle.controller.abort();
     for (const controller of this.draftControllers) controller.abort();
-    await this.checkpointDrain;
-    this.pendingCheckpoints.clear();
+    await this.checkpointDrain?.catch(() => undefined);
     await this.roomDrain?.catch(() => undefined);
     this.pendingRoomMessages.clear();
     this.roomCursor = this.roomUpperBound = undefined;

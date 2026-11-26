@@ -12,6 +12,7 @@ const backgroundShutdownMock = vi.fn(async () => {})
 const deliveryStartMock = vi.fn(async () => {})
 const deliveryShutdownMock = vi.fn(async () => {})
 const translationStartMock = vi.fn(async () => {})
+const translationCheckpointRecoveryMock = vi.fn()
 const translationShutdownMock = vi.fn(async () => {})
 
 vi.mock('./routes/index.js', () => ({
@@ -38,8 +39,11 @@ vi.mock('./core/container.js', () => ({
   getMessageDeliveryService: vi.fn(() => ({ start: deliveryStartMock, shutdown: deliveryShutdownMock })),
   getTranslationService: vi.fn(() => ({
     start: translationStartMock,
+    startSessionCheckpointRecovery: translationCheckpointRecoveryMock,
     shutdown: translationShutdownMock,
   })),
+  getSessionWakeupService: vi.fn(() => ({ start: vi.fn(), stop: vi.fn() })),
+  getUsageLimitResume: vi.fn(() => ({ start: vi.fn(), stop: vi.fn() })),
   getTaskCleanupService: vi.fn(() => ({
     start: taskCleanupStartMock,
     stop: taskCleanupStopMock,
@@ -88,6 +92,7 @@ beforeEach(() => {
   deliveryStartMock.mockClear()
   deliveryShutdownMock.mockClear()
   translationStartMock.mockClear()
+  translationCheckpointRecoveryMock.mockClear()
   translationShutdownMock.mockClear()
   vi.mocked(initializeSocket).mockClear()
 })
@@ -179,7 +184,7 @@ describe('buildApp startup services', () => {
     expect(taskCleanupStopMock).toHaveBeenCalledTimes(1)
   })
 
-  it('waits for translation recovery before starting socket and other app services', async () => {
+  it('waits for translation initialization before starting socket and other app services', async () => {
     let finishRecovery!: () => void
     const recovery = new Promise<void>((resolve) => { finishRecovery = resolve })
     translationStartMock.mockImplementationOnce(() => recovery)
@@ -199,6 +204,24 @@ describe('buildApp startup services', () => {
       await app.close()
     }
     expect(translationShutdownMock).toHaveBeenCalledOnce()
+  })
+
+  it('starts session checkpoint recovery only after the HTTP server is listening', async () => {
+    const app = await buildApp()
+    let listeningAtRecovery = false
+    translationCheckpointRecoveryMock.mockImplementationOnce(() => {
+      listeningAtRecovery = app.server.listening
+    })
+
+    try {
+      await app.ready()
+      expect(translationCheckpointRecoveryMock).not.toHaveBeenCalled()
+      await app.listen({ host: '127.0.0.1', port: 0 })
+      await vi.waitFor(() => expect(translationCheckpointRecoveryMock).toHaveBeenCalledOnce())
+      expect(listeningAtRecovery).toBe(true)
+    } finally {
+      await app.close()
+    }
   })
 
   it('waits for translation request cleanup before completing app close', async () => {

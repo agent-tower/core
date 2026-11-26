@@ -2511,7 +2511,7 @@ export class SessionManager {
         return;
       }
 
-      await prisma.session.update({
+      const snapshotWrite = prisma.session.update({
         where: { id: sessionId },
         data: {
           ...(pendingStatus ? { status: pendingStatus } : {}),
@@ -2525,10 +2525,20 @@ export class SessionManager {
       });
 
       if (snapshotChanged) {
+        // Keep the checkpoint in a small table so acknowledging it never rewrites
+        // the transcript. Both writes commit together.
+        const token = randomUUID();
+        const checkpointWrite = serializedSnapshot.includes('"translationEpoch":')
+          ? prisma.sessionTranslationCheckpoint.upsert({
+            where: { sessionId },
+            create: { sessionId, token },
+            update: { token },
+          })
+          : prisma.sessionTranslationCheckpoint.deleteMany({ where: { sessionId } });
+        await prisma.$transaction([snapshotWrite, checkpointWrite]);
         this.persistedSnapshotHashes.set(sessionId, snapshotHash);
-        if (serializedSnapshot.includes('"translationEpoch":')) {
-          try { getTranslationService().checkpointCommitted(sessionId); } catch { /* Original snapshot is durable for startup recovery. */ }
-        }
+      } else {
+        await snapshotWrite;
       }
       if (DEBUG_SNAPSHOT) {
         console.log(

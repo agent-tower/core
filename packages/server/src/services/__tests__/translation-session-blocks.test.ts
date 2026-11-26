@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PrismaClient } from '@prisma/client';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TranslationService } from '../translation.service.js';
 import { TranslationSettingsService } from '../translation-settings.service.js';
 import { TranslationClient } from '../translation-client.js';
@@ -48,6 +49,7 @@ describe('durable Session block overlays', () => {
     await settings.save({ expectedRevision: 0, enabled: true, apiBaseUrl: 'https://translator.test/v1', apiKey: { action: 'replace', value: '' }, model: 'translation', sendTargetLanguage: 'English', displayTargetLanguage: 'Chinese', promptTemplate: '{{target_language}}\n{{text}}', maxConcurrency: 2 });
     release = []; payloads = []; persist = Promise.resolve(); failOnce = new Set();
     service = make(); await service.start();
+    service.startSessionCheckpointRecovery();
   });
   function make(queue?: TranslationQueue, retryDelays = [10, 10]) {
     return new TranslationService(db, settings, { queue, client: new TranslationClient({ fetchImpl: async (_url, init) => {
@@ -62,18 +64,21 @@ describe('durable Session block overlays', () => {
   }
   afterEach(async () => { for (const resolve of release) resolve(); await persist; await service.shutdown(); sessionMsgStoreManager.delete(sessionId); });
   afterAll(async () => { await db.$disconnect(); fs.rmSync(dir, { recursive: true, force: true }); });
+  async function saveCheckpoint(logSnapshot: string, token: string = randomUUID()) {
+    await db.$transaction([
+      db.session.update({ where: { id: sessionId }, data: { logSnapshot }, select: { id: true } }),
+      db.sessionTranslationCheckpoint.upsert({ where: { sessionId }, create: { sessionId, token }, update: { token } }),
+    ]);
+  }
+
   function store() {
     const store = sessionMsgStoreManager.getOrCreate(sessionId);
     store.textBlocks.admission = service.getAdmissionEpoch;
     store.textBlocks.begin('turn');
     store.onTextBlock(entry => {
       if (entry.metadata?.textBlock?.state === 'OPEN' && entry.metadata.textBlock.sourceRevision === 1 && !entry.metadata.textBlock.paragraphs?.length) return;
-      // Same boundary contract used by SessionManager: one durable original checkpoint,
-      // then independent observer admission. Nothing on the raw output path awaits it.
-      persist = persist.then(async () => {
-        await db.session.update({ where: { id: sessionId }, data: { logSnapshot: JSON.stringify(store.getSnapshot()) } });
-        service.checkpointCommitted(sessionId);
-      });
+      // SessionManager saves the original and its pending marker in one write.
+      persist = persist.then(() => saveCheckpoint(JSON.stringify(store.getSnapshot())));
     });
     return store;
   }
@@ -172,7 +177,7 @@ describe('durable Session block overlays', () => {
     const msgStore = sessionMsgStoreManager.getOrCreate(sessionId);
     msgStore.textBlocks.admission = service.getAdmissionEpoch; msgStore.textBlocks.begin('queued-turn');
     const checkpoint = async () => {
-      await db.session.update({ where: { id: sessionId }, data: { logSnapshot: JSON.stringify(msgStore.getSnapshot()) } });
+      await saveCheckpoint(JSON.stringify(msgStore.getSnapshot()));
       await service.syncSessionCheckpoint(sessionId);
     };
     if (state === 'RETRY_WAIT') {
@@ -258,10 +263,12 @@ describe('durable Session block overlays', () => {
     // ACP session/load replay must preserve the original block identity on equal text.
     const replay = reconcileAcpHistoryEntries(msgStore.getSnapshot().entries, [createAssistantMessage('Recover this body')]);
     expect(replay).toBeUndefined();
+    await saveCheckpoint(JSON.stringify(msgStore.getSnapshot()));
     sessionMsgStoreManager.delete(sessionId);
     const staticConversation = await db.conversation.create({ data: { title: 'Static', directoryName: 'static', workingDir: dir } });
     await db.session.create({ data: { conversationId: staticConversation.id, context: 'CONVERSATION', agentType: 'CODEX', prompt: 'old', logSnapshot: JSON.stringify({ entries: [createAssistantMessage('Static history secret'), createSystemMessage('Static notification secret')] }) } });
-    service = make(); await service.start(); await pause(25);
+    service = make(); await service.start(); service.startSessionCheckpointRecovery();
+    await until(async () => (await db.sessionTranslationCheckpoint.findUnique({ where: { sessionId } })) === null);
     expect(payloads).toHaveLength(1); expect((await overlays())[0]).toEqual(previous);
     expect(await db.translationSource.count()).toBe(1);
   });
@@ -280,7 +287,7 @@ describe('durable Session block overlays', () => {
     expect(entries[0].metadata!.textBlock).toMatchObject({ blockId: original.blockId, sourceRevision: 2 });
     msgStore.pushPatch([{ op: 'replace', path: '/entries', value: entries }]);
     expect(await overlays()).toEqual([]);
-    await db.session.update({ where: { id: sessionId }, data: { logSnapshot: JSON.stringify(msgStore.getSnapshot()) } });
+    await saveCheckpoint(JSON.stringify(msgStore.getSnapshot()));
     await service.syncSessionCheckpoint(sessionId); await service.pump();
     expect(payloads).toHaveLength(1); expect(await db.translationSource.count()).toBe(1);
   });
@@ -337,7 +344,7 @@ describe('durable Session block overlays', () => {
       expect(entries[index].metadata!.textBlock!.translationEpoch).toBeUndefined();
     }
     expect(reconcileAcpHistoryEntries(entries, replay.getSnapshot().entries)).toBeUndefined();
-    await db.session.update({ where: { id: sessionId }, data: { logSnapshot: JSON.stringify(msgStore.getSnapshot()) } });
+    await saveCheckpoint(JSON.stringify(msgStore.getSnapshot()));
     await service.syncSessionCheckpoint(sessionId); await service.pump();
     // Also read through SQLite alone, with no live store to mask a stale snapshot.
     sessionMsgStoreManager.delete(sessionId);
@@ -350,16 +357,64 @@ describe('durable Session block overlays', () => {
   it.each([
     { kind: 'assistant', createMessage: createAssistantMessage },
     { kind: 'system', createMessage: createSystemMessage },
-  ])('recovers a SEALED $kind checkpoint whose observer failed before registration', async ({ createMessage }) => {
+  ])('recovers a saved $kind checkpoint after listening and skips older sessions without checkpoints', async ({ createMessage }) => {
     const msgStore = sessionMsgStoreManager.getOrCreate(sessionId);
     msgStore.textBlocks.admission = service.getAdmissionEpoch; msgStore.textBlocks.begin('crash-turn');
     msgStore.pushPatch(addNormalizedEntry(0, createMessage('Durable unregistered body'))); msgStore.textBlocks.complete(0);
-    await db.session.update({ where: { id: sessionId }, data: { logSnapshot: JSON.stringify(msgStore.getSnapshot()) } });
+    const logSnapshot = JSON.stringify(msgStore.getSnapshot());
     await service.shutdown(); sessionMsgStoreManager.delete(sessionId);
-    service = make(); await service.start(); await service.syncSessionCheckpoint(sessionId);
+    const token = randomUUID();
+    await saveCheckpoint(logSnapshot, token);
+    const oldConversation = await db.conversation.create({ data: { title: 'Earlier chat', directoryName: 'earlier', workingDir: dir } });
+    const oldSession = await db.session.create({
+      data: { conversationId: oldConversation.id, agentType: 'GEMINI_CLI', prompt: 'user', logSnapshot, createdAt: new Date(0) },
+    });
+
+    service = make();
+    const sync = vi.spyOn(service, 'syncSessionCheckpoint');
+    await service.start();
+    expect(sync).not.toHaveBeenCalled();
+    expect(await db.translationSource.count()).toBe(0);
+
+    service.startSessionCheckpointRecovery();
     await until(async () => payloads.length === 1); release[0]();
     await until(async () => (await overlays())[0]?.state === 'SUCCESS');
+    await until(async () => (await db.sessionTranslationCheckpoint.findUnique({ where: { sessionId } })) === null);
+    expect(sync.mock.calls).toEqual([[sessionId, token]]);
+    expect(await db.session.findUnique({ where: { id: oldSession.id } })).toEqual(oldSession);
     expect(await db.translationSource.count()).toBe(1); expect(await db.translationAttempt.count()).toBe(1);
+  });
+
+  it('leaves a newer checkpoint pending when an older snapshot finishes syncing', async () => {
+    const msgStore = new MsgStore();
+    const epoch = service.getAdmissionEpoch();
+    msgStore.textBlocks.admission = () => epoch;
+    msgStore.textBlocks.begin('checkpoint-turn');
+    msgStore.pushPatch(addNormalizedEntry(0, createAssistantMessage('First reply')));
+    msgStore.textBlocks.complete(0);
+    await service.shutdown();
+    await saveCheckpoint(JSON.stringify(msgStore.getSnapshot()), 'first');
+
+    service = make();
+    const registerSource = service.registerSource.bind(service);
+    vi.spyOn(service, 'registerSource').mockImplementationOnce(async input => {
+      msgStore.pushPatch(addNormalizedEntry(1, createAssistantMessage('Second reply')));
+      msgStore.textBlocks.complete(1);
+      await saveCheckpoint(JSON.stringify(msgStore.getSnapshot()), 'second');
+      return registerSource(input);
+    });
+
+    await service.syncSessionCheckpoint(sessionId, 'first');
+    const select = { translationCheckpoint: { select: { token: true } }, updatedAt: true };
+    const snapshot = await db.session.findUniqueOrThrow({ where: { id: sessionId }, select });
+    expect(snapshot.translationCheckpoint?.token).toBe('second');
+
+    await service.syncSessionCheckpoint(sessionId, 'second');
+    expect(await db.session.findUniqueOrThrow({ where: { id: sessionId }, select })).toEqual({
+      translationCheckpoint: null,
+      updatedAt: snapshot.updatedAt,
+    });
+    expect(await db.translationSource.count()).toBe(2);
   });
 
   it('omits removed blocks, rejects foreign retries, and rejects deleted conversations before returning overlays', async () => {
@@ -369,7 +424,7 @@ describe('durable Session block overlays', () => {
     await expect(service.retrySessionOverlay(sessionId, 'foreign-source', 1)).rejects.toMatchObject({ code: 'NOT_FOUND' });
     msgStore.pushPatch([{ op: 'replace', path: '/entries', value: [] }]); release[0]();
     await pause(25); expect(await overlays()).toEqual([]);
-    await db.session.update({ where: { id: sessionId }, data: { logSnapshot: JSON.stringify(msgStore.getSnapshot()) } });
+    await saveCheckpoint(JSON.stringify(msgStore.getSnapshot()));
     await service.syncSessionCheckpoint(sessionId);
     expect((await db.translationSource.findUniqueOrThrow({ where: { id: source.sourceId } })).deletedAt).not.toBeNull();
     const session = await db.session.findUniqueOrThrow({ where: { id: sessionId } });
